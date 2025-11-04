@@ -166,6 +166,11 @@ func (n *Network) EvaluateNetwork(inputs [][]float32, expectedOutputs []float64)
 		return nil, fmt.Errorf("mismatched inputs (%d) vs expected outputs (%d)", len(inputs), len(expectedOutputs))
 	}
 
+	// Save and restore batch size for single-sample evaluation
+	originalBatchSize := n.BatchSize
+	n.BatchSize = 1
+	defer func() { n.BatchSize = originalBatchSize }()
+
 	metrics := NewDeviationMetrics()
 	actualOutputs := make([]float64, len(inputs))
 
@@ -304,7 +309,40 @@ func (dm *DeviationMetrics) GetWorstSamples(n int) []PredictionResult {
 
 // SaveMetrics saves the metrics to a JSON file
 func (dm *DeviationMetrics) SaveMetrics(filepath string) error {
-	data, err := json.MarshalIndent(dm, "", "  ")
+	// Create a copy with sanitized buckets (convert pointers to values and sanitize range values)
+	sanitizedBuckets := make(map[string]DeviationBucket)
+	for k, v := range dm.Buckets {
+		bucket := *v
+		bucket.RangeMin = sanitizeFloat(bucket.RangeMin)
+		bucket.RangeMax = sanitizeFloat(bucket.RangeMax)
+		sanitizedBuckets[k] = bucket
+	}
+
+	// Sanitize results (replace Inf with large numbers)
+	sanitizedResults := make([]PredictionResult, len(dm.Results))
+	for i, r := range dm.Results {
+		sanitizedResults[i] = r
+		sanitizedResults[i].Deviation = sanitizeFloat(r.Deviation)
+	}
+
+	// Create sanitized struct
+	sanitized := struct {
+		TotalSamples     int                        `json:"total_samples"`
+		Score            float64                    `json:"score"`
+		AverageDeviation float64                    `json:"avg_deviation"`
+		Failures         int                        `json:"failures"`
+		Buckets          map[string]DeviationBucket `json:"buckets"`
+		Results          []PredictionResult         `json:"results"`
+	}{
+		TotalSamples:     dm.TotalSamples,
+		Score:            dm.Score,
+		AverageDeviation: sanitizeFloat(dm.AverageDeviation),
+		Failures:         dm.Failures,
+		Buckets:          sanitizedBuckets,
+		Results:          sanitizedResults,
+	}
+
+	data, err := json.MarshalIndent(sanitized, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal metrics: %w", err)
 	}
@@ -314,6 +352,18 @@ func (dm *DeviationMetrics) SaveMetrics(filepath string) error {
 	}
 
 	return nil
+}
+
+// sanitizeFloat replaces Inf and NaN with values that can be JSON serialized
+func sanitizeFloat(v float64) float64 {
+	if math.IsInf(v, 1) {
+		return 1e9 // Positive infinity -> very large number
+	} else if math.IsInf(v, -1) {
+		return -1e9 // Negative infinity -> very large negative number
+	} else if math.IsNaN(v) {
+		return 0.0
+	}
+	return v
 }
 
 // LoadMetrics loads deviation metrics from a JSON file
