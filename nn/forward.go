@@ -8,7 +8,7 @@ import (
 	"github.com/openfluke/webgpu/wgpu"
 )
 
-// ForwardCPU executes the network on CPU and stores intermediate activations for backprop
+// ForwardCPU executes the grid network on CPU and stores intermediate activations for backprop
 func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 	start := time.Now()
 
@@ -19,20 +19,31 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 	data := make([]float32, len(input))
 	copy(data, input)
 
-	// Forward through each layer
-	for layerIdx, layer := range n.Layers {
-		// Store pre-activation values
-		n.preActivations[layerIdx] = make([]float32, len(data))
-		copy(n.preActivations[layerIdx], data)
+	layerIdx := 0
 
-		// Apply activation
-		for i := 0; i < len(data); i++ {
-			data[i] = activateCPU(data[i], layer.Activation)
+	// Forward through grid: iterate through rows, then columns, then layers per cell
+	for row := 0; row < n.GridRows; row++ {
+		for col := 0; col < n.GridCols; col++ {
+			for layer := 0; layer < n.LayersPerCell; layer++ {
+				// Get activation for this grid position
+				activation := n.GetActivation(row, col, layer)
+
+				// Store pre-activation values
+				n.preActivations[layerIdx] = make([]float32, len(data))
+				copy(n.preActivations[layerIdx], data)
+
+				// Apply activation
+				for i := 0; i < len(data); i++ {
+					data[i] = activateCPU(data[i], activation)
+				}
+
+				// Store post-activation values
+				n.activations[layerIdx+1] = make([]float32, len(data))
+				copy(n.activations[layerIdx+1], data)
+
+				layerIdx++
+			}
 		}
-
-		// Store post-activation values
-		n.activations[layerIdx+1] = make([]float32, len(data))
-		copy(n.activations[layerIdx+1], data)
 	}
 
 	return data, time.Since(start)
@@ -52,7 +63,7 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 
 	N := len(input)
 	bytes := uint64(N * 4)
-	totalLayers := len(n.Layers)
+	totalLayers := n.TotalLayers()
 
 	// Build pipelines for each unique activation type
 	pipelines := make([]*wgpu.ComputePipeline, 5)
@@ -151,7 +162,13 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 	// Create bind groups for each layer
 	bindGroups := make([]*wgpu.BindGroup, totalLayers)
 	for layerIdx := 0; layerIdx < totalLayers; layerIdx++ {
-		activation := int(n.Layers[layerIdx].Activation)
+		// Calculate grid position for this layer
+		row := layerIdx / (n.GridCols * n.LayersPerCell)
+		remainder := layerIdx % (n.GridCols * n.LayersPerCell)
+		col := remainder / n.LayersPerCell
+		layer := remainder % n.LayersPerCell
+
+		activation := int(n.GetActivation(row, col, layer))
 		bgl := bgls[activation]
 
 		var inBuf, outBuf *wgpu.Buffer
@@ -191,7 +208,13 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 
 	// Execute layers
 	for layerIdx := 0; layerIdx < totalLayers; layerIdx++ {
-		activation := int(n.Layers[layerIdx].Activation)
+		// Calculate grid position for this layer
+		row := layerIdx / (n.GridCols * n.LayersPerCell)
+		remainder := layerIdx % (n.GridCols * n.LayersPerCell)
+		col := remainder / n.LayersPerCell
+		layer := remainder % n.LayersPerCell
+
+		activation := int(n.GetActivation(row, col, layer))
 		pipeline := pipelines[activation]
 		bg := bindGroups[layerIdx]
 

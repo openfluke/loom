@@ -8,7 +8,7 @@ import (
 	"github.com/openfluke/webgpu/wgpu"
 )
 
-// BackwardCPU computes gradients via backpropagation on CPU
+// BackwardCPU computes gradients via backpropagation on CPU through the grid
 // gradOutput: gradient flowing back from the loss (same size as network output)
 // Returns: gradient with respect to the input
 func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
@@ -23,15 +23,23 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 	grad := make([]float32, len(gradOutput))
 	copy(grad, gradOutput)
 
-	// Backpropagate through layers in reverse order
-	for layerIdx := len(n.Layers) - 1; layerIdx >= 0; layerIdx-- {
-		layer := n.Layers[layerIdx]
+	totalLayers := n.TotalLayers()
+
+	// Backpropagate through grid in reverse order
+	for layerIdx := totalLayers - 1; layerIdx >= 0; layerIdx-- {
+		// Calculate grid position for this layer
+		row := layerIdx / (n.GridCols * n.LayersPerCell)
+		remainder := layerIdx % (n.GridCols * n.LayersPerCell)
+		col := remainder / n.LayersPerCell
+		layer := remainder % n.LayersPerCell
+
+		activation := n.GetActivation(row, col, layer)
 		preAct := n.preActivations[layerIdx]
 
 		// Compute gradient with respect to pre-activation
 		// grad_pre = grad_post * activation_derivative(pre_activation)
 		for i := 0; i < len(grad); i++ {
-			derivative := activateDerivativeCPU(preAct[i], layer.Activation)
+			derivative := activateDerivativeCPU(preAct[i], activation)
 			grad[i] = grad[i] * derivative
 		}
 	}
@@ -59,7 +67,7 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 
 	N := len(gradOutput)
 	bytes := uint64(N * 4)
-	totalLayers := len(n.Layers)
+	totalLayers := n.TotalLayers()
 
 	// Build pipelines for backward pass (derivative computations)
 	pipelines := make([]*wgpu.ComputePipeline, 5)
@@ -192,9 +200,15 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 		gx = 1
 	}
 
-	// Backpropagate through layers in reverse order
+	// Backpropagate through grid in reverse order
 	for layerIdx := totalLayers - 1; layerIdx >= 0; layerIdx-- {
-		activation := int(n.Layers[layerIdx].Activation)
+		// Calculate grid position for this layer
+		row := layerIdx / (n.GridCols * n.LayersPerCell)
+		remainder := layerIdx % (n.GridCols * n.LayersPerCell)
+		col := remainder / n.LayersPerCell
+		layer := remainder % n.LayersPerCell
+
+		activation := int(n.GetActivation(row, col, layer))
 		pipeline := pipelines[activation]
 
 		// Determine buffer indices (ping-pong)
