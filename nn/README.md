@@ -1,6 +1,6 @@
 # Neural Network Package
 
-A high-performance grid neural network implementation in Go with support for multiple layer types, CPU/GPU execution, automatic differentiation, and WebAssembly export.
+A high-performance grid neural network implementation in Go with support for multiple layer types, CPU/GPU execution, automatic differentiation, WebAssembly export, and C ABI for FFI.
 
 ## Features
 
@@ -28,6 +28,7 @@ A high-performance grid neural network implementation in Go with support for mul
 - **CPU**: Pure Go implementation with full backward propagation
 - **GPU**: WebGPU/WGSL compute shaders for parallel execution
 - **WASM**: Compile to WebAssembly for browser deployment (CPU-only)
+- **C ABI**: Foreign Function Interface for C, C++, Rust, Python, and more (multi-platform)
 - **Automatic Gradient Computation**: Stores activations and pre-activations for backprop
 
 ### Training & Evaluation
@@ -46,6 +47,7 @@ A high-performance grid neural network implementation in Go with support for mul
 - **Signature Inspection**: Get parameter types and return values for any method
 - **JSON Metadata**: Export complete API documentation as JSON
 - **WASM Integration**: Automatic exposure of all public methods to JavaScript
+- **C ABI Integration**: Dynamic method calling from any language supporting C FFI
 
 ## File Structure
 
@@ -612,6 +614,37 @@ if (network.HasMethod("SaveModelToString")) {
   console.log("Model saved:", modelJSON);
 }
 ```
+
+See [../wasm/README.md](../wasm/README.md) for complete WASM documentation.
+
+### C ABI Integration
+
+Introspection also powers the C ABI, enabling dynamic method calls from any language:
+
+```c
+// In C, list all methods
+char* methods = Loom_ListMethods(handle);
+printf("Available methods: %s\n", methods);
+Loom_FreeCString(methods);
+
+// Dynamically call any method
+char* result = Loom_Call(handle, "ForwardCPU", "[[0.1, 0.2, ...]]");
+printf("Output: %s\n", result);
+Loom_FreeCString(result);
+```
+
+```python
+# In Python via ctypes
+import ctypes, json
+loom = ctypes.CDLL('./compiled/linux_x86_64/libloom.so')
+loom.Loom_ListMethods.restype = ctypes.c_char_p
+
+methods_json = loom.Loom_ListMethods(handle)
+methods = json.loads(methods_json.decode('utf-8'))
+print(f"Network has {methods['count']} methods")
+```
+
+See [../cabi/README.md](../cabi/README.md) for complete C ABI documentation and multi-platform builds.
 
 ### Introspection Demo
 

@@ -1,0 +1,16 @@
+# Compiled binaries
+compiled/
+
+# Distribution archives
+dist/
+
+# Old build artifacts (from original build.sh)
+libloom.so
+libloom.dylib
+libloom.dll
+libloom.h
+simple_bench
+simple_bench.exe
+
+# macOS specific
+*.dSYM/

@@ -25,6 +25,14 @@ Loom is a modern neural network framework that combines the simplicity of Go wit
 - **Zero Dependencies**: Pure WASM + Go stdlib, no external libraries needed
 - **Model Serialization**: Save/load models as JSON strings in the browser
 
+### 🔗 C ABI (Foreign Function Interface)
+
+- **Language Interop**: Call LOOM from C, C++, Rust, Python (ctypes/cffi), and more
+- **Handle-based Management**: Safe object lifecycle with automatic cleanup
+- **JSON Parameters**: Simple, language-agnostic API
+- **Dynamic Method Calling**: Access all Network methods via reflection
+- **Shared Library**: Build as .so/.dylib/.dll for system-wide integration
+
 ### 🧠 Neural Network Layers
 
 - **Dense Layers**: Fully-connected layers with element-wise activations
@@ -90,6 +98,12 @@ loom/
 │   ├── build.sh         # Build script for WASM compilation
 │   ├── example.html     # Interactive browser demo
 │   └── README.md        # WASM documentation and examples
+│
+├── cabi/                # C ABI for FFI
+│   ├── main.go          # C foreign function interface
+│   ├── simple_bench.c   # C benchmark program
+│   ├── build.sh         # Build script for shared library
+│   └── README.md        # C API reference and examples
 │
 ├── fabric/              # Demo application
 │   ├── main.go          # Interactive demo menu
@@ -367,6 +381,127 @@ methods.forEach((method) => {
 - ✅ **CPU-only** - GPU support via WebGPU coming soon
 
 See [wasm/README.md](wasm/README.md) for complete documentation and examples.
+
+## C ABI (Foreign Function Interface)
+
+Call LOOM from C, C++, Rust, Python (ctypes/cffi), and any language with C FFI support.
+
+### Building the Shared Library
+
+```bash
+cd cabi
+
+# Quick build (current platform)
+./build.sh
+
+# Multi-platform builds
+./build_all.sh linux arm64          # Linux ARM64
+./build_all.sh macos universal      # macOS Universal Binary
+./build_all.sh windows x86_64       # Windows 64-bit
+./build_all.sh android arm64        # Android ARM64
+./build_all.sh ios xcframework      # iOS XCFramework
+
+# Build all architectures for current platform
+./build_all.sh all
+```
+
+**Supported Platforms**: Linux (x86_64, arm64, armv7, x86), macOS (x86_64, arm64, universal), Windows (x86_64, x86, arm64), Android (arm64, armv7, x86_64, x86), iOS (arm64, simulators, xcframework)
+
+**Output**: All builds organized in `compiled/<platform>_<arch>/` with `.so`/`.dylib`/`.dll`, headers, and benchmark.
+
+### C API Example
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+
+extern char* Loom_NewNetwork(int, int, int, int, bool);
+extern char* Loom_InitDenseLayer(int, int, int);
+extern char* Loom_SetLayer(int64_t, int, int, int, char*);
+extern char* Loom_Call(int64_t, char*, char*);
+extern void Loom_Free(int64_t);
+extern void Loom_FreeCString(char*);
+
+int main() {
+    // Create network (784→392→10)
+    char* result = Loom_NewNetwork(784, 2, 1, 1, false);
+    int64_t handle = extractHandle(result); // Parse JSON for handle
+    Loom_FreeCString(result);
+
+    // Initialize layers
+    char* layer0 = Loom_InitDenseLayer(784, 392, 1); // ReLU
+    Loom_SetLayer(handle, 0, 0, 0, layer0);
+    Loom_FreeCString(layer0);
+
+    char* layer1 = Loom_InitDenseLayer(392, 10, 0); // Linear
+    Loom_SetLayer(handle, 1, 0, 0, layer1);
+    Loom_FreeCString(layer1);
+
+    // Forward pass
+    char* input = "[[0.1, 0.2, ...]]"; // 784 values
+    char* output = Loom_Call(handle, "ForwardCPU", input);
+    printf("Output: %s\n", output);
+    Loom_FreeCString(output);
+
+    // Cleanup
+    Loom_Free(handle);
+    return 0;
+}
+```
+
+Compile:
+
+```bash
+gcc -o my_program my_program.c -L./compiled/linux_x86_64 -lloom -Wl,-rpath,'$ORIGIN'
+```
+
+### Python Example (ctypes)
+
+```python
+import ctypes
+import json
+
+loom = ctypes.CDLL('./cabi/libloom.so')
+loom.Loom_NewNetwork.restype = ctypes.c_char_p
+loom.Loom_Call.restype = ctypes.c_char_p
+
+# Create network
+result = loom.Loom_NewNetwork(784, 2, 1, 1, False)
+data = json.loads(result.decode('utf-8'))
+handle = data['handle']
+
+# Forward pass
+input_json = json.dumps([[0.1] * 784])
+output = loom.Loom_Call(handle, b"ForwardCPU", input_json.encode())
+print(json.loads(output.decode('utf-8')))
+
+# Cleanup
+loom.Loom_Free(handle)
+```
+
+### Benchmark Results
+
+From `simple_bench.c` (784→392→10 network, 100 iterations):
+
+```
+CPU Forward: 100 iterations in 36.93 ms (avg: 0.3693 ms/iter)
+GPU Forward: 100 iterations in 296.38 ms (avg: 2.9638 ms/iter)
+Speedup: 8.03x (CPU faster for small batches)
+```
+
+### C ABI Features
+
+- ✅ **Multi-platform support** - Linux, macOS, Windows, Android, iOS
+- ✅ **Cross-compilation** - Build for multiple architectures from a single machine
+- ✅ **17MB shared library** - Includes full framework + CGO runtime
+- ✅ **Handle-based management** - Safe object lifecycle with sync.Mutex
+- ✅ **JSON parameters** - Language-agnostic API
+- ✅ **Dynamic method calling** - Access all 24+ Network methods via reflection
+- ✅ **Introspection** - List methods, get signatures, query object info
+- ✅ **GPU support** - Enable/disable GPU acceleration at runtime
+- ✅ **Model persistence** - Save/load as JSON strings
+
+See [cabi/README.md](cabi/README.md) for complete API reference, multi-platform build instructions, and language bindings (Python, Rust, C++, etc.).
 
 ## Performance Benchmarks
 
