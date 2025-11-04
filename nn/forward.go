@@ -106,8 +106,9 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 		return nil, 0, fmt.Errorf("GPU not initialized, call InitGPU first")
 	}
 
-	// Check for Conv2D layers and use specialized path
+	// Check for specialized layer types and use dedicated GPU paths
 	hasConv2D := false
+	hasMHA := false
 	for i := 0; i < n.TotalLayers(); i++ {
 		row := i / (n.GridCols * n.LayersPerCell)
 		remainder := i % (n.GridCols * n.LayersPerCell)
@@ -117,12 +118,18 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 		config := n.GetLayer(row, col, layer)
 		if config.Type == LayerConv2D {
 			hasConv2D = true
-			break
+		}
+		if config.Type == LayerMultiHeadAttention {
+			hasMHA = true
 		}
 	}
 
 	if hasConv2D {
 		return n.forwardGPUConv2D(input)
+	}
+
+	if hasMHA {
+		return n.forwardGPUMultiHeadAttention(input)
 	}
 
 	start := time.Now()
@@ -135,68 +142,80 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 	bytes := uint64(N * 4)
 	totalLayers := n.TotalLayers()
 
-	// Build pipelines for each unique activation type
-	pipelines := make([]*wgpu.ComputePipeline, 5)
-	bgls := make([]*wgpu.BindGroupLayout, 5)
+	// Build pipelines for each unique activation type (cached after first call)
+	var pipelines []*wgpu.ComputePipeline
+	var bgls []*wgpu.BindGroupLayout
 
-	for act := 0; act < 5; act++ {
-		shader := generateForwardShader(wgx, act, N)
-		module, err := dev.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
-			Label:          fmt.Sprintf("nn_fwd_shader_%d", act),
-			WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shader},
-		})
-		if err != nil {
-			cleanupPipelines(pipelines[:act], bgls[:act])
-			return nil, 0, fmt.Errorf("CreateShaderModule %d: %w", act, err)
-		}
+	if n.deviceInfo.forwardPipelines == nil {
+		// First time - create and cache pipelines
+		pipelines = make([]*wgpu.ComputePipeline, 5)
+		bgls = make([]*wgpu.BindGroupLayout, 5)
 
-		bgl, err := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
-			Label: fmt.Sprintf("nn_fwd_bgl_%d", act),
-			Entries: []wgpu.BindGroupLayoutEntry{
-				{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}},
-				{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},
-			},
-		})
-		if err != nil {
-			module.Release()
-			cleanupPipelines(pipelines[:act], bgls[:act])
-			return nil, 0, err
-		}
-		bgls[act] = bgl
+		for act := 0; act < 5; act++ {
+			shader := generateForwardShader(wgx, act, N)
+			module, err := dev.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+				Label:          fmt.Sprintf("nn_fwd_shader_%d", act),
+				WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shader},
+			})
+			if err != nil {
+				cleanupPipelines(pipelines[:act], bgls[:act])
+				return nil, 0, fmt.Errorf("CreateShaderModule %d: %w", act, err)
+			}
 
-		pl, err := dev.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
-			Label:            fmt.Sprintf("nn_fwd_pl_%d", act),
-			BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
-		})
-		if err != nil {
-			module.Release()
-			bgl.Release()
-			cleanupPipelines(pipelines[:act], bgls[:act])
-			return nil, 0, err
-		}
+			bgl, err := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+				Label: fmt.Sprintf("nn_fwd_bgl_%d", act),
+				Entries: []wgpu.BindGroupLayoutEntry{
+					{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}},
+					{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},
+				},
+			})
+			if err != nil {
+				module.Release()
+				cleanupPipelines(pipelines[:act], bgls[:act])
+				return nil, 0, err
+			}
+			bgls[act] = bgl
 
-		pipeline, err := dev.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
-			Label:  fmt.Sprintf("nn_fwd_pipeline_%d", act),
-			Layout: pl,
-			Compute: wgpu.ProgrammableStageDescriptor{
-				Module:     module,
-				EntryPoint: "main",
-			},
-		})
-		if err != nil {
+			pl, err := dev.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+				Label:            fmt.Sprintf("nn_fwd_pl_%d", act),
+				BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
+			})
+			if err != nil {
+				module.Release()
+				bgl.Release()
+				cleanupPipelines(pipelines[:act], bgls[:act])
+				return nil, 0, err
+			}
+
+			pipeline, err := dev.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+				Label:  fmt.Sprintf("nn_fwd_pipeline_%d", act),
+				Layout: pl,
+				Compute: wgpu.ProgrammableStageDescriptor{
+					Module:     module,
+					EntryPoint: "main",
+				},
+			})
+			if err != nil {
+				pl.Release()
+				bgl.Release()
+				module.Release()
+				cleanupPipelines(pipelines[:act], bgls[:act])
+				return nil, 0, err
+			}
+
+			pipelines[act] = pipeline
 			pl.Release()
-			bgl.Release()
 			module.Release()
-			cleanupPipelines(pipelines[:act], bgls[:act])
-			return nil, 0, err
 		}
 
-		pipelines[act] = pipeline
-		pl.Release()
-		module.Release()
+		// Cache the pipelines
+		n.deviceInfo.forwardPipelines = pipelines
+		n.deviceInfo.forwardBGLs = bgls
+	} else {
+		// Use cached pipelines
+		pipelines = n.deviceInfo.forwardPipelines
+		bgls = n.deviceInfo.forwardBGLs
 	}
-
-	defer cleanupPipelines(pipelines, bgls)
 
 	// Create buffers
 	bufA, err := dev.CreateBuffer(&wgpu.BufferDescriptor{
@@ -276,7 +295,15 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 		gx = 1
 	}
 
-	// Execute layers
+	// Create single command encoder for all layers
+	enc, err := dev.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{
+		Label: "nn_fwd_enc_all",
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("create encoder: %w", err)
+	}
+
+	// Execute all layers in a single command buffer
 	for layerIdx := 0; layerIdx < totalLayers; layerIdx++ {
 		// Calculate grid position for this layer
 		row := layerIdx / (n.GridCols * n.LayersPerCell)
@@ -288,13 +315,6 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 		pipeline := pipelines[activation]
 		bg := bindGroups[layerIdx]
 
-		enc, err := dev.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{
-			Label: fmt.Sprintf("nn_fwd_enc_%d", layerIdx),
-		})
-		if err != nil {
-			return nil, 0, fmt.Errorf("layer %d create encoder: %w", layerIdx, err)
-		}
-
 		pass := enc.BeginComputePass(&wgpu.ComputePassDescriptor{
 			Label: fmt.Sprintf("nn_fwd_pass_%d", layerIdx),
 		})
@@ -302,18 +322,18 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 		pass.SetBindGroup(0, bg, nil)
 		pass.DispatchWorkgroups(gx, 1, 1)
 		pass.End()
-
-		cb, err := enc.Finish(nil)
-		if err != nil {
-			enc.Release()
-			return nil, 0, fmt.Errorf("layer %d finish: %w", layerIdx, err)
-		}
-
-		enc.Release()
-		q.Submit(cb)
-		cb.Release()
-		pollDevice(dev, 1000)
 	}
+
+	// Submit all layers at once
+	cb, err := enc.Finish(nil)
+	if err != nil {
+		enc.Release()
+		return nil, 0, fmt.Errorf("finish command buffer: %w", err)
+	}
+	enc.Release()
+	q.Submit(cb)
+	cb.Release()
+	pollDevice(dev, 1000)
 
 	// Determine final output buffer
 	var finalOut *wgpu.Buffer
@@ -365,12 +385,58 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 func (n *Network) forwardGPUConv2D(input []float32) ([]float32, time.Duration, error) {
 	start := time.Now()
 
-	// For now, fall back to CPU for Conv2D layers
-	// Full implementation requires creating specialized pipelines with 4 bindings
-	// (input, kernel, bias, output) and handling variable buffer sizes
-	output, _ := n.ForwardCPU(input)
+	dev := n.deviceInfo.Device
+	q := n.deviceInfo.Queue
 
-	return output, time.Since(start), nil
+	// Store input
+	n.activations[0] = make([]float32, len(input))
+	copy(n.activations[0], input)
+
+	data := input
+	layerIdx := 0
+
+	// Forward through grid
+	for row := 0; row < n.GridRows; row++ {
+		for col := 0; col < n.GridCols; col++ {
+			for layer := 0; layer < n.LayersPerCell; layer++ {
+				config := n.GetLayer(row, col, layer)
+
+				if config.Type == LayerConv2D {
+					// GPU Conv2D
+					output, err := conv2DForwardGPU(dev, q, data, config, n.BatchSize)
+					if err != nil {
+						// Fall back to CPU on error
+						cpuOut, _ := n.ForwardCPU(input)
+						return cpuOut, time.Since(start), nil
+					}
+
+					// Store pre-activation (output before activation)
+					n.preActivations[layerIdx] = make([]float32, len(output))
+					copy(n.preActivations[layerIdx], output)
+
+					// Apply activation
+					postAct := make([]float32, len(output))
+					for i := 0; i < len(output); i++ {
+						postAct[i] = activateCPU(output[i], config.Activation)
+					}
+
+					data = postAct
+				} else {
+					// Fallback to CPU for other layer types
+					cpuOut, _ := n.ForwardCPU(input)
+					return cpuOut, time.Since(start), nil
+				}
+
+				// Store post-activation
+				n.activations[layerIdx+1] = make([]float32, len(data))
+				copy(n.activations[layerIdx+1], data)
+
+				layerIdx++
+			}
+		}
+	}
+
+	return data, time.Since(start), nil
 }
 
 // Helper functions for GPU resource cleanup

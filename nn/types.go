@@ -117,6 +117,12 @@ type GPUDeviceInfo struct {
 	Queue      *wgpu.Queue
 	WorkgroupX uint32
 	release    func()
+
+	// Cached GPU pipelines to avoid recreating them every forward/backward pass
+	forwardPipelines  []*wgpu.ComputePipeline
+	forwardBGLs       []*wgpu.BindGroupLayout
+	backwardPipelines []*wgpu.ComputePipeline
+	backwardBGLs      []*wgpu.BindGroupLayout
 }
 
 // NewNetwork creates a new grid neural network with dense layers
@@ -204,8 +210,44 @@ func (n *Network) BiasGradients() [][]float32 {
 
 // ReleaseGPU releases GPU resources
 func (n *Network) ReleaseGPU() {
-	if n.deviceInfo != nil && n.deviceInfo.release != nil {
-		n.deviceInfo.release()
+	if n.deviceInfo != nil {
+		// Clean up cached pipelines
+		if n.deviceInfo.forwardPipelines != nil {
+			for _, p := range n.deviceInfo.forwardPipelines {
+				if p != nil {
+					p.Release()
+				}
+			}
+			n.deviceInfo.forwardPipelines = nil
+		}
+		if n.deviceInfo.forwardBGLs != nil {
+			for _, bgl := range n.deviceInfo.forwardBGLs {
+				if bgl != nil {
+					bgl.Release()
+				}
+			}
+			n.deviceInfo.forwardBGLs = nil
+		}
+		if n.deviceInfo.backwardPipelines != nil {
+			for _, p := range n.deviceInfo.backwardPipelines {
+				if p != nil {
+					p.Release()
+				}
+			}
+			n.deviceInfo.backwardPipelines = nil
+		}
+		if n.deviceInfo.backwardBGLs != nil {
+			for _, bgl := range n.deviceInfo.backwardBGLs {
+				if bgl != nil {
+					bgl.Release()
+				}
+			}
+			n.deviceInfo.backwardBGLs = nil
+		}
+
+		if n.deviceInfo.release != nil {
+			n.deviceInfo.release()
+		}
 		n.deviceInfo = nil
 	}
 }

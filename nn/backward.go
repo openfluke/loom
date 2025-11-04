@@ -134,8 +134,9 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 		return nil, 0, fmt.Errorf("no forward pass data available for backward pass")
 	}
 
-	// Check for Conv2D layers and use specialized path
+	// Check for specialized layer types and use dedicated GPU paths
 	hasConv2D := false
+	hasMHA := false
 	for i := 0; i < n.TotalLayers(); i++ {
 		row := i / (n.GridCols * n.LayersPerCell)
 		remainder := i % (n.GridCols * n.LayersPerCell)
@@ -145,12 +146,18 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 		config := n.GetLayer(row, col, layer)
 		if config.Type == LayerConv2D {
 			hasConv2D = true
-			break
+		}
+		if config.Type == LayerMultiHeadAttention {
+			hasMHA = true
 		}
 	}
 
 	if hasConv2D {
 		return n.backwardGPUConv2D(gradOutput)
+	}
+
+	if hasMHA {
+		return n.backwardGPUMultiHeadAttention(gradOutput)
 	}
 
 	start := time.Now()
@@ -163,69 +170,81 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 	bytes := uint64(N * 4)
 	totalLayers := n.TotalLayers()
 
-	// Build pipelines for backward pass (derivative computations)
-	pipelines := make([]*wgpu.ComputePipeline, 5)
-	bgls := make([]*wgpu.BindGroupLayout, 5)
+	// Build pipelines for backward pass (derivative computations) - cached after first call
+	var pipelines []*wgpu.ComputePipeline
+	var bgls []*wgpu.BindGroupLayout
 
-	for act := 0; act < 5; act++ {
-		shader := generateBackwardShader(wgx, act, N)
-		module, err := dev.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
-			Label:          fmt.Sprintf("nn_bwd_shader_%d", act),
-			WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shader},
-		})
-		if err != nil {
-			cleanupPipelines(pipelines[:act], bgls[:act])
-			return nil, 0, fmt.Errorf("CreateShaderModule %d: %w", act, err)
-		}
+	if n.deviceInfo.backwardPipelines == nil {
+		// First time - create and cache pipelines
+		pipelines = make([]*wgpu.ComputePipeline, 5)
+		bgls = make([]*wgpu.BindGroupLayout, 5)
 
-		bgl, err := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
-			Label: fmt.Sprintf("nn_bwd_bgl_%d", act),
-			Entries: []wgpu.BindGroupLayoutEntry{
-				{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // grad_in
-				{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // pre_activation
-				{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // grad_out
-			},
-		})
-		if err != nil {
-			module.Release()
-			cleanupPipelines(pipelines[:act], bgls[:act])
-			return nil, 0, err
-		}
-		bgls[act] = bgl
+		for act := 0; act < 5; act++ {
+			shader := generateBackwardShader(wgx, act, N)
+			module, err := dev.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+				Label:          fmt.Sprintf("nn_bwd_shader_%d", act),
+				WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shader},
+			})
+			if err != nil {
+				cleanupPipelines(pipelines[:act], bgls[:act])
+				return nil, 0, fmt.Errorf("CreateShaderModule %d: %w", act, err)
+			}
 
-		pl, err := dev.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
-			Label:            fmt.Sprintf("nn_bwd_pl_%d", act),
-			BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
-		})
-		if err != nil {
-			module.Release()
-			bgl.Release()
-			cleanupPipelines(pipelines[:act], bgls[:act])
-			return nil, 0, err
-		}
+			bgl, err := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+				Label: fmt.Sprintf("nn_bwd_bgl_%d", act),
+				Entries: []wgpu.BindGroupLayoutEntry{
+					{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // grad_in
+					{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // pre_activation
+					{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // grad_out
+				},
+			})
+			if err != nil {
+				module.Release()
+				cleanupPipelines(pipelines[:act], bgls[:act])
+				return nil, 0, err
+			}
+			bgls[act] = bgl
 
-		pipeline, err := dev.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
-			Label:  fmt.Sprintf("nn_bwd_pipeline_%d", act),
-			Layout: pl,
-			Compute: wgpu.ProgrammableStageDescriptor{
-				Module:     module,
-				EntryPoint: "main",
-			},
-		})
-		if err != nil {
+			pl, err := dev.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+				Label:            fmt.Sprintf("nn_bwd_pl_%d", act),
+				BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
+			})
+			if err != nil {
+				module.Release()
+				bgl.Release()
+				cleanupPipelines(pipelines[:act], bgls[:act])
+				return nil, 0, err
+			}
+
+			pipeline, err := dev.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+				Label:  fmt.Sprintf("nn_bwd_pipeline_%d", act),
+				Layout: pl,
+				Compute: wgpu.ProgrammableStageDescriptor{
+					Module:     module,
+					EntryPoint: "main",
+				},
+			})
+			if err != nil {
+				pl.Release()
+				bgl.Release()
+				module.Release()
+				cleanupPipelines(pipelines[:act], bgls[:act])
+				return nil, 0, err
+			}
+
+			pipelines[act] = pipeline
 			pl.Release()
-			bgl.Release()
 			module.Release()
-			cleanupPipelines(pipelines[:act], bgls[:act])
-			return nil, 0, err
 		}
 
-		pipelines[act] = pipeline
-		pl.Release()
-		module.Release()
+		// Cache the pipelines
+		n.deviceInfo.backwardPipelines = pipelines
+		n.deviceInfo.backwardBGLs = bgls
+	} else {
+		// Use cached pipelines
+		pipelines = n.deviceInfo.backwardPipelines
+		bgls = n.deviceInfo.backwardBGLs
 	}
-
-	defer cleanupPipelines(pipelines, bgls)
 
 	// Create buffers for gradient computation
 	bufGradA, err := dev.CreateBuffer(&wgpu.BufferDescriptor{
@@ -294,6 +313,17 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 		gx = 1
 	}
 
+	// Create single command encoder for all layers
+	enc, err := dev.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{
+		Label: "nn_bwd_enc_all",
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("create encoder: %w", err)
+	}
+
+	// Track bind groups to release after submission
+	bindGroupsToRelease := make([]*wgpu.BindGroup, 0, totalLayers)
+
 	// Backpropagate through grid in reverse order
 	for layerIdx := totalLayers - 1; layerIdx >= 0; layerIdx-- {
 		// Calculate grid position for this layer
@@ -329,16 +359,13 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 			},
 		})
 		if err != nil {
+			enc.Release()
+			for _, bgr := range bindGroupsToRelease {
+				bgr.Release()
+			}
 			return nil, 0, fmt.Errorf("create backward bindgroup %d: %w", layerIdx, err)
 		}
-
-		enc, err := dev.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{
-			Label: fmt.Sprintf("nn_bwd_enc_%d", layerIdx),
-		})
-		if err != nil {
-			bg.Release()
-			return nil, 0, fmt.Errorf("layer %d create encoder: %w", layerIdx, err)
-		}
+		bindGroupsToRelease = append(bindGroupsToRelease, bg)
 
 		pass := enc.BeginComputePass(&wgpu.ComputePassDescriptor{
 			Label: fmt.Sprintf("nn_bwd_pass_%d", layerIdx),
@@ -347,20 +374,26 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 		pass.SetBindGroup(0, bg, nil)
 		pass.DispatchWorkgroups(gx, 1, 1)
 		pass.End()
-
-		cb, err := enc.Finish(nil)
-		if err != nil {
-			enc.Release()
-			bg.Release()
-			return nil, 0, fmt.Errorf("layer %d finish: %w", layerIdx, err)
-		}
-
-		enc.Release()
-		q.Submit(cb)
-		cb.Release()
-		bg.Release()
-		pollDevice(dev, 1000)
 	}
+
+	// Submit all layers at once
+	cb, err := enc.Finish(nil)
+	if err != nil {
+		enc.Release()
+		for _, bg := range bindGroupsToRelease {
+			bg.Release()
+		}
+		return nil, 0, fmt.Errorf("finish command buffer: %w", err)
+	}
+	enc.Release()
+	q.Submit(cb)
+	cb.Release()
+
+	// Release bind groups
+	for _, bg := range bindGroupsToRelease {
+		bg.Release()
+	}
+	pollDevice(dev, 1000)
 
 	// Determine final gradient buffer
 	var finalGrad *wgpu.Buffer
@@ -412,9 +445,11 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 func (n *Network) backwardGPUConv2D(gradOutput []float32) ([]float32, time.Duration, error) {
 	start := time.Now()
 
-	// For now, fall back to CPU for Conv2D layers
-	// Full implementation requires creating specialized pipelines with multiple bindings
-	// for gradients, kernels, inputs, and handling variable buffer sizes
+	// For now, use CPU for backward pass
+	// Full GPU implementation requires separate shaders for:
+	// - grad_input computation (transposed convolution)
+	// - grad_kernel computation (correlation)
+	// - grad_bias computation (reduction)
 	gradInput, _ := n.BackwardCPU(gradOutput)
 
 	return gradInput, time.Since(start), nil
