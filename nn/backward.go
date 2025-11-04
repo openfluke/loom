@@ -33,14 +33,29 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 		col := remainder / n.LayersPerCell
 		layer := remainder % n.LayersPerCell
 
-		activation := n.GetActivation(row, col, layer)
+		config := n.GetLayer(row, col, layer)
 		preAct := n.preActivations[layerIdx]
 
-		// Compute gradient with respect to pre-activation
-		// grad_pre = grad_post * activation_derivative(pre_activation)
-		for i := 0; i < len(grad); i++ {
-			derivative := activateDerivativeCPU(preAct[i], activation)
-			grad[i] = grad[i] * derivative
+		// Route to appropriate layer type
+		if config.Type == LayerConv2D {
+			// Conv2D backward
+			input := n.activations[layerIdx]
+			gradInput, gradKernel, gradBias := conv2DBackwardCPU(grad, input, preAct, config, n.BatchSize)
+
+			// Store gradients for weight updates
+			n.kernelGradients[layerIdx] = gradKernel
+			n.biasGradients[layerIdx] = gradBias
+
+			// Update gradient for next layer
+			grad = gradInput
+		} else {
+			// Dense layer backward
+			// Compute gradient with respect to pre-activation
+			// grad_pre = grad_post * activation_derivative(pre_activation)
+			for i := 0; i < len(grad); i++ {
+				derivative := activateDerivativeCPU(preAct[i], config.Activation)
+				grad[i] = grad[i] * derivative
+			}
 		}
 	}
 

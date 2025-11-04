@@ -25,16 +25,29 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 	for row := 0; row < n.GridRows; row++ {
 		for col := 0; col < n.GridCols; col++ {
 			for layer := 0; layer < n.LayersPerCell; layer++ {
-				// Get activation for this grid position
-				activation := n.GetActivation(row, col, layer)
+				// Get layer configuration for this grid position
+				config := n.GetLayer(row, col, layer)
 
-				// Store pre-activation values
-				n.preActivations[layerIdx] = make([]float32, len(data))
-				copy(n.preActivations[layerIdx], data)
+				// Route to appropriate layer type
+				if config.Type == LayerConv2D {
+					// Conv2D layer
+					preAct, postAct := conv2DForwardCPU(data, config, n.BatchSize)
 
-				// Apply activation
-				for i := 0; i < len(data); i++ {
-					data[i] = activateCPU(data[i], activation)
+					// Store pre-activation values (before activation function)
+					n.preActivations[layerIdx] = preAct
+
+					// Use post-activation for next layer
+					data = postAct
+				} else {
+					// Dense layer (element-wise activation)
+					// Store pre-activation values
+					n.preActivations[layerIdx] = make([]float32, len(data))
+					copy(n.preActivations[layerIdx], data)
+
+					// Apply activation in-place
+					for i := 0; i < len(data); i++ {
+						data[i] = activateCPU(data[i], config.Activation)
+					}
 				}
 
 				// Store post-activation values
