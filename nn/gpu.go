@@ -384,3 +384,224 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `, batchSize, inC, inH, inW, outH, outW, filters, kSize, stride, padding, derivativeCode, wgx)
 }
+
+// generateMHAForwardShader generates WGSL shader for Multi-Head Attention forward pass
+// NOTE: Full MHA GPU implementation requires multiple kernel launches:
+// 1. Q/K/V projections (3 matrix multiplications)
+// 2. Attention scores: Q·K^T / sqrt(d_k)
+// 3. Softmax over attention scores
+// 4. Weighted values: attention · V
+// 5. Multi-head concatenation and output projection
+//
+// This simplified version only implements the output projection as a placeholder.
+// A complete implementation would require restructuring the GPU pipeline to support
+// multiple buffers and kernel launches per layer.
+func generateMHAForwardShader(wgx uint32, batchSize, seqLen, dModel, numHeads int) string {
+	headDim := dModel / numHeads
+
+	return fmt.Sprintf(`
+// Simplified MHA Forward (Placeholder - only output projection)
+@group(0) @binding(0) var<storage, read> input: array<f32>;        // [batch, seqLen, dModel]
+@group(0) @binding(1) var<storage, read_write> output: array<f32>; // [batch, seqLen, dModel]
+
+const batchSize: u32 = %du;
+const seqLen: u32 = %du;
+const dModel: u32 = %du;
+const numHeads: u32 = %du;
+const headDim: u32 = %du;
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    let totalElements = batchSize * seqLen * dModel;
+    
+    if (idx >= totalElements) {
+        return;
+    }
+    
+    // Pass through input for now (full MHA requires complex multi-stage pipeline)
+    output[idx] = input[idx];
+}
+`, batchSize, seqLen, dModel, numHeads, headDim, wgx)
+}
+
+// generateMHABackwardShader generates WGSL shader for Multi-Head Attention backward pass
+// NOTE: This is a placeholder - full implementation requires multi-stage gradient computation
+func generateMHABackwardShader(wgx uint32, batchSize, seqLen, dModel, numHeads int) string {
+	return fmt.Sprintf(`
+// Simplified MHA Backward (Placeholder)
+@group(0) @binding(0) var<storage, read> grad_output: array<f32>;     // [batch, seqLen, dModel]
+@group(0) @binding(1) var<storage, read_write> grad_input: array<f32>; // [batch, seqLen, dModel]
+
+const batchSize: u32 = %du;
+const seqLen: u32 = %du;
+const dModel: u32 = %du;
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    let totalElements = batchSize * seqLen * dModel;
+    
+    if (idx >= totalElements) {
+        return;
+    }
+    
+    // Pass through gradient for now
+    grad_input[idx] = grad_output[idx];
+}
+`, batchSize, seqLen, dModel, wgx)
+}
+
+// generateRNNForwardShader generates WGSL shader for RNN forward pass
+// NOTE: RNN requires sequential processing across timesteps, which is challenging on GPU
+// A proper implementation would need:
+// 1. Sequential kernel launches (one per timestep) or
+// 2. Warp-level synchronization for hidden state updates
+// This placeholder just copies the input
+func generateRNNForwardShader(wgx uint32, batchSize, seqLen, inputSize, hiddenSize int) string {
+	return fmt.Sprintf(`
+// Simplified RNN Forward (Placeholder - requires sequential processing)
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> output: array<f32>;
+
+const batchSize: u32 = %du;
+const seqLen: u32 = %du;
+const inputSize: u32 = %du;
+const hiddenSize: u32 = %du;
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    let totalElements = batchSize * seqLen * hiddenSize;
+    
+    if (idx >= totalElements) {
+        return;
+    }
+    
+    // Placeholder: just copy input (truncated to hiddenSize)
+    let b = idx / (seqLen * hiddenSize);
+    let remainder = idx %% (seqLen * hiddenSize);
+    let s = remainder / hiddenSize;
+    let h = remainder %% hiddenSize;
+    
+    if (h < inputSize) {
+        let inputIdx = b * seqLen * inputSize + s * inputSize + h;
+        output[idx] = input[inputIdx];
+    } else {
+        output[idx] = 0.0;
+    }
+}
+`, batchSize, seqLen, inputSize, hiddenSize, wgx)
+}
+
+// generateRNNBackwardShader generates WGSL shader for RNN backward pass (placeholder)
+func generateRNNBackwardShader(wgx uint32, batchSize, seqLen, inputSize, hiddenSize int) string {
+	return fmt.Sprintf(`
+// Simplified RNN Backward (Placeholder)
+@group(0) @binding(0) var<storage, read> grad_output: array<f32>;
+@group(0) @binding(1) var<storage, read_write> grad_input: array<f32>;
+
+const batchSize: u32 = %du;
+const seqLen: u32 = %du;
+const inputSize: u32 = %du;
+const hiddenSize: u32 = %du;
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    let totalElements = batchSize * seqLen * inputSize;
+    
+    if (idx >= totalElements) {
+        return;
+    }
+    
+    // Pass through gradient (simplified)
+    let b = idx / (seqLen * inputSize);
+    let remainder = idx %% (seqLen * inputSize);
+    let s = remainder / inputSize;
+    let i = remainder %% inputSize;
+    
+    let gradIdx = b * seqLen * hiddenSize + s * hiddenSize + i;
+    if (i < hiddenSize) {
+        grad_input[idx] = grad_output[gradIdx];
+    } else {
+        grad_input[idx] = 0.0;
+    }
+}
+`, batchSize, seqLen, inputSize, hiddenSize, wgx)
+}
+
+// generateLSTMForwardShader generates WGSL shader for LSTM forward pass (placeholder)
+// NOTE: LSTM is even more complex than RNN with 4 gates per timestep
+func generateLSTMForwardShader(wgx uint32, batchSize, seqLen, inputSize, hiddenSize int) string {
+	return fmt.Sprintf(`
+// Simplified LSTM Forward (Placeholder)
+@group(0) @binding(0) var<storage, read> input: array<f32>;
+@group(0) @binding(1) var<storage, read_write> output: array<f32>;
+
+const batchSize: u32 = %du;
+const seqLen: u32 = %du;
+const inputSize: u32 = %du;
+const hiddenSize: u32 = %du;
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    let totalElements = batchSize * seqLen * hiddenSize;
+    
+    if (idx >= totalElements) {
+        return;
+    }
+    
+    // Placeholder: copy input (truncated)
+    let b = idx / (seqLen * hiddenSize);
+    let remainder = idx %% (seqLen * hiddenSize);
+    let s = remainder / hiddenSize;
+    let h = remainder %% hiddenSize;
+    
+    if (h < inputSize) {
+        let inputIdx = b * seqLen * inputSize + s * inputSize + h;
+        output[idx] = input[inputIdx];
+    } else {
+        output[idx] = 0.0;
+    }
+}
+`, batchSize, seqLen, inputSize, hiddenSize, wgx)
+}
+
+// generateLSTMBackwardShader generates WGSL shader for LSTM backward pass (placeholder)
+func generateLSTMBackwardShader(wgx uint32, batchSize, seqLen, inputSize, hiddenSize int) string {
+	return fmt.Sprintf(`
+// Simplified LSTM Backward (Placeholder)
+@group(0) @binding(0) var<storage, read> grad_output: array<f32>;
+@group(0) @binding(1) var<storage, read_write> grad_input: array<f32>;
+
+const batchSize: u32 = %du;
+const seqLen: u32 = %du;
+const inputSize: u32 = %du;
+const hiddenSize: u32 = %du;
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    let totalElements = batchSize * seqLen * inputSize;
+    
+    if (idx >= totalElements) {
+        return;
+    }
+    
+    // Pass through gradient (simplified)
+    let b = idx / (seqLen * inputSize);
+    let remainder = idx %% (seqLen * inputSize);
+    let s = remainder / inputSize;
+    let i = remainder %% inputSize;
+    
+    let gradIdx = b * seqLen * hiddenSize + s * hiddenSize + i;
+    if (i < hiddenSize) {
+        grad_input[idx] = grad_output[gradIdx];
+    } else {
+        grad_input[idx] = 0.0;
+    }
+}
+`, batchSize, seqLen, inputSize, hiddenSize, wgx)
+}

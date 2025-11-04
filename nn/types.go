@@ -22,6 +22,8 @@ const (
 	LayerDense              LayerType = 0 // Dense/Fully-connected layer (element-wise activation)
 	LayerConv2D             LayerType = 1 // 2D Convolutional layer
 	LayerMultiHeadAttention LayerType = 2 // Multi-Head Attention layer
+	LayerRNN                LayerType = 3 // Recurrent Neural Network layer
+	LayerLSTM               LayerType = 4 // Long Short-Term Memory layer
 )
 
 // LayerConfig holds configuration for a specific layer in the grid
@@ -57,6 +59,30 @@ type LayerConfig struct {
 	KBias        []float32 // Key bias [dModel]
 	VBias        []float32 // Value bias [dModel]
 	OutputBias   []float32 // Output bias [dModel]
+
+	// RNN/LSTM specific parameters
+	HiddenSize   int       // Hidden state size
+	RNNInputSize int       // Input feature size (different from network InputSize)
+	WeightIH     []float32 // Input-to-hidden weights [hiddenSize][inputSize]
+	WeightHH     []float32 // Hidden-to-hidden weights [hiddenSize][hiddenSize]
+	BiasH        []float32 // Hidden bias [hiddenSize]
+
+	// LSTM specific parameters (gates: i=input, f=forget, g=cell, o=output)
+	WeightIH_i []float32 // Input gate: input-to-hidden [hiddenSize][inputSize]
+	WeightHH_i []float32 // Input gate: hidden-to-hidden [hiddenSize][hiddenSize]
+	BiasH_i    []float32 // Input gate bias [hiddenSize]
+
+	WeightIH_f []float32 // Forget gate: input-to-hidden [hiddenSize][inputSize]
+	WeightHH_f []float32 // Forget gate: hidden-to-hidden [hiddenSize][hiddenSize]
+	BiasH_f    []float32 // Forget gate bias [hiddenSize]
+
+	WeightIH_g []float32 // Cell gate: input-to-hidden [hiddenSize][inputSize]
+	WeightHH_g []float32 // Cell gate: hidden-to-hidden [hiddenSize][hiddenSize]
+	BiasH_g    []float32 // Cell gate bias [hiddenSize]
+
+	WeightIH_o []float32 // Output gate: input-to-hidden [hiddenSize][inputSize]
+	WeightHH_o []float32 // Output gate: hidden-to-hidden [hiddenSize][hiddenSize]
+	BiasH_o    []float32 // Output gate bias [hiddenSize]
 }
 
 // Network represents a grid neural network

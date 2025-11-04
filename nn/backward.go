@@ -60,6 +60,54 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 
 			// Update gradient for next layer
 			grad = gradInput
+		} else if config.Type == LayerRNN {
+			// RNN backward
+			input := n.activations[layerIdx]
+			hiddenStates := preAct // stored from forward pass
+
+			gradInput, gradWeightIH, gradWeightHH, gradBiasH := rnnBackwardCPU(config, grad, input, hiddenStates,
+				n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+
+			// Store gradients concatenated
+			allGrads := append(append(gradWeightIH, gradWeightHH...), gradBiasH...)
+			n.kernelGradients[layerIdx] = allGrads
+
+			grad = gradInput
+		} else if config.Type == LayerLSTM {
+			// LSTM backward
+			input := n.activations[layerIdx]
+
+			// Unflatten the states from preActivations
+			batchSize := n.BatchSize
+			seqLength := config.SeqLength
+			hiddenSize := config.HiddenSize
+
+			states := make(map[string][]float32)
+			states["hidden"] = make([]float32, batchSize*(seqLength+1)*hiddenSize)
+			states["cell"] = make([]float32, batchSize*(seqLength+1)*hiddenSize)
+			states["i_gate"] = make([]float32, batchSize*seqLength*hiddenSize)
+			states["f_gate"] = make([]float32, batchSize*seqLength*hiddenSize)
+			states["g_gate"] = make([]float32, batchSize*seqLength*hiddenSize)
+			states["o_gate"] = make([]float32, batchSize*seqLength*hiddenSize)
+			states["c_tanh"] = make([]float32, batchSize*seqLength*hiddenSize)
+
+			offset := 0
+			for _, key := range []string{"hidden", "cell", "i_gate", "f_gate", "g_gate", "o_gate", "c_tanh"} {
+				copy(states[key], preAct[offset:offset+len(states[key])])
+				offset += len(states[key])
+			}
+
+			gradInput, grads := lstmBackwardCPU(config, grad, input, states,
+				batchSize, seqLength, config.RNNInputSize, hiddenSize)
+
+			// Store all gradients concatenated
+			allGrads := append(append(append(grads["WeightIH_i"], grads["WeightHH_i"]...), grads["BiasH_i"]...),
+				append(append(grads["WeightIH_f"], grads["WeightHH_f"]...), grads["BiasH_f"]...)...)
+			allGrads = append(allGrads, append(append(grads["WeightIH_g"], grads["WeightHH_g"]...), grads["BiasH_g"]...)...)
+			allGrads = append(allGrads, append(append(grads["WeightIH_o"], grads["WeightHH_o"]...), grads["BiasH_o"]...)...)
+			n.kernelGradients[layerIdx] = allGrads
+
+			grad = gradInput
 		} else {
 			// Dense layer backward
 			// Compute gradient with respect to pre-activation
@@ -84,6 +132,25 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 
 	if len(n.preActivations) == 0 {
 		return nil, 0, fmt.Errorf("no forward pass data available for backward pass")
+	}
+
+	// Check for Conv2D layers and use specialized path
+	hasConv2D := false
+	for i := 0; i < n.TotalLayers(); i++ {
+		row := i / (n.GridCols * n.LayersPerCell)
+		remainder := i % (n.GridCols * n.LayersPerCell)
+		col := remainder / n.LayersPerCell
+		layer := remainder % n.LayersPerCell
+
+		config := n.GetLayer(row, col, layer)
+		if config.Type == LayerConv2D {
+			hasConv2D = true
+			break
+		}
+	}
+
+	if hasConv2D {
+		return n.backwardGPUConv2D(gradOutput)
 	}
 
 	start := time.Now()
@@ -336,6 +403,19 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 	gradInput := make([]float32, N)
 	copy(gradInput, unsafe.Slice((*float32)(unsafe.Pointer(&view[0])), N))
 	readback.Unmap()
+
+	return gradInput, time.Since(start), nil
+}
+
+// backwardGPUConv2D executes backward pass for networks containing Conv2D layers on GPU
+// This uses specialized pipelines for Conv2D layers
+func (n *Network) backwardGPUConv2D(gradOutput []float32) ([]float32, time.Duration, error) {
+	start := time.Now()
+
+	// For now, fall back to CPU for Conv2D layers
+	// Full implementation requires creating specialized pipelines with multiple bindings
+	// for gradients, kernels, inputs, and handling variable buffer sizes
+	gradInput, _ := n.BackwardCPU(gradOutput)
 
 	return gradInput, time.Since(start), nil
 }

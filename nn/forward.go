@@ -47,6 +47,35 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 					// Use post-activation for next layer
 					data = postAct
+				} else if config.Type == LayerRNN {
+					// RNN layer
+					output, hiddenStates := rnnForwardCPU(config, data, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+
+					// Store hidden states for backward pass (stored as pre-activation)
+					n.preActivations[layerIdx] = hiddenStates
+
+					// Use RNN output for next layer
+					data = output
+				} else if config.Type == LayerLSTM {
+					// LSTM layer
+					output, states := lstmForwardCPU(config, data, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+
+					// Store all LSTM states for backward pass
+					// We'll flatten the states map into a single slice for storage
+					// Format: [hidden, cell, i_gate, f_gate, g_gate, o_gate, c_tanh]
+					totalStateSize := len(states["hidden"]) + len(states["cell"]) +
+						len(states["i_gate"]) + len(states["f_gate"]) +
+						len(states["g_gate"]) + len(states["o_gate"]) + len(states["c_tanh"])
+					flatStates := make([]float32, totalStateSize)
+					offset := 0
+					for _, key := range []string{"hidden", "cell", "i_gate", "f_gate", "g_gate", "o_gate", "c_tanh"} {
+						copy(flatStates[offset:], states[key])
+						offset += len(states[key])
+					}
+					n.preActivations[layerIdx] = flatStates
+
+					// Use LSTM output for next layer
+					data = output
 				} else {
 					// Dense layer (element-wise activation)
 					// Store pre-activation values
@@ -75,6 +104,25 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) {
 	if n.deviceInfo == nil {
 		return nil, 0, fmt.Errorf("GPU not initialized, call InitGPU first")
+	}
+
+	// Check for Conv2D layers and use specialized path
+	hasConv2D := false
+	for i := 0; i < n.TotalLayers(); i++ {
+		row := i / (n.GridCols * n.LayersPerCell)
+		remainder := i % (n.GridCols * n.LayersPerCell)
+		col := remainder / n.LayersPerCell
+		layer := remainder % n.LayersPerCell
+
+		config := n.GetLayer(row, col, layer)
+		if config.Type == LayerConv2D {
+			hasConv2D = true
+			break
+		}
+	}
+
+	if hasConv2D {
+		return n.forwardGPUConv2D(input)
 	}
 
 	start := time.Now()
@@ -308,6 +356,19 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 	output := make([]float32, N)
 	copy(output, unsafe.Slice((*float32)(unsafe.Pointer(&view[0])), N))
 	readback.Unmap()
+
+	return output, time.Since(start), nil
+}
+
+// forwardGPUConv2D executes networks containing Conv2D layers on GPU
+// This uses specialized pipelines for Conv2D layers
+func (n *Network) forwardGPUConv2D(input []float32) ([]float32, time.Duration, error) {
+	start := time.Now()
+
+	// For now, fall back to CPU for Conv2D layers
+	// Full implementation requires creating specialized pipelines with 4 bindings
+	// (input, kernel, bias, output) and handling variable buffer sizes
+	output, _ := n.ForwardCPU(input)
 
 	return output, time.Since(start), nil
 }
