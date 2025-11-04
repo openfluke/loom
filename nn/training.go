@@ -8,13 +8,16 @@ import (
 
 // TrainingConfig holds configuration for training
 type TrainingConfig struct {
-	Epochs          int
-	LearningRate    float32
-	UseGPU          bool
-	PrintEveryBatch int     // Print progress every N batches (0 = only print epoch summary)
-	GradientClip    float32 // Max gradient norm (0 = no clipping)
-	LossType        string  // "mse" or "cross_entropy"
-	Verbose         bool
+	Epochs            int
+	LearningRate      float32
+	UseGPU            bool
+	PrintEveryBatch   int     // Print progress every N batches (0 = only print epoch summary)
+	GradientClip      float32 // Max gradient norm (0 = no clipping)
+	LossType          string  // "mse" or "cross_entropy"
+	Verbose           bool
+	EvaluateEveryN    int         // Evaluate on validation set every N epochs (0 = no evaluation)
+	ValidationInputs  [][]float32 // Optional: validation inputs for evaluation
+	ValidationTargets []float64   // Optional: validation expected outputs
 }
 
 // TrainingBatch represents a single training batch
@@ -28,8 +31,9 @@ type TrainingResult struct {
 	FinalLoss     float64
 	BestLoss      float64
 	TotalTime     time.Duration
-	AvgThroughput float64   // samples per second
-	LossHistory   []float64 // loss per epoch
+	AvgThroughput float64           // samples per second
+	LossHistory   []float64         // loss per epoch
+	EvalMetrics   *DeviationMetrics // Optional: evaluation metrics if validation set provided
 }
 
 // DefaultTrainingConfig returns sensible defaults
@@ -161,6 +165,21 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 			// Show gradient statistics every 5 epochs
 			if (epoch+1)%5 == 0 {
 				n.printGradientStats()
+			}
+
+			// Evaluate on validation set if configured
+			if config.EvaluateEveryN > 0 && (epoch+1)%config.EvaluateEveryN == 0 {
+				if len(config.ValidationInputs) > 0 && len(config.ValidationTargets) > 0 {
+					fmt.Printf("\n  Running validation evaluation...\n")
+					evalMetrics, err := n.EvaluateNetwork(config.ValidationInputs, config.ValidationTargets)
+					if err != nil {
+						fmt.Printf("  Warning: Validation evaluation failed: %v\n", err)
+					} else {
+						fmt.Printf("  Validation Score: %.2f/100, Avg Deviation: %.2f%%, Failures: %d/%d\n",
+							evalMetrics.Score, evalMetrics.AverageDeviation, evalMetrics.Failures, evalMetrics.TotalSamples)
+						result.EvalMetrics = evalMetrics
+					}
+				}
 			}
 		}
 	}
