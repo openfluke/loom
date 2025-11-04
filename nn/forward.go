@@ -76,8 +76,17 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 					// Use LSTM output for next layer
 					data = output
+				} else if config.Type == LayerDense {
+					// Dense/Fully-Connected layer with weight matrix
+					preAct, postAct := denseForwardCPU(data, config, n.BatchSize)
+
+					// Store pre-activation values
+					n.preActivations[layerIdx] = preAct
+
+					// Use post-activation for next layer
+					data = postAct
 				} else {
-					// Dense layer (element-wise activation)
+					// Default: element-wise activation only
 					// Store pre-activation values
 					n.preActivations[layerIdx] = make([]float32, len(data))
 					copy(n.preActivations[layerIdx], data)
@@ -86,9 +95,7 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					for i := 0; i < len(data); i++ {
 						data[i] = activateCPU(data[i], config.Activation)
 					}
-				}
-
-				// Store post-activation values
+				} // Store post-activation values
 				n.activations[layerIdx+1] = make([]float32, len(data))
 				copy(n.activations[layerIdx+1], data)
 

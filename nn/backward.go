@@ -53,10 +53,13 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 			input := n.activations[layerIdx]
 			gradInput, gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB := multiHeadAttentionBackwardCPU(grad, input, preAct, config, n.BatchSize)
 
-			// Store gradients (we'll need to expand gradient storage for MHA)
-			// For now, store concatenated gradients in kernelGradients
-			allGrads := append(append(append(append(gradQW, gradKW...), gradVW...), gradOutW...), append(append(append(gradQB, gradKB...), gradVB...), gradOutB...)...)
-			n.kernelGradients[layerIdx] = allGrads
+			// Store weight gradients (Q, K, V, Output weights)
+			allWeightGrads := append(append(append(gradQW, gradKW...), gradVW...), gradOutW...)
+			n.kernelGradients[layerIdx] = allWeightGrads
+
+			// Store bias gradients (Q, K, V, Output biases)
+			allBiasGrads := append(append(append(gradQB, gradKB...), gradVB...), gradOutB...)
+			n.biasGradients[layerIdx] = allBiasGrads
 
 			// Update gradient for next layer
 			grad = gradInput
@@ -108,8 +111,19 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 			n.kernelGradients[layerIdx] = allGrads
 
 			grad = gradInput
+		} else if config.Type == LayerDense {
+			// Dense layer backward with proper weight gradients
+			input := n.activations[layerIdx]
+			gradInput, gradWeights, gradBias := denseBackwardCPU(grad, input, preAct, config, n.BatchSize)
+
+			// Store gradients
+			n.kernelGradients[layerIdx] = gradWeights
+			n.biasGradients[layerIdx] = gradBias
+
+			// Update gradient for next layer
+			grad = gradInput
 		} else {
-			// Dense layer backward
+			// Default: element-wise activation backward
 			// Compute gradient with respect to pre-activation
 			// grad_pre = grad_post * activation_derivative(pre_activation)
 			for i := 0; i < len(grad); i++ {

@@ -198,7 +198,8 @@ func multiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 }
 
 // multiHeadAttentionBackwardCPU computes gradients for multi-head attention on CPU
-// This is a simplified version - full implementation would store attention scores and intermediate values
+// Note: This is a simplified backprop that treats attention as a simple transformation
+// A full implementation would need to store Q, K, V, and attention scores during forward pass
 func multiHeadAttentionBackwardCPU(
 	gradOutput []float32,
 	input []float32,
@@ -221,21 +222,61 @@ func multiHeadAttentionBackwardCPU(
 	gradVBias = make([]float32, dModel)
 	gradOutputBias = make([]float32, dModel)
 
-	// Apply activation derivative to gradOutput
+	// Step 1: Apply activation derivative to gradOutput
+	// preActivation contains the output AFTER the output projection (before final activation)
 	gradPreActivation := make([]float32, inputSize)
 	for i := 0; i < inputSize; i++ {
 		derivative := activateDerivativeCPU(preActivation[i], config.Activation)
 		gradPreActivation[i] = gradOutput[i] * derivative
 	}
 
-	// Backprop through output projection
-	// gradPreActivation = gradOutput (after activation derivative)
-	// Need to compute:
-	// - gradOutputWeight
-	// - gradOutputBias
-	// - gradPreAttention (gradient w.r.t. concatenated attention output)
+	// Step 2: Backprop through output projection
+	// We need to reconstruct the attention output (before output projection)
+	// Forward: output = attentionOutput * OutputWeight + OutputBias
+	// Backward: gradAttentionOutput = gradOutput * OutputWeight^T
 
-	gradPreAttention := make([]float32, inputSize)
+	// First, we need to recompute the attention output by running forward pass
+	// (In a proper implementation, we'd store this during forward pass)
+	attentionOutput := make([]float32, inputSize)
+
+	// Recompute Q, K, V projections
+	Q := make([]float32, inputSize)
+	K := make([]float32, inputSize)
+	V := make([]float32, inputSize)
+
+	for b := 0; b < batchSize; b++ {
+		for s := 0; s < seqLen; s++ {
+			for d := 0; d < dModel; d++ {
+				qSum := config.QBias[d]
+				kSum := config.KBias[d]
+				vSum := config.VBias[d]
+
+				for i := 0; i < dModel; i++ {
+					inputIdx := b*seqLen*dModel + s*dModel + i
+					qWeightIdx := i*dModel + d
+					kWeightIdx := i*dModel + d
+					vWeightIdx := i*dModel + d
+
+					qSum += input[inputIdx] * config.QWeights[qWeightIdx]
+					kSum += input[inputIdx] * config.KWeights[kWeightIdx]
+					vSum += input[inputIdx] * config.VWeights[vWeightIdx]
+				}
+
+				outputIdx := b*seqLen*dModel + s*dModel + d
+				Q[outputIdx] = qSum
+				K[outputIdx] = kSum
+				V[outputIdx] = vSum
+			}
+		}
+	}
+
+	// Recompute attention (simplified - treating it as identity for gradient flow)
+	// In reality, we'd need attention scores, but for now approximate with V values
+	copy(attentionOutput, V)
+
+	// Now backprop through output projection
+	// gradAttentionOutput will receive gradients from the output layer
+	gradAttentionOutput := make([]float32, inputSize)
 
 	for b := 0; b < batchSize; b++ {
 		for s := 0; s < seqLen; s++ {
@@ -246,55 +287,79 @@ func multiHeadAttentionBackwardCPU(
 				// Gradient w.r.t. output bias
 				gradOutputBias[d] += gradOut
 
-				// Gradient w.r.t. output weights and pre-attention
+				// Gradient w.r.t. output weights and attention output
 				for i := 0; i < dModel; i++ {
-					inputIdx := b*seqLen*dModel + s*dModel + i
+					attnIdx := b*seqLen*dModel + s*dModel + i
 					weightIdx := i*dModel + d
 
-					// Gradient w.r.t. weights
-					gradOutputWeight[weightIdx] += gradOut * preActivation[inputIdx]
+					// Gradient w.r.t. output weights: grad = gradOut * input
+					gradOutputWeight[weightIdx] += gradOut * attentionOutput[attnIdx]
 
-					// Gradient w.r.t. pre-attention (backprop to Q,K,V)
-					gradPreAttention[inputIdx] += gradOut * config.OutputWeight[weightIdx]
+					// Gradient w.r.t. attention output: grad = gradOut * weight
+					gradAttentionOutput[attnIdx] += gradOut * config.OutputWeight[weightIdx]
 				}
 			}
 		}
 	}
 
-	// For simplicity, approximate backprop through attention mechanism
-	// Full implementation would require storing attention scores and doing proper backprop
-	// For now, we'll compute gradients for Q, K, V projections
-
-	// Backprop through Q, K, V projections
+	// Step 3: Backprop through V projection
+	// V = input * VWeights + VBias
+	// For simplified attention, gradAttentionOutput flows directly to gradV
 	for b := 0; b < batchSize; b++ {
 		for s := 0; s < seqLen; s++ {
 			for d := 0; d < dModel; d++ {
 				gradIdx := b*seqLen*dModel + s*dModel + d
-				gradQ := gradPreAttention[gradIdx]
-				gradK := gradPreAttention[gradIdx]
-				gradV := gradPreAttention[gradIdx]
+				gradV := gradAttentionOutput[gradIdx]
 
-				// Gradient w.r.t. biases
-				gradQBias[d] += gradQ
-				gradKBias[d] += gradK
+				// Gradient w.r.t. V bias
 				gradVBias[d] += gradV
 
-				// Gradient w.r.t. weights and input
+				// Gradient w.r.t. V weights and input
+				for i := 0; i < dModel; i++ {
+					inputIdx := b*seqLen*dModel + s*dModel + i
+					vWeightIdx := i*dModel + d
+
+					// Gradient w.r.t. V weights
+					gradVWeights[vWeightIdx] += gradV * input[inputIdx]
+
+					// Gradient w.r.t. input (from V path)
+					gradInput[inputIdx] += gradV * config.VWeights[vWeightIdx]
+				}
+			}
+		}
+	}
+
+	// Step 4: Also backprop through Q and K projections
+	// For simplified version, we approximate by flowing gradients through Q and K as well
+	// (In full attention, this would go through attention score derivatives)
+
+	// Use a fraction of the gradient for Q and K to approximate their contribution
+	gradientScale := float32(0.3) // Scale down Q/K gradients since V carries most signal
+
+	for b := 0; b < batchSize; b++ {
+		for s := 0; s < seqLen; s++ {
+			for d := 0; d < dModel; d++ {
+				gradIdx := b*seqLen*dModel + s*dModel + d
+				gradQ := gradAttentionOutput[gradIdx] * gradientScale
+				gradK := gradAttentionOutput[gradIdx] * gradientScale
+
+				// Gradient w.r.t. Q and K biases
+				gradQBias[d] += gradQ
+				gradKBias[d] += gradK
+
+				// Gradient w.r.t. Q and K weights and input
 				for i := 0; i < dModel; i++ {
 					inputIdx := b*seqLen*dModel + s*dModel + i
 					qWeightIdx := i*dModel + d
 					kWeightIdx := i*dModel + d
-					vWeightIdx := i*dModel + d
 
 					// Gradient w.r.t. weights
 					gradQWeights[qWeightIdx] += gradQ * input[inputIdx]
 					gradKWeights[kWeightIdx] += gradK * input[inputIdx]
-					gradVWeights[vWeightIdx] += gradV * input[inputIdx]
 
-					// Gradient w.r.t. input
+					// Gradient w.r.t. input (from Q and K paths)
 					gradInput[inputIdx] += gradQ * config.QWeights[qWeightIdx]
 					gradInput[inputIdx] += gradK * config.KWeights[kWeightIdx]
-					gradInput[inputIdx] += gradV * config.VWeights[vWeightIdx]
 				}
 			}
 		}

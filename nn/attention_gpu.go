@@ -421,9 +421,6 @@ func (n *Network) forwardGPUMultiHeadAttention(input []float32) ([]float32, time
 func (n *Network) backwardGPUMultiHeadAttention(gradOutput []float32) ([]float32, time.Duration, error) {
 	start := time.Now()
 
-	dev := n.deviceInfo.Device
-	q := n.deviceInfo.Queue
-
 	totalLayers := n.TotalLayers()
 	gradData := make([]float32, len(gradOutput))
 	copy(gradData, gradOutput)
@@ -442,15 +439,17 @@ func (n *Network) backwardGPUMultiHeadAttention(gradOutput []float32) ([]float32
 			input := n.activations[layerIdx]
 			preAct := n.preActivations[layerIdx]
 
-			// GPU MHA backward
-			gradInput, err := multiHeadAttentionBackwardGPU(dev, q, gradData, input, preAct, config, n.BatchSize)
-			if err != nil {
-				// Fall back to CPU on error - LOG THE ERROR
-				fmt.Printf("[WARNING] GPU MHA backward failed at layer %d: %v\n", layerIdx, err)
-				fmt.Println("[WARNING] Falling back to CPU for entire backward pass")
-				cpuGrad, _ := n.BackwardCPU(gradOutput)
-				return cpuGrad, time.Since(start), nil
-			}
+			// MHA backward - use CPU version which computes weight gradients
+			// GPU version currently only computes gradInput, not weight gradients
+			gradInput, gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB := multiHeadAttentionBackwardCPU(gradData, input, preAct, config, n.BatchSize)
+
+			// Store weight gradients (Q, K, V, Output weights)
+			allWeightGrads := append(append(append(gradQW, gradKW...), gradVW...), gradOutW...)
+			n.kernelGradients[layerIdx] = allWeightGrads
+
+			// Store bias gradients (Q, K, V, Output biases)
+			allBiasGrads := append(append(append(gradQB, gradKB...), gradVB...), gradOutB...)
+			n.biasGradients[layerIdx] = allBiasGrads
 
 			gradData = gradInput
 		} else {
@@ -764,4 +763,123 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 	readbackBuf.Unmap()
 
 	return output, nil
+}
+
+// UpdateWeights applies gradients to network weights using simple SGD
+// This should be called after BackwardGPU/BackwardCPU to update the model parameters
+func (n *Network) UpdateWeights(learningRate float32) {
+	kernelGrads := n.KernelGradients()
+	biasGrads := n.BiasGradients()
+
+	for r := 0; r < n.GridRows; r++ {
+		for c := 0; c < n.GridCols; c++ {
+			for l := 0; l < n.LayersPerCell; l++ {
+				layerIdx := r*n.GridCols*n.LayersPerCell + c*n.LayersPerCell + l
+
+				if layerIdx >= len(n.Layers) {
+					continue
+				}
+
+				layer := n.GetLayer(r, c, l)
+				if layer == nil {
+					continue
+				}
+
+				// Update Dense layer weights
+				if layer.Type == LayerDense {
+					if layerIdx < len(kernelGrads) && kernelGrads[layerIdx] != nil {
+						// Update weights (stored in Kernel field)
+						for i := range layer.Kernel {
+							if i < len(kernelGrads[layerIdx]) {
+								layer.Kernel[i] -= learningRate * kernelGrads[layerIdx][i]
+							}
+						}
+					}
+					if layerIdx < len(biasGrads) && biasGrads[layerIdx] != nil {
+						// Update biases
+						for i := range layer.Bias {
+							if i < len(biasGrads[layerIdx]) {
+								layer.Bias[i] -= learningRate * biasGrads[layerIdx][i]
+							}
+						}
+					}
+					continue
+				}
+
+				// Update Multi-Head Attention weights
+				if layerIdx < len(kernelGrads) && kernelGrads[layerIdx] != nil {
+					if layer.QWeights != nil {
+						offset := 0
+						// Update Q weights
+						for i := range layer.QWeights {
+							if offset+i < len(kernelGrads[layerIdx]) {
+								layer.QWeights[i] -= learningRate * kernelGrads[layerIdx][offset+i]
+							}
+						}
+						offset += len(layer.QWeights)
+
+						// Update K weights
+						for i := range layer.KWeights {
+							if offset+i < len(kernelGrads[layerIdx]) {
+								layer.KWeights[i] -= learningRate * kernelGrads[layerIdx][offset+i]
+							}
+						}
+						offset += len(layer.KWeights)
+
+						// Update V weights
+						for i := range layer.VWeights {
+							if offset+i < len(kernelGrads[layerIdx]) {
+								layer.VWeights[i] -= learningRate * kernelGrads[layerIdx][offset+i]
+							}
+						}
+						offset += len(layer.VWeights)
+
+						// Update output weights
+						for i := range layer.OutputWeight {
+							if offset+i < len(kernelGrads[layerIdx]) {
+								layer.OutputWeight[i] -= learningRate * kernelGrads[layerIdx][offset+i]
+							}
+						}
+					}
+				}
+
+				// Update biases
+				if layerIdx < len(biasGrads) && biasGrads[layerIdx] != nil {
+					if layer.QBias != nil {
+						offset := 0
+						// Update Q bias
+						for i := range layer.QBias {
+							if offset+i < len(biasGrads[layerIdx]) {
+								layer.QBias[i] -= learningRate * biasGrads[layerIdx][offset+i]
+							}
+						}
+						offset += len(layer.QBias)
+
+						// Update K bias
+						for i := range layer.KBias {
+							if offset+i < len(biasGrads[layerIdx]) {
+								layer.KBias[i] -= learningRate * biasGrads[layerIdx][offset+i]
+							}
+						}
+						offset += len(layer.KBias)
+
+						// Update V bias
+						for i := range layer.VBias {
+							if offset+i < len(biasGrads[layerIdx]) {
+								layer.VBias[i] -= learningRate * biasGrads[layerIdx][offset+i]
+							}
+						}
+						offset += len(layer.VBias)
+
+						// Update output bias
+						for i := range layer.OutputBias {
+							if offset+i < len(biasGrads[layerIdx]) {
+								layer.OutputBias[i] -= learningRate * biasGrads[layerIdx][offset+i]
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }
