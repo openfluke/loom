@@ -1,13 +1,13 @@
 # LOOM - Layered Omni-architecture Openfluke Machine
 
-A high-performance GPU-accelerated neural network framework written in Go, featuring WebGPU compute shaders for parallel execution.
+A high-performance GPU-accelerated neural network framework written in Go, featuring WebGPU compute shaders for parallel execution and WebAssembly export for browser deployment.
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 
 ## Overview
 
-Loom is a modern neural network framework that combines the simplicity of Go with the power of GPU acceleration via WebGPU. It supports multiple layer types, flexible grid-based architectures, and provides both CPU and GPU execution paths with automatic gradient computation.
+Loom is a modern neural network framework that combines the simplicity of Go with the power of GPU acceleration via WebGPU. It supports multiple layer types, flexible grid-based architectures, and provides both CPU and GPU execution paths with automatic gradient computation. The framework can be compiled to WebAssembly for running neural networks directly in the browser.
 
 ## Key Features
 
@@ -16,6 +16,14 @@ Loom is a modern neural network framework that combines the simplicity of Go wit
 - **WebGPU Compute Shaders**: Native GPU acceleration using WGSL (WebGPU Shading Language)
 - **Hybrid CPU/GPU**: Intelligent routing between CPU and GPU execution
 - **Multi-layer Support**: Dense, Conv2D, Multi-Head Attention with GPU acceleration
+
+### 🌐 WebAssembly Support
+
+- **Browser Deployment**: Compile to WASM for client-side inference
+- **Reflection-based API**: Automatic method exposure with 24+ discoverable functions
+- **Runtime Introspection**: Query available methods, signatures, and parameters from JavaScript
+- **Zero Dependencies**: Pure WASM + Go stdlib, no external libraries needed
+- **Model Serialization**: Save/load models as JSON strings in the browser
 
 ### 🧠 Neural Network Layers
 
@@ -50,6 +58,13 @@ Loom is a modern neural network framework that combines the simplicity of Go wit
 - JSON-based model bundles with base64-encoded weights
 - Compatible with model hosting systems
 
+### 🔍 Runtime Introspection
+
+- **Method Discovery**: Query all available network methods at runtime
+- **Signature Inspection**: Get parameter types and return values for any method
+- **JSON Metadata**: Export complete API documentation as JSON
+- **WASM Integration**: Automatic exposure of Go methods to JavaScript
+
 ## Project Structure
 
 ```
@@ -66,9 +81,15 @@ loom/
 │   ├── lstm.go          # LSTM implementation
 │   ├── training.go      # Training loop with evaluation support
 │   ├── evaluation.go    # DeviationMetrics evaluation system
+│   ├── introspection.go # Runtime method discovery
 │   ├── serialization.go # Model save/load
-│   ├── README.md        # Detailed package documentation
-│   └── EVALUATION_README.md # Evaluation system documentation
+│   └── README.md        # Detailed package documentation
+│
+├── wasm/                # WebAssembly module
+│   ├── main.go          # WASM wrapper with type conversion
+│   ├── build.sh         # Build script for WASM compilation
+│   ├── example.html     # Interactive browser demo
+│   └── README.md        # WASM documentation and examples
 │
 ├── fabric/              # Demo application
 │   ├── main.go          # Interactive demo menu
@@ -82,7 +103,8 @@ loom/
 │   └── ...
 │
 └── detector/            # GPU device detection
-    └── detector.go      # Hardware capability detection
+    ├── detector.go      # Hardware capability detection
+    └── detector_wasm.go # WASM stub (GPU N/A in browser)
 ```
 
 ## Quick Start
@@ -278,6 +300,73 @@ Deviation Distribution:
   10-20%: 18 samples - [1 8 15 21 22] ... (13 more)
    100%+: 3 samples - [17 42 89]
 ```
+
+## WebAssembly (Browser Deployment)
+
+Loom can be compiled to WebAssembly for running neural networks directly in the browser with zero dependencies.
+
+### Building the WASM Module
+
+```bash
+cd wasm
+./build.sh
+
+# Serve the demo
+python3 -m http.server 8080
+# Open http://localhost:8080/example.html
+```
+
+### JavaScript API
+
+The WASM module automatically exposes all Network methods via reflection:
+
+```javascript
+// Create a network
+const network = NewNetwork(784, 1, 1, 2); // 784→392→10 architecture
+
+// Initialize layers
+const layer0Config = InitDenseLayer(784, 392, 0); // ReLU activation
+const layer1Config = InitDenseLayer(392, 10, 1); // Sigmoid activation
+
+network.SetLayer(JSON.stringify([0, 0, 0, JSON.parse(layer0Config)]));
+network.SetLayer(JSON.stringify([0, 0, 1, JSON.parse(layer1Config)]));
+
+// Run forward pass
+const input = new Array(784).fill(0).map(() => Math.random());
+const resultJSON = network.ForwardCPU(JSON.stringify([input]));
+const output = JSON.parse(resultJSON)[0];
+
+console.log("Output:", output); // [0.34, 0.67, 0.46, ...]
+
+// Save model
+const modelJSON = network.SaveModelToString(JSON.stringify(["my_model"]));
+const model = JSON.parse(JSON.parse(modelJSON)[0]);
+
+// Load model
+const loadedNetwork = LoadModelFromString(JSON.stringify(model), "my_model");
+
+// Introspection - discover all available methods
+const methodsJSON = network.GetMethods();
+const methods = JSON.parse(methodsJSON);
+console.log("Available methods:", methods.length); // 24 methods
+
+methods.forEach((method) => {
+  console.log(
+    `${method.method_name}(${method.parameters.map((p) => p.type).join(", ")})`
+  );
+});
+```
+
+### WASM Features
+
+- ✅ **5.4MB binary** (includes full framework)
+- ✅ **24+ methods** automatically exposed via reflection
+- ✅ **Runtime introspection** - query methods, signatures, parameters
+- ✅ **Type conversion** - automatic JavaScript ↔ Go type mapping
+- ✅ **Model persistence** - save/load as JSON strings (no file system)
+- ✅ **CPU-only** - GPU support via WebGPU coming soon
+
+See [wasm/README.md](wasm/README.md) for complete documentation and examples.
 
 ## Performance Benchmarks
 

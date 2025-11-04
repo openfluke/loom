@@ -1,6 +1,6 @@
 # Neural Network Package
 
-A high-performance grid neural network implementation in Go with support for multiple layer types, CPU/GPU execution, and automatic differentiation.
+A high-performance grid neural network implementation in Go with support for multiple layer types, CPU/GPU execution, automatic differentiation, and WebAssembly export.
 
 ## Features
 
@@ -27,6 +27,7 @@ A high-performance grid neural network implementation in Go with support for mul
 
 - **CPU**: Pure Go implementation with full backward propagation
 - **GPU**: WebGPU/WGSL compute shaders for parallel execution
+- **WASM**: Compile to WebAssembly for browser deployment (CPU-only)
 - **Automatic Gradient Computation**: Stores activations and pre-activations for backprop
 
 ### Training & Evaluation
@@ -38,6 +39,13 @@ A high-performance grid neural network implementation in Go with support for mul
 - **Quality Scoring**: Standardized 0-100 score for model comparison
 - **Metrics Persistence**: Save/load evaluation results to JSON
 - **Failure Analysis**: Identify worst predictions and problematic samples
+
+### Runtime Introspection
+
+- **Method Discovery**: Query all Network methods at runtime via reflection
+- **Signature Inspection**: Get parameter types and return values for any method
+- **JSON Metadata**: Export complete API documentation as JSON
+- **WASM Integration**: Automatic exposure of all public methods to JavaScript
 
 ## File Structure
 
@@ -56,9 +64,9 @@ nn/
 ├── lstm.go               # LSTM implementation with gate computations
 ├── training.go           # Training loop with evaluation support
 ├── evaluation.go         # DeviationMetrics evaluation system
+├── introspection.go      # Runtime method discovery and inspection
 ├── serialization.go      # Model save/load (file and string-based)
-├── README.md             # This file
-└── EVALUATION_README.md  # Detailed evaluation documentation
+└── README.md             # This file
 ```
 
 ## Usage
@@ -519,6 +527,101 @@ The demo shows:
 - Multi-model bundles
 - WASM/CABI integration examples
 - Model verification with forward pass
+
+## Runtime Introspection
+
+The `nn` package provides runtime introspection capabilities for discovering and inspecting Network methods at runtime.
+
+### Available Methods
+
+- **`GetMethods()`**: Returns `[]MethodInfo` with all public methods, parameters, and return types
+- **`GetMethodsJSON()`**: Returns JSON string with method metadata
+- **`ListMethods()`**: Returns `[]string` of method names
+- **`HasMethod(methodName)`**: Returns `bool` if method exists
+- **`GetMethodSignature(methodName)`**: Returns formatted signature string
+
+### Example Usage
+
+```go
+network := nn.NewNetwork(1024, 2, 2, 2)
+
+// Get all methods as structured data
+methods, err := network.GetMethods()
+for _, method := range methods {
+    fmt.Printf("%s\n", method.MethodName)
+    for _, param := range method.Parameters {
+        fmt.Printf("  - %s: %s\n", param.Name, param.Type)
+    }
+}
+
+// Get method list
+methodNames := network.ListMethods()
+fmt.Printf("Found %d methods: %v\n", len(methodNames), methodNames)
+
+// Check if method exists
+if network.HasMethod("ForwardCPU") {
+    sig, _ := network.GetMethodSignature("ForwardCPU")
+    fmt.Println("Signature:", sig)
+    // Output: ForwardCPU([]float32) ([]float32, time.Duration)
+}
+
+// Get as JSON for WASM/API export
+methodsJSON, _ := network.GetMethodsJSON()
+fmt.Println(methodsJSON)
+```
+
+### JSON Output Format
+
+```json
+[
+  {
+    "method_name": "ForwardCPU",
+    "parameters": [{ "name": "param0", "type": "[]float32" }],
+    "returns": ["[]float32", "time.Duration"]
+  },
+  {
+    "method_name": "Train",
+    "parameters": [
+      { "name": "param0", "type": "[]nn.Batch" },
+      { "name": "param1", "type": "*nn.TrainingConfig" }
+    ],
+    "returns": ["*nn.TrainingResult", "error"]
+  }
+]
+```
+
+### WASM Integration
+
+Introspection is particularly useful for WebAssembly, where it enables automatic method exposure:
+
+```javascript
+// In browser, get all available methods
+const methodsJSON = network.GetMethods();
+const methods = JSON.parse(methodsJSON);
+
+console.log(`Network has ${methods.length} methods:`);
+methods.forEach((m) => {
+  const params = m.parameters.map((p) => p.type).join(", ");
+  const returns = m.returns.join(", ");
+  console.log(`  ${m.method_name}(${params}) -> ${returns}`);
+});
+
+// Dynamically call any method
+if (network.HasMethod("SaveModelToString")) {
+  const modelJSON = network.SaveModelToString(JSON.stringify(["my_model"]));
+  console.log("Model saved:", modelJSON);
+}
+```
+
+### Introspection Demo
+
+```bash
+cd fabric
+go run main.go
+# Select option 16 for Introspection Demo
+```
+
+The demo shows all discovered methods (24+) with their signatures and parameters.
 
 ## Testing
 
