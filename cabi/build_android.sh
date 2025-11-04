@@ -28,32 +28,50 @@ echo "Android NDK: $NDK_PATH"
 # Android API level (minimum for Go)
 API_LEVEL=21
 
+# Detect NDK prebuilt directory based on host OS
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS - prefer arm64 (Apple Silicon), fall back to x86_64 (Intel)
+    if [ -d "$NDK_PATH/toolchains/llvm/prebuilt/darwin-arm64" ]; then
+        NDK_PREBUILT="darwin-arm64"
+    elif [ -d "$NDK_PATH/toolchains/llvm/prebuilt/darwin-x86_64" ]; then
+        NDK_PREBUILT="darwin-x86_64"
+    else
+        echo "ERROR: NDK llvm prebuilt not found (darwin-arm64/x86_64)"
+        exit 1
+    fi
+else
+    # Linux
+    NDK_PREBUILT="linux-x86_64"
+fi
+
+echo "NDK Prebuilt: $NDK_PREBUILT"
+
 # Map architecture names
 case "$ARCH" in
     arm64|aarch64)
         GOARCH="arm64"
         DIR_ARCH="arm64"
         NDK_TARGET="aarch64-linux-android"
-        CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API_LEVEL}-clang"
+        CC="$NDK_PATH/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/aarch64-linux-android${API_LEVEL}-clang"
         ;;
     arm|armv7)
         GOARCH="arm"
         DIR_ARCH="armv7"
         NDK_TARGET="armv7a-linux-androideabi"
-        CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${API_LEVEL}-clang"
+        CC="$NDK_PATH/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/armv7a-linux-androideabi${API_LEVEL}-clang"
         export GOARM=7
         ;;
     x86_64|amd64)
         GOARCH="amd64"
         DIR_ARCH="x86_64"
         NDK_TARGET="x86_64-linux-android"
-        CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android${API_LEVEL}-clang"
+        CC="$NDK_PATH/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/x86_64-linux-android${API_LEVEL}-clang"
         ;;
     x86|i686)
         GOARCH="386"
         DIR_ARCH="x86"
         NDK_TARGET="i686-linux-android"
-        CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android${API_LEVEL}-clang"
+        CC="$NDK_PATH/toolchains/llvm/prebuilt/$NDK_PREBUILT/bin/i686-linux-android${API_LEVEL}-clang"
         ;;
     *)
         echo "Unsupported architecture: $ARCH"
