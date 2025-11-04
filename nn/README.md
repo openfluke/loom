@@ -29,6 +29,16 @@ A high-performance grid neural network implementation in Go with support for mul
 - **GPU**: WebGPU/WGSL compute shaders for parallel execution
 - **Automatic Gradient Computation**: Stores activations and pre-activations for backprop
 
+### Training & Evaluation
+
+- **Training Loop**: Built-in `Train()` method with gradient clipping, loss tracking, and checkpointing
+- **DeviationMetrics**: Comprehensive evaluation system tracking prediction accuracy across 7 deviation buckets
+- **Sample-Level Tracking**: Identifies which specific samples fall into each performance category
+- **Validation Integration**: Automatic periodic evaluation during training
+- **Quality Scoring**: Standardized 0-100 score for model comparison
+- **Metrics Persistence**: Save/load evaluation results to JSON
+- **Failure Analysis**: Identify worst predictions and problematic samples
+
 ## File Structure
 
 ```
@@ -43,7 +53,12 @@ nn/
 ├── cnn.go                # Conv2D implementation (forward/backward)
 ├── attention.go          # Multi-Head Attention implementation
 ├── rnn.go                # RNN implementation with BPTT
-└── lstm.go               # LSTM implementation with gate computations
+├── lstm.go               # LSTM implementation with gate computations
+├── training.go           # Training loop with evaluation support
+├── evaluation.go         # DeviationMetrics evaluation system
+├── serialization.go      # Model save/load (file and string-based)
+├── README.md             # This file
+└── EVALUATION_README.md  # Detailed evaluation documentation
 ```
 
 ## Usage
@@ -631,6 +646,153 @@ Forward and backward passes check `LayerConfig.Type`:
   - SRU (Simple Recurrent Units) - designed for parallel execution
 - **Status**: CPU implementation correct, GPU not feasible for standard RNN/LSTM architecture
 
+## Model Evaluation & Training
+
+### DeviationMetrics - Accuracy Deviation Heatmap Distribution
+
+A comprehensive evaluation system that tracks how far predictions deviate from expected values, providing detailed performance breakdowns across 7 deviation buckets.
+
+#### Quick Start
+
+```go
+// During training - automatic evaluation
+config := &nn.TrainingConfig{
+    Epochs:            10,
+    LearningRate:      0.01,
+    EvaluateEveryN:    1,  // Evaluate every epoch
+    ValidationInputs:  valInputs,   // [][]float32
+    ValidationTargets: valTargets,  // []float64
+}
+
+result, err := network.Train(batches, config)
+
+// Access evaluation metrics
+fmt.Printf("Quality Score: %.2f/100\n", result.EvalMetrics.Score)
+fmt.Printf("Average Deviation: %.2f%%\n", result.EvalMetrics.AverageDeviation)
+result.EvalMetrics.PrintSummary()
+
+// Save metrics to file
+result.EvalMetrics.SaveMetrics("evaluation.json")
+```
+
+#### Deviation Buckets
+
+Performance is categorized into 7 ranges based on percentage deviation from expected:
+
+- **0-10%**: High confidence, highly accurate (🟢 Red in visualization)
+- **10-20%**: Very good accuracy
+- **20-30%**: Good accuracy
+- **30-40%**: Moderate accuracy
+- **40-50%**: Acceptable accuracy
+- **50-100%**: Significant deviation (🔵 Blue in visualization)
+- **100%+**: Extreme deviation/failures (⚫ Black in visualization)
+
+#### Sample-Level Tracking
+
+Each bucket tracks which specific training samples fall into it:
+
+```go
+// Get samples in a specific bucket
+samples := metrics.GetSamplesInBucket("0-10%")
+fmt.Printf("High-performing samples: %v\n", samples)
+
+// Get worst N predictions
+worst := metrics.GetWorstSamples(5)
+for _, result := range worst {
+    fmt.Printf("Sample #%d: Expected %.2f, Predicted %.2f, Deviation: %.1f%%\n",
+        result.SampleIndex, result.ExpectedOutput, result.ActualOutput, result.Deviation)
+}
+```
+
+#### Manual Evaluation
+
+```go
+// Evaluate model on any dataset
+metrics, err := network.EvaluateNetwork(inputs, expectedOutputs)
+
+// Print distribution
+metrics.PrintSummary()
+
+// Analyze results
+for bucketName, bucket := range metrics.Buckets {
+    fmt.Printf("%s: %d samples\n", bucketName, bucket.Count)
+    fmt.Printf("  Sample indices: %v\n", bucket.Samples)
+}
+```
+
+#### Training Integration
+
+The `TrainingConfig` struct supports automatic evaluation during training:
+
+```go
+type TrainingConfig struct {
+    Epochs            int
+    LearningRate      float32
+    EvaluateEveryN    int         // Evaluate every N epochs (0 = disabled)
+    ValidationInputs  [][]float32 // Validation dataset inputs
+    ValidationTargets []float64   // Validation dataset targets
+    // ... other fields
+}
+```
+
+During training, validation metrics are printed:
+
+```
+Epoch 5/10 - Avg Loss: 0.234
+  Running validation evaluation...
+  Validation Score: 76.5/100, Avg Deviation: 32.1%, Failures: 3/100
+```
+
+#### Metrics Persistence
+
+```go
+// Save metrics to JSON
+err := metrics.SaveMetrics("mnist_evaluation.json")
+
+// Load metrics from JSON
+loadedMetrics, err := nn.LoadMetrics("mnist_evaluation.json")
+
+// Evaluate from checkpoint files
+metrics, err := nn.EvaluateFromCheckpointFiles(
+    "model.json", "model_v1",
+    inputs, expectedOutputs,
+)
+```
+
+#### Example Output
+
+```
+=== Model Evaluation Summary ===
+Total Samples: 100
+Quality Score: 76.5/100
+Average Deviation: 32.1%
+Failures (>100% deviation): 3 (3.0%)
+
+Deviation Distribution:
+     0-10%:   45 samples (45.0%) ██████████████████████
+    10-20%:   18 samples (18.0%) █████████
+    20-30%:   12 samples (12.0%) ██████
+    30-40%:    8 samples (8.0%)  ████
+    40-50%:    6 samples (6.0%)  ███
+   50-100%:    8 samples (8.0%)  ████
+     100%+:    3 samples (3.0%)  █
+
+=== Worst 5 Predictions ===
+1. Sample #42: Expected 5, Predicted 1, Deviation: 80.0%
+2. Sample #17: Expected 3, Predicted 7, Deviation: 133.3%
+3. Sample #89: Expected 2, Predicted 9, Deviation: 350.0%
+```
+
+#### Use Cases
+
+1. **Training Monitoring**: Track model improvement over epochs
+2. **Failure Analysis**: Identify which samples the model struggles with
+3. **Quality Benchmarking**: Compare model versions with standardized score (0-100)
+4. **Dataset Insights**: Discover patterns in prediction errors
+5. **Debugging**: Isolate problematic samples for investigation
+
+See `EVALUATION_README.md` for detailed API documentation and advanced examples.
+
 ## Current Limitations
 
 ### GPU Execution
@@ -680,3 +842,7 @@ Forward and backward passes check `LayerConfig.Type`:
 - [x] Dense GPU forward/backward (working)
 - [x] MHA GPU matrix operations (working)
 - [x] MHA GPU backward pass (working)
+- [x] Training loop with automatic evaluation (`Train()` method)
+- [x] DeviationMetrics evaluation system with sample tracking
+- [x] Validation integration during training
+- [x] Metrics persistence (JSON save/load)

@@ -35,6 +35,15 @@ Loom is a modern neural network framework that combines the simplicity of Go wit
 
 - ScaledReLU, Sigmoid, Tanh, Softplus, LeakyReLU
 
+### 🎯 Training & Evaluation
+
+- **Built-in Training Loop**: `Train()` method with gradient clipping, loss tracking, and checkpointing
+- **DeviationMetrics System**: Comprehensive evaluation tracking prediction accuracy across 7 deviation buckets
+- **Sample-Level Tracking**: Identifies which specific samples fall into each performance category
+- **Validation Integration**: Automatic periodic evaluation during training
+- **Quality Scoring**: Standardized 0-100 score for model comparison
+- **Metrics Persistence**: Save/load evaluation results to JSON
+
 ### 💾 Model Serialization
 
 - Save and load model architectures and weights
@@ -55,8 +64,11 @@ loom/
 │   ├── cnn.go           # Conv2D implementation
 │   ├── rnn.go           # RNN implementation
 │   ├── lstm.go          # LSTM implementation
+│   ├── training.go      # Training loop with evaluation support
+│   ├── evaluation.go    # DeviationMetrics evaluation system
 │   ├── serialization.go # Model save/load
-│   └── README.md        # Detailed package documentation
+│   ├── README.md        # Detailed package documentation
+│   └── EVALUATION_README.md # Evaluation system documentation
 │
 ├── fabric/              # Demo application
 │   ├── main.go          # Interactive demo menu
@@ -176,6 +188,95 @@ output, gpuTime, _ := network.ForwardGPU(input)
 // Backward pass (GPU-accelerated gradient computation)
 gradOutput := make([]float32, len(output))
 gradInput, bwdTime, _ := network.BackwardGPU(gradOutput)
+```
+
+### Training with Automatic Evaluation
+
+```go
+// Prepare training data
+trainBatches := []nn.Batch{
+    {Inputs: batch1Inputs, Targets: batch1Targets},
+    {Inputs: batch2Inputs, Targets: batch2Targets},
+    // ... more batches
+}
+
+// Prepare validation data
+valInputs := [][]float32{ /* validation inputs */ }
+valTargets := []float64{ /* expected outputs */ }
+
+// Configure training with automatic evaluation
+config := &nn.TrainingConfig{
+    Epochs:            10,
+    LearningRate:      0.01,
+    UseGPU:            true,
+    GradientClip:      5.0,
+    LossType:          "mse",
+    EvaluateEveryN:    1,  // Evaluate every epoch
+    ValidationInputs:  valInputs,
+    ValidationTargets: valTargets,
+}
+
+// Train the model
+result, err := network.Train(trainBatches, config)
+if err != nil {
+    panic(err)
+}
+
+// Training output:
+// Epoch 1/10 - Avg Loss: 0.234
+//   Running validation evaluation...
+//   Validation Score: 76.5/100, Avg Deviation: 32.1%, Failures: 3/100
+// ...
+
+// Access evaluation metrics
+fmt.Printf("Final Quality Score: %.2f/100\n", result.EvalMetrics.Score)
+fmt.Printf("Average Deviation: %.2f%%\n", result.EvalMetrics.AverageDeviation)
+
+// Print detailed distribution
+result.EvalMetrics.PrintSummary()
+
+// Save evaluation metrics
+result.EvalMetrics.SaveMetrics("evaluation.json")
+
+// Get worst predictions
+worst := result.EvalMetrics.GetWorstSamples(5)
+for _, pred := range worst {
+    fmt.Printf("Sample #%d: Expected %.2f, Got %.2f, Deviation: %.1f%%\n",
+        pred.SampleIndex, pred.ExpectedOutput, pred.ActualOutput, pred.Deviation)
+}
+
+// Analyze specific buckets
+highPerformers := result.EvalMetrics.GetSamplesInBucket("0-10%")
+fmt.Printf("High-performing samples: %v\n", highPerformers)
+```
+
+### Evaluation Output Example
+
+```
+=== Model Evaluation Summary ===
+Total Samples: 100
+Quality Score: 76.5/100
+Average Deviation: 32.1%
+Failures (>100% deviation): 3 (3.0%)
+
+Deviation Distribution:
+     0-10%:   45 samples (45.0%) ██████████████████████
+    10-20%:   18 samples (18.0%) █████████
+    20-30%:   12 samples (12.0%) ██████
+    30-40%:    8 samples (8.0%)  ████
+    40-50%:    6 samples (6.0%)  ███
+   50-100%:    8 samples (8.0%)  ████
+     100%+:    3 samples (3.0%)  █
+
+=== Worst 5 Predictions ===
+1. Sample #42: Expected 5, Predicted 1, Deviation: 80.0%
+2. Sample #17: Expected 3, Predicted 7, Deviation: 133.3%
+3. Sample #89: Expected 2, Predicted 9, Deviation: 350.0%
+
+=== Samples by Performance ===
+   0-10%: 45 samples - [3 4 13 19 24] ... (40 more)
+  10-20%: 18 samples - [1 8 15 21 22] ... (13 more)
+   100%+: 3 samples - [17 42 89]
 ```
 
 ## Performance Benchmarks
@@ -321,6 +422,7 @@ Loom uses WGSL (WebGPU Shading Language) for GPU compute:
 ## Documentation
 
 - [Neural Network Package](nn/README.md) - Detailed API documentation
+- [Evaluation System](nn/EVALUATION_README.md) - DeviationMetrics comprehensive guide
 - [Examples](fabric/examples/) - Code examples and benchmarks
 - [Demos](fabric/demos/) - Interactive demonstrations
 
@@ -363,11 +465,22 @@ go build
 
 ### Future Enhancements
 
-- [ ] Optimizers (SGD, Adam, RMSprop)
-- [ ] Loss functions (cross-entropy, MSE)
 - [ ] Batch normalization
 - [ ] Dropout layers
 - [ ] Model visualization tools
+
+### Completed ✅
+
+- [x] **Training Loop**: Built-in `Train()` method with gradient clipping and loss tracking
+- [x] **DeviationMetrics Evaluation**: 7-bucket accuracy tracking with sample-level analysis
+- [x] **Validation Integration**: Automatic periodic evaluation during training
+- [x] **Metrics Persistence**: JSON save/load for evaluation results
+- [x] **Multi-Head Attention**: GPU-accelerated with hybrid CPU/GPU execution (1.07x speedup)
+- [x] **Model Serialization**: File and string-based save/load (WASM/FFI compatible)
+- [x] **RNN/LSTM**: Full CPU implementation with BPTT
+- [x] **Dense GPU**: Forward/backward with WebGPU compute shaders
+- [x] **Optimizers**: SGD with momentum, gradient clipping, learning rate scheduling
+- [x] **Loss Functions**: MSE, Cross-Entropy with softmax
 
 ## Contributing
 
