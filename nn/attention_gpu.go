@@ -258,6 +258,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 	}
 
 	data := readbackBuf.GetMappedRange(0, 0)
+	if len(data) == 0 {
+		return nil, fmt.Errorf("readback buffer mapping failed: got empty data (M=%d, N=%d, expected %d bytes)", M, N, M*N*4)
+	}
 	output := make([]float32, M*N)
 	copy(output, unsafe.Slice((*float32)(unsafe.Pointer(&data[0])), M*N))
 	readbackBuf.Unmap()
