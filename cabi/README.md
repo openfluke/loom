@@ -99,15 +99,59 @@ brew install mingw-w64
 **Android**:
 
 ```bash
-# Download Android NDK
-# Set environment variable
-export ANDROID_NDK_HOME=/path/to/ndk
+# Download Android NDK from https://developer.android.com/ndk/downloads
+# Or install via Homebrew on macOS:
+brew install --cask android-ndk
+
+# Set environment variable (add to ~/.zshrc for persistence)
+export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk
+
+# Verify installation
+ls $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/
+```
+
+**Linux ARM64** (cross-compile from macOS/x86_64):
+
+```bash
+# macOS
+brew install aarch64-unknown-linux-gnu
+
+# Ubuntu/Debian
+sudo apt install gcc-aarch64-linux-gnu
+```
+
+**Windows ARM64** (cross-compile from macOS/Linux):
+
+```bash
+# macOS - included with mingw-w64
+brew install mingw-w64
+
+# Ubuntu/Debian
+sudo apt install gcc-mingw-w64-aarch64
 ```
 
 **iOS**:
 
 - Requires macOS with Xcode installed
 - Run: `xcode-select --install`
+
+### Quick Build Scripts (macOS)
+
+For convenience on macOS, use the dedicated build scripts:
+
+```bash
+# Native macOS builds
+./build_macos.sh              # Current architecture
+ARCH=universal ./build_macos.sh  # Universal binary (x86_64 + arm64)
+
+# Cross-compile for other platforms
+./build_windows.sh            # Windows x86_64
+./build_windows_arm64.sh      # Windows ARM64
+./build_linux_arm64.sh        # Linux ARM64
+./build_android.sh            # Android ARM64
+./build_ios.sh                # iOS (requires Xcode)
+ARCH=universal ./build_ios.sh # iOS XCFramework
+```
 
 ## C API Reference
 
