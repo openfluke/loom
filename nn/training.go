@@ -131,10 +131,16 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 			// Update weights
 			n.UpdateWeights(config.LearningRate)
 
-			// Print batch progress if configured
-			if config.Verbose && config.PrintEveryBatch > 0 && batchIdx%config.PrintEveryBatch == 0 {
-				fmt.Printf("\rEpoch %d/%d - Batch %d/%d - Loss: %.6f",
-					epoch+1, config.Epochs, batchIdx+1, len(batches), loss)
+			// Print batch progress if verbose
+			if config.Verbose {
+				if config.PrintEveryBatch > 0 && batchIdx%config.PrintEveryBatch == 0 {
+					fmt.Printf("\rEpoch %d/%d - Batch %d/%d - Loss: %.6f",
+						epoch+1, config.Epochs, batchIdx+1, len(batches), loss)
+				} else if config.PrintEveryBatch == 0 {
+					// Print every batch when PrintEveryBatch is 0
+					fmt.Printf("\rEpoch %d/%d - Batch %d/%d - Loss: %.6f",
+						epoch+1, config.Epochs, batchIdx+1, len(batches), loss)
+				}
 			}
 		}
 
