@@ -38,6 +38,15 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 					// Use post-activation for next layer
 					data = postAct
+				} else if config.Type == LayerMultiHeadAttention {
+					// Multi-Head Attention layer
+					preAct, postAct := multiHeadAttentionForwardCPU(data, config, n.BatchSize)
+
+					// Store pre-activation values
+					n.preActivations[layerIdx] = preAct
+
+					// Use post-activation for next layer
+					data = postAct
 				} else {
 					// Dense layer (element-wise activation)
 					// Store pre-activation values

@@ -48,6 +48,18 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 
 			// Update gradient for next layer
 			grad = gradInput
+		} else if config.Type == LayerMultiHeadAttention {
+			// Multi-Head Attention backward
+			input := n.activations[layerIdx]
+			gradInput, gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB := multiHeadAttentionBackwardCPU(grad, input, preAct, config, n.BatchSize)
+
+			// Store gradients (we'll need to expand gradient storage for MHA)
+			// For now, store concatenated gradients in kernelGradients
+			allGrads := append(append(append(append(gradQW, gradKW...), gradVW...), gradOutW...), append(append(append(gradQB, gradKB...), gradVB...), gradOutB...)...)
+			n.kernelGradients[layerIdx] = allGrads
+
+			// Update gradient for next layer
+			grad = gradInput
 		} else {
 			// Dense layer backward
 			// Compute gradient with respect to pre-activation

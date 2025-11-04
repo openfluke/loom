@@ -19,8 +19,9 @@ const (
 type LayerType int
 
 const (
-	LayerDense  LayerType = 0 // Dense/Fully-connected layer (element-wise activation)
-	LayerConv2D LayerType = 1 // 2D Convolutional layer
+	LayerDense              LayerType = 0 // Dense/Fully-connected layer (element-wise activation)
+	LayerConv2D             LayerType = 1 // 2D Convolutional layer
+	LayerMultiHeadAttention LayerType = 2 // Multi-Head Attention layer
 )
 
 // LayerConfig holds configuration for a specific layer in the grid
@@ -42,6 +43,20 @@ type LayerConfig struct {
 	InputChannels int
 	OutputHeight  int
 	OutputWidth   int
+
+	// Multi-Head Attention specific parameters
+	NumHeads     int       // Number of attention heads
+	HeadDim      int       // Dimension per head (dModel / numHeads)
+	DModel       int       // Model dimension (embedding size)
+	SeqLength    int       // Sequence length
+	QWeights     []float32 // Query projection weights [dModel][dModel]
+	KWeights     []float32 // Key projection weights [dModel][dModel]
+	VWeights     []float32 // Value projection weights [dModel][dModel]
+	OutputWeight []float32 // Output projection weights [dModel][dModel]
+	QBias        []float32 // Query bias [dModel]
+	KBias        []float32 // Key bias [dModel]
+	VBias        []float32 // Value bias [dModel]
+	OutputBias   []float32 // Output bias [dModel]
 }
 
 // Network represents a grid neural network
