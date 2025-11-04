@@ -134,18 +134,31 @@ build_platform() {
     local platform=$1
     local arch=$2
     
+    # Try to build, return 0 on success, 1 on failure
+    set +e  # Don't exit on error
+    
     case "$platform" in
         linux)
-            chmod +x build_linux.sh
-            ARCH=$arch ./build_linux.sh
+            if [ "$arch" = "arm64" ] && [ -f "build_linux_arm64.sh" ]; then
+                chmod +x build_linux_arm64.sh
+                ./build_linux_arm64.sh
+            else
+                chmod +x build_linux.sh
+                ARCH=$arch ./build_linux.sh
+            fi
             ;;
         macos)
             chmod +x build_macos.sh
             ARCH=$arch ./build_macos.sh
             ;;
         windows)
-            chmod +x build_windows.sh
-            ARCH=$arch ./build_windows.sh
+            if [ "$arch" = "arm64" ] && [ -f "build_windows_arm64.sh" ]; then
+                chmod +x build_windows_arm64.sh
+                ./build_windows_arm64.sh
+            else
+                chmod +x build_windows.sh
+                ARCH=$arch ./build_windows.sh
+            fi
             ;;
         android)
             chmod +x build_android.sh
@@ -157,9 +170,13 @@ build_platform() {
             ;;
         *)
             echo "ERROR: Unknown platform: $platform"
-            exit 1
+            return 1
             ;;
     esac
+    
+    local result=$?
+    set -e  # Re-enable exit on error
+    return $result
 }
 
 build_all_archs() {
@@ -168,43 +185,93 @@ build_all_archs() {
     echo "Building all architectures for: $platform"
     echo ""
     
+    # Track successes and failures
+    declare -a SUCCESS_BUILDS
+    declare -a FAILED_BUILDS
+    
     case "$platform" in
         linux)
             for arch in x86_64 arm64 armv7 x86; do
                 echo "--- Building Linux $arch ---"
-                build_platform linux $arch
+                if build_platform linux $arch; then
+                    SUCCESS_BUILDS+=("linux_$arch")
+                else
+                    FAILED_BUILDS+=("linux_$arch")
+                fi
                 echo ""
             done
             ;;
         macos)
             echo "--- Building macOS universal ---"
-            build_platform macos universal
+            if build_platform macos universal; then
+                SUCCESS_BUILDS+=("macos_universal")
+            else
+                FAILED_BUILDS+=("macos_universal")
+            fi
             echo ""
             ;;
         windows)
             for arch in x86_64 x86 arm64; do
                 echo "--- Building Windows $arch ---"
-                build_platform windows $arch
+                if build_platform windows $arch; then
+                    SUCCESS_BUILDS+=("windows_$arch")
+                else
+                    FAILED_BUILDS+=("windows_$arch")
+                fi
                 echo ""
             done
             ;;
         android)
             for arch in arm64 armv7 x86_64 x86; do
                 echo "--- Building Android $arch ---"
-                build_platform android $arch
+                if build_platform android $arch; then
+                    SUCCESS_BUILDS+=("android_$arch")
+                else
+                    FAILED_BUILDS+=("android_$arch")
+                fi
                 echo ""
             done
             ;;
         ios)
             echo "--- Building iOS XCFramework ---"
-            build_platform ios universal
+            if build_platform ios universal; then
+                SUCCESS_BUILDS+=("ios_xcframework")
+            else
+                FAILED_BUILDS+=("ios_xcframework")
+            fi
             echo ""
             ;;
         *)
             echo "ERROR: Unknown platform: $platform"
-            exit 1
+            return 1
             ;;
     esac
+    
+    # Print summary
+    echo ""
+    echo "╔════════════════════════════════════════════════════╗"
+    echo "║              Build Summary                         ║"
+    echo "╚════════════════════════════════════════════════════╝"
+    echo ""
+    
+    if [ ${#SUCCESS_BUILDS[@]} -gt 0 ]; then
+        echo "✅ Successful builds (${#SUCCESS_BUILDS[@]}):"
+        for build in "${SUCCESS_BUILDS[@]}"; do
+            echo "   ✓ $build"
+        done
+        echo ""
+    fi
+    
+    if [ ${#FAILED_BUILDS[@]} -gt 0 ]; then
+        echo "❌ Failed builds (${#FAILED_BUILDS[@]}):"
+        for build in "${FAILED_BUILDS[@]}"; do
+            echo "   ✗ $build (missing cross-compiler or dependencies)"
+        done
+        echo ""
+        echo "💡 Install missing tools:"
+        echo "   macOS: brew install mingw-w64 aarch64-unknown-linux-gnu android-ndk"
+        echo "   Linux: sudo apt install mingw-w64 gcc-aarch64-linux-gnu"
+    fi
 }
 
 # Parse arguments
