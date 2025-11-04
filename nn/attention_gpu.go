@@ -249,17 +249,40 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 	queue.Submit(cb)
 	cb.Release()
 
-	// Read results
-	pollDevice(dev, 1000)
+	// Read results - wait for GPU to complete
+	pollDevice(dev, 2000)
+
+	// Map buffer for reading
 	done := false
-	readbackBuf.MapAsync(wgpu.MapModeRead, 0, uint64(M*N*4), func(wgpu.BufferMapAsyncStatus) { done = true })
-	for i := 0; i < 1000 && !done; i++ {
+	mapStatus := wgpu.BufferMapAsyncStatusUnknown
+	readbackBuf.MapAsync(wgpu.MapModeRead, 0, uint64(M*N*4), func(status wgpu.BufferMapAsyncStatus) {
+		mapStatus = status
+		done = true
+	})
+
+	// Poll until mapping completes (with timeout)
+	for i := 0; i < 10000 && !done; i++ {
 		dev.Poll(true, nil)
 	}
 
-	data := readbackBuf.GetMappedRange(0, 0)
+	// Extra polls after done to ensure data is available
+	for i := 0; i < 100; i++ {
+		dev.Poll(true, nil)
+	}
+
+	// Check if mapping succeeded
+	if !done {
+		return nil, fmt.Errorf("buffer mapping timeout after 10000 polls (M=%d, N=%d)", M, N)
+	}
+	if mapStatus != wgpu.BufferMapAsyncStatusSuccess {
+		return nil, fmt.Errorf("buffer mapping failed with status %v (M=%d, N=%d)", mapStatus, M, N)
+	}
+
+	// Get mapped range with explicit size
+	bufSize := uint(M * N * 4)
+	data := readbackBuf.GetMappedRange(0, bufSize)
 	if len(data) == 0 {
-		return nil, fmt.Errorf("readback buffer mapping failed: got empty data (M=%d, N=%d, expected %d bytes)", M, N, M*N*4)
+		return nil, fmt.Errorf("readback buffer mapping failed: got empty data (M=%d, N=%d, expected %d bytes)", M, N, bufSize)
 	}
 	output := make([]float32, M*N)
 	copy(output, unsafe.Slice((*float32)(unsafe.Pointer(&data[0])), M*N))
@@ -364,7 +387,9 @@ func (n *Network) forwardGPUMultiHeadAttention(input []float32) ([]float32, time
 					// GPU MHA
 					preAct, postAct, err := multiHeadAttentionForwardGPU(dev, q, data, config, n.BatchSize)
 					if err != nil {
-						// Fall back to CPU on error
+						// Fall back to CPU on error - LOG THE ERROR
+						fmt.Printf("[WARNING] GPU MHA forward failed at layer %d: %v\n", layerIdx, err)
+						fmt.Println("[WARNING] Falling back to CPU for entire forward pass")
 						cpuOut, _ := n.ForwardCPU(input)
 						return cpuOut, time.Since(start), nil
 					}
@@ -420,7 +445,9 @@ func (n *Network) backwardGPUMultiHeadAttention(gradOutput []float32) ([]float32
 			// GPU MHA backward
 			gradInput, err := multiHeadAttentionBackwardGPU(dev, q, gradData, input, preAct, config, n.BatchSize)
 			if err != nil {
-				// Fall back to CPU on error
+				// Fall back to CPU on error - LOG THE ERROR
+				fmt.Printf("[WARNING] GPU MHA backward failed at layer %d: %v\n", layerIdx, err)
+				fmt.Println("[WARNING] Falling back to CPU for entire backward pass")
 				cpuGrad, _ := n.BackwardCPU(gradOutput)
 				return cpuGrad, time.Since(start), nil
 			}
@@ -697,17 +724,40 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 	queue.Submit(cb)
 	cb.Release()
 
-	// Read results
-	pollDevice(dev, 1000)
+	// Read results - wait for GPU to complete
+	pollDevice(dev, 2000)
+
+	// Map buffer for reading
 	done := false
-	readbackBuf.MapAsync(wgpu.MapModeRead, 0, uint64(M*N*4), func(wgpu.BufferMapAsyncStatus) { done = true })
-	for i := 0; i < 1000 && !done; i++ {
+	mapStatus := wgpu.BufferMapAsyncStatusUnknown
+	readbackBuf.MapAsync(wgpu.MapModeRead, 0, uint64(M*N*4), func(status wgpu.BufferMapAsyncStatus) {
+		mapStatus = status
+		done = true
+	})
+
+	// Poll until mapping completes (with timeout)
+	for i := 0; i < 10000 && !done; i++ {
 		dev.Poll(true, nil)
 	}
 
-	data := readbackBuf.GetMappedRange(0, 0)
+	// Extra polls after done to ensure data is available
+	for i := 0; i < 100; i++ {
+		dev.Poll(true, nil)
+	}
+
+	// Check if mapping succeeded
+	if !done {
+		return nil, fmt.Errorf("buffer mapping timeout after 10000 polls (M=%d, N=%d)", M, N)
+	}
+	if mapStatus != wgpu.BufferMapAsyncStatusSuccess {
+		return nil, fmt.Errorf("buffer mapping failed with status %v (M=%d, N=%d)", mapStatus, M, N)
+	}
+
+	// Get mapped range with explicit size
+	bufSize := uint(M * N * 4)
+	data := readbackBuf.GetMappedRange(0, bufSize)
 	if len(data) == 0 {
-		return nil, fmt.Errorf("failed to read GPU results: empty mapped range (M=%d, N=%d)", M, N)
+		return nil, fmt.Errorf("failed to read GPU results: empty mapped range (M=%d, N=%d, expected %d bytes)", M, N, bufSize)
 	}
 	output := make([]float32, M*N)
 	copy(output, unsafe.Slice((*float32)(unsafe.Pointer(&data[0])), M*N))
