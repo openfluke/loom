@@ -30,9 +30,18 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     
     # Check if Docker is running
     if ! docker info &> /dev/null; then
-        echo "❌ ERROR: Docker is not running"
+        echo "❌ ERROR: Docker daemon is not running"
         echo ""
-        echo "Start Docker Desktop and try again"
+        echo "If you're in an SSH session:"
+        echo "  1. On the physical Mac, open Docker Desktop from Applications"
+        echo "  2. Wait for Docker to start (whale icon in menu bar)"
+        echo "  3. Re-run this script from SSH"
+        echo ""
+        echo "Or use Colima (headless Docker alternative):"
+        echo "  brew install colima"
+        echo "  colima start"
+        echo ""
+        echo "Then re-run this script."
         exit 1
     fi
     
