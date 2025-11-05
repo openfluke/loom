@@ -120,13 +120,14 @@ brew install aarch64-unknown-linux-gnu
 sudo apt install gcc-aarch64-linux-gnu
 ```
 
-**Windows ARM64** (cross-compile from macOS/Linux):
+**Windows ARM64** (native ARM64 on Linux, fallback to x86_64 on macOS):
 
 ```bash
-# macOS - included with mingw-w64
+# macOS: Homebrew mingw-w64 lacks ARM64 support
+#        Script will use x86_64-w64-mingw32-gcc as fallback (produces x86_64 binary)
 brew install mingw-w64
 
-# Ubuntu/Debian
+# Linux: True ARM64 Windows builds
 sudo apt install gcc-mingw-w64-aarch64
 ```
 
@@ -145,8 +146,8 @@ For convenience on macOS, use the dedicated build scripts:
 ARCH=universal ./build_macos.sh  # Universal binary (x86_64 + arm64)
 
 # Cross-compile for other platforms
-./build_windows.sh            # Windows x86_64
-./build_windows_arm64.sh      # Windows ARM64
+./build_windows.sh            # Windows x86_64 and x86
+./build_windows_arm64.sh      # Windows ARM64 (⚠️ falls back to x86_64 on macOS)
 ./build_linux_arm64.sh        # Linux ARM64
 ./build_android.sh            # Android ARM64
 ./build_ios.sh                # iOS (requires Xcode)

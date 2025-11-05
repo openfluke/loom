@@ -2,8 +2,7 @@
 
 # LOOM C ABI Master Build Script
 # Builds for all platforms and architectures
-
-set -e
+# Note: Does not exit on error - continues building and reports summary
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -25,7 +24,7 @@ PLATFORMS:
   windows    Windows (x86_64, x86, arm64)
   android    Android (arm64, armv7, x86_64, x86)
   ios        iOS (arm64, x86_64_sim, arm64_sim, universal/xcframework)
-  all        Build for current platform (all architectures)
+  all        Build ALL platforms and architectures (tries everything)
   
 ARCHITECTURES:
   x86_64, amd64    64-bit Intel/AMD
@@ -41,12 +40,17 @@ OPTIONS:
   
 EXAMPLES:
   $0                    # Build for current platform and architecture
-  $0 linux              # Build for Linux (current architecture)
+  $0 linux              # Build for Linux (all architectures)
   $0 linux arm64        # Build for Linux ARM64
   $0 macos universal    # Build macOS universal binary
   $0 ios xcframework    # Build iOS XCFramework
-  $0 all                # Build all architectures for current platform
-  $0 --clean linux      # Clean and build for Linux
+  $0 all                # Build EVERYTHING - all platforms and architectures
+  $0 --clean all        # Clean and build everything
+  
+NOTES:
+  - 'all' platform will attempt to build for ALL platforms and report failures
+  - Failed builds typically indicate missing cross-compilers (see README.md)
+  - Use 'all' to discover what tools you need to install
   
 ENVIRONMENT VARIABLES:
   ANDROID_NDK_HOME      Path to Android NDK (required for Android builds)
@@ -269,8 +273,17 @@ build_all_archs() {
         done
         echo ""
         echo "💡 Install missing tools:"
-        echo "   macOS: brew install mingw-w64 aarch64-unknown-linux-gnu android-ndk"
-        echo "   Linux: sudo apt install mingw-w64 gcc-aarch64-linux-gnu"
+        echo "   macOS:"
+        echo "     brew install mingw-w64                    # Windows x86/x86_64"
+        echo "     brew install aarch64-unknown-linux-gnu    # Linux ARM64"
+        echo "     brew install --cask android-ndk           # Android"
+        echo "     export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk"
+        echo ""
+        echo "   ⚠️  Windows ARM64 NOT available on macOS (mingw-w64 lacks aarch64)"
+        echo "      Use Linux: sudo apt install gcc-mingw-w64-aarch64"
+        echo ""
+        echo "   Linux:"
+        echo "     sudo apt install mingw-w64 gcc-aarch64-linux-gnu gcc-mingw-w64-aarch64"
     fi
 }
 
@@ -319,11 +332,124 @@ if [ -z "$PLATFORM" ]; then
     echo "Auto-detected platform: $PLATFORM"
 fi
 
-# Handle "all" platform
+# Handle "all" platform - build everything
 if [ "$PLATFORM" = "all" ]; then
-    PLATFORM=$(detect_platform)
-    build_all_archs $PLATFORM
-    exit 0
+    echo "╔════════════════════════════════════════════════════╗"
+    echo "║       Building ALL Platforms & Architectures      ║"
+    echo "╚════════════════════════════════════════════════════╝"
+    echo ""
+    
+    # Track all successes and failures across all platforms
+    declare -a ALL_SUCCESS
+    declare -a ALL_FAILED
+    
+    # Build all platforms
+    for platform in linux macos windows android ios; do
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Platform: $platform"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        
+        case "$platform" in
+            linux)
+                for arch in x86_64 arm64 armv7 x86; do
+                    echo "--- Building Linux $arch ---"
+                    if build_platform linux $arch; then
+                        ALL_SUCCESS+=("linux_$arch")
+                    else
+                        ALL_FAILED+=("linux_$arch")
+                    fi
+                    echo ""
+                done
+                ;;
+            macos)
+                echo "--- Building macOS universal ---"
+                if build_platform macos universal; then
+                    ALL_SUCCESS+=("macos_universal")
+                else
+                    ALL_FAILED+=("macos_universal")
+                fi
+                echo ""
+                ;;
+            windows)
+                for arch in x86_64 x86 arm64; do
+                    echo "--- Building Windows $arch ---"
+                    if build_platform windows $arch; then
+                        ALL_SUCCESS+=("windows_$arch")
+                    else
+                        ALL_FAILED+=("windows_$arch")
+                    fi
+                    echo ""
+                done
+                ;;
+            android)
+                for arch in arm64 armv7 x86_64 x86; do
+                    echo "--- Building Android $arch ---"
+                    if build_platform android $arch; then
+                        ALL_SUCCESS+=("android_$arch")
+                    else
+                        ALL_FAILED+=("android_$arch")
+                    fi
+                    echo ""
+                done
+                ;;
+            ios)
+                echo "--- Building iOS XCFramework ---"
+                if build_platform ios universal; then
+                    ALL_SUCCESS+=("ios_xcframework")
+                else
+                    ALL_FAILED+=("ios_xcframework")
+                fi
+                echo ""
+                ;;
+        esac
+    done
+    
+    # Print comprehensive summary
+    echo ""
+    echo ""
+    echo "╔════════════════════════════════════════════════════╗"
+    echo "║         FINAL BUILD SUMMARY - ALL PLATFORMS        ║"
+    echo "╚════════════════════════════════════════════════════╝"
+    echo ""
+    
+    if [ ${#ALL_SUCCESS[@]} -gt 0 ]; then
+        echo "✅ Successful builds (${#ALL_SUCCESS[@]}):"
+        for build in "${ALL_SUCCESS[@]}"; do
+            echo "   ✓ $build"
+        done
+        echo ""
+    fi
+    
+    if [ ${#ALL_FAILED[@]} -gt 0 ]; then
+        echo "❌ Failed builds (${#ALL_FAILED[@]}):"
+        for build in "${ALL_FAILED[@]}"; do
+            echo "   ✗ $build"
+        done
+        echo ""
+        echo "💡 Install missing tools on macOS:"
+        echo "   brew install mingw-w64                      # Windows x86/x86_64 (NOT ARM64)"
+        echo "   brew install aarch64-unknown-linux-gnu      # Linux ARM64"
+        echo "   brew install --cask android-ndk             # Android"
+        echo "   export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk"
+        echo ""
+        echo "   ⚠️  Windows ARM64: NOT supported on macOS (mingw-w64 lacks aarch64-w64-mingw32-gcc)"
+        echo "       Build on Linux or use Docker instead"
+        echo ""
+        echo "💡 Install missing tools on Linux:"
+        echo "   sudo apt install mingw-w64 gcc-aarch64-linux-gnu gcc-mingw-w64-aarch64"
+        echo ""
+    fi
+    
+    # Exit with appropriate code
+    if [ ${#ALL_FAILED[@]} -eq 0 ]; then
+        echo "🎉 All builds completed successfully!"
+        exit 0
+    else
+        echo "⚠️  Some builds failed. See above for details."
+        exit 1
+    fi
 fi
 
 # Detect architecture if not specified

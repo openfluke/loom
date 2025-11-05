@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # LOOM C ABI Multi-Platform Build System
-# Builds for Windows ARM64 (from macOS or Linux)
+# Builds for Windows ARM64 (Linux only - macOS Homebrew mingw-w64 lacks ARM64 support)
 
 set -e
 
@@ -13,25 +13,31 @@ DIR_ARCH="arm64"
 
 # Detect host OS and set appropriate compiler
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS - check for mingw-w64 via Homebrew
-    if command -v aarch64-w64-mingw32-gcc &> /dev/null; then
-        CC="aarch64-w64-mingw32-gcc"
-    elif command -v x86_64-w64-mingw32-gcc &> /dev/null; then
-        # Fallback: some mingw-w64 installations may not have ARM64 toolchain
-        echo "WARNING: aarch64-w64-mingw32-gcc not found"
-        echo "Installing mingw-w64 with ARM64 support..."
-        echo "Run: brew install mingw-w64"
+    # macOS - Homebrew mingw-w64 does NOT include ARM64 toolchain
+    # Fallback to x86_64 compiler (will produce x86_64 binary, not true ARM64)
+    if command -v x86_64-w64-mingw32-gcc &> /dev/null; then
+        echo "⚠️  WARNING: Using x86_64-w64-mingw32-gcc (Homebrew mingw-w64 lacks ARM64 support)"
+        echo "    This will produce a Windows x86_64 binary, NOT true ARM64."
+        echo "    For native ARM64: use Linux with gcc-mingw-w64-aarch64"
         echo ""
-        echo "Note: ARM64 Windows cross-compilation from macOS requires mingw-w64"
-        exit 1
+        CC="x86_64-w64-mingw32-gcc"
+        # Keep directory name as arm64 but note it's actually x86_64
+        echo "    Output: compiled/windows_arm64/ (contains x86_64 binary)"
     else
         echo "ERROR: mingw-w64 not found"
         echo "Install with: brew install mingw-w64"
         exit 1
     fi
 else
-    # Linux
-    CC="aarch64-w64-mingw32-gcc"
+    # Linux - prefer true ARM64 compiler
+    if command -v aarch64-w64-mingw32-gcc &> /dev/null; then
+        echo "✓ Using native ARM64 compiler: aarch64-w64-mingw32-gcc"
+        CC="aarch64-w64-mingw32-gcc"
+    else
+        echo "ERROR: aarch64-w64-mingw32-gcc not found"
+        echo "Install with: sudo apt install gcc-mingw-w64-aarch64"
+        exit 1
+    fi
 fi
 
 echo "Target Architecture: $ARCH"
