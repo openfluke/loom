@@ -1,1 +1,27 @@
 fabric
+
+# Compiled binaries (C ABI)
+cabi/compiled/
+
+# Python package binaries
+python/src/loom_py/linux_*/
+python/src/loom_py/darwin_*/
+python/src/loom_py/windows_*/
+python/src/loom_py/android_*/
+python/src/loom_py/ios_*/
+python/src/loom_py/macos_*/
+
+# Python build artifacts
+python/dist/
+python/build/
+python/src/*.egg-info/
+python/.pytest_cache/
+python/__pycache__/
+
+# Zip archives
+cabi/*.zip
+
+# macOS
+.DS_Store
+**/.DS_Store
+**/._*

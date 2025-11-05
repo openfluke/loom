@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loom-py"
+version = "0.0.1"
+description = "LOOM — Python bindings for high-performance neural networks with WebGPU acceleration"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "Apache-2.0"}
+authors = [{ name = "OpenFluke / Samuel Watson" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["neural-network", "machine-learning", "webgpu", "gpu", "deep-learning"]
+
+[project.urls]
+Homepage = "https://github.com/openfluke/loom"
+Source = "https://github.com/openfluke/loom"
+Issues = "https://github.com/openfluke/loom/issues"
+Documentation = "https://github.com/openfluke/loom/tree/main/python"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+loom_py = [
+  "linux_x86_64/*.so",
+  "linux_arm64/*.so",
+  "linux_armv7/*.so",
+  "linux_x86/*.so",
+  "darwin_arm64/*.dylib",
+  "darwin_x86_64/*.dylib",
+  "darwin_universal/*.dylib",
+  "windows_x86_64/*.dll",
+  "windows_x86/*.dll",
+  "android_arm64/*.so",
+  "android_armv7/*.so",
+]
+
+[tool.setuptools.exclude-package-data]
+loom_py = [
+  "**/*.h",
+  "**/simple_bench*",
+  "**/.DS_Store",
+  "**/._*",
+]
