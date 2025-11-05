@@ -105,6 +105,14 @@ loom/
 │   ├── build.sh         # Build script for shared library
 │   └── README.md        # C API reference and examples
 │
+├── python/              # Python package (welvet)
+│   ├── pyproject.toml   # Python package configuration
+│   ├── README.md        # Python package documentation
+│   └── src/loom_py/     # Python bindings via ctypes
+│       ├── __init__.py  # Package initialization
+│       ├── utils.py     # High-level Python API
+│       └── */           # Multi-platform C libraries
+│
 ├── fabric/              # Demo application
 │   ├── main.go          # Interactive demo menu
 │   ├── demos/           # Individual layer demos

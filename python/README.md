@@ -1,11 +1,13 @@
-# LOOM Python Bindings
+# welvet - LOOM Python Bindings
 
-High-performance neural network library with WebGPU acceleration for Python.
+**Wrapper for Embedding Loom Via External (C-ABI) Toolchain**
+
+High-performance neural network library with WebGPU acceleration for Python via C-ABI bindings.
 
 ## Installation
 
 ```bash
-pip install loom-py
+pip install welvet
 ```
 
 ## Quick Start
