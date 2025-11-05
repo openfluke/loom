@@ -110,7 +110,7 @@ loom/
 ├── python/              # Python package (welvet)
 │   ├── pyproject.toml   # Python package configuration
 │   ├── README.md        # Python package documentation
-│   └── src/loom_py/     # Python bindings via ctypes
+│   └── src/welvet/      # Python bindings via ctypes
 │       ├── __init__.py  # Package initialization
 │       ├── utils.py     # High-level Python API
 │       └── */           # Multi-platform C libraries
@@ -528,10 +528,10 @@ pip install welvet
 ### Quick Example
 
 ```python
-import loom_py
+import welvet
 
 # Create network with GPU acceleration
-network = loom_py.create_network(
+network = welvet.create_network(
     input_size=4,
     grid_rows=1,
     grid_cols=1,
@@ -540,10 +540,10 @@ network = loom_py.create_network(
 )
 
 # Configure: 4 -> 8 -> 2
-loom_py.configure_sequential_network(
+welvet.configure_sequential_network(
     network,
     layer_sizes=[4, 8, 2],
-    activations=[loom_py.Activation.RELU, loom_py.Activation.SIGMOID]
+    activations=[welvet.Activation.RELU, welvet.Activation.SIGMOID]
 )
 
 # Training data
@@ -552,16 +552,16 @@ targets = [[1.0, 0.0], [0.0, 1.0]]
 
 # Train
 for epoch in range(10):
-    loss = loom_py.train_epoch(network, inputs, targets, learning_rate=0.1)
+    loss = welvet.train_epoch(network, inputs, targets, learning_rate=0.1)
     print(f"Epoch {epoch+1}: loss = {loss:.4f}")
 
 # Predict
-output = loom_py.forward(network, [0.1, 0.2, 0.3, 0.4])
+output = welvet.forward(network, [0.1, 0.2, 0.3, 0.4])
 print(f"Output: {output}")
 
 # Cleanup
-loom_py.cleanup_gpu(network)
-loom_py.free_network(network)
+welvet.cleanup_gpu(network)
+welvet.free_network(network)
 ```
 
 ### Features

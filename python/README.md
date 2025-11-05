@@ -13,10 +13,10 @@ pip install welvet
 ## Quick Start
 
 ```python
-import loom_py
+import welvet
 
 # Create a neural network with GPU
-network = loom_py.create_network(
+network = welvet.create_network(
     input_size=4,
     grid_rows=1,
     grid_cols=1,
@@ -25,10 +25,10 @@ network = loom_py.create_network(
 )
 
 # Configure network architecture: 4 -> 8 -> 2
-loom_py.configure_sequential_network(
+welvet.configure_sequential_network(
     network,
     layer_sizes=[4, 8, 2],
-    activations=[loom_py.Activation.RELU, loom_py.Activation.SIGMOID]
+    activations=[welvet.Activation.RELU, welvet.Activation.SIGMOID]
 )
 
 # Training data
@@ -37,16 +37,16 @@ targets = [[1.0, 0.0], [0.0, 1.0]]
 
 # Train for 10 epochs
 for epoch in range(10):
-    loss = loom_py.train_epoch(network, inputs, targets, learning_rate=0.1)
+    loss = welvet.train_epoch(network, inputs, targets, learning_rate=0.1)
     print(f"Epoch {epoch+1}: loss = {loss:.4f}")
 
 # Test the network
-output = loom_py.forward(network, [0.1, 0.2, 0.3, 0.4])
+output = welvet.forward(network, [0.1, 0.2, 0.3, 0.4])
 print(f"Output: {output}")
 
 # Clean up
-loom_py.cleanup_gpu(network)
-loom_py.free_network(network)
+welvet.cleanup_gpu(network)
+welvet.free_network(network)
 ```
 
 ## Features
@@ -226,10 +226,10 @@ Get LOOM library version string.
 ### Basic Training Example
 
 ```python
-import loom_py
+import welvet
 
 # Create network with GPU
-net = loom_py.create_network(
+net = welvet.create_network(
     input_size=4,
     grid_rows=1,
     grid_cols=1,
@@ -238,7 +238,7 @@ net = loom_py.create_network(
 )
 
 # Configure architecture: 4 -> 8 -> 2
-loom_py.configure_sequential_network(net, [4, 8, 2])
+welvet.configure_sequential_network(net, [4, 8, 2])
 
 # Training data
 inputs = [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]
@@ -246,26 +246,26 @@ targets = [[1.0, 0.0], [0.0, 1.0]]
 
 # Train for 50 epochs
 for epoch in range(50):
-    loss = loom_py.train_epoch(net, inputs, targets, learning_rate=0.1)
+    loss = welvet.train_epoch(net, inputs, targets, learning_rate=0.1)
     if (epoch + 1) % 10 == 0:
         print(f"Epoch {epoch+1}: loss = {loss:.6f}")
 
 # Test
-output = loom_py.forward(net, [0.1, 0.2, 0.3, 0.4])
+output = welvet.forward(net, [0.1, 0.2, 0.3, 0.4])
 print(f"Output: {output}")
 
 # Cleanup
-loom_py.cleanup_gpu(net)
-loom_py.free_network(net)
+welvet.cleanup_gpu(net)
+welvet.free_network(net)
 ```
 
 ### Custom Layer Configuration
 
 ```python
-import loom_py
+import welvet
 
 # Create network
-net = loom_py.create_network(
+net = welvet.create_network(
     input_size=10,
     grid_rows=2,
     grid_cols=2,
@@ -277,22 +277,22 @@ net = loom_py.create_network(
 for row in range(2):
     for col in range(2):
         # Layer 0: 10 -> 20 (ReLU)
-        layer0 = loom_py.init_dense_layer(10, 20, loom_py.Activation.RELU)
-        loom_py.set_layer(net, row, col, 0, layer0)
+        layer0 = welvet.init_dense_layer(10, 20, welvet.Activation.RELU)
+        welvet.set_layer(net, row, col, 0, layer0)
 
         # Layer 1: 20 -> 15 (Tanh)
-        layer1 = loom_py.init_dense_layer(20, 15, loom_py.Activation.TANH)
-        loom_py.set_layer(net, row, col, 1, layer1)
+        layer1 = welvet.init_dense_layer(20, 15, welvet.Activation.TANH)
+        welvet.set_layer(net, row, col, 1, layer1)
 
         # Layer 2: 15 -> 5 (Sigmoid)
-        layer2 = loom_py.init_dense_layer(15, 5, loom_py.Activation.SIGMOID)
-        loom_py.set_layer(net, row, col, 2, layer2)
+        layer2 = welvet.init_dense_layer(15, 5, welvet.Activation.SIGMOID)
+        welvet.set_layer(net, row, col, 2, layer2)
 
 # Network is now configured
-info = loom_py.get_network_info(net)
+info = welvet.get_network_info(net)
 print(f"Total layers: {info['total_layers']}")
 
-loom_py.free_network(net)
+welvet.free_network(net)
 ```
 
 ## Testing
@@ -307,24 +307,24 @@ python examples/train_gpu.py
 Or test programmatically:
 
 ```python
-import loom_py
+import welvet
 
 # Test basic functionality
-net = loom_py.create_network(input_size=2, grid_rows=1, grid_cols=1,
+net = welvet.create_network(input_size=2, grid_rows=1, grid_cols=1,
                              layers_per_cell=1, use_gpu=False)
-loom_py.configure_sequential_network(net, [2, 4, 2])
+welvet.configure_sequential_network(net, [2, 4, 2])
 
 # Verify forward pass works
-output = loom_py.forward(net, [0.5, 0.5])
+output = welvet.forward(net, [0.5, 0.5])
 assert len(output) == 2, "Forward pass failed"
 
 # Verify training works
 inputs = [[0.0, 0.0], [1.0, 1.0]]
 targets = [[1.0, 0.0], [0.0, 1.0]]
-loss = loom_py.train_epoch(net, inputs, targets, learning_rate=0.1)
+loss = welvet.train_epoch(net, inputs, targets, learning_rate=0.1)
 assert loss > 0, "Training failed"
 
-loom_py.free_network(net)
+welvet.free_network(net)
 print("✅ All tests passed!")
 ```
 

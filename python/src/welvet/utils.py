@@ -1,4 +1,4 @@
-# src/loom_py/utils.py
+# src/welvet/utils.py
 """
 LOOM Python Bindings - Native library interface
 Wraps the LOOM C ABI for Python access
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Optional, Any
 from importlib.resources import files
 
-PKG_DIR = files("loom_py")
+PKG_DIR = files("welvet")
 _RTLD_GLOBAL = getattr(ctypes, "RTLD_GLOBAL", 0)
 
 

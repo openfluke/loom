@@ -1,5 +1,5 @@
 include README.md
 include LICENSE
-recursive-include src/loom_py *.so *.dylib *.dll
-exclude src/loom_py/**/*.h
-exclude src/loom_py/**/simple_bench*
+recursive-include src/welvet *.so *.dylib *.dll
+exclude src/welvet/**/*.h
+exclude src/welvet/**/simple_bench*

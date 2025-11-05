@@ -4,7 +4,7 @@ LOOM GPU Training Example
 Demonstrates GPU-accelerated neural network training with the LOOM Python package.
 """
 
-import loom_py
+import welvet
 
 print("="*70)
 print("  LOOM GPU Training Example")
@@ -13,7 +13,7 @@ print()
 
 # Create network with GPU enabled
 print("Creating neural network with GPU acceleration...")
-network = loom_py.create_network(
+network = welvet.create_network(
     input_size=4,
     grid_rows=1,
     grid_cols=1,
@@ -22,7 +22,7 @@ network = loom_py.create_network(
 )
 
 # Check GPU status
-info = loom_py.get_network_info(network)
+info = welvet.get_network_info(network)
 print(f"✓ Network created (handle={network})")
 print(f"✓ GPU enabled: {info['gpu_enabled']}")
 print(f"✓ Architecture: {info['grid_rows']}x{info['grid_cols']} grid, "
@@ -31,10 +31,10 @@ print()
 
 # Configure network layers
 print("Configuring network architecture...")
-loom_py.configure_sequential_network(
+welvet.configure_sequential_network(
     network,
     layer_sizes=[4, 8, 2],  # 4 inputs -> 8 hidden -> 2 outputs
-    activations=[loom_py.Activation.RELU, loom_py.Activation.SIGMOID]
+    activations=[welvet.Activation.RELU, welvet.Activation.SIGMOID]
 )
 print("✓ Network configured: 4 -> 8 (ReLU) -> 2 (Sigmoid)")
 print()
@@ -63,7 +63,7 @@ epochs = 50
 learning_rate = 0.1
 
 for epoch in range(epochs):
-    loss = loom_py.train_epoch(
+    loss = welvet.train_epoch(
         network,
         training_inputs,
         training_targets,
@@ -83,7 +83,7 @@ print("  Input                    -> Output         -> Predicted Class")
 print("  " + "-"*62)
 
 for i, (inp, target) in enumerate(zip(training_inputs, training_targets)):
-    output = loom_py.forward(network, inp)
+    output = welvet.forward(network, inp)
     predicted_class = 1 if output[1] > output[0] else 0
     expected_class = 1 if target[1] > target[0] else 0
     
@@ -97,8 +97,8 @@ print()
 
 # Cleanup
 print("Cleaning up...")
-loom_py.cleanup_gpu(network)
-loom_py.free_network(network)
+welvet.cleanup_gpu(network)
+welvet.free_network(network)
 print("✓ GPU resources released")
 print()
 

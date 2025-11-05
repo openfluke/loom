@@ -4,12 +4,12 @@ fabric
 cabi/compiled/
 
 # Python package binaries
-python/src/loom_py/linux_*/
-python/src/loom_py/darwin_*/
-python/src/loom_py/windows_*/
-python/src/loom_py/android_*/
-python/src/loom_py/ios_*/
-python/src/loom_py/macos_*/
+python/src/welvet/linux_*/
+python/src/welvet/darwin_*/
+python/src/welvet/windows_*/
+python/src/welvet/android_*/
+python/src/welvet/ios_*/
+python/src/welvet/macos_*/
 
 # Python build artifacts
 python/dist/
