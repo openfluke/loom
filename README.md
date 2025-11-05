@@ -22,20 +22,33 @@ Loom is a modern neural network framework that combines the simplicity of Go wit
 ### 🌐 WebAssembly Support
 
 - **Browser Deployment**: Compile to WASM for client-side inference
+- **Registry-based Layer Initialization**: Dynamic layer creation via `CallLayerInit()` for all 5 layer types
 - **Reflection-based API**: Automatic method exposure with 24+ discoverable functions
 - **Runtime Introspection**: Query available methods, signatures, and parameters from JavaScript
 - **Zero Dependencies**: Pure WASM + Go stdlib, no external libraries needed
 - **Model Serialization**: Save/load models as JSON strings in the browser
+- **Full Training Support**: Train networks with all layer types (Dense, Conv2D, Attention, RNN, LSTM) in browser
 
 ### 🔗 C ABI (Foreign Function Interface)
 
 - **Language Interop**: Call LOOM from C, C++, Rust, Python (ctypes/cffi), and more
 - **Handle-based Management**: Safe object lifecycle with automatic cleanup
 - **JSON Parameters**: Simple, language-agnostic API
+- **Registry-based Layer Creation**: Dynamic layer initialization for all 5 layer types via `CallLayerInit()`
 - **Dynamic Method Calling**: Access all Network methods via reflection
 - **Shared Library**: Build as .so/.dylib/.dll for system-wide integration
+- **Multi-Platform**: Linux, macOS, Windows, Android, iOS with cross-compilation support
 
 ### 🧠 Neural Network Layers
+
+All layer types support:
+
+- **CPU Execution**: Full forward/backward propagation on CPU
+- **GPU Acceleration**: Dense, Conv2D, and Multi-Head Attention with WebGPU compute shaders
+- **Registry System**: Dynamic layer initialization via `CallLayerInit()` across all platforms (Go, WASM, C-ABI, Python, TypeScript)
+- **Automatic Differentiation**: Complete gradient computation with backpropagation
+
+**Supported Layer Types:**
 
 - **Dense Layers**: Fully-connected layers with element-wise activations
 - **Conv2D**: 2D convolutional layers with configurable kernels
@@ -51,7 +64,14 @@ Loom is a modern neural network framework that combines the simplicity of Go wit
 
 ### 📊 Activation Functions
 
-- ScaledReLU, Sigmoid, Tanh, Softplus, LeakyReLU
+Supported across all layer types and platforms:
+
+- **ReLU** (0): Rectified Linear Unit with 1.1x scaling
+- **Sigmoid** (1): Logistic sigmoid function
+- **Tanh** (2): Hyperbolic tangent
+- **Softplus** (3): Smooth approximation of ReLU
+- **LeakyReLU** (4): ReLU with negative slope (0.1x for x < 0)
+- **Linear** (5): Identity function (no activation)
 
 ### 🎯 Training & Evaluation
 
@@ -81,12 +101,14 @@ Loom is a modern neural network framework that combines the simplicity of Go wit
 loom/
 ├── nn/                  # Neural network package
 │   ├── types.go         # Core types and structures
+│   ├── registry.go      # Layer initialization function registry
 │   ├── forward.go       # Forward propagation (CPU/GPU)
 │   ├── backward.go      # Backward propagation (CPU/GPU)
 │   ├── gpu.go           # WebGPU initialization and shaders
 │   ├── attention.go     # Multi-Head Attention implementation
 │   ├── attention_gpu.go # MHA GPU kernels
 │   ├── cnn.go           # Conv2D implementation
+│   ├── conv2d_gpu.go    # Conv2D GPU kernels
 │   ├── rnn.go           # RNN implementation
 │   ├── lstm.go          # LSTM implementation
 │   ├── training.go      # Training loop with evaluation support

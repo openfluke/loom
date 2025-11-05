@@ -15,34 +15,49 @@ pip install welvet
 ```python
 import welvet
 
-# Create a neural network with GPU
+# Create a neural network with all 5 layer types
 network = welvet.create_network(
-    input_size=4,
+    input_size=32,
     grid_rows=1,
     grid_cols=1,
-    layers_per_cell=2,  # 2 layers: hidden + output
+    layers_per_cell=6,
     use_gpu=True
 )
 
-# Configure network architecture: 4 -> 8 -> 2
-welvet.configure_sequential_network(
+# Initialize layers using registry-based system
+dense1 = welvet.call_layer_init("InitDenseLayer", [32, 32, welvet.Activation.LEAKY_RELU])
+conv2d = welvet.call_layer_init("InitConv2DLayer", [4, 4, 2, 4, 3, 2, 1, welvet.Activation.LEAKY_RELU])
+attention = welvet.call_layer_init("InitMultiHeadAttentionLayer", [4, 4, 2, welvet.Activation.TANH])
+rnn = welvet.call_layer_init("InitRNNLayer", [4, 8, 4, 32])
+lstm = welvet.call_layer_init("InitLSTMLayer", [8, 4, 4, 16])
+dense2 = welvet.call_layer_init("InitDenseLayer", [16, 2, welvet.Activation.SIGMOID])
+
+# Set layers in network
+welvet.set_layer(network, 0, 0, 0, dense1)
+welvet.set_layer(network, 0, 0, 1, conv2d)
+welvet.set_layer(network, 0, 0, 2, attention)
+welvet.set_layer(network, 0, 0, 3, rnn)
+welvet.set_layer(network, 0, 0, 4, lstm)
+welvet.set_layer(network, 0, 0, 5, dense2)
+
+# Prepare training data
+batches = [
+    {"Input": [0.8] * 16 + [0.2] * 16, "Target": [1.0, 0.0]},
+    {"Input": [0.2] * 16 + [0.8] * 16, "Target": [0.0, 1.0]},
+]
+
+# Train using high-level API
+result = welvet.train(
     network,
-    layer_sizes=[4, 8, 2],
-    activations=[welvet.Activation.RELU, welvet.Activation.SIGMOID]
+    batches,
+    epochs=10,
+    learning_rate=0.003,
+    gradient_clip=1.0,
+    loss_type="mse"
 )
 
-# Training data
-inputs = [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]
-targets = [[1.0, 0.0], [0.0, 1.0]]
-
-# Train for 10 epochs
-for epoch in range(10):
-    loss = welvet.train_epoch(network, inputs, targets, learning_rate=0.1)
-    print(f"Epoch {epoch+1}: loss = {loss:.4f}")
-
-# Test the network
-output = welvet.forward(network, [0.1, 0.2, 0.3, 0.4])
-print(f"Output: {output}")
+print(f"Final Loss: {result['FinalLoss']:.6f}")
+print(f"Throughput: {result['AvgThroughput']:.0f} samples/sec")
 
 # Clean up
 welvet.cleanup_gpu(network)
@@ -51,12 +66,15 @@ welvet.free_network(network)
 
 ## Features
 
-- 🚀 **GPU Acceleration**: WebGPU-powered compute shaders for high performance
+- 🚀 **GPU Acceleration**: WebGPU-powered compute shaders for Dense, Conv2D, and Attention layers
+- 🧠 **All 5 Layer Types**: Dense, Conv2D, Multi-Head Attention, RNN, LSTM fully supported
+- 🎯 **Registry-based Initialization**: Dynamic layer creation via `call_layer_init()` for any layer type
+- ⚡ **High-Level Training API**: Built-in `train()` function with automatic gradients and loss tracking
 - 🎯 **Cross-Platform**: Pre-compiled binaries for Linux, macOS, Windows, Android
 - 📦 **Easy Integration**: Simple Python API with high-level helpers
-- ⚡ **Grid Architecture**: Flexible grid-based neural network topology
-- 🔧 **Low-Level Access**: Direct control over layers and training loop
-- 🎓 **Training Helpers**: Built-in functions for common training tasks
+- 🔧 **Low-Level Access**: Direct control over layers and training loop via C-ABI
+- �️ **Grid Architecture**: Flexible grid-based neural network topology
+- 📊 **Comprehensive Activations**: ReLU, Sigmoid, Tanh, Softplus, LeakyReLU, Linear
 
 ## API Reference
 
@@ -94,10 +112,61 @@ Frees network resources.
 
 Activation function constants:
 
-- `Activation.RELU` (0) - ReLU activation
+- `Activation.RELU` (0) - Scaled ReLU (1.1x) activation
 - `Activation.SIGMOID` (1) - Sigmoid activation
 - `Activation.TANH` (2) - Tanh activation
-- `Activation.LINEAR` (3) - Linear activation
+- `Activation.SOFTPLUS` (3) - Softplus activation
+- `Activation.LEAKY_RELU` (4) - LeakyReLU (0.1x negative slope)
+- `Activation.LINEAR` (5) - Linear (no activation)
+
+### Layer Initialization (Registry-based)
+
+#### `call_layer_init(function_name, params)`
+
+Dynamically create any layer type using the registry system.
+
+**Parameters:**
+
+- `function_name` (str): Name of the layer init function
+  - `"InitDenseLayer"` - Fully-connected layer
+  - `"InitConv2DLayer"` - 2D Convolutional layer
+  - `"InitMultiHeadAttentionLayer"` - Multi-head attention layer
+  - `"InitRNNLayer"` - Recurrent Neural Network layer
+  - `"InitLSTMLayer"` - Long Short-Term Memory layer
+- `params` (list): Parameters for the layer (varies by type)
+
+**Returns:** LayerConfig dictionary
+
+**Examples:**
+
+```python
+# Dense layer: [inputSize, outputSize, activation]
+dense = welvet.call_layer_init("InitDenseLayer", [128, 64, welvet.Activation.RELU])
+
+# Conv2D: [height, width, channels, filters, kernelSize, stride, padding, activation]
+conv = welvet.call_layer_init("InitConv2DLayer", [28, 28, 1, 32, 3, 1, 1, welvet.Activation.RELU])
+
+# Attention: [seqLength, dModel, numHeads, activation]
+attn = welvet.call_layer_init("InitMultiHeadAttentionLayer", [10, 64, 8, welvet.Activation.TANH])
+
+# RNN: [inputSize, hiddenSize, seqLength, outputSize]
+rnn = welvet.call_layer_init("InitRNNLayer", [32, 64, 10, 640])
+
+# LSTM: [inputSize, hiddenSize, seqLength, outputSize]
+lstm = welvet.call_layer_init("InitLSTMLayer", [32, 64, 10, 640])
+```
+
+#### `list_layer_init_functions()`
+
+Get metadata about all available layer initialization functions.
+
+**Returns:** List of dictionaries with function metadata
+
+```python
+functions = welvet.list_layer_init_functions()
+for func in functions:
+    print(f"{func['Name']}: {func['Parameters']}")
+```
 
 #### `init_dense_layer(input_size, output_size, activation=0)`
 

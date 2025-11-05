@@ -4,13 +4,16 @@ C Foreign Function Interface (FFI) for the LOOM neural network framework. Allows
 
 ## Features
 
+- **All 5 Layer Types**: Dense, Conv2D, Multi-Head Attention, RNN, LSTM fully supported
+- **Registry-based Initialization**: Dynamic layer creation via `CallLayerInit()` for any layer type
+- **Full Training Support**: Complete forward/backward propagation with automatic gradients
 - **Multi-platform support**: Linux, macOS, Windows, Android, iOS
 - **Cross-compilation**: Build for multiple architectures from a single machine
 - **Handle-based object management**: Safe lifecycle management with sync.Mutex
 - **JSON parameter passing**: Simple, language-agnostic API
 - **Reflection-based method calling**: Automatic exposure of all Network methods
 - **Type conversion**: Automatic Go ↔ JSON type mapping (including custom types)
-- **GPU support**: Enable/disable GPU acceleration
+- **GPU support**: Enable/disable GPU acceleration (Dense, Conv2D, Attention)
 - **Model serialization**: Save/load networks as JSON strings
 - **Introspection**: List available methods and get object info
 

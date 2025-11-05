@@ -5,8 +5,11 @@ WebAssembly bindings for the LOOM neural network framework, enabling neural netw
 ## Features
 
 - ✅ **5.4MB Binary**: Complete framework in a single WASM module
+- ✅ **All 5 Layer Types**: Dense, Conv2D, Multi-Head Attention, RNN, LSTM fully supported
+- ✅ **Registry-based Initialization**: Dynamic layer creation via `CallLayerInit()` with zero manual exports
 - ✅ **24+ Methods**: All Network methods automatically exposed via reflection
-- ✅ **CPU-based Neural Networks**: Create and run networks in the browser
+- ✅ **CPU-based Neural Networks**: Create and train networks in the browser
+- ✅ **Full Training Support**: `network.Train()` API with automatic gradient computation
 - ✅ **Runtime Introspection**: Query methods, signatures, and parameters at runtime
 - ✅ **Model Serialization**: Save/load models as JSON strings (no file system needed)
 - ✅ **Type Conversion**: Automatic JavaScript ↔ Go type conversion (structs, slices, custom types)
@@ -50,13 +53,62 @@ The demo includes:
 // Create a network: 784 input → 392 hidden → 10 output
 const network = NewNetwork(784, 1, 1, 2);
 
-// Initialize layers with weights
-const layer0Config = InitDenseLayer(784, 392, 0); // ReLU activation
-const layer1Config = InitDenseLayer(392, 10, 1); // Sigmoid activation
+// Use registry-based initialization for all layer types
+const layer0Config = CallLayerInit(
+  "InitDenseLayer",
+  JSON.stringify([784, 392, 0]) // ReLU activation
+);
+const layer1Config = CallLayerInit(
+  "InitDenseLayer",
+  JSON.stringify([392, 10, 1]) // Sigmoid activation
+);
 
 // Apply configurations to network
 network.SetLayer(JSON.stringify([0, 0, 0, JSON.parse(layer0Config)]));
 network.SetLayer(JSON.stringify([0, 0, 1, JSON.parse(layer1Config)]));
+```
+
+**All Layer Types Supported:**
+
+```javascript
+// Dense layer
+const dense = CallLayerInit(
+  "InitDenseLayer",
+  JSON.stringify([inputSize, outputSize, activation])
+);
+
+// Conv2D layer
+const conv = CallLayerInit(
+  "InitConv2DLayer",
+  JSON.stringify([
+    height,
+    width,
+    channels,
+    filters,
+    kernel,
+    stride,
+    padding,
+    activation,
+  ])
+);
+
+// Multi-Head Attention
+const attention = CallLayerInit(
+  "InitMultiHeadAttentionLayer",
+  JSON.stringify([seqLen, dModel, numHeads, activation])
+);
+
+// RNN layer
+const rnn = CallLayerInit(
+  "InitRNNLayer",
+  JSON.stringify([inputSize, hiddenSize, seqLen, outputSize])
+);
+
+// LSTM layer
+const lstm = CallLayerInit(
+  "InitLSTMLayer",
+  JSON.stringify([inputSize, hiddenSize, seqLen, outputSize])
+);
 ```
 
 ### Runtime Introspection

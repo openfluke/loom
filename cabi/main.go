@@ -404,6 +404,84 @@ func Loom_InitDenseLayer(inputSize, outputSize, activation C.int) *C.char {
 	return C.CString(string(data))
 }
 
+//export Loom_CallLayerInit
+func Loom_CallLayerInit(funcName *C.char, argsJSON *C.char) *C.char {
+	name := C.GoString(funcName)
+
+	// Get function from registry
+	fn, ok := nn.GetLayerInitFunction(name)
+	if !ok {
+		return errJSON(fmt.Sprintf("layer init function %s not found", name))
+	}
+
+	// Parse arguments
+	var args []interface{}
+	if err := json.Unmarshal([]byte(C.GoString(argsJSON)), &args); err != nil {
+		return errJSON("failed to parse arguments: " + err.Error())
+	}
+
+	// Call via reflection
+	funcValue := reflect.ValueOf(fn)
+	funcType := funcValue.Type()
+
+	if len(args) != funcType.NumIn() {
+		return errJSON(fmt.Sprintf("%s expects %d arguments, got %d", name, funcType.NumIn(), len(args)))
+	}
+
+	inputs := make([]reflect.Value, len(args))
+	for i, arg := range args {
+		expectedType := funcType.In(i)
+
+		// Convert argument to expected type
+		switch expectedType.Kind() {
+		case reflect.Int:
+			if num, ok := arg.(float64); ok {
+				// Check if it's a named type (like ActivationType) or plain int
+				if expectedType.String() != "int" {
+					// It's a named int type (enum), convert via reflection
+					inputs[i] = reflect.ValueOf(int(num)).Convert(expectedType)
+				} else {
+					inputs[i] = reflect.ValueOf(int(num))
+				}
+			} else {
+				return errJSON(fmt.Sprintf("argument %d: expected int, got %T", i, arg))
+			}
+		case reflect.Float32:
+			if num, ok := arg.(float64); ok {
+				inputs[i] = reflect.ValueOf(float32(num))
+			} else {
+				return errJSON(fmt.Sprintf("argument %d: expected float32, got %T", i, arg))
+			}
+		default:
+			return errJSON(fmt.Sprintf("argument %d: unsupported type %s", i, expectedType))
+		}
+	}
+
+	// Call the function
+	results := funcValue.Call(inputs)
+	if len(results) != 1 {
+		return errJSON("expected 1 return value")
+	}
+
+	// Marshal the LayerConfig result
+	data, err := json.Marshal(results[0].Interface())
+	if err != nil {
+		return errJSON("failed to serialize result: " + err.Error())
+	}
+
+	return C.CString(string(data))
+}
+
+//export Loom_ListLayerInitFunctions
+func Loom_ListLayerInitFunctions() *C.char {
+	functions := nn.ListLayerInitFunctions()
+	data, err := json.Marshal(functions)
+	if err != nil {
+		return errJSON("failed to serialize functions list: " + err.Error())
+	}
+	return C.CString(string(data))
+}
+
 //export Loom_SetLayer
 func Loom_SetLayer(handle int64, row, col, layer C.int, configJSON *C.char) *C.char {
 	obj, ok := get(handle)

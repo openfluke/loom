@@ -8,6 +8,8 @@ A high-performance grid neural network implementation in Go with support for mul
 
 - **Grid Structure**: Organizes layers in a 2D grid (rows × columns × layers per cell)
 - **Flexible Configuration**: Each grid position can have different layer types and activations
+- **Registry-based Initialization**: Dynamic layer creation via `CallLayerInit()` for all 5 layer types
+- **Cross-Platform Support**: Same API across Go, WASM, C-ABI, Python, and TypeScript
 - **Layer Types**:
   - **Dense**: Element-wise activation functions
   - **Conv2D**: 2D convolutional layers with configurable kernels
@@ -17,11 +19,12 @@ A high-performance grid neural network implementation in Go with support for mul
 
 ### Activation Functions
 
-1. **ScaledReLU**: `max(0, 1.1 * x)` with derivative `1.1` for x > 0
-2. **Sigmoid**: `1 / (1 + e^(-x))`
-3. **Tanh**: `(e^(2x) - 1) / (e^(2x) + 1)`
-4. **Softplus**: `log(1 + e^x)`
-5. **LeakyReLU**: `x` if x ≥ 0, else `0.1 * x`
+1. **ReLU** (0): `max(0, 1.1 * x)` with derivative `1.1` for x > 0
+2. **Sigmoid** (1): `1 / (1 + e^(-x))`
+3. **Tanh** (2): `(e^(2x) - 1) / (e^(2x) + 1)`
+4. **Softplus** (3): `log(1 + e^x)`
+5. **LeakyReLU** (4): `x` if x ≥ 0, else `0.1 * x`
+6. **Linear** (5): `x` (identity function, no activation)
 
 ### Execution Modes
 
@@ -46,6 +49,7 @@ A high-performance grid neural network implementation in Go with support for mul
 - **Method Discovery**: Query all Network methods at runtime via reflection
 - **Signature Inspection**: Get parameter types and return values for any method
 - **JSON Metadata**: Export complete API documentation as JSON
+- **Registry System**: List all available layer initialization functions with metadata
 - **WASM Integration**: Automatic exposure of all public methods to JavaScript
 - **C ABI Integration**: Dynamic method calling from any language supporting C FFI
 
@@ -55,13 +59,16 @@ A high-performance grid neural network implementation in Go with support for mul
 nn/
 ├── nn.go                 # Package documentation
 ├── types.go              # Core types (Network, LayerConfig, LayerType)
+├── registry.go           # Layer initialization function registry
 ├── activations.go        # Activation functions and derivatives
 ├── forward.go            # Forward propagation (CPU/GPU)
 ├── backward.go           # Backward propagation (CPU/GPU)
 ├── gpu.go                # WebGPU initialization and shader generation
 ├── utils.go              # Utility functions (MaxAbsDiff, Min, Max, Mean)
 ├── cnn.go                # Conv2D implementation (forward/backward)
+├── conv2d_gpu.go         # Conv2D GPU kernels
 ├── attention.go          # Multi-Head Attention implementation
+├── attention_gpu.go      # Attention GPU kernels
 ├── rnn.go                # RNN implementation with BPTT
 ├── lstm.go               # LSTM implementation with gate computations
 ├── training.go           # Training loop with evaluation support
@@ -73,6 +80,44 @@ nn/
 
 ## Usage
 
+### Registry-based Layer Initialization
+
+All layer types can be created dynamically using the registry system. This enables automatic discovery and creation of layers across all platforms (Go, WASM, C-ABI, Python, TypeScript).
+
+```go
+// List all available layer initialization functions
+functions := nn.ListLayerInitFunctions()
+for _, fn := range functions {
+    fmt.Printf("%s: %s\n", fn.Name, fn.Signature)
+}
+// Output:
+// InitDenseLayer: func(int, int, nn.ActivationType) nn.LayerConfig
+// InitConv2DLayer: func(int, int, int, int, int, int, int, nn.ActivationType) nn.LayerConfig
+// InitMultiHeadAttentionLayer: func(int, int, int, nn.ActivationType) nn.LayerConfig
+// InitRNNLayer: func(int, int, int, int) nn.LayerConfig
+// InitLSTMLayer: func(int, int, int, int) nn.LayerConfig
+
+// Call any layer init function dynamically
+params := []interface{}{128, 64, nn.ActivationReLU}
+layerConfig, err := nn.CallLayerInit("InitDenseLayer", params)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Same for other layer types
+conv2dConfig, _ := nn.CallLayerInit("InitConv2DLayer",
+    []interface{}{28, 28, 1, 32, 3, 1, 1, nn.ActivationReLU})
+
+attentionConfig, _ := nn.CallLayerInit("InitMultiHeadAttentionLayer",
+    []interface{}{10, 64, 8, nn.ActivationTanh})
+
+rnnConfig, _ := nn.CallLayerInit("InitRNNLayer",
+    []interface{}{32, 64, 10, 640})
+
+lstmConfig, _ := nn.CallLayerInit("InitLSTMLayer",
+    []interface{}{32, 64, 10, 640})
+```
+
 ### Creating a Dense Neural Network
 
 ```go
@@ -83,6 +128,11 @@ network := nn.NewNetwork(
     2,     // gridCols
     2,     // layersPerCell
 )
+
+// Initialize layer using registry
+layerConfig, _ := nn.CallLayerInit("InitDenseLayer",
+    []interface{}{1024, 512, nn.ActivationReLU})
+network.SetLayer(0, 0, 0, layerConfig)
 
 // Forward pass on CPU
 input := make([]float32, 1024)
@@ -106,17 +156,18 @@ batchSize := 2
 network := nn.NewNetwork(inputSize, 1, 1, 1)
 network.BatchSize = batchSize
 
-// Configure Conv2D layer
-conv2dConfig := nn.InitConv2DLayer(
-    4,  // inputHeight
-    4,  // inputWidth
-    3,  // inputChannels
-    3,  // kernelSize
-    1,  // stride
-    1,  // padding
-    2,  // filters
-    nn.ActivationScaledReLU,
-)
+// Configure Conv2D layer using registry
+conv2dConfig, _ := nn.CallLayerInit("InitConv2DLayer",
+    []interface{}{
+        4,  // inputHeight
+        4,  // inputWidth
+        3,  // inputChannels
+        2,  // filters
+        3,  // kernelSize
+        1,  // stride
+        1,  // padding
+        nn.ActivationReLU,
+    })
 network.SetLayer(0, 0, 0, conv2dConfig)
 
 // Forward and backward passes work the same

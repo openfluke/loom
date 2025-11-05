@@ -35,9 +35,12 @@ func methodWrapper(network *nn.Network, methodName string) js.Func {
 
 		var params []interface{}
 		paramJSON := args[0].String()
+		fmt.Printf("DEBUG methodWrapper: %s called with JSON: %s\n", methodName, paramJSON)
 		if err := json.Unmarshal([]byte(paramJSON), &params); err != nil {
 			return fmt.Sprintf("Invalid JSON input: %v", err)
 		}
+
+		fmt.Printf("DEBUG methodWrapper: Parsed %d params\n", len(params))
 
 		expectedParams := methodType.NumIn()
 		if len(params) != expectedParams {
@@ -54,6 +57,7 @@ func methodWrapper(network *nn.Network, methodName string) js.Func {
 				return err.Error()
 			}
 			inputs[i] = converted
+			fmt.Printf("DEBUG methodWrapper: Param %d converted to type %s\n", i, expectedType)
 		}
 
 		results := method.Call(inputs)
@@ -196,6 +200,8 @@ func convertSlice(param interface{}, expectedType reflect.Type, paramIndex int) 
 		return reflect.Value{}, fmt.Errorf("parameter %d: expected slice, got %T", paramIndex, param)
 	}
 
+	fmt.Printf("DEBUG convertSlice: Converting slice of length %d to type %s\n", len(val), expectedType)
+
 	elemType := expectedType.Elem()
 	slice := reflect.MakeSlice(expectedType, len(val), len(val))
 
@@ -313,17 +319,30 @@ func serializeResults(results []reflect.Value) string {
 
 	output := make([]interface{}, len(results))
 	for i, result := range results {
-		output[i] = result.Interface()
+		val := result.Interface()
+
+		// Special handling for slices - convert to []interface{} for JSON
+		if result.Kind() == reflect.Slice {
+			length := result.Len()
+			fmt.Printf("DEBUG: Serializing slice of length %d\n", length)
+			slice := make([]interface{}, length)
+			for j := 0; j < length; j++ {
+				elem := result.Index(j)
+				slice[j] = elem.Interface()
+			}
+			output[i] = slice
+		} else {
+			output[i] = val
+		}
 	}
 
 	resultJSON, err := json.Marshal(output)
 	if err != nil {
 		return fmt.Sprintf("Failed to marshal results: %v", err)
 	}
+	fmt.Printf("DEBUG: Serialized results: %s\n", string(resultJSON))
 	return string(resultJSON)
-}
-
-// newNetworkWrapper creates a wrapper for nn.NewNetwork
+} // newNetworkWrapper creates a wrapper for nn.NewNetwork
 func newNetworkWrapper() js.Func {
 	return js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		// Parse the NewNetwork arguments: inputSize, gridRows, gridCols, layersPerCell
@@ -469,6 +488,67 @@ func loadModelFromStringWrapper() js.Func {
 	})
 }
 
+// callNNFunction calls a function from the nn package via reflection
+func callNNFunction() js.Func {
+	return js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return "Error: function name required"
+		}
+
+		funcName := args[0].String()
+
+		// Get the function from the nn package registry
+		fn, ok := nn.GetLayerInitFunction(funcName)
+		if !ok {
+			return fmt.Sprintf("Error: function %s not found in registry", funcName)
+		}
+
+		// Parse parameters from JSON
+		var params []interface{}
+		if len(args) > 1 && !args[1].IsUndefined() {
+			paramJSON := args[1].String()
+			if err := json.Unmarshal([]byte(paramJSON), &params); err != nil {
+				return fmt.Sprintf("Error parsing parameters: %v", err)
+			}
+		}
+
+		// Call the function via reflection
+		funcValue := reflect.ValueOf(fn)
+		funcType := funcValue.Type()
+
+		if len(params) != funcType.NumIn() {
+			return fmt.Sprintf("Error: %s expects %d parameters, got %d", funcName, funcType.NumIn(), len(params))
+		}
+
+		// Convert parameters to correct types
+		inputs := make([]reflect.Value, len(params))
+		for i, param := range params {
+			expectedType := funcType.In(i)
+			converted, err := convertParameter(param, expectedType, i)
+			if err != nil {
+				return fmt.Sprintf("Error converting parameter %d: %v", i, err)
+			}
+			inputs[i] = converted
+		}
+
+		// Call the function
+		results := funcValue.Call(inputs)
+		return serializeResults(results)
+	})
+}
+
+// listLayerInitFunctions returns metadata about all available layer init functions
+func listLayerInitFunctions() js.Func {
+	return js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		functions := nn.ListLayerInitFunctions()
+		data, err := json.Marshal(functions)
+		if err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
+		return string(data)
+	})
+}
+
 func main() {
 	fmt.Println("LOOM Neural Network WASM module initialized")
 
@@ -476,49 +556,27 @@ func main() {
 	js.Global().Set("NewNetwork", newNetworkWrapper())
 	js.Global().Set("LoadModelFromString", loadModelFromStringWrapper())
 
-	// Helper functions
-	js.Global().Set("InitDenseLayer", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) < 3 {
-			return "Expected 3 arguments: inputSize, outputSize, activation"
-		}
-		inputSize := args[0].Int()
-		outputSize := args[1].Int()
-		activation := args[2].Int()
+	// Layer initialization via registry
+	js.Global().Set("CallLayerInit", callNNFunction())
+	js.Global().Set("ListLayerInitFunctions", listLayerInitFunctions())
 
-		config := nn.InitDenseLayer(inputSize, outputSize, nn.ActivationType(activation))
-
-		// Serialize config to JSON
-		data, err := json.Marshal(config)
-		if err != nil {
-			return fmt.Sprintf("Error: %v", err)
-		}
-		return string(data)
-	}))
-
-	js.Global().Set("InitMultiHeadAttentionLayer", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) < 4 {
-			return "Expected 4 arguments: dModel, numHeads, seqLength, activation"
-		}
-		dModel := args[0].Int()
-		numHeads := args[1].Int()
-		seqLength := args[2].Int()
-		activation := args[3].Int()
-
-		config := nn.InitMultiHeadAttentionLayer(dModel, numHeads, seqLength, nn.ActivationType(activation))
-
-		// Serialize config to JSON
-		data, err := json.Marshal(config)
-		if err != nil {
-			return fmt.Sprintf("Error: %v", err)
-		}
-		return string(data)
-	}))
-
+	// List available functions dynamically from registry
+	functions := nn.ListLayerInitFunctions()
 	fmt.Println("LOOM WASM API ready. Available functions:")
 	fmt.Println("  - NewNetwork(inputSize, gridRows, gridCols, layersPerCell)")
 	fmt.Println("  - LoadModelFromString(jsonString, modelID)")
-	fmt.Println("  - InitDenseLayer(inputSize, outputSize, activation)")
-	fmt.Println("  - InitMultiHeadAttentionLayer(dModel, numHeads, seqLength, activation)")
+	fmt.Println("  - CallLayerInit(functionName, paramsJSON) - Call any layer init function:")
+	for _, fn := range functions {
+		argStr := ""
+		for i, arg := range fn.ArgTypes {
+			if i > 0 {
+				argStr += ", "
+			}
+			argStr += arg
+		}
+		fmt.Printf("      * %s(%s)\n", fn.Name, argStr)
+	}
+	fmt.Println("  - ListLayerInitFunctions() - Get metadata about all layer init functions")
 
 	// Keep the Go program running
 	select {}

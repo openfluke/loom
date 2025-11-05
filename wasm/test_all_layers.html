@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loom WASM - All Layer Types Test</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        overflow: hidden;
+      }
+
+      .header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 30px;
+        text-align: center;
+      }
+
+      .header h1 {
+        font-size: 2.5em;
+        margin-bottom: 10px;
+      }
+
+      .header p {
+        font-size: 1.1em;
+        opacity: 0.9;
+      }
+
+      .content {
+        padding: 30px;
+      }
+
+      .section {
+        margin-bottom: 30px;
+        padding: 20px;
+        background: #f8f9fa;
+        border-radius: 8px;
+        border-left: 4px solid #667eea;
+      }
+
+      .section h2 {
+        color: #667eea;
+        margin-bottom: 15px;
+        font-size: 1.5em;
+      }
+
+      .layer-list {
+        list-style: none;
+        padding: 0;
+      }
+
+      .layer-list li {
+        padding: 12px;
+        margin: 8px 0;
+        background: white;
+        border-radius: 6px;
+        border-left: 3px solid #28a745;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+
+      .layer-list li strong {
+        color: #667eea;
+      }
+
+      button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        padding: 15px 40px;
+        font-size: 1.1em;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: transform 0.2s, box-shadow 0.2s;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+      }
+
+      button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      #output {
+        background: #1e1e1e;
+        color: #d4d4d4;
+        padding: 20px;
+        border-radius: 8px;
+        font-family: "Courier New", monospace;
+        font-size: 14px;
+        line-height: 1.6;
+        max-height: 600px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+
+      #output .success {
+        color: #4ec9b0;
+      }
+
+      #output .error {
+        color: #f48771;
+      }
+
+      #output .info {
+        color: #569cd6;
+      }
+
+      #output .warning {
+        color: #dcdcaa;
+      }
+
+      #output .header-line {
+        color: #c586c0;
+        font-weight: bold;
+      }
+
+      .status {
+        display: inline-block;
+        padding: 6px 12px;
+        border-radius: 4px;
+        font-size: 0.9em;
+        font-weight: bold;
+        margin-bottom: 15px;
+      }
+
+      .status.loading {
+        background: #ffc107;
+        color: #000;
+      }
+
+      .status.ready {
+        background: #28a745;
+        color: white;
+      }
+
+      .status.error {
+        background: #dc3545;
+        color: white;
+      }
+
+      .controls {
+        display: flex;
+        gap: 15px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+      }
+
+      .config-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+        margin-bottom: 20px;
+      }
+
+      .config-item {
+        background: white;
+        padding: 15px;
+        border-radius: 6px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+
+      .config-item label {
+        display: block;
+        color: #667eea;
+        font-weight: bold;
+        margin-bottom: 5px;
+        font-size: 0.9em;
+      }
+
+      .config-item input {
+        width: 100%;
+        padding: 8px;
+        border: 2px solid #e0e0e0;
+        border-radius: 4px;
+        font-size: 1em;
+      }
+
+      .config-item input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      .results-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 15px;
+        margin-top: 20px;
+      }
+
+      .result-card {
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        border-top: 3px solid #667eea;
+      }
+
+      .result-card h3 {
+        color: #667eea;
+        margin-bottom: 10px;
+        font-size: 1.2em;
+      }
+
+      .result-card .value {
+        font-size: 2em;
+        font-weight: bold;
+        color: #333;
+      }
+
+      .result-card .label {
+        color: #666;
+        font-size: 0.9em;
+        margin-top: 5px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .spinner {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 3px solid rgba(255, 255, 255, 0.3);
+        border-top-color: white;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-right: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>🧠 Loom AI Framework</h1>
+        <p>All Layer Types Test - Dense, Conv2D, Attention, RNN, LSTM</p>
+      </div>
+
+      <div class="content">
+        <div class="section">
+          <h2>📊 Network Architecture</h2>
+          <p style="margin-bottom: 15px">
+            Complex network with all 5 layer types:
+          </p>
+          <ul class="layer-list">
+            <li><strong>Input:</strong> 32 values</li>
+            <li><strong>Layer 0 - Dense:</strong> 32 → 32 (LeakyReLU)</li>
+            <li>
+              <strong>Layer 1 - Conv2D:</strong> 4x4x2 → 2x2x4 = 16 (LeakyReLU)
+            </li>
+            <li>
+              <strong>Layer 2 - Attention:</strong> 4 seq x 4 dim, 2 heads
+              (Tanh)
+            </li>
+            <li>
+              <strong>Layer 3 - RNN:</strong> 4 features, 8 hidden, 4 steps → 32
+            </li>
+            <li>
+              <strong>Layer 4 - LSTM:</strong> 8 features, 4 hidden, 4 steps →
+              16
+            </li>
+            <li><strong>Layer 5 - Dense:</strong> 16 → 2 (Sigmoid)</li>
+            <li><strong>Output:</strong> 2 classes</li>
+          </ul>
+        </div>
+
+        <div class="section">
+          <h2>⚙️ Training Configuration</h2>
+          <div class="config-grid">
+            <div class="config-item">
+              <label for="epochs">Epochs</label>
+              <input type="number" id="epochs" value="5" min="1" max="100" />
+            </div>
+            <div class="config-item">
+              <label for="learningRate">Learning Rate</label>
+              <input
+                type="number"
+                id="learningRate"
+                value="0.003"
+                step="0.001"
+                min="0.0001"
+                max="1"
+              />
+            </div>
+            <div class="config-item">
+              <label for="samples">Training Samples</label>
+              <input
+                type="number"
+                id="samples"
+                value="50"
+                min="10"
+                max="1000"
+              />
+            </div>
+            <div class="config-item">
+              <label for="gradientClip">Gradient Clip</label>
+              <input
+                type="number"
+                id="gradientClip"
+                value="1.0"
+                step="0.1"
+                min="0"
+                max="10"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>🚀 Controls</h2>
+          <div id="status" class="status loading">
+            <span class="spinner"></span> Loading WASM...
+          </div>
+          <div class="controls">
+            <button id="trainBtn" disabled>
+              <span class="spinner" style="display: none"></span>
+              Start Training
+            </button>
+            <button id="clearBtn">Clear Output</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>📝 Output</h2>
+          <div id="output">Waiting for WASM to load...</div>
+        </div>
+      </div>
+    </div>
+
+    <script src="wasm_exec.js"></script>
+    <script>
+      const output = document.getElementById("output");
+      const trainBtn = document.getElementById("trainBtn");
+      const clearBtn = document.getElementById("clearBtn");
+      const statusDiv = document.getElementById("status");
+
+      function log(message, type = "info") {
+        const span = document.createElement("span");
+        span.className = type;
+        span.textContent = message + "\n";
+        output.appendChild(span);
+        output.scrollTop = output.scrollHeight;
+      }
+
+      function clearOutput() {
+        output.innerHTML = "";
+      }
+
+      clearBtn.addEventListener("click", clearOutput);
+
+      // Load WASM
+      const go = new Go();
+
+      WebAssembly.instantiateStreaming(fetch("loom.wasm"), go.importObject)
+        .then((result) => {
+          go.run(result.instance);
+          statusDiv.className = "status ready";
+          statusDiv.innerHTML = "✓ WASM Ready";
+          trainBtn.disabled = false;
+          log("WASM module loaded successfully", "success");
+          log("Registry-based layer initialization enabled", "info");
+          log("", "info");
+
+          // List available functions
+          if (window.ListLayerInitFunctions) {
+            try {
+              const functionsJSON = window.ListLayerInitFunctions();
+              const functions = JSON.parse(functionsJSON);
+              log("═══ Available Layer Types ═══", "header-line");
+              functions.forEach((fn) => {
+                const args = fn.ArgTypes.join(", ");
+                log(`  • ${fn.Name}(${args})`, "info");
+              });
+              log("", "info");
+            } catch (e) {
+              log(`Error listing functions: ${e.message}`, "error");
+            }
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to load WASM:", err);
+          statusDiv.className = "status error";
+          statusDiv.textContent = "✗ Failed to load WASM";
+          log("Error loading WASM: " + err.message, "error");
+        });
+
+      trainBtn.addEventListener("click", async () => {
+        trainBtn.disabled = true;
+        const spinner = trainBtn.querySelector(".spinner");
+        spinner.style.display = "inline-block";
+        trainBtn.textContent = " Training...";
+        trainBtn.prepend(spinner);
+
+        clearOutput();
+
+        try {
+          // Get configuration
+          const epochs = parseInt(document.getElementById("epochs").value);
+          const learningRate = parseFloat(
+            document.getElementById("learningRate").value
+          );
+          const numSamples = parseInt(document.getElementById("samples").value);
+          const gradientClip = parseFloat(
+            document.getElementById("gradientClip").value
+          );
+
+          log(
+            "═══════════════════════════════════════════════════════════════════",
+            "header-line"
+          );
+          log("═══ All Layer Types Test ═══", "header-line");
+          log(
+            "Testing network with all 5 layer types: Dense, Conv2D, Attention, RNN, LSTM",
+            "info"
+          );
+          log(
+            "═══════════════════════════════════════════════════════════════════",
+            "header-line"
+          );
+          log("", "info");
+
+          // Create network
+          log("Building network with all layer types...", "info");
+          log("", "info");
+
+          const network = window.NewNetwork(32, 1, 1, 6);
+
+          log(`Network created successfully`, "success");
+
+          // Layer 0: Dense (32 -> 32, LeakyReLU - activation 4)
+          const dense1JSON = window.CallLayerInit(
+            "InitDenseLayer",
+            JSON.stringify([32, 32, 4])
+          );
+          const dense1 = JSON.parse(dense1JSON)[0];
+          network.SetLayer(JSON.stringify([0, 0, 0, dense1]));
+          log("  Layer 0: Dense (32 → 32, LeakyReLU)", "success");
+
+          // Layer 1: Conv2D (4x4x2 -> 2x2x4 = 16, LeakyReLU - activation 4)
+          const convJSON = window.CallLayerInit(
+            "InitConv2DLayer",
+            JSON.stringify([4, 4, 2, 3, 2, 1, 4, 4])
+          );
+          const conv = JSON.parse(convJSON)[0];
+          network.SetLayer(JSON.stringify([0, 0, 1, conv]));
+          log("  Layer 1: Conv2D (4x4x2 → 2x2x4=16, LeakyReLU)", "success");
+
+          // Layer 2: Multi-Head Attention (16 -> 16, Tanh - activation 2)
+          const attentionJSON = window.CallLayerInit(
+            "InitMultiHeadAttentionLayer",
+            JSON.stringify([4, 2, 4, 2])
+          );
+          const attention = JSON.parse(attentionJSON)[0];
+          network.SetLayer(JSON.stringify([0, 0, 2, attention]));
+          log("  Layer 2: Attention (4 seq x 4 dim, 2 heads, Tanh)", "success");
+
+          // Layer 3: RNN (4 features, 8 hidden, 4 timesteps -> 32)
+          const rnnJSON = window.CallLayerInit(
+            "InitRNNLayer",
+            JSON.stringify([4, 8, 1, 4])
+          );
+          const rnn = JSON.parse(rnnJSON)[0];
+          network.SetLayer(JSON.stringify([0, 0, 3, rnn]));
+          log("  Layer 3: RNN (4 features, 8 hidden, 4 steps → 32)", "success");
+
+          // Layer 4: LSTM (8 features, 4 hidden, 4 timesteps -> 16)
+          const lstmJSON = window.CallLayerInit(
+            "InitLSTMLayer",
+            JSON.stringify([8, 4, 1, 4])
+          );
+          const lstm = JSON.parse(lstmJSON)[0];
+          network.SetLayer(JSON.stringify([0, 0, 4, lstm]));
+          log(
+            "  Layer 4: LSTM (8 features, 4 hidden, 4 steps → 16)",
+            "success"
+          );
+
+          // Layer 5: Dense (16 -> 2, Sigmoid - activation 1)
+          const dense2JSON = window.CallLayerInit(
+            "InitDenseLayer",
+            JSON.stringify([16, 2, 1])
+          );
+          const dense2 = JSON.parse(dense2JSON)[0];
+          network.SetLayer(JSON.stringify([0, 0, 5, dense2]));
+          log("  Layer 5: Dense (16 → 2, Sigmoid)", "success");
+
+          log("", "info");
+          log("Network Summary:", "header-line");
+          log("  Total layers: 6", "info");
+          log(
+            "  Layer types: Dense → Conv2D → Attention → RNN → LSTM → Dense",
+            "info"
+          );
+          log("  Data flow: 32 → 32 → 16 → 16 → 32 → 16 → 2", "info");
+          log("", "info");
+
+          // Generate training data
+          log(`Generating ${numSamples} training samples...`, "info");
+          const batches = [];
+
+          for (let i = 0; i < numSamples; i++) {
+            let input, target;
+
+            if (i % 2 === 0) {
+              // Pattern type 0: higher values in first half
+              input = [];
+              for (let j = 0; j < 16; j++) {
+                input.push(0.7 + Math.random() * 0.3);
+              }
+              for (let j = 16; j < 32; j++) {
+                input.push(Math.random() * 0.3);
+              }
+              target = [1.0, 0.0];
+            } else {
+              // Pattern type 1: higher values in second half
+              input = [];
+              for (let j = 0; j < 16; j++) {
+                input.push(Math.random() * 0.3);
+              }
+              for (let j = 16; j < 32; j++) {
+                input.push(0.7 + Math.random() * 0.3);
+              }
+              target = [0.0, 1.0];
+            }
+
+            batches.push({ Input: input, Target: target });
+          }
+
+          log("", "info");
+
+          // Training configuration
+          const config = {
+            Epochs: epochs,
+            LearningRate: learningRate,
+            UseGPU: false,
+            PrintEveryBatch: 0,
+            GradientClip: gradientClip,
+            LossType: "mse",
+            Verbose: true,
+          };
+
+          log("Training Configuration:", "header-line");
+          log(`  Epochs: ${epochs}`, "info");
+          log(`  Learning Rate: ${learningRate}`, "info");
+          log(`  Gradient Clipping: ${gradientClip}`, "info");
+          log(`  Loss Function: MSE`, "info");
+          log("", "info");
+
+          log("Starting training...", "warning");
+          log("", "info");
+
+          // Call Train method via reflection
+          const resultJSON = network.Train(JSON.stringify([batches, config]));
+          const result = JSON.parse(resultJSON);
+
+          // Check for error
+          if (result[1]) {
+            throw new Error(result[1]);
+          }
+
+          const trainingResult = result[0];
+
+          log("", "info");
+          log("✓ Training complete!", "success");
+          log(`  Final Loss: ${trainingResult.FinalLoss.toFixed(6)}`, "info");
+          log(`  Best Loss: ${trainingResult.BestLoss.toFixed(6)}`, "info");
+          log(
+            `  Total Time: ${(trainingResult.TotalTime / 1000000).toFixed(
+              2
+            )}ms`,
+            "info"
+          );
+          log(
+            `  Avg Throughput: ${trainingResult.AvgThroughput.toFixed(
+              1
+            )} samples/sec`,
+            "info"
+          );
+          log("", "info");
+
+          // Test predictions
+          log(
+            "═══════════════════════════════════════════════════════════════════",
+            "header-line"
+          );
+          log("═══ Testing Predictions ===", "header-line");
+          log("", "info");
+
+          // Test pattern 0 (high in first half)
+          const test0 = Array(16).fill(0.8).concat(Array(16).fill(0.2));
+          const output0JSON = network.ForwardCPU(JSON.stringify([test0]));
+          const output0 = JSON.parse(output0JSON)[0];
+
+          const pred0_0 = output0[0];
+          const pred0_1 = output0[1];
+          const class0 = pred0_0 > pred0_1 ? "Class 0" : "Class 1";
+
+          log(`Pattern 0 (first half high):`, "info");
+          log(
+            `  Output: [${pred0_0.toFixed(4)}, ${pred0_1.toFixed(
+              4
+            )}] → ${class0}`,
+            "success"
+          );
+
+          // Test pattern 1 (high in second half)
+          const test1 = Array(16).fill(0.2).concat(Array(16).fill(0.8));
+          const output1JSON = network.ForwardCPU(JSON.stringify([test1]));
+          const output1 = JSON.parse(output1JSON)[0];
+
+          const pred1_0 = output1[0];
+          const pred1_1 = output1[1];
+          const class1 = pred1_0 > pred1_1 ? "Class 0" : "Class 1";
+
+          log(`Pattern 1 (second half high):`, "info");
+          log(
+            `  Output: [${pred1_0.toFixed(4)}, ${pred1_1.toFixed(
+              4
+            )}] → ${class1}`,
+            "success"
+          );
+
+          log("", "info");
+          log(
+            "═══════════════════════════════════════════════════════════════════",
+            "header-line"
+          );
+          log("═══ Layer Type Summary ===", "header-line");
+          log("✓ LayerDense: Tested (layers 0, 5)", "success");
+          log("✓ LayerConv2D: Tested (layer 1)", "success");
+          log("✓ LayerMultiHeadAttention: Tested (layer 2)", "success");
+          log("✓ LayerRNN: Tested (layer 3)", "success");
+          log("✓ LayerLSTM: Tested (layer 4)", "success");
+          log("", "info");
+          log(
+            "✅ All 5 layer types successfully integrated and trained!",
+            "success"
+          );
+          log(
+            "✅ WASM bindings provide full access to the AI framework!",
+            "success"
+          );
+          log(
+            "═══════════════════════════════════════════════════════════════════",
+            "header-line"
+          );
+        } catch (error) {
+          log("", "info");
+          log("Training failed: " + error.message, "error");
+          console.error("Training error:", error);
+        } finally {
+          trainBtn.disabled = false;
+          spinner.style.display = "none";
+          trainBtn.textContent = "Start Training";
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -123,6 +123,18 @@ if _InitDenseLayer:
     _InitDenseLayer.restype = ctypes.c_char_p
     _InitDenseLayer.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
 
+# Loom_CallLayerInit: generic layer init via registry
+_CallLayerInit = _sym("Loom_CallLayerInit")
+if _CallLayerInit:
+    _CallLayerInit.restype = ctypes.c_char_p
+    _CallLayerInit.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+
+# Loom_ListLayerInitFunctions: list available layer init functions
+_ListLayerInitFunctions = _sym("Loom_ListLayerInitFunctions")
+if _ListLayerInitFunctions:
+    _ListLayerInitFunctions.restype = ctypes.c_char_p
+    _ListLayerInitFunctions.argtypes = []
+
 # Loom_SetLayer: sets a layer in the network
 _SetLayer = _sym("Loom_SetLayer")
 if _SetLayer:
@@ -139,10 +151,13 @@ if _GetInfo:
 # ---- Activation Types ----
 class Activation:
     """Neural network activation function types."""
-    RELU = 0
-    SIGMOID = 1
-    TANH = 2
-    LINEAR = 3
+    SCALED_RELU = 0  # v * 1.1, then ReLU
+    RELU = 0         # Alias for SCALED_RELU (default)
+    SIGMOID = 1      # 1 / (1 + exp(-v))
+    TANH = 2         # tanh(v)
+    SOFTPLUS = 3     # log(1 + exp(v))
+    LEAKY_RELU = 4   # v if v >= 0, else v * 0.1
+    LINEAR = 3       # Alias for SOFTPLUS (deprecated)
 
 
 # ---- Public Python API ----
@@ -469,6 +484,82 @@ def init_dense_layer(input_size: int, output_size: int, activation: int = 0) -> 
     return config
 
 
+def call_layer_init(function_name: str, *args) -> dict:
+    """
+    Call any layer initialization function via the registry.
+    
+    This is a generic interface to call any of the layer init functions:
+    - InitDenseLayer
+    - InitConv2DLayer
+    - InitMultiHeadAttentionLayer
+    - InitRNNLayer
+    - InitLSTMLayer
+    
+    Args:
+        function_name: Name of the function to call (e.g., "InitDenseLayer")
+        *args: Arguments to pass to the function
+    
+    Returns:
+        Layer configuration dict
+    
+    Examples:
+        # Dense layer: init_dense_layer(32, 64, 0)
+        config = call_layer_init("InitDenseLayer", 32, 64, 0)
+        
+        # Conv2D layer: init_conv2d_layer(28, 28, 1, 3, 1, 1, 32, 0)
+        config = call_layer_init("InitConv2DLayer", 28, 28, 1, 3, 1, 1, 32, 0)
+        
+        # LSTM layer: init_lstm_layer(128, 256, 1, 10)
+        config = call_layer_init("InitLSTMLayer", 128, 256, 1, 10)
+    """
+    if not _CallLayerInit:
+        raise RuntimeError("CallLayerInit function not available")
+    
+    args_json = json.dumps(list(args))
+    response = _CallLayerInit(function_name.encode('utf-8'), args_json.encode('utf-8'))
+    
+    if not response:
+        raise RuntimeError(f"Failed to call {function_name}")
+    
+    config = json.loads(response.decode('utf-8'))
+    
+    if isinstance(config, dict) and "error" in config:
+        raise RuntimeError(f"Failed to call {function_name}: {config['error']}")
+    
+    return config
+
+
+def list_layer_init_functions() -> list:
+    """
+    List all available layer initialization functions.
+    
+    Returns:
+        List of dicts with function metadata including:
+        - Name: Function name
+        - NumArgs: Number of arguments
+        - ArgTypes: List of argument type names
+    
+    Example:
+        functions = list_layer_init_functions()
+        for fn in functions:
+            print(f"{fn['Name']}: {fn['NumArgs']} args - {fn['ArgTypes']}")
+    """
+    if not _ListLayerInitFunctions:
+        raise RuntimeError("ListLayerInitFunctions function not available")
+    
+    response = _ListLayerInitFunctions()
+    
+    if not response:
+        raise RuntimeError("Failed to list layer init functions")
+    
+    result = json.loads(response.decode('utf-8'))
+    
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(f"Failed to list functions: {result['error']}")
+    
+    return result
+
+
 def set_layer(handle: int, row: int, col: int, layer_index: int, layer_config: dict) -> None:
     """
     Set a layer in the network grid.
@@ -616,3 +707,81 @@ def train_epoch(handle: int, inputs: List[List[float]], targets: List[List[float
         update_weights(handle, learning_rate)
     
     return total_loss / len(inputs)
+
+def train(handle: int, batches: List[tuple], config: dict = None) -> dict:
+    """
+    Train the network using the high-level Train API.
+    
+    Args:
+        handle: Network handle
+        batches: List of (input, target) tuples where:
+                 - input: List of floats (input data)
+                 - target: List of floats (target/label data)
+        config: Optional training configuration dict with keys:
+                - epochs: int (default: 5)
+                - learning_rate: float (default: 0.001)
+                - use_gpu: bool (default: False)
+                - print_every_batch: int (default: 0)
+                - gradient_clip: float (default: 0.0)
+                - loss_type: str (default: "mse")
+                - verbose: bool (default: True)
+    
+    Returns:
+        Training result dict with keys:
+        - FinalLoss: float
+        - BestLoss: float
+        - TotalTime: int (nanoseconds)
+        - AvgThroughput: float (samples/sec)
+        - LossHistory: List[float]
+    
+    Example:
+        batches = [
+            ([0.1, 0.2], [1.0, 0.0]),
+            ([0.8, 0.9], [0.0, 1.0]),
+        ]
+        result = train(net, batches, {
+            'epochs': 10,
+            'learning_rate': 0.01,
+            'verbose': True
+        })
+        print(f"Final loss: {result['FinalLoss']}")
+    """
+    # Convert batches to the format expected by Go
+    training_batches = []
+    for input_data, target_data in batches:
+        training_batches.append({
+            "Input": input_data,
+            "Target": target_data
+        })
+    
+    # Default configuration
+    if config is None:
+        config = {}
+    
+    training_config = {
+        "Epochs": config.get("epochs", 5),
+        "LearningRate": config.get("learning_rate", 0.001),
+        "UseGPU": config.get("use_gpu", False),
+        "PrintEveryBatch": config.get("print_every_batch", 0),
+        "GradientClip": config.get("gradient_clip", 0.0),
+        "LossType": config.get("loss_type", "mse"),
+        "Verbose": config.get("verbose", True),
+        "EvaluateEveryN": config.get("evaluate_every_n", 0),
+        "ValidationInputs": config.get("validation_inputs"),
+        "ValidationTargets": config.get("validation_targets"),
+    }
+    
+    # Call Train method via reflection
+    result = _json_call(handle, "Train", training_batches, training_config)
+    
+    # Result is [TrainingResult, error] - we want the first element
+    if isinstance(result, list) and len(result) > 0:
+        training_result = result[0]
+        if training_result is None:
+            # Check if there was an error (second element)
+            if len(result) > 1 and result[1]:
+                raise RuntimeError(f"Training failed: {result[1]}")
+            raise RuntimeError("Training returned no result")
+        return training_result
+    
+    raise RuntimeError(f"Unexpected Train response format: {result}")

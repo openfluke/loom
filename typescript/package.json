@@ -1,0 +1,59 @@
+{
+  "name": "@openfluke/welvet",
+  "version": "0.1.0",
+  "description": "TypeScript/JavaScript bindings for LOOM neural network framework with WebAssembly support - GPU-accelerated machine learning in the browser",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "loom",
+    "neural-network",
+    "machine-learning",
+    "deep-learning",
+    "webassembly",
+    "wasm",
+    "webgpu",
+    "gpu",
+    "typescript",
+    "javascript",
+    "go",
+    "golang",
+    "ml",
+    "ai",
+    "training",
+    "inference",
+    "browser"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openfluke/loom.git",
+    "directory": "typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/openfluke/loom/issues"
+  },
+  "homepage": "https://github.com/openfluke/loom/tree/main/typescript#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsc -p tsconfig.json",
+    "postbuild": "cp -r assets/* dist/",
+    "prepare": "bun run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "typescript": "^5.6.3"
+  }
+}

@@ -17,6 +17,7 @@ python/build/
 python/src/*.egg-info/
 python/.pytest_cache/
 python/__pycache__/
+python/src/welvet/__pycache__/
 
 # Zip archives
 cabi/*.zip

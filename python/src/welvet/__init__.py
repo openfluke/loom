@@ -17,9 +17,13 @@ from .utils import (
     set_layer,
     get_network_info,
     Activation,
+    # Registry-based layer initialization
+    call_layer_init,
+    list_layer_init_functions,
     # High-level helpers
     configure_sequential_network,
     train_epoch,
+    train,
 )
 
 __version__ = "0.0.1"
@@ -39,7 +43,11 @@ __all__ = [
     "set_layer",
     "get_network_info",
     "Activation",
+    # Registry-based layer initialization
+    "call_layer_init",
+    "list_layer_init_functions",
     # High-level helpers
     "configure_sequential_network",
     "train_epoch",
+    "train",
 ]
