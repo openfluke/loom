@@ -75,6 +75,7 @@ export async function initLoom(opts: InitOptions = {}): Promise<LoomAPI> {
   const api: LoomAPI = {
     NewNetwork: g.NewNetwork,
     LoadModelFromString: g.LoadModelFromString,
+    CallLayerInit: g.CallLayerInit, // Direct access to registry-based layer init
 
     // Layer initialization functions using CallLayerInit (registry-based)
     InitDenseLayer: (

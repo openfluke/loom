@@ -58,6 +58,14 @@ export interface LoomAPI {
   LoadModelFromString: (modelJSON: string, modelID: string) => LoomNetwork;
 
   /**
+   * Call any layer initialization function from the registry
+   * @param functionName - Name of the layer init function (e.g., "InitDenseLayer")
+   * @param paramsJSON - JSON string of parameters array
+   * @returns JSON string of layer configuration
+   */
+  CallLayerInit: (functionName: string, paramsJSON: string) => string;
+
+  /**
    * Initialize a dense (fully-connected) layer configuration
    * @param inputSize - Input dimension
    * @param outputSize - Output dimension
