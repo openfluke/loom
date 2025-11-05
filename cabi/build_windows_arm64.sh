@@ -2,7 +2,7 @@
 
 # LOOM C ABI Multi-Platform Build System
 # Builds for Windows ARM64
-# Uses Docker on macOS, native gcc-mingw-w64-aarch64 on Linux
+# REQUIRES: Linux with gcc-mingw-w64 (ARM64 support not in standard repos)
 
 set -e
 
@@ -14,86 +14,31 @@ DIR_ARCH="arm64"
 
 # Detect host OS and set appropriate compiler
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS - Use Docker with Linux container
-    echo "🐳 macOS detected - using Docker for Windows ARM64 cross-compilation"
+    # macOS - Windows ARM64 cross-compiler not available
+    echo "❌ Windows ARM64 build not supported on macOS"
     echo ""
-    
-    if ! command -v docker &> /dev/null; then
-        echo "❌ ERROR: Docker not found"
-        echo ""
-        echo "Install Docker Desktop for Mac:"
-        echo "  brew install --cask docker"
-        echo ""
-        echo "Or download from: https://www.docker.com/products/docker-desktop"
-        exit 1
-    fi
-    
-    # Check if Docker is running
-    if ! docker info &> /dev/null; then
-        echo "❌ ERROR: Docker daemon is not running"
-        echo ""
-        echo "If you're in an SSH session:"
-        echo "  1. On the physical Mac, open Docker Desktop from Applications"
-        echo "  2. Wait for Docker to start (whale icon in menu bar)"
-        echo "  3. Re-run this script from SSH"
-        echo ""
-        echo "Or use Colima (headless Docker alternative):"
-        echo "  brew install colima"
-        echo "  colima start"
-        echo ""
-        echo "Then re-run this script."
-        exit 1
-    fi
-    
-    echo "Building in Docker container..."
+    echo "The gcc-mingw-w64 ARM64 cross-compiler is not available in:"
+    echo "  • macOS Homebrew packages"
+    echo "  • Standard Debian/Ubuntu Docker images"
+    echo "  • Pre-built binaries for macOS"
     echo ""
-    
-    # Run the build inside a Docker container
-    docker run --rm \
-        -v "$(pwd)/..":/work \
-        -w /work/cabi \
-        golang:1.21 \
-        bash -c "
-            set -e
-            echo '📦 Installing Windows ARM64 cross-compiler...'
-            apt-get update -qq
-            apt-get install -y -qq gcc-mingw-w64-aarch64 > /dev/null
-            echo '✓ Compiler installed'
-            echo ''
-            echo '🔨 Building Windows ARM64 binary...'
-            export CC=aarch64-w64-mingw32-gcc
-            export GOOS=windows
-            export GOARCH=arm64
-            export CGO_ENABLED=1
-            
-            mkdir -p compiled/windows_arm64
-            
-            go build -buildmode=c-shared -o compiled/windows_arm64/libloom.dll main.go
-            echo '✓ Shared library built'
-            
-            echo ''
-            echo '🔨 Building benchmark executable...'
-            aarch64-w64-mingw32-gcc -o compiled/windows_arm64/simple_bench.exe simple_bench.c -L./compiled/windows_arm64 -lloom -lm
-            echo '✓ Benchmark compiled'
-            
-            echo ''
-            echo 'Build artifacts:'
-            ls -lh compiled/windows_arm64/
-        "
-    
+    echo "To build Windows ARM64:"
     echo ""
-    echo "╔════════════════════════════════════════════════════╗"
-    echo "║         Windows ARM64 Build Complete! 🎉           ║"
-    echo "╚════════════════════════════════════════════════════╝"
+    echo "1. Use a Linux machine (Ubuntu 24.04+ or Arch):"
+    echo "   # Ubuntu 24.04+ (has ARM64 mingw in repos)"
+    echo "   sudo apt install gcc-mingw-w64-aarch64-win32"
+    echo "   ./build_windows_arm64.sh"
     echo ""
-    echo "Output: compiled/windows_arm64/"
+    echo "2. Use GitHub Actions (recommended):"
+    echo "   - Push to GitHub"
+    echo "   - Use ubuntu-latest runner"
+    echo "   - Install gcc-mingw-w64 in workflow"
     echo ""
-    echo "Deploy to Windows ARM64 device (Surface Pro X, etc.):"
-    echo "  1. Copy compiled/windows_arm64/ folder to device"
-    echo "  2. Run: simple_bench.exe"
+    echo "3. Build natively on Windows ARM64 device"
     echo ""
-    
-    exit 0
+    echo "For now, use ./build_windows.sh for Windows x86_64"
+    echo ""
+    exit 1
 else
     # Linux - use mingw-w64 ARM64 compiler directly
     if command -v aarch64-w64-mingw32-gcc &> /dev/null; then
@@ -102,7 +47,13 @@ else
         CXX="aarch64-w64-mingw32-g++"
     else
         echo "ERROR: aarch64-w64-mingw32-gcc not found"
-        echo "Install with: sudo apt install gcc-mingw-w64-aarch64"
+        echo ""
+        echo "Install on Ubuntu 24.04+:"
+        echo "  sudo apt install gcc-mingw-w64-aarch64-win32"
+        echo ""
+        echo "Or on Arch Linux:"
+        echo "  yay -S mingw-w64-gcc"
+        echo ""
         exit 1
     fi
 fi
