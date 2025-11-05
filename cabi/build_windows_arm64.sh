@@ -62,7 +62,8 @@ mkdir -p "$OUTPUT_DIR"
 
 # Build Go shared library
 echo "Building shared library..."
-GOOS=windows GOARCH=$GOARCH CGO_ENABLED=1 CC=$CC go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" main.go
+# Add Windows system libraries that wgpu_native needs
+CGO_LDFLAGS="-loleaut32 -lole32 -lc++" GOOS=windows GOARCH=$GOARCH CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" main.go
 
 echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
 
