@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # LOOM C ABI Multi-Platform Build System
-# Builds for Windows ARM64 (Linux only - macOS Homebrew mingw-w64 lacks ARM64 support)
+# Builds for Windows ARM64
+# Uses Zig as cross-compiler on macOS (mingw-w64 doesn't support ARM64)
 
 set -e
 
@@ -13,29 +14,36 @@ DIR_ARCH="arm64"
 
 # Detect host OS and set appropriate compiler
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS - Homebrew mingw-w64 does NOT include ARM64 toolchain
-    # Fallback to x86_64 compiler (will produce x86_64 binary, not true ARM64)
-    if command -v x86_64-w64-mingw32-gcc &> /dev/null; then
-        echo "⚠️  WARNING: Using x86_64-w64-mingw32-gcc (Homebrew mingw-w64 lacks ARM64 support)"
-        echo "    This will produce a Windows x86_64 binary, NOT true ARM64."
-        echo "    For native ARM64: use Linux with gcc-mingw-w64-aarch64"
-        echo ""
-        CC="x86_64-w64-mingw32-gcc"
-        # Keep directory name as arm64 but note it's actually x86_64
-        echo "    Output: compiled/windows_arm64/ (contains x86_64 binary)"
+    # macOS - Use Zig as cross-compiler (supports Windows ARM64)
+    if command -v zig &> /dev/null; then
+        echo "✓ Using Zig cross-compiler for Windows ARM64"
+        CC="zig cc -target aarch64-windows-gnu"
+        CXX="zig c++ -target aarch64-windows-gnu"
     else
-        echo "ERROR: mingw-w64 not found"
-        echo "Install with: brew install mingw-w64"
+        echo "❌ Zig not found. Installing via Homebrew..."
+        echo ""
+        echo "Run: brew install zig"
+        echo ""
+        echo "Zig provides cross-compilation to Windows ARM64 from macOS."
+        echo "After installing, re-run this script."
         exit 1
     fi
 else
-    # Linux - prefer true ARM64 compiler
+    # Linux - use mingw-w64 if available, otherwise Zig
     if command -v aarch64-w64-mingw32-gcc &> /dev/null; then
         echo "✓ Using native ARM64 compiler: aarch64-w64-mingw32-gcc"
         CC="aarch64-w64-mingw32-gcc"
+        CXX="aarch64-w64-mingw32-g++"
+    elif command -v zig &> /dev/null; then
+        echo "✓ Using Zig cross-compiler for Windows ARM64"
+        CC="zig cc -target aarch64-windows-gnu"
+        CXX="zig c++ -target aarch64-windows-gnu"
     else
-        echo "ERROR: aarch64-w64-mingw32-gcc not found"
-        echo "Install with: sudo apt install gcc-mingw-w64-aarch64"
+        echo "ERROR: No suitable compiler found"
+        echo "Install either:"
+        echo "  sudo apt install gcc-mingw-w64-aarch64"
+        echo "  or"
+        echo "  sudo snap install zig --classic --beta"
         exit 1
     fi
 fi
@@ -48,19 +56,6 @@ LIB_NAME="libloom.dll"
 echo "Output directory: $OUTPUT_DIR"
 echo "GOARCH: $GOARCH"
 echo "Cross-compiler: $CC"
-
-# Check if cross-compiler exists
-if ! command -v $CC &> /dev/null; then
-    echo "ERROR: $CC not found. Install mingw-w64 for cross-compilation."
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        echo "  macOS: brew install mingw-w64"
-    else
-        echo "  Ubuntu/Debian: sudo apt install gcc-mingw-w64-aarch64"
-    fi
-    echo ""
-    echo "Note: ARM64 cross-compiler support may vary by platform."
-    exit 1
-fi
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
