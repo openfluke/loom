@@ -4,6 +4,8 @@ A high-performance GPU-accelerated neural network framework written in Go, featu
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/welvet.svg)](https://pypi.org/project/welvet/)
+[![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/)
 
 ## Overview
 
@@ -510,6 +512,69 @@ Speedup: 8.03x (CPU faster for small batches)
 - ✅ **Model persistence** - Save/load as JSON strings
 
 See [cabi/README.md](cabi/README.md) for complete API reference, multi-platform build instructions, and language bindings (Python, Rust, C++, etc.).
+
+## Python Package (welvet)
+
+**Wrapper for Embedding Loom Via External (C-ABI) Toolchain**
+
+High-level Python bindings for LOOM with GPU acceleration support.
+
+### Installation
+
+```bash
+pip install welvet
+```
+
+### Quick Example
+
+```python
+import loom_py
+
+# Create network with GPU acceleration
+network = loom_py.create_network(
+    input_size=4,
+    grid_rows=1,
+    grid_cols=1,
+    layers_per_cell=2,
+    use_gpu=True
+)
+
+# Configure: 4 -> 8 -> 2
+loom_py.configure_sequential_network(
+    network,
+    layer_sizes=[4, 8, 2],
+    activations=[loom_py.Activation.RELU, loom_py.Activation.SIGMOID]
+)
+
+# Training data
+inputs = [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]
+targets = [[1.0, 0.0], [0.0, 1.0]]
+
+# Train
+for epoch in range(10):
+    loss = loom_py.train_epoch(network, inputs, targets, learning_rate=0.1)
+    print(f"Epoch {epoch+1}: loss = {loss:.4f}")
+
+# Predict
+output = loom_py.forward(network, [0.1, 0.2, 0.3, 0.4])
+print(f"Output: {output}")
+
+# Cleanup
+loom_py.cleanup_gpu(network)
+loom_py.free_network(network)
+```
+
+### Features
+
+- ✅ **Simple API** - High-level helpers for common tasks
+- ✅ **GPU Support** - WebGPU acceleration via C-ABI
+- ✅ **Multi-platform** - Linux, macOS, Windows, Android binaries included
+- ✅ **Lightweight** - ctypes-based, no compilation required
+- ✅ **Type Safe** - Proper error handling and validation
+
+See [python/README.md](python/README.md) for complete documentation.
+
+**PyPI**: https://pypi.org/project/welvet/
 
 ## Performance Benchmarks
 
