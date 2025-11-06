@@ -883,3 +883,24 @@ func (n *Network) UpdateWeights(learningRate float32) {
 		}
 	}
 }
+
+// ZeroGradients clears all accumulated gradients after weight update
+func (n *Network) ZeroGradients() {
+	// Zero all kernel gradients
+	for i := range n.kernelGradients {
+		if n.kernelGradients[i] != nil {
+			for j := range n.kernelGradients[i] {
+				n.kernelGradients[i][j] = 0
+			}
+		}
+	}
+
+	// Zero all bias gradients
+	for i := range n.biasGradients {
+		if n.biasGradients[i] != nil {
+			for j := range n.biasGradients[i] {
+				n.biasGradients[i][j] = 0
+			}
+		}
+	}
+}

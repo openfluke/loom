@@ -122,6 +122,49 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 
 			// Update gradient for next layer
 			grad = gradInput
+		} else if config.Type == LayerSoftmax {
+			// Softmax layer backward - NOT element-wise!
+			// Get the softmax output (which is stored in activations)
+			softmaxOutput := n.activations[layerIdx+1] // output of this layer
+
+			// Handle different softmax variants
+			if config.SoftmaxRows > 0 {
+				// Grid Softmax: per-row softmax gradient
+				rows := config.SoftmaxRows
+				cols := config.SoftmaxCols
+				gradInput := make([]float32, len(grad))
+
+				for row := 0; row < rows; row++ {
+					start := row * cols
+					end := start + cols
+
+					// For each position in this row
+					for i := start; i < end; i++ {
+						var gradSum float32
+						// Jacobian-vector product: dL/dx_i = Σ_j (dL/dy_j * dy_j/dx_i)
+						// where dy_j/dx_i = y_j * (δ_ij - y_i) for softmax
+						for j := start; j < end; j++ {
+							jacobian := softmaxOutput[j] * (kroneckerFloat(i, j) - softmaxOutput[i])
+							gradSum += grad[j] * jacobian
+						}
+						gradInput[i] = gradSum
+					}
+				}
+				grad = gradInput
+			} else {
+				// Standard softmax: single softmax over all values
+				gradInput := make([]float32, len(grad))
+
+				for i := range gradInput {
+					var gradSum float32
+					for j := range grad {
+						jacobian := softmaxOutput[j] * (kroneckerFloat(i, j) - softmaxOutput[i])
+						gradSum += grad[j] * jacobian
+					}
+					gradInput[i] = gradSum
+				}
+				grad = gradInput
+			}
 		} else {
 			// Default: element-wise activation backward
 			// Compute gradient with respect to pre-activation
@@ -467,4 +510,12 @@ func (n *Network) backwardGPUConv2D(gradOutput []float32) ([]float32, time.Durat
 	gradInput, _ := n.BackwardCPU(gradOutput)
 
 	return gradInput, time.Since(start), nil
+}
+
+// kroneckerFloat returns 1.0 if i==j, else 0.0 (for float32 computations)
+func kroneckerFloat(i, j int) float32 {
+	if i == j {
+		return 1.0
+	}
+	return 0.0
 }
