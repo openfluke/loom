@@ -24,6 +24,23 @@ const (
 	LayerMultiHeadAttention LayerType = 2 // Multi-Head Attention layer
 	LayerRNN                LayerType = 3 // Recurrent Neural Network layer
 	LayerLSTM               LayerType = 4 // Long Short-Term Memory layer
+	LayerSoftmax            LayerType = 5 // Softmax layer with multiple variants
+)
+
+// SoftmaxType defines the variant of softmax to use
+type SoftmaxType int
+
+const (
+	SoftmaxStandard     SoftmaxType = 0 // Standard softmax: one distribution
+	SoftmaxGrid         SoftmaxType = 1 // Grid softmax: independent distributions per row
+	SoftmaxHierarchical SoftmaxType = 2 // Hierarchical: nested softmax levels
+	SoftmaxTemperature  SoftmaxType = 3 // Temperature-scaled softmax
+	SoftmaxGumbel       SoftmaxType = 4 // Gumbel softmax (adds noise)
+	SoftmaxMasked       SoftmaxType = 5 // Masked softmax (ignores certain positions)
+	SoftmaxSparse       SoftmaxType = 6 // Sparsemax (can output exact zeros)
+	SoftmaxAdaptive     SoftmaxType = 7 // Adaptive softmax (for large vocabularies)
+	SoftmaxMixture      SoftmaxType = 8 // Mixture of softmaxes
+	SoftmaxEntmax       SoftmaxType = 9 // Entmax (generalization of softmax/sparsemax)
 )
 
 // LayerConfig holds configuration for a specific layer in the grid
@@ -83,6 +100,18 @@ type LayerConfig struct {
 	WeightIH_o []float32 // Output gate: input-to-hidden [hiddenSize][inputSize]
 	WeightHH_o []float32 // Output gate: hidden-to-hidden [hiddenSize][hiddenSize]
 	BiasH_o    []float32 // Output gate bias [hiddenSize]
+
+	// Softmax specific parameters
+	SoftmaxVariant   SoftmaxType // Which softmax variant to use
+	SoftmaxRows      int         // For grid softmax: number of rows (agents/groups)
+	SoftmaxCols      int         // For grid softmax: number of columns (actions per row)
+	Temperature      float32     // For temperature softmax (default 1.0)
+	GumbelNoise      bool        // For Gumbel softmax: whether to add noise
+	Mask             []bool      // For masked softmax: which positions to include
+	HierarchyLevels  []int       // For hierarchical softmax: sizes at each level [strategies, units, actions]
+	AdaptiveClusters [][]int     // For adaptive softmax: item indices per cluster
+	MixtureWeights   []float32   // For mixture softmax: weights for each component
+	EntmaxAlpha      float32     // For entmax: alpha parameter (1.0=softmax, 2.0=sparsemax)
 }
 
 // Network represents a grid neural network

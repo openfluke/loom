@@ -60,6 +60,18 @@ type LayerDefinition struct {
 	// RNN/LSTM fields
 	InputSize  int `json:"input_size,omitempty"`
 	HiddenSize int `json:"hidden_size,omitempty"`
+
+	// Softmax fields
+	SoftmaxVariant   string    `json:"softmax_variant,omitempty"`
+	SoftmaxRows      int       `json:"softmax_rows,omitempty"`
+	SoftmaxCols      int       `json:"softmax_cols,omitempty"`
+	Temperature      float32   `json:"temperature,omitempty"`
+	GumbelNoise      bool      `json:"gumbel_noise,omitempty"`
+	Mask             []bool    `json:"mask,omitempty"`
+	HierarchyLevels  []int     `json:"hierarchy_levels,omitempty"`
+	AdaptiveClusters [][]int   `json:"adaptive_clusters,omitempty"`
+	MixtureWeights   []float32 `json:"mixture_weights,omitempty"`
+	EntmaxAlpha      float32   `json:"entmax_alpha,omitempty"`
 }
 
 // EncodedWeights stores weights in base64-encoded JSON format
@@ -240,6 +252,19 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 			layerWeights.BiasF = layerConfig.BiasH_f
 			layerWeights.BiasG = layerConfig.BiasH_g
 			layerWeights.BiasO = layerConfig.BiasH_o
+
+		case LayerSoftmax:
+			layerDef.SoftmaxVariant = softmaxTypeToString(layerConfig.SoftmaxVariant)
+			layerDef.SoftmaxRows = layerConfig.SoftmaxRows
+			layerDef.SoftmaxCols = layerConfig.SoftmaxCols
+			layerDef.Temperature = layerConfig.Temperature
+			layerDef.GumbelNoise = layerConfig.GumbelNoise
+			layerDef.Mask = layerConfig.Mask
+			layerDef.HierarchyLevels = layerConfig.HierarchyLevels
+			layerDef.AdaptiveClusters = layerConfig.AdaptiveClusters
+			layerDef.MixtureWeights = layerConfig.MixtureWeights
+			layerDef.EntmaxAlpha = layerConfig.EntmaxAlpha
+			// Softmax has no trainable weights
 		}
 
 		config.Layers = append(config.Layers, layerDef)
@@ -480,6 +505,29 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				BiasH_o:      layerWeights.BiasO,
 			}
 
+		case "softmax":
+			// Initialize mask if needed
+			mask := layerDef.Mask
+			if mask == nil && layerDef.SoftmaxVariant == "masked" {
+				// If mask wasn't saved, create a default all-true mask
+				// The size should be determined from context
+				mask = []bool{}
+			}
+
+			layerConfig = LayerConfig{
+				Type:             LayerSoftmax,
+				SoftmaxVariant:   stringToSoftmaxType(layerDef.SoftmaxVariant),
+				SoftmaxRows:      layerDef.SoftmaxRows,
+				SoftmaxCols:      layerDef.SoftmaxCols,
+				Temperature:      layerDef.Temperature,
+				GumbelNoise:      layerDef.GumbelNoise,
+				Mask:             mask,
+				HierarchyLevels:  layerDef.HierarchyLevels,
+				AdaptiveClusters: layerDef.AdaptiveClusters,
+				MixtureWeights:   layerDef.MixtureWeights,
+				EntmaxAlpha:      layerDef.EntmaxAlpha,
+			}
+
 		default:
 			return nil, fmt.Errorf("unknown layer type: %s", layerDef.Type)
 		}
@@ -503,8 +551,64 @@ func layerTypeToString(lt LayerType) string {
 		return "rnn"
 	case LayerLSTM:
 		return "lstm"
+	case LayerSoftmax:
+		return "softmax"
 	default:
 		return "unknown"
+	}
+}
+
+func softmaxTypeToString(st SoftmaxType) string {
+	switch st {
+	case SoftmaxStandard:
+		return "standard"
+	case SoftmaxGrid:
+		return "grid"
+	case SoftmaxHierarchical:
+		return "hierarchical"
+	case SoftmaxTemperature:
+		return "temperature"
+	case SoftmaxGumbel:
+		return "gumbel"
+	case SoftmaxMasked:
+		return "masked"
+	case SoftmaxSparse:
+		return "sparse"
+	case SoftmaxAdaptive:
+		return "adaptive"
+	case SoftmaxMixture:
+		return "mixture"
+	case SoftmaxEntmax:
+		return "entmax"
+	default:
+		return "standard"
+	}
+}
+
+func stringToSoftmaxType(s string) SoftmaxType {
+	switch s {
+	case "standard":
+		return SoftmaxStandard
+	case "grid":
+		return SoftmaxGrid
+	case "hierarchical":
+		return SoftmaxHierarchical
+	case "temperature":
+		return SoftmaxTemperature
+	case "gumbel":
+		return SoftmaxGumbel
+	case "masked":
+		return SoftmaxMasked
+	case "sparse":
+		return SoftmaxSparse
+	case "adaptive":
+		return SoftmaxAdaptive
+	case "mixture":
+		return SoftmaxMixture
+	case "entmax":
+		return SoftmaxEntmax
+	default:
+		return SoftmaxStandard
 	}
 }
 
