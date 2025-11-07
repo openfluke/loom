@@ -42,6 +42,34 @@ bun add @openfluke/welvet
 
 ## 🚀 Quick Start
 
+### The Easy Way: Load Complete Models
+
+Instead of manually configuring layers, **load a complete model with ONE line**:
+
+```typescript
+import { initLoom } from "@openfluke/welvet";
+
+const loom = await initLoom();
+
+// Load model from JSON (architecture + weights all at once!)
+const modelJSON = await fetch("test.json").then((r) => r.json());
+const network = loom.LoadModelFromString(
+  JSON.stringify(modelJSON),
+  "all_layers_test"
+);
+
+// That's it! All 16 layers, weights, biases loaded automatically
+const input = new Array(10).fill(0).map(() => Math.random());
+const [output, duration] = JSON.parse(
+  network.ForwardCPU(JSON.stringify([input]))
+);
+console.log("Output:", output);
+```
+
+**Live Demo:** See `wasm/all_layers_test.html` for a complete working example that loads a 26.4KB model with 16 layers (Dense, Conv2D, Attention, RNN, LSTM) and runs inference in the browser!
+
+### Manual Configuration (for building models from scratch)
+
 ```typescript
 import { initLoom, ActivationType } from "@openfluke/welvet";
 
@@ -254,6 +282,28 @@ network.UpdateWeights(JSON.stringify([learningRate]));
 
 ### Model Persistence
 
+#### Load Model (The Easy Way - ONE LINE!)
+
+```typescript
+// Fetch model from server
+const savedModel = await fetch("model.json").then((r) => r.json());
+
+// Load complete network with ONE function call!
+const network = loom.LoadModelFromString(
+  JSON.stringify(savedModel),
+  "model_name"
+);
+
+// Or from localStorage
+const savedModel = JSON.parse(localStorage.getItem("my_model")!);
+const network = loom.LoadModelFromString(
+  JSON.stringify(savedModel),
+  "model_name"
+);
+```
+
+**That's it!** All layers, weights, biases, and configurations are automatically restored. No manual layer setup needed!
+
 #### Save Model
 
 ```typescript
@@ -264,14 +314,38 @@ const model = JSON.parse(JSON.parse(modelJSON)[0]);
 localStorage.setItem("my_model", JSON.stringify(model));
 ```
 
-#### Load Model
+#### Save Model
 
 ```typescript
-const savedModel = JSON.parse(localStorage.getItem("my_model")!);
-const network = loom.LoadModelFromString(
-  JSON.stringify(savedModel),
-  "model_name"
-);
+const modelJSON = network.SaveModelToString(JSON.stringify(["model_name"]));
+const model = JSON.parse(JSON.parse(modelJSON)[0]);
+
+// Store anywhere (localStorage, IndexedDB, backend API, etc.)
+localStorage.setItem("my_model", JSON.stringify(model));
+```
+
+#### Cross-Platform Model Loading
+
+The same JSON model file works across **all three platforms**:
+
+```typescript
+// JavaScript/WASM
+const network = loom.LoadModelFromString(modelJSON, "model_id");
+```
+
+```python
+# Python
+network = welvet.load_model_from_string(model_json, "model_id")
+```
+
+```go
+// Go
+network, _ := nn.LoadModelFromString(modelJSON, "model_id")
+```
+
+See `examples/all_layers_validation.go` for a complete demo that generates test.json (26.4KB with 16 layers) and verifies all three platforms load it identically!
+
+#### Load Model (Legacy API)
 ```
 
 ### Runtime Introspection

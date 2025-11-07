@@ -30,24 +30,81 @@ This produces:
 - `loom.wasm` (5.4MB) - The compiled WebAssembly binary
 - `wasm_exec.js` (17KB) - Go's WASM runtime
 
-### Running the Demo
+### Running the Demos
 
 ```bash
-python3 -m http.server 8080
+./serve.sh  # Starts server on port 8080
 # Open http://localhost:8080/example.html
+# Open http://localhost:8080/all_layers_test.html
 ```
 
-The demo includes:
+**Demos included:**
 
-- Network creation with layer initialization
-- Forward pass with real-time output
-- Training loop demo (5 epochs)
-- Model save/load functionality
-- Complete introspection showcase
+- `example.html` - Network creation, training, introspection
+- `all_layers_test.html` - ✨ **Load complete models from JSON!**
+
+### ✨ All Layers Test Demo
+
+The `all_layers_test.html` demo showcases the **one-line model loading** feature:
+
+```javascript
+// Load a complete model (structure + all weights) in ONE LINE!
+const network = LoadModelFromString(modelJSON, "my_model");
+
+// That's it! Network is ready to use
+const resultJSON = network.ForwardCPU(JSON.stringify([inputData]));
+const output = JSON.parse(resultJSON)[0];
+```
+
+**What it does:**
+
+1. Fetches `test.json` from localhost:3123 (26KB model with 16 layers)
+2. Calls `LoadModelFromString()` - **Done!** Network ready
+3. Runs inference and compares with expected outputs
+4. Trains to verify weights are mutable
+
+**Try it:**
+
+```bash
+# Terminal 1: Start model file server
+cd ../examples
+./serve_files.sh  # Port 3123
+
+# Terminal 2: Start WASM server
+cd ../wasm
+./serve.sh  # Port 8080
+
+# Open: http://localhost:8080/all_layers_test.html
+```
 
 ## JavaScript API
 
-### Creating a Network
+### ✨ Model Loading (The Easy Way)
+
+```javascript
+// Load complete model from JSON string
+const network = LoadModelFromString(modelJSONString, "model_id");
+
+// That's it! Network has all layers + weights loaded
+// Use it immediately:
+const output = JSON.parse(network.ForwardCPU(JSON.stringify([inputData])))[0];
+
+// Train it:
+const batches = [{ Input: inputData, Target: targetData }];
+const config = {
+  Epochs: 10,
+  LearningRate: 0.01,
+  LossType: "mse",
+};
+network.Train(JSON.stringify([batches, config]));
+
+// Save it:
+const savedJSON = JSON.parse(
+  network.SaveModelToString(JSON.stringify(["model_id"]))
+)[0];
+```
+
+### Creating Networks from Scratch
 
 ```javascript
 // Create a network: 784 input → 392 hidden → 10 output
@@ -97,7 +154,6 @@ const attention = CallLayerInit(
   "InitMultiHeadAttentionLayer",
   JSON.stringify([seqLen, dModel, numHeads, activation])
 );
-
 // RNN layer
 const rnn = CallLayerInit(
   "InitRNNLayer",

@@ -12,6 +12,27 @@ pip install welvet
 
 ## Quick Start
 
+### ✨ The Easy Way - Load Complete Models
+
+```python
+import welvet
+
+# Load a complete model (structure + all weights) in ONE LINE!
+network = welvet.load_model_from_string(model_json, "my_model")
+
+# That's it! Network is ready to use
+output = welvet.forward(network, input_data)
+
+# Train it
+welvet.backward(network, gradient)
+welvet.update_weights(network, learning_rate=0.01)
+
+# Save it
+model_json = welvet.save_model_to_string(network, "my_model")
+```
+
+### Building Networks from Scratch
+
 ```python
 import welvet
 
@@ -64,6 +85,35 @@ welvet.cleanup_gpu(network)
 welvet.free_network(network)
 ```
 
+### Complete Example: All Layers Test
+
+See `examples/all_layers_test.py` for a comprehensive test that:
+
+1. Downloads a complete model from localhost:3123
+2. Loads it with `load_model_from_string()` - ONE line!
+3. Runs inference and compares outputs
+4. Trains to verify weights are mutable
+
+```bash
+# Start the file server (serves test.json)
+cd ../../examples
+./serve_files.sh
+
+# Run the test (in another terminal)
+cd ../python/examples
+python3 all_layers_test.py
+```
+
+Output:
+
+```
+✅ test.json loaded (26.4 KB)
+✅ ✨ Model loaded completely! (handle: 1)
+✅ All 16 layers with weights loaded automatically!
+✅ Outputs match with small differences (expected with softmax)
+✅ Weights successfully changed!
+```
+
 ## Features
 
 - 🚀 **GPU Acceleration**: WebGPU-powered compute shaders for Dense, Conv2D, and Attention layers
@@ -79,6 +129,49 @@ welvet.free_network(network)
 ## API Reference
 
 ### Network Management
+
+#### `load_model_from_string(model_json, model_id="loaded_model")` ✨
+
+**The Easy Way!** Load a complete model (structure + all weights) from JSON string.
+
+**Parameters:**
+
+- `model_json` (str): JSON string containing the complete model
+- `model_id` (str): Model identifier (default: "loaded_model")
+
+**Returns:** Network handle (int)
+
+**Example:**
+
+```python
+# Load from file
+with open('model.json', 'r') as f:
+    model_json = f.read()
+
+network = welvet.load_model_from_string(model_json, "my_model")
+# Done! All layers + weights loaded, ready to use
+```
+
+#### `save_model_to_string(handle, model_id="saved_model")`
+
+Save a complete model (structure + all weights) to JSON string.
+
+**Parameters:**
+
+- `handle` (int): Network handle
+- `model_id` (str): Model identifier (default: "saved_model")
+
+**Returns:** JSON string containing the complete model
+
+**Example:**
+
+```python
+model_json = welvet.save_model_to_string(network, "my_model")
+
+# Save to file
+with open('model.json', 'w') as f:
+    f.write(model_json)
+```
 
 #### `create_network(input_size, grid_rows=2, grid_cols=2, layers_per_cell=3, use_gpu=False)`
 

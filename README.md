@@ -250,6 +250,47 @@ func main() {
 }
 ```
 
+### ✨ Model Serialization - Save & Load Complete Networks
+
+**The Easy Way - One Function Call:**
+
+```go
+// Save a trained model (includes all weights and configuration)
+err := network.SaveModel("model.json", "my_model")
+
+// Load it back - ONE LINE! Everything restored automatically
+loadedNet, err := nn.LoadModel("model.json", "my_model")
+// Done! All layers, weights, and configuration loaded
+
+// Or use strings (great for APIs/databases)
+jsonString, err := network.SaveModelToString("my_model")
+loadedNet, err := nn.LoadModelFromString(jsonString, "my_model")
+```
+
+**Works everywhere:**
+
+- ✅ **Go**: `nn.LoadModel()` / `nn.LoadModelFromString()`
+- ✅ **Python**: `welvet.load_model_from_string(json_str, "model_id")`
+- ✅ **JavaScript/WASM**: `LoadModelFromString(jsonString, "model_id")`
+- ✅ **C/C++/Rust**: `Loom_LoadModel(jsonCStr, modelID)`
+
+**Example Test:** See `examples/all_layers_validation.go` for a complete demo with all 6 layer types + 10 softmax variants (16 layers total)
+
+```bash
+cd examples
+go run all_layers_validation.go
+# Creates: test.json, inputs.txt, outputs.txt
+# Tests: save → load → verify → train
+```
+
+**Cross-Platform Tests:**
+
+- **Python/C-ABI**: `python/examples/all_layers_test.py`
+- **WebAssembly**: `wasm/all_layers_test.html` (open in browser)
+- **Go Native**: `examples/all_layers_validation.go`
+
+All three tests load the same `test.json` model file and verify outputs match!
+
 ## Validation
 
 All 5 layer types (Dense, Conv2D, Multi-Head Attention, RNN, LSTM) have been empirically validated through end-to-end training:

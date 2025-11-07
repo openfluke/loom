@@ -660,6 +660,50 @@ The demo shows:
 - WASM/CABI integration examples
 - Model verification with forward pass
 
+### Cross-Platform Serialization Test
+
+The `examples/all_layers_validation.go` test demonstrates **one-line model loading** across all platforms (Go, Python, WASM):
+
+```bash
+# 1. Generate test.json (26.4KB model with 16 layers)
+cd examples
+go run all_layers_validation.go
+
+# 2. Serve for web access (in new terminal)
+cd .. && ./serve_files.sh  # Port 3123
+
+# 3. Test Python (loads same test.json with ONE line!)
+cd python/examples
+python3 all_layers_test.py
+
+# 4. Test WASM (loads same test.json with ONE line!)
+# Open: http://localhost:3123/wasm/all_layers_test.html
+```
+
+All three platforms load the SAME test.json and verify:
+
+- ✅ All 16 layers loaded automatically
+- ✅ Weights, biases, configurations restored
+- ✅ Outputs match within floating-point precision
+- ✅ Training works (weight mutation verified)
+
+**The key insight: ONE function call loads everything!**
+
+```go
+// Go
+network, _ := nn.LoadModel("test.json", "all_layers_test")
+```
+
+```python
+# Python
+network = welvet.load_model_from_string(model_json, "all_layers_test")
+```
+
+```javascript
+// JavaScript/WASM
+network = LoadModelFromString(modelJSON, "all_layers_test");
+```
+
 ## Runtime Introspection
 
 The `nn` package provides runtime introspection capabilities for discovering and inspecting Network methods at runtime.

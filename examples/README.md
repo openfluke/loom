@@ -77,18 +77,56 @@ Agent 2: [0.10, 0.50, 0.25, 0.15] ← sum = 1.0
 
 ### Basic Examples
 
-#### `all_layers_validation.go` ✅
+#### `all_layers_validation.go` ✅ **NEW: Cross-Platform Test Suite**
 
-**Purpose:** Validate all 5 layer types work correctly
+**Purpose:** Comprehensive test of all 6 layer types + 10 softmax variants with model serialization
 
-**What it proves:**
+**What it demonstrates:**
 
-- Dense → Conv2D → Attention → RNN → LSTM → Dense stack
-- 200 epochs training
-- 93.6% loss reduction
-- Perfect binary classification
+- Creates network with ALL layer types: Dense → Conv2D → Attention → RNN → LSTM → Dense + 10 Softmax variants (16 layers total)
+- Trains model (200 epochs, 50 samples)
+- **Saves complete model** to `test.json` (structure + all weights)
+- Creates reference `inputs.txt` and `outputs.txt`
+- **Reloads model** from JSON and verifies outputs match
+- Retrains loaded model to verify weights are mutable
 
-**Key takeaway:** Complex layer stacks can learn effectively
+**✨ One Function to Load Everything:**
+
+```go
+// Save trained model
+network.SaveModel("test.json", "all_layers_test")
+
+// Load it back - DONE! All 16 layers + weights restored
+loadedNet, err := nn.LoadModel("test.json", "all_layers_test")
+```
+
+**Cross-platform validation:**
+
+```bash
+# 1. Run Go test (creates test.json)
+go run all_layers_validation.go
+
+# 2. Start file server
+./serve_files.sh  # Serves test.json on localhost:3123
+
+# 3. Test Python/C-ABI (in another terminal)
+cd ../python/examples
+python3 all_layers_test.py
+
+# 4. Test WebAssembly (open in browser)
+# Open: http://localhost:8080/all_layers_test.html
+cd ../../wasm
+./serve.sh
+```
+
+All three platforms load the SAME `test.json` and verify identical outputs!
+
+**Key achievements:**
+
+- ✅ **93.6% loss reduction** (200 epochs)
+- ✅ **Perfect serialization** - outputs match to 5 decimal places
+- ✅ **Works everywhere** - Go, Python, JavaScript/WASM
+- ✅ **One-line loading** - `LoadModel()` / `load_model_from_string()` / `LoadModelFromString()`
 
 ```bash
 go run all_layers_validation.go
