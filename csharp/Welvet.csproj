@@ -8,7 +8,7 @@
     
     <!-- NuGet Package Metadata -->
     <PackageId>Welvet</PackageId>
-    <Version>0.0.2</Version>
+    <Version>0.0.3</Version>
     <Authors>OpenFluke / Samuel Watson</Authors>
     <Company>OpenFluke</Company>
     <Description>Welvet - LOOM Neural Network Framework for .NET - GPU-accelerated deep learning with one-line model loading</Description>

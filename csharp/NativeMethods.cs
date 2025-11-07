@@ -9,7 +9,13 @@ namespace Welvet;
 /// </summary>
 internal static class NativeMethods
 {
+    // On Windows, .NET requires the .dll extension in the library name
+    // On Linux/macOS, it automatically adds .so/.dylib
+#if WINDOWS
+    private const string LibName = "libloom.dll";
+#else
     private const string LibName = "libloom";
+#endif
 
     /// <summary>
     /// Creates a new neural network and returns JSON with handle.
