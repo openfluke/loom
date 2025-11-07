@@ -4,6 +4,8 @@
 from .utils import (
     # Core network functions
     create_network,
+    load_model_from_string,
+    save_model_to_string,
     free_network,
     forward,
     get_output,
@@ -30,6 +32,8 @@ __version__ = "0.0.1"
 __all__ = [
     # Core API
     "create_network",
+    "load_model_from_string",
+    "save_model_to_string",
     "free_network",
     "forward",
     "get_output",

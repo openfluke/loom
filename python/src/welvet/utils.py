@@ -147,6 +147,18 @@ if _GetInfo:
     _GetInfo.restype = ctypes.c_char_p
     _GetInfo.argtypes = [ctypes.c_longlong]
 
+# Loom_LoadModel: loads a model from JSON string
+_LoadModel = _sym("Loom_LoadModel")
+if _LoadModel:
+    _LoadModel.restype = ctypes.c_char_p
+    _LoadModel.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+
+# Loom_SaveModel: saves a model to JSON string
+_SaveModel = _sym("Loom_SaveModel")
+if _SaveModel:
+    _SaveModel.restype = ctypes.c_char_p
+    _SaveModel.argtypes = [ctypes.c_longlong, ctypes.c_char_p]
+
 
 # ---- Activation Types ----
 class Activation:
@@ -247,6 +259,92 @@ def create_network(input_size: int, hidden_size: int = None, output_size: int = 
         raise RuntimeError("Network created but no handle returned")
     
     return result["handle"]
+
+
+def load_model_from_string(model_json: str, model_id: str = "loaded_model") -> int:
+    """
+    Load a complete model from JSON string (with all weights and configuration).
+    
+    This is the easy way - just pass the JSON and get back a fully configured network!
+    
+    Args:
+        model_json: JSON string containing the complete model (structure + weights)
+        model_id: Optional model identifier
+    
+    Returns:
+        Network handle (integer)
+    
+    Example:
+        # Load model from file
+        with open('model.json', 'r') as f:
+            model_json = f.read()
+        
+        network = load_model_from_string(model_json, "my_model")
+        
+        # Use it immediately
+        output = forward(network, input_data)
+    """
+    if not _LoadModel:
+        raise RuntimeError("LoadModel function not available in library")
+    
+    response = _LoadModel(model_json.encode('utf-8'), model_id.encode('utf-8'))
+    
+    if not response:
+        raise RuntimeError("Failed to load model")
+    
+    result = json.loads(response.decode('utf-8'))
+    
+    # Check for error
+    if "error" in result:
+        error = result["error"]
+        raise RuntimeError(f"Failed to load model: {error}")
+    
+    # Extract handle
+    if "handle" not in result:
+        raise RuntimeError("Model loaded but no handle returned")
+    
+    return result["handle"]
+
+
+def save_model_to_string(handle: int, model_id: str = "saved_model") -> str:
+    """
+    Save a model to JSON string (with all weights and configuration).
+    
+    Args:
+        handle: Network handle
+        model_id: Model identifier
+    
+    Returns:
+        JSON string containing the complete model
+    
+    Example:
+        model_json = save_model_to_string(network, "my_model")
+        
+        # Save to file
+        with open('model.json', 'w') as f:
+            f.write(model_json)
+    """
+    if not _SaveModel:
+        raise RuntimeError("SaveModel function not available in library")
+    
+    response = _SaveModel(int(handle), model_id.encode('utf-8'))
+    
+    if not response:
+        raise RuntimeError("Failed to save model")
+    
+    # The response should be the JSON string directly
+    result_str = response.decode('utf-8')
+    
+    # Check if it's an error wrapped in JSON
+    try:
+        result = json.loads(result_str)
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(f"Failed to save model: {result['error']}")
+    except json.JSONDecodeError:
+        # Not JSON, probably the raw model string - this is fine
+        pass
+    
+    return result_str
 
 
 def free_network(handle: int) -> None:

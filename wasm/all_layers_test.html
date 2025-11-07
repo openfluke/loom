@@ -1,4 +1,21 @@
 <!DOCTYPE html>
+<!--
+  LOOM All Layers Test (WebAssembly)
+  
+  ✨ ONE FUNCTION CALL TO RULE THEM ALL! ✨
+  
+  This demonstrates LoadModelFromString() which takes a JSON string
+  and returns a fully configured network with ALL weights loaded.
+  
+  No manual layer setup, no type conversions, no hassle!
+  Just: network = LoadModelFromString(jsonString, modelID)
+  
+  The test:
+  1. Fetches model.json from localhost:3123
+  2. Calls LoadModelFromString() - DONE! Network ready!
+  3. Runs inference and compares with expected outputs
+  4. Trains the network to verify weights are mutable
+-->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
