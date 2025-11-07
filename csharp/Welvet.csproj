@@ -8,7 +8,7 @@
     
     <!-- NuGet Package Metadata -->
     <PackageId>Welvet</PackageId>
-    <Version>0.0.5</Version>
+    <Version>0.0.6</Version>
     <Authors>OpenFluke / Samuel Watson</Authors>
     <Company>OpenFluke</Company>
     <Description>Welvet - LOOM Neural Network Framework for .NET - GPU-accelerated deep learning with one-line model loading</Description>
@@ -30,12 +30,11 @@
     <!-- Include build targets file to ensure native libraries are copied -->
     <None Include="build/Welvet.targets" Pack="true" PackagePath="build/" />
     
-    <!-- Include native libraries for each platform as Content with CopyToOutputDirectory -->
-    <!-- These will be copied to the consuming app's output directory automatically -->
-    <None Include="runtimes/linux_x86_64/libloom.so" Pack="true" PackagePath="runtimes/linux-x64/native/libloom.so" />
-    <None Include="runtimes/macos_arm64/libloom.dylib" Pack="true" PackagePath="runtimes/osx-arm64/native/libloom.dylib" />
-    <None Include="runtimes/windows_x86_64/libloom.dll" Pack="true" PackagePath="runtimes/win-x64/native/libloom.dll" />
-    <None Include="runtimes/android_arm64/libloom.so" Pack="true" PackagePath="runtimes/android-arm64/native/libloom.so" />
+    <!-- Include native libraries - keep source path structure in package -->
+    <None Include="runtimes/linux_x86_64/libloom.so" Pack="true" PackagePath="runtimes/linux_x86_64/" />
+    <None Include="runtimes/macos_arm64/libloom.dylib" Pack="true" PackagePath="runtimes/macos_arm64/" />
+    <None Include="runtimes/windows_x86_64/libloom.dll" Pack="true" PackagePath="runtimes/windows_x86_64/" />
+    <None Include="runtimes/android_arm64/libloom.so" Pack="true" PackagePath="runtimes/android_arm64/" />
   </ItemGroup>
 
 </Project>

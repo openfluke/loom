@@ -1,13 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <!-- Ensure native libraries are copied to output directory -->
-    <NativeLibraryReference Include="$(MSBuildThisFileDirectory)\..\runtimes\**\*.*">
-      <Link>runtimes\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    <!-- Copy native libraries from NuGet package to output directory -->
+    <ContentWithTargetPath Include="$(MSBuildThisFileDirectory)..\runtimes\windows_x86_64\libloom.dll" 
+                            Condition="$([MSBuild]::IsOSPlatform('Windows'))">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Visible>false</Visible>
-    </NativeLibraryReference>
+      <TargetPath>libloom.dll</TargetPath>
+    </ContentWithTargetPath>
     
-    <None Include="@(NativeLibraryReference)" />
+    <ContentWithTargetPath Include="$(MSBuildThisFileDirectory)..\runtimes\linux_x86_64\libloom.so" 
+                            Condition="$([MSBuild]::IsOSPlatform('Linux')) And '$(RuntimeIdentifier)' != 'android-arm64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>libloom.so</TargetPath>
+    </ContentWithTargetPath>
+    
+    <ContentWithTargetPath Include="$(MSBuildThisFileDirectory)..\runtimes\macos_arm64\libloom.dylib" 
+                            Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>libloom.dylib</TargetPath>
+    </ContentWithTargetPath>
+    
+    <ContentWithTargetPath Include="$(MSBuildThisFileDirectory)..\runtimes\android_arm64\libloom.so" 
+                            Condition="'$(RuntimeIdentifier)' == 'android-arm64' Or '$(RuntimeIdentifier)' == 'android.21-arm64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>libloom.so</TargetPath>
+    </ContentWithTargetPath>
   </ItemGroup>
 </Project>

@@ -31,20 +31,36 @@ internal static class NativeMethods
         if (libraryName != LibName && libraryName != "libloom")
             return IntPtr.Zero;
 
-        // Get the runtime identifier
-        string rid = GetRuntimeIdentifier();
         string libFileName = GetLibraryFileName();
-        
-        // Try to load from runtimes/<rid>/native/
         string assemblyLocation = assembly.Location;
+        
         if (!string.IsNullOrEmpty(assemblyLocation))
         {
             string assemblyDir = Path.GetDirectoryName(assemblyLocation)!;
-            string runtimePath = Path.Combine(assemblyDir, "runtimes", rid, "native", libFileName);
             
-            if (File.Exists(runtimePath))
+            // Try 1: Check if it's directly in the output directory (from .targets file)
+            string directPath = Path.Combine(assemblyDir, libFileName);
+            if (File.Exists(directPath))
             {
-                if (NativeLibrary.TryLoad(runtimePath, out IntPtr handle))
+                if (NativeLibrary.TryLoad(directPath, out IntPtr handle))
+                    return handle;
+            }
+            
+            // Try 2: Check our custom runtime paths (windows_x86_64, linux_x86_64, etc.)
+            string customRid = GetCustomRuntimeIdentifier();
+            string customPath = Path.Combine(assemblyDir, "runtimes", customRid, libFileName);
+            if (File.Exists(customPath))
+            {
+                if (NativeLibrary.TryLoad(customPath, out IntPtr handle))
+                    return handle;
+            }
+            
+            // Try 3: Check standard .NET runtime paths (win-x64, linux-x64, etc.)
+            string standardRid = GetRuntimeIdentifier();
+            string standardPath = Path.Combine(assemblyDir, "runtimes", standardRid, "native", libFileName);
+            if (File.Exists(standardPath))
+            {
+                if (NativeLibrary.TryLoad(standardPath, out IntPtr handle))
                     return handle;
             }
         }
@@ -54,6 +70,22 @@ internal static class NativeMethods
             return defaultHandle;
 
         return IntPtr.Zero;
+    }
+
+    private static string GetCustomRuntimeIdentifier()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return "windows_x86_64";
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            if (RuntimeInformation.RuntimeIdentifier.Contains("android"))
+                return "android_arm64";
+            return "linux_x86_64";
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return "macos_arm64";
+        
+        return "unknown";
     }
 
     private static string GetRuntimeIdentifier()
