@@ -200,7 +200,10 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 		case LayerDense:
 			layerDef.Width = 1
 			layerDef.Height = 1
-			layerWeights.Biases = layerConfig.Bias
+			layerDef.InputHeight = layerConfig.InputHeight   // inputSize
+			layerDef.OutputHeight = layerConfig.OutputHeight // outputSize
+			layerWeights.Kernel = layerConfig.Kernel         // Weight matrix
+			layerWeights.Biases = layerConfig.Bias           // Bias vector
 
 		case LayerConv2D:
 			layerDef.InputChannels = layerConfig.InputChannels
@@ -432,9 +435,12 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 		switch layerDef.Type {
 		case "dense":
 			layerConfig = LayerConfig{
-				Type:       LayerDense,
-				Activation: stringToActivation(layerDef.Activation),
-				Bias:       layerWeights.Biases,
+				Type:         LayerDense,
+				Activation:   stringToActivation(layerDef.Activation),
+				InputHeight:  layerDef.InputHeight,  // inputSize
+				OutputHeight: layerDef.OutputHeight, // outputSize
+				Kernel:       layerWeights.Kernel,   // Weight matrix
+				Bias:         layerWeights.Biases,   // Bias vector
 			}
 
 		case "conv2d":
