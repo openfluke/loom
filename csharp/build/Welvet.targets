@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <!-- Ensure native libraries are copied to output directory -->
+    <NativeLibraryReference Include="$(MSBuildThisFileDirectory)\..\runtimes\**\*.*">
+      <Link>runtimes\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>false</Visible>
+    </NativeLibraryReference>
+    
+    <None Include="@(NativeLibraryReference)" />
+  </ItemGroup>
+</Project>
