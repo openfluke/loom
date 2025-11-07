@@ -6,48 +6,81 @@
   </PropertyGroup>
   
   <ItemGroup>
-    <!-- Copy native libraries from NuGet package to output directory -->
-    
-    <!-- Windows -->
-    <ContentWithTargetPath Include="$(WelvetNativeLibPath)windows_x86_64\libloom.dll" 
-                            Condition="'$(OS)' == 'Windows_NT'">
+    <!-- Windows - include for all Windows targets including MAUI -->
+    <None Include="$(WelvetNativeLibPath)windows_x86_64\libloom.dll" 
+          Condition="'$(OS)' == 'Windows_NT' Or '$(TargetPlatformIdentifier)' == 'Windows'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <TargetPath>libloom.dll</TargetPath>
+      <Link>libloom.dll</Link>
       <Visible>false</Visible>
-    </ContentWithTargetPath>
+    </None>
     
     <!-- Linux (non-Android) -->
-    <ContentWithTargetPath Include="$(WelvetNativeLibPath)linux_x86_64\libloom.so" 
-                            Condition="'$(OS)' != 'Windows_NT' And '$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))' And '$(TargetFrameworkIdentifier)' != 'MonoAndroid'">
+    <None Include="$(WelvetNativeLibPath)linux_x86_64\libloom.so" 
+          Condition="'$(OS)' != 'Windows_NT' And '$(TargetFrameworkIdentifier)' != 'MonoAndroid' And '$(TargetPlatformIdentifier)' != 'android'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <TargetPath>libloom.so</TargetPath>
+      <Link>libloom.so</Link>
       <Visible>false</Visible>
-    </ContentWithTargetPath>
+    </None>
     
     <!-- macOS -->
-    <ContentWithTargetPath Include="$(WelvetNativeLibPath)macos_arm64\libloom.dylib" 
-                            Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::OSX)))' == 'true'">
+    <None Include="$(WelvetNativeLibPath)macos_arm64\libloom.dylib" 
+          Condition="'$(TargetPlatformIdentifier)' == 'macOS' Or '$(TargetPlatformIdentifier)' == 'maccatalyst'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <TargetPath>libloom.dylib</TargetPath>
+      <Link>libloom.dylib</Link>
       <Visible>false</Visible>
-    </ContentWithTargetPath>
+    </None>
     
     <!-- Android -->
-    <ContentWithTargetPath Include="$(WelvetNativeLibPath)android_arm64\libloom.so" 
-                            Condition="'$(TargetFrameworkIdentifier)' == 'MonoAndroid' Or '$(RuntimeIdentifier)' == 'android-arm64' Or '$(RuntimeIdentifier)' == 'android.21-arm64'">
+    <None Include="$(WelvetNativeLibPath)android_arm64\libloom.so" 
+          Condition="'$(TargetFrameworkIdentifier)' == 'MonoAndroid' Or '$(TargetPlatformIdentifier)' == 'android'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <TargetPath>libloom.so</TargetPath>
+      <Link>libloom.so</Link>
       <Visible>false</Visible>
-    </ContentWithTargetPath>
-    
+    </None>
   </ItemGroup>
+
+  <!-- MAUI-specific: Also add as AndroidNativeLibrary for Android -->
+  <ItemGroup Condition="'$(TargetFrameworkIdentifier)' == 'MonoAndroid' Or '$(TargetPlatformIdentifier)' == 'android'">
+    <AndroidNativeLibrary Include="$(WelvetNativeLibPath)android_arm64\libloom.so">
+      <Link>libs\arm64-v8a\libloom.so</Link>
+    </AndroidNativeLibrary>
+  </ItemGroup>
+
+  <!-- MAUI Windows: Ensure DLL is in the app bundle -->
+  <Target Name="WelvetCopyWindowsNative" 
+          AfterTargets="Build" 
+          Condition="('$(TargetPlatformIdentifier)' == 'Windows' Or '$(OS)' == 'Windows_NT') And Exists('$(WelvetNativeLibPath)windows_x86_64\libloom.dll')">
+    <Copy SourceFiles="$(WelvetNativeLibPath)windows_x86_64\libloom.dll" 
+          DestinationFiles="$(OutputPath)libloom.dll" 
+          SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="Welvet: Copied libloom.dll to $(OutputPath)" />
+  </Target>
+
+  <!-- MAUI: Force Welvet.dll to be copied to output (MAUI sometimes skips it) -->
+  <Target Name="WelvetCopyManagedAssembly" 
+          AfterTargets="Build"
+          Condition="'$(TargetPlatformIdentifier)' == 'Windows' Or '$(TargetPlatformIdentifier)' == 'android' Or '$(TargetPlatformIdentifier)' == 'macOS' Or '$(TargetPlatformIdentifier)' == 'maccatalyst'">
+    <PropertyGroup>
+      <WelvetManagedDllPath>$(MSBuildThisFileDirectory)..\lib\net9.0\Welvet.dll</WelvetManagedDllPath>
+    </PropertyGroup>
+    <Copy SourceFiles="$(WelvetManagedDllPath)" 
+          DestinationFiles="$(OutputPath)Welvet.dll" 
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(WelvetManagedDllPath)')" />
+    <Message Importance="high" Text="Welvet: Copied Welvet.dll to $(OutputPath)" Condition="Exists('$(WelvetManagedDllPath)')" />
+    <Warning Text="Welvet: Could not find Welvet.dll at $(WelvetManagedDllPath)" Condition="!Exists('$(WelvetManagedDllPath)')" />
+  </Target>
   
   <!-- Debug output to help troubleshoot -->
   <Target Name="WelvetDebugInfo" BeforeTargets="BeforeBuild">
+    <Message Importance="high" Text="=== Welvet Native Library Configuration ===" />
     <Message Importance="high" Text="Welvet: OS = $(OS)" />
     <Message Importance="high" Text="Welvet: TargetFrameworkIdentifier = $(TargetFrameworkIdentifier)" />
+    <Message Importance="high" Text="Welvet: TargetPlatformIdentifier = $(TargetPlatformIdentifier)" />
     <Message Importance="high" Text="Welvet: RuntimeIdentifier = $(RuntimeIdentifier)" />
+    <Message Importance="high" Text="Welvet: OutputPath = $(OutputPath)" />
     <Message Importance="high" Text="Welvet: Native lib path = $(WelvetNativeLibPath)" />
+    <Message Importance="high" Text="==========================================" />
   </Target>
   
 </Project>

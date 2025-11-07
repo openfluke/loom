@@ -60,9 +60,19 @@ mkdir -p "$OUTPUT_DIR"
 
 # Build Go shared library
 echo "Building shared library..."
+# Use -static flags to embed MinGW runtime into the DLL
+export CGO_LDFLAGS="-static-libgcc -static-libstdc++"
 GOOS=windows GOARCH=$GOARCH CGO_ENABLED=1 CC=$CC go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" main.go
 
 echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
+
+# Verify static linking
+echo "Checking DLL dependencies..."
+if command -v objdump &> /dev/null; then
+    echo "DLL imports:"
+    objdump -p "$OUTPUT_DIR/$LIB_NAME" | grep "DLL Name" | grep -v "KERNEL32\|USER32\|msvcrt\|ntdll\|WS2_32\|GDI32\|OPENGL32\|bcrypt\|D3DCOMPILER" || echo "✓ No MinGW runtime dependencies found"
+fi
+echo ""
 
 # Build C benchmark
 echo "Building simple_bench.exe..."
