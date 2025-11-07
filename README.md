@@ -8,7 +8,7 @@ A high-performance GPU-accelerated neural network framework written in Go, featu
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/welvet.svg)](https://pypi.org/project/welvet/)
 [![npm](https://img.shields.io/npm/v/@openfluke/welvet.svg)](https://www.npmjs.com/package/@openfluke/welvet)
-[![NuGet](https://img.shields.io/badge/NuGet-Coming%20Soon-lightgrey.svg)](https://www.nuget.org/)
+[![NuGet](https://img.shields.io/nuget/v/Welvet.svg)](https://www.nuget.org/packages/Welvet/)
 [![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/)
 [![.NET](https://img.shields.io/badge/.NET-9.0+-512BD4.svg)](https://dotnet.microsoft.com/)
 
@@ -770,7 +770,7 @@ string json = network.SaveToString("my_model");
 
 See [csharp/README.md](csharp/README.md) for complete documentation.
 
-**NuGet**: Coming soon!
+**NuGet**: https://www.nuget.org/packages/Welvet/
 
 ## Performance Benchmarks
 
