@@ -23,16 +23,43 @@ internal static class NativeMethods
     {
         // Register a custom DLL import resolver to help locate the native library
         NativeLibrary.SetDllImportResolver(typeof(NativeMethods).Assembly, DllImportResolver);
+        
+        // Print debug information
+        Console.WriteLine("=== Welvet Native Library Loader ===");
+        Console.WriteLine($"OS: {RuntimeInformation.OSDescription}");
+        Console.WriteLine($"OS Platform: Windows={RuntimeInformation.IsOSPlatform(OSPlatform.Windows)}, Linux={RuntimeInformation.IsOSPlatform(OSPlatform.Linux)}, macOS={RuntimeInformation.IsOSPlatform(OSPlatform.OSX)}");
+        Console.WriteLine($"Architecture: {RuntimeInformation.ProcessArchitecture}");
+        Console.WriteLine($"Runtime ID: {RuntimeInformation.RuntimeIdentifier}");
+        Console.WriteLine($"Framework: {RuntimeInformation.FrameworkDescription}");
+        Console.WriteLine($"Expected library: {GetLibraryFileName()}");
+        Console.WriteLine($"Custom RID: {GetCustomRuntimeIdentifier()}");
+        Console.WriteLine($"Standard RID: {GetRuntimeIdentifier()}");
+        
+        var assemblyLocation = typeof(NativeMethods).Assembly.Location;
+        if (!string.IsNullOrEmpty(assemblyLocation))
+        {
+            var assemblyDir = Path.GetDirectoryName(assemblyLocation);
+            Console.WriteLine($"Assembly directory: {assemblyDir}");
+        }
+        Console.WriteLine("====================================");
     }
 
     private static IntPtr DllImportResolver(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
     {
+        Console.WriteLine($"\n[DllImportResolver] Resolving: {libraryName}");
+        
         // Only handle our library
         if (libraryName != LibName && libraryName != "libloom")
+        {
+            Console.WriteLine($"[DllImportResolver] Not our library, skipping");
             return IntPtr.Zero;
+        }
 
         string libFileName = GetLibraryFileName();
         string assemblyLocation = assembly.Location;
+        
+        Console.WriteLine($"[DllImportResolver] Looking for: {libFileName}");
+        Console.WriteLine($"[DllImportResolver] Assembly location: {assemblyLocation}");
         
         if (!string.IsNullOrEmpty(assemblyLocation))
         {
@@ -40,35 +67,96 @@ internal static class NativeMethods
             
             // Try 1: Check if it's directly in the output directory (from .targets file)
             string directPath = Path.Combine(assemblyDir, libFileName);
+            Console.WriteLine($"[DllImportResolver] Try 1 - Direct: {directPath}");
+            Console.WriteLine($"[DllImportResolver] File exists: {File.Exists(directPath)}");
             if (File.Exists(directPath))
             {
+                Console.WriteLine($"[DllImportResolver] Attempting to load from direct path...");
                 if (NativeLibrary.TryLoad(directPath, out IntPtr handle))
+                {
+                    Console.WriteLine($"[DllImportResolver] ✅ SUCCESS! Loaded from direct path");
                     return handle;
+                }
+                Console.WriteLine($"[DllImportResolver] ❌ Failed to load from direct path");
             }
             
             // Try 2: Check our custom runtime paths (windows_x86_64, linux_x86_64, etc.)
             string customRid = GetCustomRuntimeIdentifier();
             string customPath = Path.Combine(assemblyDir, "runtimes", customRid, libFileName);
+            Console.WriteLine($"[DllImportResolver] Try 2 - Custom RID: {customPath}");
+            Console.WriteLine($"[DllImportResolver] File exists: {File.Exists(customPath)}");
             if (File.Exists(customPath))
             {
+                Console.WriteLine($"[DllImportResolver] Attempting to load from custom RID path...");
                 if (NativeLibrary.TryLoad(customPath, out IntPtr handle))
+                {
+                    Console.WriteLine($"[DllImportResolver] ✅ SUCCESS! Loaded from custom RID path");
                     return handle;
+                }
+                Console.WriteLine($"[DllImportResolver] ❌ Failed to load from custom RID path");
             }
             
             // Try 3: Check standard .NET runtime paths (win-x64, linux-x64, etc.)
             string standardRid = GetRuntimeIdentifier();
             string standardPath = Path.Combine(assemblyDir, "runtimes", standardRid, "native", libFileName);
+            Console.WriteLine($"[DllImportResolver] Try 3 - Standard RID: {standardPath}");
+            Console.WriteLine($"[DllImportResolver] File exists: {File.Exists(standardPath)}");
             if (File.Exists(standardPath))
             {
+                Console.WriteLine($"[DllImportResolver] Attempting to load from standard RID path...");
                 if (NativeLibrary.TryLoad(standardPath, out IntPtr handle))
+                {
+                    Console.WriteLine($"[DllImportResolver] ✅ SUCCESS! Loaded from standard RID path");
                     return handle;
+                }
+                Console.WriteLine($"[DllImportResolver] ❌ Failed to load from standard RID path");
+            }
+            
+            // Try 4: List what's actually in the directory
+            Console.WriteLine($"[DllImportResolver] Listing files in assembly directory:");
+            try
+            {
+                var files = Directory.GetFiles(assemblyDir, "*loom*", SearchOption.TopDirectoryOnly);
+                foreach (var file in files)
+                {
+                    Console.WriteLine($"  - {Path.GetFileName(file)}");
+                }
+                
+                var runtimesDir = Path.Combine(assemblyDir, "runtimes");
+                if (Directory.Exists(runtimesDir))
+                {
+                    Console.WriteLine($"[DllImportResolver] Runtimes directory exists: {runtimesDir}");
+                    var subdirs = Directory.GetDirectories(runtimesDir);
+                    foreach (var subdir in subdirs)
+                    {
+                        Console.WriteLine($"  - {Path.GetFileName(subdir)}/");
+                        var libFiles = Directory.GetFiles(subdir, "*loom*", SearchOption.AllDirectories);
+                        foreach (var libFile in libFiles)
+                        {
+                            Console.WriteLine($"    - {libFile.Replace(runtimesDir, "runtimes")}");
+                        }
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"[DllImportResolver] Runtimes directory does not exist");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DllImportResolver] Error listing files: {ex.Message}");
             }
         }
 
         // Fallback: try default search
+        Console.WriteLine($"[DllImportResolver] Try 4 - Default search...");
         if (NativeLibrary.TryLoad(libraryName, assembly, searchPath, out IntPtr defaultHandle))
+        {
+            Console.WriteLine($"[DllImportResolver] ✅ SUCCESS! Loaded via default search");
             return defaultHandle;
+        }
 
+        Console.WriteLine($"[DllImportResolver] ❌ ALL ATTEMPTS FAILED");
         return IntPtr.Zero;
     }
 

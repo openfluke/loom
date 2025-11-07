@@ -1,29 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  
+  <PropertyGroup>
+    <WelvetNativeLibPath>$(MSBuildThisFileDirectory)..\runtimes\</WelvetNativeLibPath>
+  </PropertyGroup>
+  
   <ItemGroup>
     <!-- Copy native libraries from NuGet package to output directory -->
-    <ContentWithTargetPath Include="$(MSBuildThisFileDirectory)..\runtimes\windows_x86_64\libloom.dll" 
-                            Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    
+    <!-- Windows -->
+    <ContentWithTargetPath Include="$(WelvetNativeLibPath)windows_x86_64\libloom.dll" 
+                            Condition="'$(OS)' == 'Windows_NT'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <TargetPath>libloom.dll</TargetPath>
+      <Visible>false</Visible>
     </ContentWithTargetPath>
     
-    <ContentWithTargetPath Include="$(MSBuildThisFileDirectory)..\runtimes\linux_x86_64\libloom.so" 
-                            Condition="$([MSBuild]::IsOSPlatform('Linux')) And '$(RuntimeIdentifier)' != 'android-arm64'">
+    <!-- Linux (non-Android) -->
+    <ContentWithTargetPath Include="$(WelvetNativeLibPath)linux_x86_64\libloom.so" 
+                            Condition="'$(OS)' != 'Windows_NT' And '$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))' And '$(TargetFrameworkIdentifier)' != 'MonoAndroid'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <TargetPath>libloom.so</TargetPath>
+      <Visible>false</Visible>
     </ContentWithTargetPath>
     
-    <ContentWithTargetPath Include="$(MSBuildThisFileDirectory)..\runtimes\macos_arm64\libloom.dylib" 
-                            Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <!-- macOS -->
+    <ContentWithTargetPath Include="$(WelvetNativeLibPath)macos_arm64\libloom.dylib" 
+                            Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::OSX)))' == 'true'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <TargetPath>libloom.dylib</TargetPath>
+      <Visible>false</Visible>
     </ContentWithTargetPath>
     
-    <ContentWithTargetPath Include="$(MSBuildThisFileDirectory)..\runtimes\android_arm64\libloom.so" 
-                            Condition="'$(RuntimeIdentifier)' == 'android-arm64' Or '$(RuntimeIdentifier)' == 'android.21-arm64'">
+    <!-- Android -->
+    <ContentWithTargetPath Include="$(WelvetNativeLibPath)android_arm64\libloom.so" 
+                            Condition="'$(TargetFrameworkIdentifier)' == 'MonoAndroid' Or '$(RuntimeIdentifier)' == 'android-arm64' Or '$(RuntimeIdentifier)' == 'android.21-arm64'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <TargetPath>libloom.so</TargetPath>
+      <Visible>false</Visible>
     </ContentWithTargetPath>
+    
   </ItemGroup>
+  
+  <!-- Debug output to help troubleshoot -->
+  <Target Name="WelvetDebugInfo" BeforeTargets="BeforeBuild">
+    <Message Importance="high" Text="Welvet: OS = $(OS)" />
+    <Message Importance="high" Text="Welvet: TargetFrameworkIdentifier = $(TargetFrameworkIdentifier)" />
+    <Message Importance="high" Text="Welvet: RuntimeIdentifier = $(RuntimeIdentifier)" />
+    <Message Importance="high" Text="Welvet: Native lib path = $(WelvetNativeLibPath)" />
+  </Target>
+  
 </Project>
