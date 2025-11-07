@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>Welvet</PackageId>
+    <Version>0.0.2</Version>
+    <Authors>OpenFluke / Samuel Watson</Authors>
+    <Company>OpenFluke</Company>
+    <Description>Welvet - LOOM Neural Network Framework for .NET - GPU-accelerated deep learning with one-line model loading</Description>
+    <PackageTags>neural-network;machine-learning;deep-learning;gpu;ai;webgpu;welvet;loom</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/openfluke/loom</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/openfluke/loom.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    
+    <!-- Generate documentation XML -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Include README in package -->
+    <None Include="README.md" Pack="true" PackagePath="/" />
+    
+    <!-- Include native libraries for each platform -->
+    <Content Include="runtimes/linux_x86_64/libloom.so" PackagePath="runtimes/linux-x64/native" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="runtimes/macos_arm64/libloom.dylib" PackagePath="runtimes/osx-arm64/native" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="runtimes/windows_x86_64/libloom.dll" PackagePath="runtimes/win-x64/native" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="runtimes/android_arm64/libloom.so" PackagePath="runtimes/android-arm64/native" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

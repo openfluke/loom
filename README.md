@@ -7,7 +7,10 @@ A high-performance GPU-accelerated neural network framework written in Go, featu
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/welvet.svg)](https://pypi.org/project/welvet/)
+[![npm](https://img.shields.io/npm/v/@openfluke/welvet.svg)](https://www.npmjs.com/package/@openfluke/welvet)
+[![NuGet](https://img.shields.io/badge/NuGet-Coming%20Soon-lightgrey.svg)](https://www.nuget.org/)
 [![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/)
+[![.NET](https://img.shields.io/badge/.NET-9.0+-512BD4.svg)](https://dotnet.microsoft.com/)
 
 ## Overview
 
@@ -158,6 +161,20 @@ loom/
 │       ├── utils.py     # High-level Python API
 │       └── */           # Multi-platform C libraries
 │
+├── typescript/          # TypeScript/WASM package
+│   ├── package.json     # npm package configuration
+│   ├── README.md        # TypeScript package documentation
+│   └── src/             # TypeScript bindings
+│
+├── csharp/              # C#/.NET package (Welvet)
+│   ├── Welvet.csproj    # NuGet package configuration
+│   ├── NativeMethods.cs # P/Invoke declarations (C-ABI)
+│   ├── Network.cs       # High-level managed API
+│   ├── Activation.cs    # Activation enum
+│   ├── README.md        # C# package documentation
+│   ├── runtimes/        # Native libraries per platform
+│   └── examples/        # C# example programs
+│
 ├── fabric/              # Demo application
 │   ├── main.go          # Interactive demo menu
 │   ├── demos/           # Individual layer demos
@@ -272,6 +289,7 @@ loadedNet, err := nn.LoadModelFromString(jsonString, "my_model")
 - ✅ **Go**: `nn.LoadModel()` / `nn.LoadModelFromString()`
 - ✅ **Python**: `welvet.load_model_from_string(json_str, "model_id")`
 - ✅ **JavaScript/WASM**: `LoadModelFromString(jsonString, "model_id")`
+- ✅ **C#/.NET**: `Network.LoadFromString(jsonString, "model_id")`
 - ✅ **C/C++/Rust**: `Loom_LoadModel(jsonCStr, modelID)`
 
 **Example Test:** See `examples/all_layers_validation.go` for a complete demo with all 6 layer types + 10 softmax variants (16 layers total)
@@ -287,9 +305,11 @@ go run all_layers_validation.go
 
 - **Python/C-ABI**: `python/examples/all_layers_test.py`
 - **WebAssembly**: `wasm/all_layers_test.html` (open in browser)
+- **TypeScript/Bun**: `typescript/examples/all_layers_test.js`
+- **C#/.NET**: `csharp/examples/Program.cs`
 - **Go Native**: `examples/all_layers_validation.go`
 
-All three tests load the same `test.json` model file and verify outputs match!
+All tests load the same `test.json` model file and verify outputs match!
 
 ## Validation
 
@@ -676,6 +696,81 @@ welvet.free_network(network)
 See [python/README.md](python/README.md) for complete documentation.
 
 **PyPI**: https://pypi.org/project/welvet/
+
+## .NET/C# Package (Welvet)
+
+High-level C# bindings for LOOM with full P/Invoke support for .NET 9.0+.
+
+### Installation
+
+```bash
+dotnet add package Welvet
+```
+
+### Quick Example
+
+```csharp
+using Welvet;
+
+// Create network with GPU acceleration
+using var network = Network.Create(
+    inputSize: 4,
+    gridRows: 1,
+    gridCols: 1,
+    layersPerCell: 2,
+    useGpu: true
+);
+
+// Configure: 4 -> 8 -> 2
+network.ConfigureSequential(
+    layerSizes: new[] { 4, 8, 2 },
+    activations: new[] { Activation.ScaledReLU, Activation.Sigmoid }
+);
+
+// Training data
+var inputs = new float[][] {
+    new[] { 0.1f, 0.2f, 0.3f, 0.4f },
+    new[] { 0.5f, 0.6f, 0.7f, 0.8f }
+};
+var targets = new float[][] {
+    new[] { 1.0f, 0.0f },
+    new[] { 0.0f, 1.0f }
+};
+
+// Train
+for (int epoch = 0; epoch < 10; epoch++)
+{
+    float loss = network.TrainEpoch(inputs, targets, learningRate: 0.1f);
+    Console.WriteLine($"Epoch {epoch + 1}: loss = {loss:F4}");
+}
+
+// Predict
+var output = network.Forward(new[] { 0.1f, 0.2f, 0.3f, 0.4f });
+Console.WriteLine($"Output: [{string.Join(", ", output)}]");
+```
+
+### One-Line Model Loading
+
+```csharp
+// Load complete model from JSON string
+using var network = Network.LoadFromString(modelJson, "my_model");
+
+// Save model to JSON string
+string json = network.SaveToString("my_model");
+```
+
+### Features
+
+- ✅ **Modern C# API** - IDisposable, nullable reference types, async-ready
+- ✅ **GPU Support** - WebGPU acceleration via P/Invoke to C-ABI
+- ✅ **Multi-platform** - Linux, macOS, Windows with native library packaging
+- ✅ **Type Safe** - Strong typing with proper exception handling
+- ✅ **.NET 9.0+** - Built for latest .NET runtime
+- ✅ **Zero Dependencies** - Pure P/Invoke, no external packages
+
+See [csharp/README.md](csharp/README.md) for complete documentation.
+
+**NuGet**: Coming soon!
 
 ## Performance Benchmarks
 
