@@ -346,7 +346,8 @@ network, _ := nn.LoadModelFromString(modelJSON, "model_id")
 See `examples/all_layers_validation.go` for a complete demo that generates test.json (26.4KB with 16 layers) and verifies all three platforms load it identically!
 
 #### Load Model (Legacy API)
-```
+
+````
 
 ### Runtime Introspection
 
@@ -361,7 +362,7 @@ methods.forEach((method) => {
     `${method.method_name}(${method.parameters.map((p) => p.type).join(", ")})`
   );
 });
-```
+````
 
 #### Check Method Availability
 
