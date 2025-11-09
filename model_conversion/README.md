@@ -2,6 +2,37 @@
 
 This directory contains tools for running LOOM transformer models with a web interface.
 
+## Model Servers
+
+### serve_model_bytes.go ⭐ NEW
+
+**Best for production use** - Loads entire model into memory using `nn.LoadTransformerFromBytes()`
+
+- Reads config.json and model.safetensors into byte slices
+- Uses the nn framework's native transformer loading
+- Cleaner code, easier to maintain
+- HTTP API compatible with other servers
+
+```bash
+go build -o serve_model_bytes serve_model_bytes.go
+./serve_model_bytes -model ~/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B/snapshots/xxx -port 8080
+```
+
+### serve_model_auto.go
+
+Automatically loads models with dynamic EOS token detection
+
+- Reads safetensors directly from disk
+- Flexible tensor key matching
+- Good for quick testing
+
+### serve_model_manual.go
+
+Manual model construction with explicit layer-by-layer loading
+
+- Most control over model structure
+- Useful for debugging
+
 ## Quick Start
 
 ### 1. Download the model:

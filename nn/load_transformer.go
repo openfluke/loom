@@ -157,6 +157,132 @@ func LoadTransformerFromSafetensors(modelDir string) (*Network, error) {
 	return network, nil
 }
 
+// LoadTransformerFromBytes loads a Llama-based transformer model from byte slices
+// Supports: Llama, TinyLlama, Qwen2.5, Mistral, and other models using the Llama architecture
+// configData: JSON config file contents
+// weightsData: safetensors file contents
+func LoadTransformerFromBytes(configData []byte, weightsData []byte) (*Network, error) {
+	// Parse config
+	var config TransformerConfig
+	if err := json.Unmarshal(configData, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	fmt.Printf("Loading transformer model from bytes:\n")
+	fmt.Printf("  Model type: %s\n", config.ModelType)
+	if len(config.Architectures) > 0 {
+		fmt.Printf("  Architecture: %s\n", config.Architectures[0])
+	}
+	fmt.Printf("  Hidden size: %d\n", config.HiddenSize)
+	fmt.Printf("  Layers: %d\n", config.NumLayers)
+	fmt.Printf("  Attention heads: %d (Q), %d (KV)\n", config.NumHeads, config.NumKVHeads)
+	fmt.Printf("  Intermediate size: %d\n", config.IntermediateSize)
+
+	// Load weights from bytes
+	tensors, err := LoadSafetensorsFromBytes(weightsData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load weights: %w", err)
+	}
+
+	fmt.Printf("Loaded %d tensors\n", len(tensors))
+
+	// Build network
+	maxLayers := config.NumLayers // Load ALL layers for proper model behavior
+
+	network := &Network{
+		GridRows:      1,
+		GridCols:      1,
+		LayersPerCell: maxLayers * 4, // 4 layers per transformer block: Attn, RMSNorm, SwiGLU, RMSNorm
+		InputSize:     config.HiddenSize,
+		BatchSize:     1,
+		Layers:        make([]LayerConfig, 0),
+	}
+
+	// For each transformer layer
+	fmt.Printf("Loading %d transformer blocks (%d total layers) out of %d available...\n",
+		maxLayers, maxLayers*4, config.NumLayers)
+
+	for i := 0; i < maxLayers; i++ {
+		prefix := fmt.Sprintf("model.layers.%d", i)
+
+		// 1. Pre-attention RMSNorm (input_layernorm)
+		inputNorm := LayerConfig{
+			Type:     LayerRMSNorm,
+			NormSize: config.HiddenSize,
+			Gamma:    getTensor(tensors, prefix+".input_layernorm.weight"),
+			Epsilon:  float32(config.RMSNormEps),
+		}
+		network.Layers = append(network.Layers, inputNorm)
+
+		// 2. Multi-head attention (GQA)
+		qWeights, kWeights, vWeights, qBias, kBias, vBias := extractQKVWeights(tensors, prefix, config)
+		outWeight := getTensor(tensors, prefix+".self_attn.o_proj.weight")
+		// Transpose output weight from PyTorch [out, in] to LOOM [in, out]
+		outWeightTransposed := transposeWeights(outWeight, config.HiddenSize, config.HiddenSize)
+		outBias := make([]float32, config.HiddenSize) // No bias in Llama
+
+		attnLayer := LayerConfig{
+			Type:         LayerMultiHeadAttention,
+			DModel:       config.HiddenSize,
+			NumHeads:     config.NumHeads,
+			NumKVHeads:   config.NumKVHeads,
+			HeadDim:      config.HiddenSize / config.NumHeads,
+			SeqLength:    128, // Default sequence length
+			QWeights:     qWeights,
+			KWeights:     kWeights,
+			VWeights:     vWeights,
+			QBias:        qBias,
+			KBias:        kBias,
+			VBias:        vBias,
+			OutputWeight: outWeightTransposed,
+			OutputBias:   outBias,
+		}
+		network.Layers = append(network.Layers, attnLayer)
+
+		// 3. Pre-MLP RMSNorm (post_attention_layernorm)
+		postAttnNorm := LayerConfig{
+			Type:     LayerRMSNorm,
+			NormSize: config.HiddenSize,
+			Gamma:    getTensor(tensors, prefix+".post_attention_layernorm.weight"),
+			Epsilon:  float32(config.RMSNormEps),
+		}
+		network.Layers = append(network.Layers, postAttnNorm)
+
+		// 4. SwiGLU layer (replaces simple MLP)
+		gateWeights := getTensor(tensors, prefix+".mlp.gate_proj.weight")
+		upWeights := getTensor(tensors, prefix+".mlp.up_proj.weight")
+		downWeights := getTensor(tensors, prefix+".mlp.down_proj.weight")
+
+		// Transpose weights from PyTorch [out, in] to LOOM [in, out]
+		gateTransposed := transposeWeights(gateWeights, config.IntermediateSize, config.HiddenSize)
+		upTransposed := transposeWeights(upWeights, config.IntermediateSize, config.HiddenSize)
+		downTransposed := transposeWeights(downWeights, config.HiddenSize, config.IntermediateSize)
+
+		swiGLULayer := LayerConfig{
+			Type:         LayerSwiGLU,
+			InputHeight:  config.HiddenSize,
+			OutputHeight: config.IntermediateSize,
+			GateWeights:  gateTransposed,
+			UpWeights:    upTransposed,
+			DownWeights:  downTransposed,
+			GateBias:     make([]float32, config.IntermediateSize),
+			UpBias:       make([]float32, config.IntermediateSize),
+			DownBias:     make([]float32, config.HiddenSize),
+		}
+		network.Layers = append(network.Layers, swiGLULayer)
+
+		fmt.Printf("Added layer %d/%d\n", i+1, config.NumLayers)
+	}
+
+	fmt.Printf("✅ Loaded transformer model with %d layers\n", len(network.Layers))
+
+	// Initialize activation storage
+	network.activations = make([][]float32, len(network.Layers)+1)
+	network.preActivations = make([][]float32, len(network.Layers))
+
+	return network, nil
+}
+
 // extractQKVWeights extracts Q, K, V weights for GQA attention
 func extractQKVWeights(tensors map[string][]float32, prefix string, config TransformerConfig) ([]float32, []float32, []float32, []float32, []float32, []float32) {
 	qWeight := getTensor(tensors, prefix+".self_attn.q_proj.weight")

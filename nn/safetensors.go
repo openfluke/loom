@@ -127,6 +127,107 @@ func LoadSafetensors(filepath string) (map[string][]float32, error) {
 	return tensors, nil
 }
 
+// LoadSafetensorsFromBytes reads safetensors data from a byte slice and returns tensors by name
+func LoadSafetensorsFromBytes(data []byte) (map[string][]float32, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("data too short: need at least 8 bytes for header size")
+	}
+
+	// Read header size (first 8 bytes, little-endian)
+	headerSize := binary.LittleEndian.Uint64(data[0:8])
+
+	if len(data) < int(8+headerSize) {
+		return nil, fmt.Errorf("data too short: header size %d but only %d bytes available", headerSize, len(data)-8)
+	}
+
+	// Read header JSON
+	headerBytes := data[8 : 8+headerSize]
+
+	// Parse header
+	var rawHeader map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &rawHeader); err != nil {
+		return nil, fmt.Errorf("failed to parse header: %w", err)
+	}
+
+	// Tensor data starts after header
+	allData := data[8+headerSize:]
+
+	// Extract tensors
+	tensors := make(map[string][]float32)
+	for name, value := range rawHeader {
+		if name == "__metadata__" {
+			continue // Skip metadata
+		}
+
+		// Parse tensor info
+		infoMap, ok := value.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		dtype, _ := infoMap["dtype"].(string)
+		if dtype != "F32" && dtype != "F16" && dtype != "BF16" {
+			fmt.Printf("Warning: skipping tensor %s with unsupported dtype %s\n", name, dtype)
+			continue
+		}
+
+		shapeList, _ := infoMap["shape"].([]interface{})
+		offsetList, _ := infoMap["data_offsets"].([]interface{})
+
+		shape := make([]int, len(shapeList))
+		for i, v := range shapeList {
+			shape[i] = int(v.(float64))
+		}
+
+		startOffset := int(offsetList[0].(float64))
+
+		// Calculate number of elements
+		numElements := 1
+		for _, dim := range shape {
+			numElements *= dim
+		}
+
+		// Convert to float32
+		tensorData := make([]float32, numElements)
+
+		if dtype == "F32" {
+			// Direct conversion from bytes to float32
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*4
+				if offset+4 > len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				bits := binary.LittleEndian.Uint32(allData[offset : offset+4])
+				tensorData[i] = float32frombits(bits)
+			}
+		} else if dtype == "F16" {
+			// Convert from float16 to float32
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*2
+				if offset+2 > len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				f16bits := binary.LittleEndian.Uint16(allData[offset : offset+2])
+				tensorData[i] = float16ToFloat32(f16bits)
+			}
+		} else if dtype == "BF16" {
+			// Convert from bfloat16 to float32
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*2
+				if offset+2 > len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				bf16bits := binary.LittleEndian.Uint16(allData[offset : offset+2])
+				tensorData[i] = bfloat16ToFloat32(bf16bits)
+			}
+		}
+
+		tensors[name] = tensorData
+	}
+
+	return tensors, nil
+}
+
 // float32frombits converts uint32 bits to float32
 func float32frombits(bits uint32) float32 {
 	return *(*float32)(unsafe.Pointer(&bits))

@@ -15,11 +15,13 @@ import (
 
 // Global model state
 var (
-	network    *nn.Network
-	embeddings []float32
-	finalNorm  []float32
-	hiddenSize int
-	vocabSize  int
+	network      *nn.Network
+	embeddings   []float32
+	finalNorm    []float32
+	hiddenSize   int
+	vocabSize    int
+	eosTokens    []int // EOS tokens for this model
+	hasFinalNorm bool  // Whether this model has a final norm layer
 )
 
 type GenerateRequest struct {
@@ -37,6 +39,55 @@ type GenerateResponse struct {
 type StreamResponse struct {
 	Token int  `json:"token,omitempty"`
 	Done  bool `json:"done"`
+}
+
+// loadEOSTokens reads EOS token IDs from the model's config.json
+func loadEOSTokens(configPath string) []int {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+
+	var config map[string]interface{}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil
+	}
+
+	var tokens []int
+
+	// Try different config keys for EOS tokens
+	if eosID, ok := config["eos_token_id"]; ok {
+		switch v := eosID.(type) {
+		case float64:
+			tokens = append(tokens, int(v))
+		case []interface{}:
+			for _, id := range v {
+				if idFloat, ok := id.(float64); ok {
+					tokens = append(tokens, int(idFloat))
+				}
+			}
+		}
+	}
+
+	// Also check for pad_token_id
+	if padID, ok := config["pad_token_id"]; ok {
+		if idFloat, ok := padID.(float64); ok {
+			tokens = append(tokens, int(idFloat))
+		}
+	}
+
+	return tokens
+}
+
+// tryLoadTensor attempts to load a tensor using multiple possible keys
+func tryLoadTensor(tensors map[string][]float32, keys []string) []float32 {
+	for _, key := range keys {
+		if tensor, exists := tensors[key]; exists {
+			log.Printf("   Found tensor: %s", key)
+			return tensor
+		}
+	}
+	return nil
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -100,8 +151,8 @@ func generateHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 
-			// Check for EOS
-			if nextToken == 151643 || nextToken == 2 || nextToken == 0 {
+			// Check for EOS (dynamic based on loaded model)
+			if isEOSToken(nextToken) {
 				log.Printf("   EOS token detected, stopping")
 				break
 			}
@@ -130,8 +181,8 @@ func generateHandler(w http.ResponseWriter, r *http.Request) {
 
 		tokens = append(tokens, nextToken)
 
-		// Check for EOS
-		if nextToken == 151643 || nextToken == 2 || nextToken == 0 {
+		// Check for EOS (dynamic based on loaded model)
+		if isEOSToken(nextToken) {
 			log.Printf("   EOS token detected, stopping")
 			break
 		}
@@ -141,6 +192,16 @@ func generateHandler(w http.ResponseWriter, r *http.Request) {
 	outputIDs := tokens[len(req.InputIDs):]
 	log.Printf("✅ Generated %d tokens total", len(outputIDs))
 	json.NewEncoder(w).Encode(GenerateResponse{OutputIDs: outputIDs})
+}
+
+// isEOSToken checks if a token is an end-of-sequence token
+func isEOSToken(token int) bool {
+	for _, eos := range eosTokens {
+		if token == eos {
+			return true
+		}
+	}
+	return false
 }
 
 // generateNextToken uses Network.ForwardCPU (automatic approach)
@@ -169,14 +230,20 @@ func generateNextToken(tokens []int) (int, error) {
 	output, duration := network.ForwardCPU(input)
 	log.Printf("      Forward pass took: %v", duration)
 
-	// Step 3: Apply final RMSNorm to all tokens
-	finalNormConfig := &nn.LayerConfig{
-		Type:     nn.LayerRMSNorm,
-		NormSize: hiddenSize,
-		Gamma:    finalNorm,
-		Epsilon:  1e-6,
+	// Step 3: Apply final RMSNorm if model has one
+	var normalized []float32
+	if hasFinalNorm && finalNorm != nil {
+		finalNormConfig := &nn.LayerConfig{
+			Type:     nn.LayerRMSNorm,
+			NormSize: hiddenSize,
+			Gamma:    finalNorm,
+			Epsilon:  1e-6,
+		}
+		normalized = nn.RmsNormForwardCPU(output, nil, finalNormConfig, len(tokens))
+	} else {
+		// No final norm, use output directly
+		normalized = output
 	}
-	normalized := nn.RmsNormForwardCPU(output, nil, finalNormConfig, len(tokens))
 
 	// Step 4: Extract last token after normalization
 	lastIdx := (len(tokens) - 1) * hiddenSize
@@ -239,6 +306,17 @@ func main() {
 	snapshotDir := filepath.Join(modelDir, entries[0].Name())
 	log.Printf("Loading model from: %s\n", snapshotDir)
 
+	// Try to load model config to get EOS tokens and architecture info
+	configPath := filepath.Join(snapshotDir, "config.json")
+	eosTokens = loadEOSTokens(configPath)
+	if len(eosTokens) == 0 {
+		// Default fallback (common tokens)
+		eosTokens = []int{2, 0} // </s> and <pad>
+		log.Printf("⚠️  No EOS tokens found in config, using defaults: %v", eosTokens)
+	} else {
+		log.Printf("✅ Loaded EOS tokens from config: %v", eosTokens)
+	}
+
 	// Load model using Network.LoadTransformerFromSafetensors
 	network, err = nn.LoadTransformerFromSafetensors(snapshotDir)
 	if err != nil {
@@ -252,8 +330,30 @@ func main() {
 		log.Fatalf("Error loading weights: %v", err)
 	}
 
-	embeddings = tensors["model.embed_tokens.weight"]
-	finalNorm = tensors["model.norm.weight"]
+	// Try to load embeddings (different models use different keys)
+	embeddings = tryLoadTensor(tensors, []string{
+		"model.embed_tokens.weight",
+		"transformer.wte.weight",
+		"embeddings.weight",
+		"embed_tokens.weight",
+	})
+	if embeddings == nil {
+		log.Fatalf("Could not find embeddings in model weights")
+	}
+
+	// Try to load final norm (not all models have this)
+	finalNorm = tryLoadTensor(tensors, []string{
+		"model.norm.weight",
+		"transformer.ln_f.weight",
+		"ln_f.weight",
+		"norm.weight",
+	})
+	hasFinalNorm = (finalNorm != nil)
+	if hasFinalNorm {
+		log.Printf("✅ Found final normalization layer")
+	} else {
+		log.Printf("⚠️  No final normalization layer found")
+	}
 
 	hiddenSize = network.InputSize
 	vocabSize = len(embeddings) / hiddenSize
