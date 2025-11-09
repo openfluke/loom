@@ -42,15 +42,25 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					// Use post-activation for next layer
 					data = postAct
 				} else if config.Type == LayerMultiHeadAttention {
-					// Multi-Head Attention layer
-					// Store input for residual connection
-					residualInput = make([]float32, len(data))
-					copy(residualInput, data)
+					// Multi-Head Attention layer with residual connection
+					// In Pre-LN: x = Attention(Norm(x)) + x
+					// The norm happens before this layer, so we need to add the pre-norm input
 
-					preAct, postAct := multiHeadAttentionForwardCPU(data, config, n.BatchSize)
+					preAct, postAct := MultiHeadAttentionForwardCPU(data, config, n.BatchSize)
+
+					// Add residual connection if we have stored residual
+					if residualInput != nil && len(residualInput) == len(postAct) {
+						for i := range postAct {
+							postAct[i] += residualInput[i]
+						}
+					}
 
 					// Store pre-activation values
 					n.preActivations[layerIdx] = preAct
+
+					// Store output as residual for next sub-block
+					residualInput = make([]float32, len(postAct))
+					copy(residualInput, postAct)
 
 					// Use post-activation for next layer
 					data = postAct
@@ -106,6 +116,29 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 					// Use post-activation for next layer
 					data = postAct
+				} else if config.Type == LayerSwiGLU {
+					// SwiGLU gated activation layer with residual connection
+					// In Pre-LN: x = SwiGLU(Norm(x)) + x
+					// The norm happens before this layer, so we need to add the pre-norm input
+
+					preAct, postAct := SwiGLUForwardCPU(data, config, n.BatchSize)
+
+					// Add residual connection if we have stored residual
+					if residualInput != nil && len(residualInput) == len(postAct) {
+						for i := range postAct {
+							postAct[i] += residualInput[i]
+						}
+					}
+
+					// Store pre-activation values
+					n.preActivations[layerIdx] = preAct
+
+					// Store output as residual for next sub-block
+					residualInput = make([]float32, len(postAct))
+					copy(residualInput, postAct)
+
+					// Use post-activation for next layer
+					data = postAct
 				} else if config.Type == LayerNorm {
 					// Layer Normalization with residual connection
 					normalized := layerNormForwardCPU(data, residualInput, config, n.BatchSize)
@@ -122,6 +155,20 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 					// Use normalized output for next layer
 					data = normalized
+				} else if config.Type == LayerRMSNorm {
+					// RMS Normalization (just normalize, no residual addition here)
+					normalized := rmsNormForwardCPU(data, nil, config, n.BatchSize)
+
+					// Store pre-normalization values
+					n.preActivations[layerIdx] = make([]float32, len(data))
+					copy(n.preActivations[layerIdx], data)
+
+					// Save input as residual for next Attention or SwiGLU
+					residualInput = make([]float32, len(data))
+					copy(residualInput, data)
+
+					// Use normalized output for next layer
+					data = normalized
 				} else {
 					// Default: element-wise activation only
 					// Store pre-activation values
@@ -135,7 +182,6 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 				} // Store post-activation values
 				n.activations[layerIdx+1] = make([]float32, len(data))
 				copy(n.activations[layerIdx+1], data)
-
 				layerIdx++
 			}
 		}

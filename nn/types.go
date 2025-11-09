@@ -27,6 +27,8 @@ const (
 	LayerSoftmax            LayerType = 5 // Softmax layer with multiple variants
 	LayerNorm               LayerType = 6 // Layer Normalization
 	LayerResidual           LayerType = 7 // Residual/Skip connection (adds stored input)
+	LayerRMSNorm            LayerType = 8 // RMS Normalization (Llama-style, no beta)
+	LayerSwiGLU             LayerType = 9 // SwiGLU gated activation (gate_proj * silu(up_proj))
 )
 
 // SoftmaxType defines the variant of softmax to use
@@ -66,17 +68,18 @@ type LayerConfig struct {
 	OutputWidth   int
 
 	// Multi-Head Attention specific parameters
-	NumHeads     int       // Number of attention heads
+	NumHeads     int       // Number of attention heads (query heads)
+	NumKVHeads   int       // Number of key/value heads (for GQA, 0 = same as NumHeads)
 	HeadDim      int       // Dimension per head (dModel / numHeads)
 	DModel       int       // Model dimension (embedding size)
 	SeqLength    int       // Sequence length
 	QWeights     []float32 // Query projection weights [dModel][dModel]
-	KWeights     []float32 // Key projection weights [dModel][dModel]
-	VWeights     []float32 // Value projection weights [dModel][dModel]
+	KWeights     []float32 // Key projection weights [dModel][dModel or smaller for GQA]
+	VWeights     []float32 // Value projection weights [dModel][dModel or smaller for GQA]
 	OutputWeight []float32 // Output projection weights [dModel][dModel]
 	QBias        []float32 // Query bias [dModel]
-	KBias        []float32 // Key bias [dModel]
-	VBias        []float32 // Value bias [dModel]
+	KBias        []float32 // Key bias [dModel or smaller for GQA]
+	VBias        []float32 // Value bias [dModel or smaller for GQA]
 	OutputBias   []float32 // Output bias [dModel]
 
 	// RNN/LSTM specific parameters
@@ -120,6 +123,14 @@ type LayerConfig struct {
 	Gamma    []float32 // Scale parameters [normSize]
 	Beta     []float32 // Shift parameters [normSize]
 	Epsilon  float32   // Small constant for numerical stability (default 1e-5)
+
+	// SwiGLU specific parameters (gated FFN: down_proj(silu(gate_proj(x)) * up_proj(x)))
+	GateWeights []float32 // Gate projection weights [intermediate][hidden]
+	UpWeights   []float32 // Up projection weights [intermediate][hidden]
+	DownWeights []float32 // Down projection weights [hidden][intermediate]
+	GateBias    []float32 // Gate bias [intermediate]
+	UpBias      []float32 // Up bias [intermediate]
+	DownBias    []float32 // Down bias [hidden]
 
 	// Residual connection
 	ResidualSkip int // How many layers back to skip for residual (0 = no residual)
@@ -236,6 +247,11 @@ func (n *Network) GetActivation(row, col, layer int) ActivationType {
 	cellIdx := row*n.GridCols + col
 	activation := (cellIdx*n.LayersPerCell + layer) % 5
 	return ActivationType(activation)
+}
+
+// Activations returns the activation values for all layers
+func (n *Network) Activations() [][]float32 {
+	return n.activations
 }
 
 // KernelGradients returns the kernel gradients for all layers

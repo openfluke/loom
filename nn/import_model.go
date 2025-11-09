@@ -218,6 +218,17 @@ func convertImportedLayer(imported *ImportedLayerConfig) (*LayerConfig, error) {
 			copy(config.Beta, imported.Beta)
 		}
 
+	case "rms_norm":
+		config.Type = LayerRMSNorm
+		config.NormSize = imported.NormSize
+		config.Epsilon = imported.Epsilon
+
+		if len(imported.Gamma) > 0 {
+			config.Gamma = make([]float32, len(imported.Gamma))
+			copy(config.Gamma, imported.Gamma)
+		}
+		// Note: RMSNorm doesn't use Beta
+
 	default:
 		return nil, fmt.Errorf("unsupported layer type: %s", imported.Type)
 	}

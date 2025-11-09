@@ -1,370 +1,139 @@
-# Model Conversion Tools
+# LOOM Model Conversion & Inference
 
-This folder contains all utilities for converting pre-trained models from HuggingFace/PyTorch into LOOM's native format, plus verification and testing tools.
+This directory contains tools for running LOOM transformer models with a web interface.
 
-## 📁 What's Here
+## Quick Start
 
-### Conversion Scripts
-
-- **`convert_tiny.py`** - Main converter for BERT models (Tiny, Mini, Small)
-- **`convert_model.py`** - General-purpose model converter with PyTorch/TensorFlow support
-- **`bert_text_processor.py`** - Text tokenization helper for BERT models
-
-### Verification Tools
-
-- **`verify_bert_weights.py`** - End-to-end verification comparing LOOM vs real BERT
-- **`compare_bert_loom.py`** - Detailed statistical comparison tool
-
-### Example/Test Code
-
-- **`run_bert_tiny.go`** - Simple Go script to test BERT model loading and inference
-- **`bert_comparison/main.go`** - Comprehensive comparison demo
-
-### Model Files (Git-Ignored)
-
-- `*.json` - Converted models (bert-tiny.json, etc.)
-- All JSON files are ignored by git via `.gitignore`
-
-## 🚀 Quick Start
-
-### 1. Install Dependencies
+### 1. Download the model:
 
 ```bash
-pip install -r requirements.txt
+huggingface-cli download Qwen/Qwen2.5-0.5B
 ```
 
-This installs: `transformers`, `torch`, `numpy`
+### 2. Start the servers:
 
-### 2. Convert a BERT Model
+**Terminal 1 - Start backend:**
 
 ```bash
 cd model_conversion
-python3 convert_tiny.py
+go run serve_model_auto.go -model Qwen/Qwen2.5-0.5B
 ```
 
-You'll be prompted to select a model:
-
-```
-1. BERT Tiny (4MB) - 2 layers, 128 hidden
-2. GPT-2 Distilled (8MB) - 2 layers, 768 hidden
-3. ELECTRA Small (12MB) - 2 layers, 256 hidden
-4. BERT Mini (6MB) - 2 layers, 256 hidden
-5. Custom model
-```
-
-Output: `bert-tiny.json` (or your chosen model name)
-
-### 3. Verify the Conversion
-
-```bash
-python3 verify_bert_weights.py
-```
-
-This will:
-
-- Process 3 test sentences through real BERT
-- Process same sentences through LOOM
-- Calculate cosine similarity per token
-- Report verification status
-
-**Expected output:**
-
-```
-✅✅✅ VERIFICATION PASSED ✅✅✅
-LOOM's BERT weights are working correctly!
-📊 Overall Average Similarity: 0.54
-```
-
-### 4. Test in Go
+**Terminal 2 - Start web interface:**
 
 ```bash
 cd model_conversion
-go run run_bert_tiny.go
+python3 web_interface.py
 ```
 
-## 📊 BERT Architecture in LOOM
+Then open: **http://localhost:5000**
 
-When you convert a BERT model, here's what gets extracted:
+## Files
 
-### Layer Structure (BERT-Tiny example)
+### Production Files (keep these):
 
-```
-Layer 0: Multi-Head Attention (2 heads, 128 hidden)
-Layer 1: LayerNorm (with residual connection)
-Layer 2: Dense (128 → 512, FFN intermediate)
-Layer 3: Dense (512 → 128, FFN output)
-Layer 4: LayerNorm (with residual connection)
-[Repeat for each transformer block]
-```
+- **`serve_model_auto.go`** - Production inference server using Network.ForwardCPU (with fixed SwiGLU)
+- **`serve_model_manual.go`** - Reference implementation with manual layer processing
+- **`trace_all_layers_loom.go`** - Layer-by-layer validation tool
+- **`web_interface.py`** - Flask web server with streaming support
+- **`templates/index.html`** - Web UI with real-time token streaming
 
-### Key Components
+### How It Works
 
-**Multi-Head Attention**
+1. **Backend Server** (`serve_model_auto.go`):
 
-- Query, Key, Value weight matrices (per head)
-- Output projection matrix
-- Attention scores computed via scaled dot-product
+   - Loads model from HuggingFace safetensors
+   - Provides HTTP API on port 8080
+   - Supports streaming generation (Server-Sent Events)
+   - Uses fixed `Network.ForwardCPU` with corrected SwiGLU weight indexing
 
-**LayerNorm**
+2. **Web Interface** (`web_interface.py` + `templates/index.html`):
 
-- Gamma (scale) and Beta (bias) parameters
-- Epsilon for numerical stability (1e-12)
-- Residual connections added before normalization
+   - Flask server on port 5000
+   - Tokenizes input using HuggingFace transformers
+   - Streams tokens in real-time from backend
+   - Beautiful gradient UI with live stats
 
-**Feed-Forward Network (FFN)**
+3. **Streaming Flow**:
+   ```
+   Browser → Flask → Backend (Go) → Flask → Browser
+   (EventSource)   (HTTP+SSE)         (SSE)
+   ```
 
-- Two Dense layers: `hidden → intermediate → hidden`
-- BERT uses GELU activation (LOOM approximates with Softplus)
-- Residual connection after FFN block
+## API Endpoints
 
-**Residual Connections**
+### Backend (Port 8080)
 
-- Pattern: `output = LayerNorm(layer(input) + input)`
-- Two residuals per transformer block:
-  1. After attention
-  2. After FFN
-
-### Current Limitations
-
-- **Embeddings**: Not yet extracted (must be provided separately)
-- **Pooler**: Output pooling layer not included
-- **Activation**: GELU approximated as Softplus (~95% similar)
-- **Positional Embeddings**: Not extracted (add to word embeddings externally)
-
-## 🔬 Verification Details
-
-### How Verification Works
-
-1. **Tokenization**: Text → token IDs using HuggingFace tokenizer
-2. **Embeddings**: Extract from BERT's embedding layer (word + position)
-3. **Real BERT**: Forward pass through HuggingFace model
-4. **LOOM**: Forward pass through converted model
-5. **Comparison**: Cosine similarity per token, mean/std statistics
-
-### Similarity Scores
-
-| Score   | Meaning                            |
-| ------- | ---------------------------------- |
-| > 0.9   | Excellent - nearly identical       |
-| 0.5-0.9 | Good - weights working correctly   |
-| 0.3-0.5 | Moderate - some correlation        |
-| < 0.3   | Poor - likely weight loading issue |
-
-**LOOM BERT-Tiny achieves ~0.54** (good correlation despite GELU→Softplus difference)
-
-### What Gets Verified
-
-- ✅ Weight matrices loaded correctly
-- ✅ Layer order preserved
-- ✅ Attention mechanism functional
-- ✅ Residual connections working
-- ✅ LayerNorm parameters correct
-- ✅ Output distributions similar
-
-## 📝 LOOM Model Format
-
-Models are saved as JSON with this structure:
+**POST /generate** - Generate text
 
 ```json
 {
-  "layers": [
-    {
-      "type": "multi_head_attention",
-      "num_heads": 2,
-      "hidden_size": 128,
-      "num_kv_heads": 2,
-      "query_weights": [
-        /* 128x128 flattened */
-      ],
-      "key_weights": [
-        /* 128x128 flattened */
-      ],
-      "value_weights": [
-        /* 128x128 flattened */
-      ],
-      "output_weights": [
-        /* 128x128 flattened */
-      ],
-      "query_bias": [
-        /* 128 values */
-      ],
-      "key_bias": [
-        /* 128 values */
-      ],
-      "value_bias": [
-        /* 128 values */
-      ],
-      "output_bias": [
-        /* 128 values */
-      ]
-    },
-    {
-      "type": "layer_norm",
-      "norm_size": 128,
-      "gamma": [
-        /* 128 values */
-      ],
-      "beta": [
-        /* 128 values */
-      ],
-      "epsilon": 1e-12
-    },
-    {
-      "type": "dense",
-      "input_size": 128,
-      "output_size": 512,
-      "activation": 3, // Softplus
-      "weights": [
-        /* 128x512 flattened */
-      ],
-      "bias": [
-        /* 512 values */
-      ]
-    }
-  ]
+  "input_ids": [12522, 5193, 264, 882],
+  "max_new_tokens": 50,
+  "stream": true // Enable streaming
 }
 ```
 
-### Layer Types
+**GET /health** - Health check
 
-| Type               | Code | Description                     |
-| ------------------ | ---- | ------------------------------- |
-| Dense              | 0    | Fully-connected with activation |
-| Conv2D             | 1    | 2D convolution                  |
-| Softmax            | 2    | Probability distribution        |
-| RNN                | 3    | Recurrent layer                 |
-| LSTM               | 4    | Long short-term memory          |
-| MultiHeadAttention | 5    | Transformer attention           |
-| LayerNorm          | 6    | Layer normalization             |
+### Web Interface (Port 5000)
 
-### Activation Functions
+**GET /** - Web UI  
+**POST /generate_stream** - Stream generation (used by web UI)  
+**GET /health** - Health check
 
-| Type      | Code | Notes                                     |
-| --------- | ---- | ----------------------------------------- |
-| ReLU      | 0    | Scaled by 1.1×                            |
-| Sigmoid   | 1    | Logistic function                         |
-| Tanh      | 2    | Hyperbolic tangent                        |
-| Softplus  | 3    | Smooth ReLU (used for GELU approximation) |
-| LeakyReLU | 4    | Negative slope 0.1                        |
-| Linear    | 5    | Identity (no activation)                  |
+## Requirements
 
-## 🛠️ Advanced Usage
-
-### Custom Model Conversion
+**Python packages:**
 
 ```bash
-python3 convert_tiny.py
-# Select option 5 (custom)
-# Enter: your-org/your-model
-# Enter output filename: my-model.json
-# Enter max layers: 12
+pip install flask transformers requests
 ```
 
-### Loading in Go
+## Troubleshooting
+
+**Backend won't start:**
+
+- Check `/tmp/serve_auto.log` for errors
+- Ensure model exists in HuggingFace cache
+
+**Streaming not working:**
+
+- Check browser console for errors
+- Verify backend is running: `curl http://localhost:8080/health`
+
+**Slow generation:**
+
+- Normal for CPU inference (~1-3 tokens/sec on small models)
+- GPU acceleration coming soon
+
+## Technical Details
+
+### Fixed SwiGLU Bug
+
+The original implementation had incorrect weight indexing for transposed weight matrices. The fix changes from row-major to column-major indexing:
+
+**Before (wrong):**
 
 ```go
-import "github.com/openfluke/loom/nn"
-
-network, err := nn.LoadImportedModel("bert-tiny.json", "bert-tiny")
-if err != nil {
-    panic(err)
-}
-
-output, _ := network.ForwardCPU(embeddings)
+gateWeights[i*inputSize+j]  // Row-major for [intermediate][input]
 ```
 
-### Debugging Conversions
+**After (correct):**
 
-```bash
-# Check layer count and structure
-python3 -c "import json; d=json.load(open('bert-tiny.json')); print(f'{len(d[\"layers\"])} layers'); [print(f'{i}: {l[\"type\"]}') for i,l in enumerate(d['layers'])]"
-
-# Check first layer details
-python3 -c "import json; print(json.load(open('bert-tiny.json'))['layers'][0])"
-
-# File size
-ls -lh bert-tiny.json
+```go
+gateWeights[j*intermediateSize+i]  // Column-major for transposed [input][intermediate]
 ```
 
-## 🤝 Contributing New Converters
+This affects Gate, Up, and Down projections in the SwiGLU MLP layers.
 
-To add support for GPT, T5, Vision Transformers, etc.:
+### Validation
 
-1. **Study the architecture** - Understand layer types and connections
-2. **Create converter script** - Follow `convert_tiny.py` pattern
-3. **Extract weights** - Map PyTorch/TF parameters to LOOM format
-4. **Handle special cases** - Grouped queries, relative attention, etc.
-5. **Create verification** - Compare against original model
-6. **Document** - Update this README with your model type
-
-### Tips
-
-- Use `model.state_dict()` to see all available parameters
-- Check tensor shapes: `param.shape`
-- Flatten 2D weight matrices: `weights.flatten().tolist()`
-- Store biases separately from weights
-- Test with small models first (faster iteration)
-
-## 📚 Examples
-
-### Example 1: Basic Conversion & Test
+Use `trace_all_layers_loom.go` to validate layer outputs against PyTorch:
 
 ```bash
 cd model_conversion
-
-# Convert
-echo "1" | python3 convert_tiny.py
-
-# Verify
-python3 verify_bert_weights.py
-
-# Test in Go
-go run run_bert_tiny.go
+go run trace_all_layers_loom.go
 ```
 
-### Example 2: Custom Model
-
-```python
-from transformers import AutoModel
-import json
-
-model = AutoModel.from_pretrained("your-model")
-# ... extract layers ...
-# ... save to JSON ...
-```
-
-See `convert_model.py` for general-purpose conversion framework.
-
-## ⚠️ Notes
-
-- **Git Ignore**: All `*.json` files in this folder are ignored (large model files)
-- **Models Not Included**: Download via converter scripts (requires internet)
-- **Python 3.7+**: Required for transformers library
-- **GPU Optional**: Conversion runs on CPU, inference can use GPU
-
-## 🐛 Troubleshooting
-
-**"Failed to load model"**
-
-- Check file exists: `ls -lh bert-tiny.json`
-- Check JSON valid: `python3 -c "import json; json.load(open('bert-tiny.json'))"`
-- Check current directory: `pwd` should be in `model_conversion/`
-
-**"Verification failed"**
-
-- Low similarity (<0.3) indicates weight loading issue
-- Check layer count matches original model
-- Verify activation functions mapped correctly
-
-**"Import error: transformers"**
-
-```bash
-pip install -r requirements.txt
-```
-
-## 📖 Further Reading
-
-- [LOOM Main README](../README.md) - Framework overview
-- [Neural Network Docs](../nn/README.md) - Layer implementation details
-- [BERT Paper](https://arxiv.org/abs/1810.04805) - Original architecture
-- [Transformer Architecture](https://arxiv.org/abs/1706.03762) - Attention mechanism
+Should show all layers matching within 1e-5 tolerance.

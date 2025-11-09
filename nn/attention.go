@@ -1,378 +1,355 @@
 package nn
 
 import (
+	"fmt"
 	"math"
-	"math/rand"
 )
 
-// InitMultiHeadAttentionLayer initializes a Multi-Head Attention layer
-// dModel: model dimension (embedding size)
-// numHeads: number of attention heads
-// seqLength: sequence length
-// activation: activation function (typically not used in standard MHA, but available for variants)
-func InitMultiHeadAttentionLayer(
-	dModel, numHeads, seqLength int,
-	activation ActivationType,
-) LayerConfig {
-	if dModel%numHeads != 0 {
-		panic("dModel must be divisible by numHeads")
-	}
-
-	headDim := dModel / numHeads
-
-	// Xavier/Glorot initialization: stddev = sqrt(2 / (fan_in + fan_out))
-	// For linear layers: fan_in = fan_out = dModel
-	stddev := float32(math.Sqrt(2.0 / float64(2*dModel)))
-
-	// Initialize Q, K, V projection weights [dModel x dModel]
-	qWeights := make([]float32, dModel*dModel)
-	kWeights := make([]float32, dModel*dModel)
-	vWeights := make([]float32, dModel*dModel)
-	outputWeight := make([]float32, dModel*dModel)
-
-	for i := range qWeights {
-		qWeights[i] = float32(rand.NormFloat64()) * stddev
-		kWeights[i] = float32(rand.NormFloat64()) * stddev
-		vWeights[i] = float32(rand.NormFloat64()) * stddev
-		outputWeight[i] = float32(rand.NormFloat64()) * stddev
-	}
-
-	// Initialize biases to zero
-	qBias := make([]float32, dModel)
-	kBias := make([]float32, dModel)
-	vBias := make([]float32, dModel)
-	outputBias := make([]float32, dModel)
-
-	return LayerConfig{
-		Type:         LayerMultiHeadAttention,
-		Activation:   activation,
-		NumHeads:     numHeads,
-		HeadDim:      headDim,
-		DModel:       dModel,
-		SeqLength:    seqLength,
-		QWeights:     qWeights,
-		KWeights:     kWeights,
-		VWeights:     vWeights,
-		OutputWeight: outputWeight,
-		QBias:        qBias,
-		KBias:        kBias,
-		VBias:        vBias,
-		OutputBias:   outputBias,
-	}
+// InitMultiHeadAttentionLayer initializes a multi-head attention layer
+func InitMultiHeadAttentionLayer(config *LayerConfig, isGPU bool) {
+	// Nothing special needed for initialization with the new clean implementation
+	// Weights and biases are already loaded by load_transformer.go
 }
 
-// multiHeadAttentionForwardCPU performs multi-head attention on CPU
-// input shape: [batch][seqLength][dModel] (flattened)
-// Returns: preActivation (before output activation), postActivation (after output activation)
-func multiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]float32, []float32) {
+// MultiHeadAttentionForwardCPU performs multi-head attention exactly like PyTorch
+// This is a clean rewrite to match PyTorch's implementation precisely
+func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]float32, []float32) {
+	// Extract dimensions
 	dModel := config.DModel
 	numHeads := config.NumHeads
+	numKVHeads := config.NumKVHeads
+	if numKVHeads == 0 {
+		numKVHeads = numHeads // Standard MHA
+	}
 	headDim := config.HeadDim
-	seqLen := config.SeqLength
 
-	// For sequence models like BERT, the batchSize parameter is set to seqLength
-	// but the actual batch dimension is 1. Adjust based on input size.
-	actualBatchSize := 1
-	actualSeqLen := len(input) / dModel
-	if actualSeqLen != batchSize*seqLen {
-		batchSize = actualBatchSize
-		seqLen = actualSeqLen
-	}
+	// Determine sequence length from input
+	seqLen := len(input) / dModel
+	batchSize = 1 // Always 1 for our use case
 
-	// Output size same as input: [batch][seqLength][dModel]
-	outputSize := batchSize * seqLen * dModel
-	preActivation := make([]float32, outputSize)
-	postActivation := make([]float32, outputSize)
+	// === STEP 1: Q, K, V Projections ===
+	// Input: [batch=1, seqLen, dModel=896]
+	// Q: [batch=1, seqLen, dModel=896]
+	// K: [batch=1, seqLen, kvDim=128]
+	// V: [batch=1, seqLen, kvDim=128]
 
-	// Temporary storage for Q, K, V projections
-	Q := make([]float32, outputSize)
-	K := make([]float32, outputSize)
-	V := make([]float32, outputSize)
+	kvDim := numKVHeads * headDim
+	Q := make([]float32, seqLen*dModel)
+	K := make([]float32, seqLen*kvDim)
+	V := make([]float32, seqLen*kvDim)
 
-	// Step 1: Project input to Q, K, V
-	// Q = input * QWeights + QBias
-	for b := 0; b < batchSize; b++ {
-		for s := 0; s < seqLen; s++ {
-			for d := 0; d < dModel; d++ {
-				qSum := config.QBias[d]
-				kSum := config.KBias[d]
-				vSum := config.VBias[d]
-
-				for i := 0; i < dModel; i++ {
-					inputIdx := b*seqLen*dModel + s*dModel + i
-					qWeightIdx := i*dModel + d
-					kWeightIdx := i*dModel + d
-					vWeightIdx := i*dModel + d
-
-					qSum += input[inputIdx] * config.QWeights[qWeightIdx]
-					kSum += input[inputIdx] * config.KWeights[kWeightIdx]
-					vSum += input[inputIdx] * config.VWeights[vWeightIdx]
-				}
-
-				outputIdx := b*seqLen*dModel + s*dModel + d
-				Q[outputIdx] = qSum
-				K[outputIdx] = kSum
-				V[outputIdx] = vSum
+	// Q projection: Q = input @ W_Q.T + b_Q
+	for s := 0; s < seqLen; s++ {
+		for outDim := 0; outDim < dModel; outDim++ {
+			sum := config.QBias[outDim]
+			for inDim := 0; inDim < dModel; inDim++ {
+				inputIdx := s*dModel + inDim
+				weightIdx := inDim*dModel + outDim // Weights are [in, out] after transpose
+				sum += input[inputIdx] * config.QWeights[weightIdx]
 			}
+			Q[s*dModel+outDim] = sum
 		}
 	}
 
-	// Step 2: Reshape to [batch][numHeads][seqLen][headDim] and compute attention
-	// For each batch and head
-	for b := 0; b < batchSize; b++ {
+	// K projection: K = input @ W_K.T + b_K
+	for s := 0; s < seqLen; s++ {
+		for outDim := 0; outDim < kvDim; outDim++ {
+			sum := config.KBias[outDim]
+			for inDim := 0; inDim < dModel; inDim++ {
+				inputIdx := s*dModel + inDim
+				weightIdx := inDim*kvDim + outDim
+				sum += input[inputIdx] * config.KWeights[weightIdx]
+			}
+			K[s*kvDim+outDim] = sum
+		}
+	}
+
+	// V projection: V = input @ W_V.T + b_V
+	for s := 0; s < seqLen; s++ {
+		for outDim := 0; outDim < kvDim; outDim++ {
+			sum := config.VBias[outDim]
+			for inDim := 0; inDim < dModel; inDim++ {
+				inputIdx := s*dModel + inDim
+				weightIdx := inDim*kvDim + outDim
+				sum += input[inputIdx] * config.VWeights[weightIdx]
+			}
+			V[s*kvDim+outDim] = sum
+		}
+	}
+
+	// === STEP 2: Reshape for multi-head ===
+	// Q: [batch=1, seqLen, dModel] -> [batch=1, numHeads=14, seqLen, headDim=64]
+	// K: [batch=1, seqLen, kvDim] -> [batch=1, numKVHeads=2, seqLen, headDim=64]
+	// V: [batch=1, seqLen, kvDim] -> [batch=1, numKVHeads=2, seqLen, headDim=64]
+
+	// In PyTorch: Q[bsz, seq, dModel] -> Q.view(bsz, seq, numHeads, headDim) -> Q.transpose(1,2) = [bsz, numHeads, seq, headDim]
+	// Our memory layout: [numHeads, seqLen, headDim] (omitting batch=1)
+
+	// Reshape Q: [numHeads, seqLen, headDim]
+	Q_reshaped := make([]float32, seqLen*numHeads*headDim)
+	for s := 0; s < seqLen; s++ {
 		for h := 0; h < numHeads; h++ {
-			// Compute attention scores: Q * K^T / sqrt(headDim)
-			scale := float32(1.0 / math.Sqrt(float64(headDim)))
-			attentionScores := make([]float32, seqLen*seqLen)
-
-			for qi := 0; qi < seqLen; qi++ {
-				for ki := 0; ki < seqLen; ki++ {
-					sum := float32(0)
-					for d := 0; d < headDim; d++ {
-						// Q index: [b][qi][h*headDim + d]
-						qIdx := b*seqLen*dModel + qi*dModel + h*headDim + d
-						// K index: [b][ki][h*headDim + d]
-						kIdx := b*seqLen*dModel + ki*dModel + h*headDim + d
-						sum += Q[qIdx] * K[kIdx]
-					}
-					attentionScores[qi*seqLen+ki] = sum * scale
-				}
-			}
-
-			// Apply softmax to attention scores (row-wise)
-			for qi := 0; qi < seqLen; qi++ {
-				// Find max for numerical stability
-				maxVal := attentionScores[qi*seqLen]
-				for ki := 1; ki < seqLen; ki++ {
-					if attentionScores[qi*seqLen+ki] > maxVal {
-						maxVal = attentionScores[qi*seqLen+ki]
-					}
-				}
-
-				// Compute exp and sum
-				sumExp := float32(0)
-				for ki := 0; ki < seqLen; ki++ {
-					attentionScores[qi*seqLen+ki] = float32(math.Exp(float64(attentionScores[qi*seqLen+ki] - maxVal)))
-					sumExp += attentionScores[qi*seqLen+ki]
-				}
-
-				// Normalize
-				for ki := 0; ki < seqLen; ki++ {
-					attentionScores[qi*seqLen+ki] /= sumExp
-				}
-			}
-
-			// Multiply attention scores by V
-			// output[qi] = sum over ki of (attention[qi][ki] * V[ki])
-			for qi := 0; qi < seqLen; qi++ {
-				for d := 0; d < headDim; d++ {
-					sum := float32(0)
-					for ki := 0; ki < seqLen; ki++ {
-						vIdx := b*seqLen*dModel + ki*dModel + h*headDim + d
-						sum += attentionScores[qi*seqLen+ki] * V[vIdx]
-					}
-					// Store in temporary output position
-					outIdx := b*seqLen*dModel + qi*dModel + h*headDim + d
-					preActivation[outIdx] = sum
-				}
+			for d := 0; d < headDim; d++ {
+				// Source: Q[s, h*headDim + d]
+				srcIdx := s*dModel + h*headDim + d
+				// Dest: Q_reshaped[h, s, d]
+				dstIdx := h*seqLen*headDim + s*headDim + d
+				Q_reshaped[dstIdx] = Q[srcIdx]
 			}
 		}
 	}
 
-	// Step 3: Concatenate heads and apply output projection
-	// Output = preActivation * OutputWeight + OutputBias
-	for b := 0; b < batchSize; b++ {
+	// Reshape K: [numKVHeads, seqLen, headDim]
+	K_reshaped := make([]float32, seqLen*numKVHeads*headDim)
+	for s := 0; s < seqLen; s++ {
+		for h := 0; h < numKVHeads; h++ {
+			for d := 0; d < headDim; d++ {
+				srcIdx := s*kvDim + h*headDim + d
+				dstIdx := h*seqLen*headDim + s*headDim + d
+				K_reshaped[dstIdx] = K[srcIdx]
+			}
+		}
+	}
+
+	// Reshape V: [numKVHeads, seqLen, headDim]
+	V_reshaped := make([]float32, seqLen*numKVHeads*headDim)
+	for s := 0; s < seqLen; s++ {
+		for h := 0; h < numKVHeads; h++ {
+			for d := 0; d < headDim; d++ {
+				srcIdx := s*kvDim + h*headDim + d
+				dstIdx := h*seqLen*headDim + s*headDim + d
+				V_reshaped[dstIdx] = V[srcIdx]
+			}
+		}
+	}
+	// === STEP 3: Apply RoPE ===
+	ropeTheta := 1000000.0
+	applyRoPEPyTorchStyle(Q_reshaped, seqLen, numHeads, headDim, ropeTheta)
+	applyRoPEPyTorchStyle(K_reshaped, seqLen, numKVHeads, headDim, ropeTheta)
+
+	// === STEP 4: Repeat K/V for GQA ===
+	// Each KV head is used by (numHeads / numKVHeads) query heads
+	// K, V: [numKVHeads=2, seqLen, headDim] -> [numHeads=14, seqLen, headDim]
+	headsPerKV := numHeads / numKVHeads
+
+	K_repeated := make([]float32, numHeads*seqLen*headDim)
+	V_repeated := make([]float32, numHeads*seqLen*headDim)
+
+	for h := 0; h < numHeads; h++ {
+		kvHead := h / headsPerKV
 		for s := 0; s < seqLen; s++ {
-			for d := 0; d < dModel; d++ {
-				sum := config.OutputBias[d]
+			for d := 0; d < headDim; d++ {
+				// Source: [kvHead, s, d]
+				srcIdx := kvHead*seqLen*headDim + s*headDim + d
+				// Dest: [h, s, d]
+				dstIdx := h*seqLen*headDim + s*headDim + d
+				K_repeated[dstIdx] = K_reshaped[srcIdx]
+				V_repeated[dstIdx] = V_reshaped[srcIdx]
+			}
+		}
+	}
+	// === STEP 5: Compute attention scores ===
+	// attn_weights = (Q @ K.T) / sqrt(headDim)
+	// Q, K shape: [numHeads, seqLen, headDim]
+	// Result shape: [numHeads, seqLen, seqLen]
 
-				for i := 0; i < dModel; i++ {
-					inputIdx := b*seqLen*dModel + s*dModel + i
-					weightIdx := i*dModel + d
-					sum += preActivation[inputIdx] * config.OutputWeight[weightIdx]
+	scale := float32(1.0 / math.Sqrt(float64(headDim)))
+	attnWeights := make([]float32, numHeads*seqLen*seqLen)
+
+	for h := 0; h < numHeads; h++ {
+		for qPos := 0; qPos < seqLen; qPos++ {
+			for kPos := 0; kPos < seqLen; kPos++ {
+				sum := float32(0)
+				for d := 0; d < headDim; d++ {
+					// Q[h, qPos, d]
+					qIdx := h*seqLen*headDim + qPos*headDim + d
+					// K[h, kPos, d]
+					kIdx := h*seqLen*headDim + kPos*headDim + d
+					sum += Q_reshaped[qIdx] * K_repeated[kIdx]
 				}
-
-				outputIdx := b*seqLen*dModel + s*dModel + d
-
-				// Store pre-activation (before final activation function)
-				preActivation[outputIdx] = sum
-
-				// Apply activation function
-				postActivation[outputIdx] = activateCPU(sum, config.Activation)
+				// attnWeights[h, qPos, kPos]
+				attnIdx := h*seqLen*seqLen + qPos*seqLen + kPos
+				attnWeights[attnIdx] = sum * scale
+			}
+		}
+	}
+	// === STEP 6: Apply causal mask (no peeking ahead) ===
+	for h := 0; h < numHeads; h++ {
+		for qPos := 0; qPos < seqLen; qPos++ {
+			for kPos := qPos + 1; kPos < seqLen; kPos++ {
+				attnIdx := h*seqLen*seqLen + qPos*seqLen + kPos
+				attnWeights[attnIdx] = -1e9 // Will become ~0 after softmax
 			}
 		}
 	}
 
-	return preActivation, postActivation
+	// === STEP 7: Softmax ===
+	for h := 0; h < numHeads; h++ {
+		for qPos := 0; qPos < seqLen; qPos++ {
+			// Find max for numerical stability
+			maxVal := attnWeights[h*seqLen*seqLen+qPos*seqLen]
+			for kPos := 1; kPos < seqLen; kPos++ {
+				idx := h*seqLen*seqLen + qPos*seqLen + kPos
+				if attnWeights[idx] > maxVal {
+					maxVal = attnWeights[idx]
+				}
+			}
+
+			// Exp and sum
+			sumExp := float32(0)
+			for kPos := 0; kPos < seqLen; kPos++ {
+				idx := h*seqLen*seqLen + qPos*seqLen + kPos
+				attnWeights[idx] = float32(math.Exp(float64(attnWeights[idx] - maxVal)))
+				sumExp += attnWeights[idx]
+			}
+
+			// Normalize
+			for kPos := 0; kPos < seqLen; kPos++ {
+				idx := h*seqLen*seqLen + qPos*seqLen + kPos
+				attnWeights[idx] /= sumExp
+			}
+		}
+	}
+
+	// === STEP 8: Weighted sum of values ===
+	// attn_output = attn_weights @ V
+	// attn_weights: [numHeads, seqLen, seqLen]
+	// V: [numHeads, seqLen, headDim]
+	// Result: [numHeads, seqLen, headDim]
+	attnOutput := make([]float32, numHeads*seqLen*headDim)
+
+	for h := 0; h < numHeads; h++ {
+		for qPos := 0; qPos < seqLen; qPos++ {
+			for d := 0; d < headDim; d++ {
+				sum := float32(0)
+				for kPos := 0; kPos < seqLen; kPos++ {
+					// attnWeights[h, qPos, kPos]
+					weightIdx := h*seqLen*seqLen + qPos*seqLen + kPos
+					// V[h, kPos, d]
+					vIdx := h*seqLen*headDim + kPos*headDim + d
+					sum += attnWeights[weightIdx] * V_repeated[vIdx]
+				}
+				// attnOutput[h, qPos, d]
+				outIdx := h*seqLen*headDim + qPos*headDim + d
+				attnOutput[outIdx] = sum
+			}
+		}
+	}
+	// === STEP 9: Concatenate heads ===
+	// PyTorch: attn_output.transpose(1, 2).contiguous().view(bsz, seq, dModel)
+	// Input: [numHeads, seqLen, headDim]
+	// After transpose(0,1): [seqLen, numHeads, headDim]
+	// After view: [seqLen, dModel]
+	concatenated := make([]float32, seqLen*dModel)
+	for s := 0; s < seqLen; s++ {
+		for h := 0; h < numHeads; h++ {
+			for d := 0; d < headDim; d++ {
+				// Source: attnOutput[h, s, d]
+				srcIdx := h*seqLen*headDim + s*headDim + d
+				// Dest: concatenated[s, h*headDim + d]
+				dstIdx := s*dModel + h*headDim + d
+				concatenated[dstIdx] = attnOutput[srcIdx]
+			}
+		}
+	}
+
+	// === STEP 10: Output projection ===
+	// output = concatenated @ W_O.T + b_O
+	output := make([]float32, seqLen*dModel)
+
+	for s := 0; s < seqLen; s++ {
+		for outDim := 0; outDim < dModel; outDim++ {
+			sum := config.OutputBias[outDim]
+			for inDim := 0; inDim < dModel; inDim++ {
+				inputIdx := s*dModel + inDim
+				weightIdx := inDim*dModel + outDim
+				sum += concatenated[inputIdx] * config.OutputWeight[weightIdx]
+			}
+			output[s*dModel+outDim] = sum
+		}
+	}
+
+	// Return output twice (preActivation, postActivation are same - no activation)
+	return output, output
 }
 
-// multiHeadAttentionBackwardCPU computes gradients for multi-head attention on CPU
-// Note: This is a simplified backprop that treats attention as a simple transformation
-// A full implementation would need to store Q, K, V, and attention scores during forward pass
-func multiHeadAttentionBackwardCPU(
-	gradOutput []float32,
-	input []float32,
-	preActivation []float32,
-	config *LayerConfig,
-	batchSize int,
-) (gradInput []float32, gradQWeights []float32, gradKWeights []float32, gradVWeights []float32, gradOutputWeight []float32, gradQBias []float32, gradKBias []float32, gradVBias []float32, gradOutputBias []float32) {
+// applyRoPEPyTorchStyle applies Rotary Position Embedding exactly like PyTorch
+// Input shape: [numHeads, seqLen, headDim]
+// PyTorch does: q_embed = (q * cos) + (rotate_half(q) * sin)
+// where rotate_half(x) = concat([-x[half:], x[:half]])
+func applyRoPEPyTorchStyle(tensor []float32, seqLen, numHeads, headDim int, theta float64) {
+	// Compute frequency bands for each dimension
+	freqs := make([]float64, headDim)
+	half := headDim / 2
+	for i := 0; i < half; i++ {
+		freqs[i] = 1.0 / math.Pow(theta, float64(2*i)/float64(headDim))
+		freqs[i+half] = freqs[i] // Same frequency for second half
+	}
+
+	// Compute cos and sin for each position
+	cosVals := make([]float32, seqLen*headDim)
+	sinVals := make([]float32, seqLen*headDim)
+	for pos := 0; pos < seqLen; pos++ {
+		for d := 0; d < headDim; d++ {
+			angle := freqs[d] * float64(pos)
+			cosVals[pos*headDim+d] = float32(math.Cos(angle))
+			sinVals[pos*headDim+d] = float32(math.Sin(angle))
+		}
+	}
+
+	// Apply RoPE: output = (tensor * cos) + (rotate_half(tensor) * sin)
+	result := make([]float32, len(tensor))
+	half = headDim / 2
+
+	for head := 0; head < numHeads; head++ {
+		for pos := 0; pos < seqLen; pos++ {
+			for d := 0; d < headDim; d++ {
+				idx := head*seqLen*headDim + pos*headDim + d
+
+				// rotate_half: concat([-x[half:], x[:half]])
+				var rotatedVal float32
+				if d < half {
+					// First half gets -x[d+half]
+					rotatedIdx := head*seqLen*headDim + pos*headDim + d + half
+					rotatedVal = -tensor[rotatedIdx]
+				} else {
+					// Second half gets x[d-half]
+					rotatedIdx := head*seqLen*headDim + pos*headDim + d - half
+					rotatedVal = tensor[rotatedIdx]
+				}
+
+				// output[d] = tensor[d] * cos[d] + rotatedVal * sin[d]
+				result[idx] = tensor[idx]*cosVals[pos*headDim+d] + rotatedVal*sinVals[pos*headDim+d]
+			}
+		}
+	}
+
+	// Copy result back to tensor
+	copy(tensor, result)
+}
+
+// multiHeadAttentionBackwardCPU is a stub for backward pass
+// We're focusing on forward pass correctness first
+func multiHeadAttentionBackwardCPU(grad, input, preAct []float32, config *LayerConfig, batchSize int) (
+	gradInput, gradQW, gradKW, gradVW, gradOutW []float32,
+	gradQB, gradKB, gradVB, gradOutB []float32) {
+
+	// Stub implementation - will implement if needed for training
+	fmt.Println("[WARNING] Attention backward pass not implemented in clean rewrite")
+
+	// Return zero gradients
 	dModel := config.DModel
-	seqLen := config.SeqLength
+	kvDim := config.NumKVHeads * config.HeadDim
 
-	// Initialize gradients
-	inputSize := batchSize * seqLen * dModel
-	gradInput = make([]float32, inputSize)
-	gradQWeights = make([]float32, dModel*dModel)
-	gradKWeights = make([]float32, dModel*dModel)
-	gradVWeights = make([]float32, dModel*dModel)
-	gradOutputWeight = make([]float32, dModel*dModel)
-	gradQBias = make([]float32, dModel)
-	gradKBias = make([]float32, dModel)
-	gradVBias = make([]float32, dModel)
-	gradOutputBias = make([]float32, dModel)
+	gradInput = make([]float32, len(input))
+	gradQW = make([]float32, len(config.QWeights))
+	gradKW = make([]float32, len(config.KWeights))
+	gradVW = make([]float32, len(config.VWeights))
+	gradOutW = make([]float32, len(config.OutputWeight))
+	gradQB = make([]float32, dModel)
+	gradKB = make([]float32, kvDim)
+	gradVB = make([]float32, kvDim)
+	gradOutB = make([]float32, dModel)
 
-	// Step 1: Apply activation derivative to gradOutput
-	// preActivation contains the output AFTER the output projection (before final activation)
-	gradPreActivation := make([]float32, inputSize)
-	for i := 0; i < inputSize; i++ {
-		derivative := activateDerivativeCPU(preActivation[i], config.Activation)
-		gradPreActivation[i] = gradOutput[i] * derivative
-	}
-
-	// Step 2: Backprop through output projection
-	// We need to reconstruct the attention output (before output projection)
-	// Forward: output = attentionOutput * OutputWeight + OutputBias
-	// Backward: gradAttentionOutput = gradOutput * OutputWeight^T
-
-	// First, we need to recompute the attention output by running forward pass
-	// (In a proper implementation, we'd store this during forward pass)
-	attentionOutput := make([]float32, inputSize)
-
-	// Recompute Q, K, V projections
-	Q := make([]float32, inputSize)
-	K := make([]float32, inputSize)
-	V := make([]float32, inputSize)
-
-	for b := 0; b < batchSize; b++ {
-		for s := 0; s < seqLen; s++ {
-			for d := 0; d < dModel; d++ {
-				qSum := config.QBias[d]
-				kSum := config.KBias[d]
-				vSum := config.VBias[d]
-
-				for i := 0; i < dModel; i++ {
-					inputIdx := b*seqLen*dModel + s*dModel + i
-					qWeightIdx := i*dModel + d
-					kWeightIdx := i*dModel + d
-					vWeightIdx := i*dModel + d
-
-					qSum += input[inputIdx] * config.QWeights[qWeightIdx]
-					kSum += input[inputIdx] * config.KWeights[kWeightIdx]
-					vSum += input[inputIdx] * config.VWeights[vWeightIdx]
-				}
-
-				outputIdx := b*seqLen*dModel + s*dModel + d
-				Q[outputIdx] = qSum
-				K[outputIdx] = kSum
-				V[outputIdx] = vSum
-			}
-		}
-	}
-
-	// Recompute attention (simplified - treating it as identity for gradient flow)
-	// In reality, we'd need attention scores, but for now approximate with V values
-	copy(attentionOutput, V)
-
-	// Now backprop through output projection
-	// gradAttentionOutput will receive gradients from the output layer
-	gradAttentionOutput := make([]float32, inputSize)
-
-	for b := 0; b < batchSize; b++ {
-		for s := 0; s < seqLen; s++ {
-			for d := 0; d < dModel; d++ {
-				gradIdx := b*seqLen*dModel + s*dModel + d
-				gradOut := gradPreActivation[gradIdx]
-
-				// Gradient w.r.t. output bias
-				gradOutputBias[d] += gradOut
-
-				// Gradient w.r.t. output weights and attention output
-				for i := 0; i < dModel; i++ {
-					attnIdx := b*seqLen*dModel + s*dModel + i
-					weightIdx := i*dModel + d
-
-					// Gradient w.r.t. output weights: grad = gradOut * input
-					gradOutputWeight[weightIdx] += gradOut * attentionOutput[attnIdx]
-
-					// Gradient w.r.t. attention output: grad = gradOut * weight
-					gradAttentionOutput[attnIdx] += gradOut * config.OutputWeight[weightIdx]
-				}
-			}
-		}
-	}
-
-	// Step 3: Backprop through V projection
-	// V = input * VWeights + VBias
-	// For simplified attention, gradAttentionOutput flows directly to gradV
-	for b := 0; b < batchSize; b++ {
-		for s := 0; s < seqLen; s++ {
-			for d := 0; d < dModel; d++ {
-				gradIdx := b*seqLen*dModel + s*dModel + d
-				gradV := gradAttentionOutput[gradIdx]
-
-				// Gradient w.r.t. V bias
-				gradVBias[d] += gradV
-
-				// Gradient w.r.t. V weights and input
-				for i := 0; i < dModel; i++ {
-					inputIdx := b*seqLen*dModel + s*dModel + i
-					vWeightIdx := i*dModel + d
-
-					// Gradient w.r.t. V weights
-					gradVWeights[vWeightIdx] += gradV * input[inputIdx]
-
-					// Gradient w.r.t. input (from V path)
-					gradInput[inputIdx] += gradV * config.VWeights[vWeightIdx]
-				}
-			}
-		}
-	}
-
-	// Step 4: Also backprop through Q and K projections
-	// For simplified version, we approximate by flowing gradients through Q and K as well
-	// (In full attention, this would go through attention score derivatives)
-
-	// Use a fraction of the gradient for Q and K to approximate their contribution
-	gradientScale := float32(0.3) // Scale down Q/K gradients since V carries most signal
-
-	for b := 0; b < batchSize; b++ {
-		for s := 0; s < seqLen; s++ {
-			for d := 0; d < dModel; d++ {
-				gradIdx := b*seqLen*dModel + s*dModel + d
-				gradQ := gradAttentionOutput[gradIdx] * gradientScale
-				gradK := gradAttentionOutput[gradIdx] * gradientScale
-
-				// Gradient w.r.t. Q and K biases
-				gradQBias[d] += gradQ
-				gradKBias[d] += gradK
-
-				// Gradient w.r.t. Q and K weights and input
-				for i := 0; i < dModel; i++ {
-					inputIdx := b*seqLen*dModel + s*dModel + i
-					qWeightIdx := i*dModel + d
-					kWeightIdx := i*dModel + d
-
-					// Gradient w.r.t. weights
-					gradQWeights[qWeightIdx] += gradQ * input[inputIdx]
-					gradKWeights[kWeightIdx] += gradK * input[inputIdx]
-
-					// Gradient w.r.t. input (from Q and K paths)
-					gradInput[inputIdx] += gradQ * config.QWeights[qWeightIdx]
-					gradInput[inputIdx] += gradK * config.KWeights[kWeightIdx]
-				}
-			}
-		}
-	}
-
-	return gradInput, gradQWeights, gradKWeights, gradVWeights, gradOutputWeight, gradQBias, gradKBias, gradVBias, gradOutputBias
+	return
 }

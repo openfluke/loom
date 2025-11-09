@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LOOM Transformer - Text Generation</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .container {
+        background: white;
+        border-radius: 16px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        max-width: 800px;
+        width: 100%;
+        padding: 40px;
+      }
+
+      h1 {
+        color: #333;
+        margin-bottom: 10px;
+        font-size: 32px;
+        text-align: center;
+      }
+
+      .subtitle {
+        color: #666;
+        text-align: center;
+        margin-bottom: 30px;
+        font-size: 14px;
+      }
+
+      .status {
+        background: #f0f9ff;
+        border: 1px solid #bae6fd;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 20px;
+        font-size: 14px;
+        color: #0369a1;
+      }
+
+      .status.loading {
+        background: #fef3c7;
+        border-color: #fde68a;
+        color: #92400e;
+      }
+
+      .status.error {
+        background: #fee;
+        border-color: #fcc;
+        color: #c00;
+      }
+
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 8px;
+        color: #374151;
+      }
+
+      textarea {
+        width: 100%;
+        padding: 12px;
+        border: 2px solid #e5e7eb;
+        border-radius: 8px;
+        font-size: 16px;
+        font-family: inherit;
+        resize: vertical;
+        transition: border-color 0.2s;
+        min-height: 120px;
+      }
+
+      textarea:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      .controls {
+        display: flex;
+        gap: 20px;
+        margin: 20px 0;
+        align-items: center;
+      }
+
+      .slider-group {
+        flex: 1;
+      }
+
+      .slider-group label {
+        font-size: 14px;
+        margin-bottom: 4px;
+      }
+
+      input[type="range"] {
+        width: 100%;
+        height: 6px;
+        border-radius: 3px;
+        background: #e5e7eb;
+        outline: none;
+        -webkit-appearance: none;
+      }
+
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #667eea;
+        cursor: pointer;
+      }
+
+      input[type="range"]::-moz-range-thumb {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #667eea;
+        cursor: pointer;
+        border: none;
+      }
+
+      .slider-value {
+        color: #6b7280;
+        font-size: 14px;
+        margin-top: 4px;
+      }
+
+      button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        padding: 14px 32px;
+        font-size: 16px;
+        font-weight: 600;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: transform 0.2s, box-shadow 0.2s;
+        width: 100%;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .output-section {
+        margin-top: 30px;
+      }
+
+      .output-box {
+        background: #f9fafb;
+        border: 2px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 20px;
+        min-height: 150px;
+        font-size: 16px;
+        line-height: 1.6;
+        color: #1f2937;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+
+      .output-box:empty:before {
+        content: "Generated text will appear here...";
+        color: #9ca3af;
+        font-style: italic;
+      }
+
+      .stats {
+        display: flex;
+        gap: 20px;
+        margin-top: 15px;
+        font-size: 14px;
+        color: #6b7280;
+      }
+
+      .stat {
+        flex: 1;
+        background: #f3f4f6;
+        padding: 10px;
+        border-radius: 6px;
+        text-align: center;
+      }
+
+      .stat-value {
+        font-weight: 600;
+        color: #374151;
+        font-size: 18px;
+      }
+
+      .stat-label {
+        font-size: 12px;
+        margin-top: 2px;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+
+      .loading-indicator {
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🚀 LOOM Transformer</h1>
+      <p class="subtitle">
+        Qwen2.5-0.5B with Fixed SwiGLU • Network.ForwardCPU
+      </p>
+
+      <div class="status" id="status">Checking backend connection...</div>
+
+      <div class="input-section">
+        <label for="prompt">Enter your prompt:</label>
+        <textarea id="prompt" placeholder="Once upon a time..." autofocus>
+Once upon a time</textarea
+        >
+      </div>
+
+      <div class="controls">
+        <div class="slider-group">
+          <label for="maxTokens">Max Tokens</label>
+          <input
+            type="range"
+            id="maxTokens"
+            min="1"
+            max="200"
+            value="50"
+            oninput="updateSliderValue()"
+          />
+          <div class="slider-value" id="sliderValue">50 tokens</div>
+        </div>
+      </div>
+
+      <button id="generateBtn" onclick="generate()">Generate Text</button>
+
+      <div class="output-section">
+        <label>Generated Output:</label>
+        <div class="output-box" id="output"></div>
+
+        <div class="stats" id="stats" style="display: none">
+          <div class="stat">
+            <div class="stat-value" id="numTokens">-</div>
+            <div class="stat-label">Tokens Generated</div>
+          </div>
+          <div class="stat">
+            <div class="stat-value" id="genTime">-</div>
+            <div class="stat-label">Time (s)</div>
+          </div>
+          <div class="stat">
+            <div class="stat-value" id="tokensPerSec">-</div>
+            <div class="stat-label">Tokens/sec</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Check backend health on load
+      checkHealth();
+
+      function updateSliderValue() {
+        const slider = document.getElementById("maxTokens");
+        const value = document.getElementById("sliderValue");
+        value.textContent = slider.value + " tokens";
+      }
+
+      async function checkHealth() {
+        const status = document.getElementById("status");
+        try {
+          const response = await fetch("/health");
+          const data = await response.json();
+
+          if (data.backend === "ok") {
+            status.className = "status";
+            status.textContent = "✅ Connected to backend server";
+          } else {
+            status.className = "status error";
+            status.textContent =
+              "❌ Backend server unavailable. Start serve_model_auto first!";
+          }
+        } catch (error) {
+          status.className = "status error";
+          status.textContent = "❌ Web interface error: " + error.message;
+        }
+      }
+
+      async function generate() {
+        const prompt = document.getElementById("prompt").value;
+        const maxTokens = parseInt(document.getElementById("maxTokens").value);
+        const output = document.getElementById("output");
+        const status = document.getElementById("status");
+        const generateBtn = document.getElementById("generateBtn");
+        const stats = document.getElementById("stats");
+
+        if (!prompt.trim()) {
+          status.className = "status error";
+          status.textContent = "⚠️ Please enter a prompt";
+          return;
+        }
+
+        // Reset UI
+        output.textContent = prompt;
+        output.classList.add("loading-indicator");
+        status.className = "status loading";
+        status.textContent = "⏳ Streaming tokens...";
+        generateBtn.disabled = true;
+        stats.style.display = "none";
+
+        const startTime = Date.now();
+        let tokenCount = 0;
+
+        try {
+          const response = await fetch("/generate_stream", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              prompt: prompt,
+              max_tokens: maxTokens,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error("Generation failed");
+          }
+
+          output.classList.remove("loading-indicator");
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (true) {
+            const { done, value } = await reader.read();
+
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop(); // Keep incomplete line in buffer
+
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                const data = JSON.parse(line.slice(6));
+
+                if (data.error) {
+                  throw new Error(data.error);
+                }
+
+                if (data.done) {
+                  const endTime = Date.now();
+                  const timeSeconds = ((endTime - startTime) / 1000).toFixed(2);
+                  const tokensPerSec =
+                    tokenCount > 0
+                      ? ((tokenCount / (endTime - startTime)) * 1000).toFixed(2)
+                      : "0.00";
+
+                  // Show stats
+                  document.getElementById("numTokens").textContent = tokenCount;
+                  document.getElementById("genTime").textContent = timeSeconds;
+                  document.getElementById("tokensPerSec").textContent =
+                    tokensPerSec;
+                  stats.style.display = "flex";
+
+                  // Update status
+                  status.className = "status";
+                  status.textContent = `✅ Generated ${tokenCount} tokens in ${timeSeconds}s (${tokensPerSec} tokens/sec)`;
+                  break;
+                }
+
+                if (data.token) {
+                  // Append token to output
+                  output.textContent += data.token;
+                  tokenCount++;
+
+                  // Update status with live count
+                  const currentTime = Date.now();
+                  const elapsed = ((currentTime - startTime) / 1000).toFixed(1);
+                  const currentRate =
+                    tokenCount > 0
+                      ? (
+                          (tokenCount / (currentTime - startTime)) *
+                          1000
+                        ).toFixed(1)
+                      : "0.0";
+                  status.textContent = `⏳ Streaming... ${tokenCount} tokens (${currentRate} tok/s)`;
+                }
+              }
+            }
+          }
+        } catch (error) {
+          output.classList.remove("loading-indicator");
+          status.className = "status error";
+          status.textContent = "❌ Error: " + error.message;
+        } finally {
+          generateBtn.disabled = false;
+        }
+      }
+
+      // Allow Enter key to generate (with Shift+Enter for new line)
+      document
+        .getElementById("prompt")
+        .addEventListener("keydown", function (e) {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            generate();
+          }
+        });
+    </script>
+  </body>
+</html>
