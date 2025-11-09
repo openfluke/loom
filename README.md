@@ -1,6 +1,8 @@
 # LOOM - Layered Omni-architecture Openfluke Machine
 
-A high-performance GPU-accelerated neural network framework written in Go, featuring WebGPU compute shaders for parallel execution and WebAssembly export for browser deployment.
+A high-performance GPU-accelerated neural network framework written in Go, featuring WebGPU compute shaders for parallel execution and WebAssembly export for browser deployment. **Now with transformer inference support!**
+
+> 🎉 **NEW:** Full transformer inference in browser WASM! SmolLM2-135M-Instruct successfully generates coherent text entirely in the browser with pure Go implementation.
 
 > 🤯 **BREAKTHROUGH:** LOOM's Softmax layer includes **native Mixture of Experts (MoE)** via Grid Softmax - the same architecture used in GPT-4, Switch Transformer, and Mixtral. **Mathematically proven** equivalent with 97.1% loss reduction and perfect gradient matching. See `examples/moe_proof_demo.go` for rigorous proof!
 
@@ -14,7 +16,16 @@ A high-performance GPU-accelerated neural network framework written in Go, featu
 
 ## Overview
 
-Loom is a modern neural network framework that combines the simplicity of Go with the power of GPU acceleration via WebGPU. It supports multiple layer types, flexible grid-based architectures, and provides both CPU and GPU execution paths with automatic gradient computation. The framework can be compiled to WebAssembly for running neural networks directly in the browser.
+Loom is a modern neural network framework that combines the simplicity of Go with the power of GPU acceleration via WebGPU. It supports multiple layer types, flexible grid-based architectures, and provides both CPU and GPU execution paths with automatic gradient computation. The framework can be compiled to WebAssembly for running neural networks and **transformer inference** directly in the browser.
+
+**Example transformer output (SmolLM2-135M in browser):**
+
+```
+Prompt: "Once upon a time"
+Output: "hi
+
+I'm excited to see what you come up with! Let me know if you have any"
+```
 
 ## Key Features
 
@@ -27,6 +38,12 @@ Loom is a modern neural network framework that combines the simplicity of Go wit
 ### 🌐 WebAssembly Support
 
 - **Browser Deployment**: Compile to WASM for client-side inference
+- **🚀 Transformer Inference**: Run LLaMA, GPT-2, and other transformers entirely in browser
+- **Pure Go Tokenizer**: Complete BPE tokenizer implementation (no Python dependencies)
+- **Safetensors Loading**: Direct loading of HuggingFace model weights from bytes
+- **Local Model Files**: Load models from local filesystem (downloaded via `huggingface-cli`)
+- **Interactive UI**: Beautiful web interface with model selection and generation controls
+- **Working Models**: SmolLM2-135M (✅), Pythia-70M/160M (✅)
 - **Registry-based Layer Initialization**: Dynamic layer creation via `CallLayerInit()` for all layer types
 - **Reflection-based API**: Automatic method exposure with 24+ discoverable functions
 - **Runtime Introspection**: Query available methods, signatures, and parameters from JavaScript

@@ -560,6 +560,19 @@ func main() {
 	js.Global().Set("CallLayerInit", callNNFunction())
 	js.Global().Set("ListLayerInitFunctions", listLayerInitFunctions())
 
+	// Tokenizer functions
+	js.Global().Set("LoadTokenizerFromBytes", loadTokenizerFromBytes())
+	js.Global().Set("EncodeText", encodeText())
+	js.Global().Set("DecodeTokens", decodeTokens())
+
+	// Model loading functions
+	js.Global().Set("LoadTransformerFromBytes", loadTransformerFromBytes())
+	js.Global().Set("LoadEmbeddings", loadEmbeddings())
+
+	// Inference functions
+	js.Global().Set("GenerateNextToken", generateNextToken())
+	js.Global().Set("GenerateText", generateText())
+
 	// List available functions dynamically from registry
 	functions := nn.ListLayerInitFunctions()
 	fmt.Println("LOOM WASM API ready. Available functions:")
@@ -577,6 +590,14 @@ func main() {
 		fmt.Printf("      * %s(%s)\n", fn.Name, argStr)
 	}
 	fmt.Println("  - ListLayerInitFunctions() - Get metadata about all layer init functions")
+	fmt.Println("\nTransformer Inference API:")
+	fmt.Println("  - LoadTokenizerFromBytes(tokenizerData) - Load tokenizer from tokenizer.json")
+	fmt.Println("  - LoadTransformerFromBytes(configData, weightsData) - Load transformer model")
+	fmt.Println("  - LoadEmbeddings(embeddingsFloat32Array) - Load embedding matrix")
+	fmt.Println("  - EncodeText(text, addSpecialTokens) - Tokenize text to IDs")
+	fmt.Println("  - DecodeTokens(tokenIDs, skipSpecialTokens) - Convert IDs to text")
+	fmt.Println("  - GenerateNextToken(tokenIDs, temperature) - Generate one token")
+	fmt.Println("  - GenerateText(prompt, maxTokens, temperature) - Generate complete text")
 
 	// Keep the Go program running
 	select {}

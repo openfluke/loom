@@ -1,5 +1,9 @@
 fabric
 
+# Downloaded models (HuggingFace, etc.)
+models/
+wasm/models
+
 # Compiled binaries (C ABI)
 cabi/compiled/
 
