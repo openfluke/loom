@@ -70,6 +70,15 @@ func multiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 	headDim := config.HeadDim
 	seqLen := config.SeqLength
 
+	// For sequence models like BERT, the batchSize parameter is set to seqLength
+	// but the actual batch dimension is 1. Adjust based on input size.
+	actualBatchSize := 1
+	actualSeqLen := len(input) / dModel
+	if actualSeqLen != batchSize*seqLen {
+		batchSize = actualBatchSize
+		seqLen = actualSeqLen
+	}
+
 	// Output size same as input: [batch][seqLength][dModel]
 	outputSize := batchSize * seqLen * dModel
 	preActivation := make([]float32, outputSize)

@@ -25,6 +25,8 @@ const (
 	LayerRNN                LayerType = 3 // Recurrent Neural Network layer
 	LayerLSTM               LayerType = 4 // Long Short-Term Memory layer
 	LayerSoftmax            LayerType = 5 // Softmax layer with multiple variants
+	LayerNorm               LayerType = 6 // Layer Normalization
+	LayerResidual           LayerType = 7 // Residual/Skip connection (adds stored input)
 )
 
 // SoftmaxType defines the variant of softmax to use
@@ -112,6 +114,15 @@ type LayerConfig struct {
 	AdaptiveClusters [][]int     // For adaptive softmax: item indices per cluster
 	MixtureWeights   []float32   // For mixture softmax: weights for each component
 	EntmaxAlpha      float32     // For entmax: alpha parameter (1.0=softmax, 2.0=sparsemax)
+
+	// LayerNorm specific parameters
+	NormSize int       // Size of the normalization dimension
+	Gamma    []float32 // Scale parameters [normSize]
+	Beta     []float32 // Shift parameters [normSize]
+	Epsilon  float32   // Small constant for numerical stability (default 1e-5)
+
+	// Residual connection
+	ResidualSkip int // How many layers back to skip for residual (0 = no residual)
 }
 
 // Network represents a grid neural network

@@ -21,6 +21,9 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 	layerIdx := 0
 
+	// Track residual inputs for BERT-style skip connections
+	var residualInput []float32
+
 	// Forward through grid: iterate through rows, then columns, then layers per cell
 	for row := 0; row < n.GridRows; row++ {
 		for col := 0; col < n.GridCols; col++ {
@@ -40,6 +43,10 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					data = postAct
 				} else if config.Type == LayerMultiHeadAttention {
 					// Multi-Head Attention layer
+					// Store input for residual connection
+					residualInput = make([]float32, len(data))
+					copy(residualInput, data)
+
 					preAct, postAct := multiHeadAttentionForwardCPU(data, config, n.BatchSize)
 
 					// Store pre-activation values
@@ -99,6 +106,22 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 					// Use post-activation for next layer
 					data = postAct
+				} else if config.Type == LayerNorm {
+					// Layer Normalization with residual connection
+					normalized := layerNormForwardCPU(data, residualInput, config, n.BatchSize)
+
+					// Store pre-normalization values
+					n.preActivations[layerIdx] = make([]float32, len(data))
+					copy(n.preActivations[layerIdx], data)
+
+					// After LayerNorm, store output as potential residual for next block
+					if residualInput != nil {
+						residualInput = make([]float32, len(normalized))
+						copy(residualInput, normalized)
+					}
+
+					// Use normalized output for next layer
+					data = normalized
 				} else {
 					// Default: element-wise activation only
 					// Store pre-activation values
