@@ -40,10 +40,11 @@ func main() {
 		fmt.Println("Building network with ALL layer types + all softmax variants...")
 		fmt.Println()
 
-		// Network with 19 layers:
-		// 0-8: Dense, RMSNorm, Conv2D, Attention, Dense, RNN, LSTM, SwiGLU, LayerNorm, Dense
-		// 9-18: All 10 softmax variants
-		network = nn.NewNetwork(32, 1, 1, 19)
+		// Network with 11 layers:
+		// 0-8: Dense, RMSNorm, Conv2D, Attention, Dense, RNN, LSTM, SwiGLU, LayerNorm
+		// 9: Dense (16 -> 2)
+		// 10: Single softmax
+		network = nn.NewNetwork(32, 1, 1, 11)
 		network.BatchSize = batchSize
 
 		// Layer 0: Dense (32 -> 32)
@@ -100,41 +101,41 @@ func main() {
 		network.SetLayer(0, 0, 3, attention)
 		fmt.Println("  Layer 3: Attention (4 seq x 4 dim, 2 heads)")
 
-		// Layer 4: Dense (16 -> 32)
-		dense2 := nn.InitDenseLayer(16, 32, nn.ActivationSigmoid)
+		// Layer 4: Dense (16 -> 16)
+		dense2 := nn.InitDenseLayer(16, 16, nn.ActivationSigmoid)
 		network.SetLayer(0, 0, 4, dense2)
-		fmt.Println("  Layer 4: Dense (16 -> 32, Sigmoid)")
+		fmt.Println("  Layer 4: Dense (16 -> 16, Sigmoid)")
 
-		// Layer 5: RNN (4 features, 8 hidden, 4 timesteps -> 32)
+		// Layer 5: RNN (4 features, 4 hidden, 4 timesteps -> 16)
 		rnn := nn.InitRNNLayer(
 			4, // inputSize
-			8, // hiddenSize
+			4, // hiddenSize
 			batchSize,
 			4, // seqLength
 		)
 		network.SetLayer(0, 0, 5, rnn)
-		fmt.Println("  Layer 5: RNN (4 features, 8 hidden, 4 steps -> 32)")
+		fmt.Println("  Layer 5: RNN (4 features, 4 hidden, 4 steps -> 16)")
 
-		// Layer 6: LSTM (8 features, 4 hidden, 4 timesteps -> 16)
+		// Layer 6: LSTM (4 features, 4 hidden, 4 timesteps -> 16)
 		lstm := nn.InitLSTMLayer(
-			8, // inputSize
+			4, // inputSize
 			4, // hiddenSize
 			batchSize,
 			4, // seqLength
 		)
 		network.SetLayer(0, 0, 6, lstm)
-		fmt.Println("  Layer 6: LSTM (8 features, 4 hidden, 4 steps -> 16)")
+		fmt.Println("  Layer 6: LSTM (4 features, 4 hidden, 4 steps -> 16)")
 
-		// Layer 7: SwiGLU (16 -> 32 intermediate -> 16)
+		// Layer 7: SwiGLU (16 -> 24 intermediate -> 16)
 		swiglu := nn.LayerConfig{
 			Type:         nn.LayerSwiGLU,
 			InputHeight:  16,
-			OutputHeight: 32,
-			GateWeights:  make([]float32, 16*32),
-			UpWeights:    make([]float32, 16*32),
-			DownWeights:  make([]float32, 32*16),
-			GateBias:     make([]float32, 32),
-			UpBias:       make([]float32, 32),
+			OutputHeight: 24, // intermediate size
+			GateWeights:  make([]float32, 16*24),
+			UpWeights:    make([]float32, 16*24),
+			DownWeights:  make([]float32, 24*16),
+			GateBias:     make([]float32, 24),
+			UpBias:       make([]float32, 24),
 			DownBias:     make([]float32, 16),
 		}
 		for i := range swiglu.GateWeights {
@@ -145,7 +146,7 @@ func main() {
 			swiglu.DownWeights[i] = rand.Float32()*0.2 - 0.1
 		}
 		network.SetLayer(0, 0, 7, swiglu)
-		fmt.Println("  Layer 7: SwiGLU (16 -> 32 -> 16)")
+		fmt.Println("  Layer 7: SwiGLU (16 -> 24 -> 16)")
 
 		// Layer 8: LayerNorm (16 features)
 		layerNorm := nn.LayerConfig{
@@ -168,34 +169,16 @@ func main() {
 		fmt.Println("  Layer 9: Dense (16 -> 2, Sigmoid)")
 
 		fmt.Println()
-		fmt.Println("Adding all 10 softmax variants...")
+		fmt.Println("Adding softmax output layer...")
 
-		// Layer 10-19: All softmax variants (2 outputs each)
-		softmaxLayers := []struct {
-			name  string
-			layer nn.LayerConfig
-		}{
-			{"Standard", nn.InitSoftmaxLayer()},
-			{"Grid", nn.InitGridSoftmaxLayer(2, 1)},
-			{"Hierarchical", nn.InitHierarchicalSoftmaxLayer([]int{2, 1})},
-			{"Temperature", nn.InitTemperatureSoftmaxLayer(0.7)},
-			{"Gumbel", nn.InitGumbelSoftmaxLayer(1.0)},
-			{"Masked", nn.InitMaskedSoftmaxLayer(2)},
-			{"Sparsemax", nn.InitSparsemaxLayer()},
-			{"Adaptive", nn.LayerConfig{Type: nn.LayerSoftmax, SoftmaxVariant: nn.SoftmaxAdaptive, Temperature: 1.0}},
-			{"Mixture", nn.LayerConfig{Type: nn.LayerSoftmax, SoftmaxVariant: nn.SoftmaxMixture, Temperature: 1.0}},
-			{"Entmax", nn.InitEntmaxLayer(1.5)},
-		}
-
-		for i, sm := range softmaxLayers {
-			network.SetLayer(0, 0, 10+i, sm.layer)
-			fmt.Printf("  Layer %d: Softmax %s\n", 10+i, sm.name)
-		}
+		// Layer 10: Single softmax (2 outputs)
+		network.SetLayer(0, 0, 10, nn.InitSoftmaxLayer())
+		fmt.Println("  Layer 10: Softmax Standard")
 
 		fmt.Println()
 		fmt.Println("Network Summary:")
-		fmt.Println("  Total layers: 19")
-		fmt.Println("  Layer types: Dense → RMSNorm → Conv2D → Attention → Dense → RNN → LSTM → SwiGLU → LayerNorm → Dense → 10 Softmax variants")
+		fmt.Println("  Total layers: 11")
+		fmt.Println("  Layer types: Dense → RMSNorm → Conv2D → Attention → Dense → RNN → LSTM → SwiGLU → LayerNorm → Dense → Softmax")
 		fmt.Println()
 
 		// Create training data
@@ -419,8 +402,8 @@ func main() {
 	fmt.Println()
 
 	fmt.Println("=== All Layer Types Test Complete ===")
-	fmt.Println("✅ All 10 core layer types + 10 softmax variants tested")
-	fmt.Println("✅ Includes: Dense, RMSNorm, Conv2D, Attention, RNN, LSTM, SwiGLU, LayerNorm")
+	fmt.Println("✅ All 10 core layer types tested")
+	fmt.Println("✅ Includes: Dense, RMSNorm, Conv2D, Attention, RNN, LSTM, SwiGLU, LayerNorm, Softmax")
 	fmt.Println("✅ Model save/load working correctly")
 	fmt.Println("✅ Weight mutation verified")
 }

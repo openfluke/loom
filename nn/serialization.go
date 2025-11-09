@@ -72,6 +72,10 @@ type LayerDefinition struct {
 	AdaptiveClusters [][]int   `json:"adaptive_clusters,omitempty"`
 	MixtureWeights   []float32 `json:"mixture_weights,omitempty"`
 	EntmaxAlpha      float32   `json:"entmax_alpha,omitempty"`
+
+	// Normalization fields
+	NormSize int     `json:"norm_size,omitempty"`
+	Epsilon  float32 `json:"epsilon,omitempty"`
 }
 
 // EncodedWeights stores weights in base64-encoded JSON format
@@ -123,6 +127,18 @@ type LayerWeights struct {
 	BiasF    []float32 `json:"bias_f,omitempty"`
 	BiasG    []float32 `json:"bias_g,omitempty"`
 	BiasO    []float32 `json:"bias_o,omitempty"`
+
+	// LayerNorm / RMSNorm weights
+	Gamma []float32 `json:"gamma,omitempty"`
+	Beta  []float32 `json:"beta,omitempty"`
+
+	// SwiGLU weights
+	GateWeights []float32 `json:"gate_weights,omitempty"`
+	UpWeights   []float32 `json:"up_weights,omitempty"`
+	DownWeights []float32 `json:"down_weights,omitempty"`
+	GateBias    []float32 `json:"gate_bias,omitempty"`
+	UpBias      []float32 `json:"up_bias,omitempty"`
+	DownBias    []float32 `json:"down_bias,omitempty"`
 }
 
 // SaveModel saves a single model to a file
@@ -268,6 +284,28 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 			layerDef.MixtureWeights = layerConfig.MixtureWeights
 			layerDef.EntmaxAlpha = layerConfig.EntmaxAlpha
 			// Softmax has no trainable weights
+
+		case LayerNorm:
+			layerDef.NormSize = layerConfig.NormSize
+			layerDef.Epsilon = layerConfig.Epsilon
+			layerWeights.Gamma = layerConfig.Gamma
+			layerWeights.Beta = layerConfig.Beta
+
+		case LayerRMSNorm:
+			layerDef.NormSize = layerConfig.NormSize
+			layerDef.Epsilon = layerConfig.Epsilon
+			layerWeights.Gamma = layerConfig.Gamma
+			// RMSNorm has no Beta
+
+		case LayerSwiGLU:
+			layerDef.InputHeight = layerConfig.InputHeight   // hidden size
+			layerDef.OutputHeight = layerConfig.OutputHeight // intermediate size
+			layerWeights.GateWeights = layerConfig.GateWeights
+			layerWeights.UpWeights = layerConfig.UpWeights
+			layerWeights.DownWeights = layerConfig.DownWeights
+			layerWeights.GateBias = layerConfig.GateBias
+			layerWeights.UpBias = layerConfig.UpBias
+			layerWeights.DownBias = layerConfig.DownBias
 		}
 
 		config.Layers = append(config.Layers, layerDef)
@@ -534,6 +572,37 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				EntmaxAlpha:      layerDef.EntmaxAlpha,
 			}
 
+		case "layer_norm", "layernorm":
+			layerConfig = LayerConfig{
+				Type:     LayerNorm,
+				NormSize: layerDef.NormSize,
+				Epsilon:  layerDef.Epsilon,
+				Gamma:    layerWeights.Gamma,
+				Beta:     layerWeights.Beta,
+			}
+
+		case "rms_norm", "rmsnorm":
+			layerConfig = LayerConfig{
+				Type:     LayerRMSNorm,
+				NormSize: layerDef.NormSize,
+				Epsilon:  layerDef.Epsilon,
+				Gamma:    layerWeights.Gamma,
+				// RMSNorm has no Beta
+			}
+
+		case "swiglu":
+			layerConfig = LayerConfig{
+				Type:         LayerSwiGLU,
+				InputHeight:  layerDef.InputHeight,  // hidden size
+				OutputHeight: layerDef.OutputHeight, // intermediate size
+				GateWeights:  layerWeights.GateWeights,
+				UpWeights:    layerWeights.UpWeights,
+				DownWeights:  layerWeights.DownWeights,
+				GateBias:     layerWeights.GateBias,
+				UpBias:       layerWeights.UpBias,
+				DownBias:     layerWeights.DownBias,
+			}
+
 		default:
 			return nil, fmt.Errorf("unknown layer type: %s", layerDef.Type)
 		}
@@ -559,6 +628,14 @@ func layerTypeToString(lt LayerType) string {
 		return "lstm"
 	case LayerSoftmax:
 		return "softmax"
+	case LayerNorm:
+		return "layer_norm"
+	case LayerRMSNorm:
+		return "rms_norm"
+	case LayerSwiGLU:
+		return "swiglu"
+	case LayerResidual:
+		return "residual"
 	default:
 		return "unknown"
 	}
