@@ -43,6 +43,87 @@ go run web_interface.go -model Qwen/Qwen2.5-0.5B -backend http://localhost:8080 
 
 Navigate to: **http://localhost:5000**
 
+## Supported Models (≤1B Parameters)
+
+**⚠️ Note: CPU inference is currently VERY SLOW. Performance will be significantly improved with upcoming WebGPU acceleration.**
+
+All models under ~1B parameters should work. Here are tested configurations:
+
+### Qwen Models (Alibaba)
+
+```bash
+# Qwen2.5-0.5B (494M) - Fast, great quality
+huggingface-cli download Qwen/Qwen2.5-0.5B
+go run serve_model_bytes.go -model Qwen/Qwen2.5-0.5B -port 8080
+go run web_interface.go -model Qwen/Qwen2.5-0.5B -backend http://localhost:8080 -port 5000
+
+# Qwen2.5-0.5B-Instruct (494M) - Instruction-tuned
+huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct
+go run serve_model_bytes.go -model Qwen/Qwen2.5-0.5B-Instruct -port 8080
+go run web_interface.go -model Qwen/Qwen2.5-0.5B-Instruct -backend http://localhost:8080 -port 5000
+```
+
+### SmolLM Models (HuggingFace)
+
+```bash
+# SmolLM2-360M-Instruct (360M) - Very fast, excellent for testing
+huggingface-cli download HuggingFaceTB/SmolLM2-360M-Instruct
+go run serve_model_bytes.go -model HuggingFaceTB/SmolLM2-360M-Instruct -port 8080
+go run web_interface.go -model HuggingFaceTB/SmolLM2-360M-Instruct -backend http://localhost:8080 -port 5000
+
+# SmolLM2-1.7B-Instruct (1.7B) - Larger, better quality (slower on CPU)
+huggingface-cli download HuggingFaceTB/SmolLM2-1.7B-Instruct
+go run serve_model_bytes.go -model HuggingFaceTB/SmolLM2-1.7B-Instruct -port 8080
+go run web_interface.go -model HuggingFaceTB/SmolLM2-1.7B-Instruct -backend http://localhost:8080 -port 5000
+```
+
+### TinyLlama Models (Meta/Community)
+
+```bash
+# TinyLlama-1.1B-Chat (1.1B) - Popular, well-trained
+huggingface-cli download TinyLlama/TinyLlama-1.1B-Chat-v1.0
+go run serve_model_bytes.go -model TinyLlama/TinyLlama-1.1B-Chat-v1.0 -port 8080
+go run web_interface.go -model TinyLlama/TinyLlama-1.1B-Chat-v1.0 -backend http://localhost:8080 -port 5000
+```
+
+### Pythia Models (EleutherAI)
+
+```bash
+# Pythia-410M (410M) - GPT-NeoX architecture
+huggingface-cli download EleutherAI/pythia-410m
+go run serve_model_bytes.go -model EleutherAI/pythia-410m -port 8080
+go run web_interface.go -model EleutherAI/pythia-410m -backend http://localhost:8080 -port 5000
+
+# Pythia-1B (1B)
+huggingface-cli download EleutherAI/pythia-1b
+go run serve_model_bytes.go -model EleutherAI/pythia-1b -port 8080
+go run web_interface.go -model EleutherAI/pythia-1b -backend http://localhost:8080 -port 5000
+```
+
+### OPT Models (Meta)
+
+```bash
+# OPT-350M (350M) - Original Meta model
+huggingface-cli download facebook/opt-350m
+go run serve_model_bytes.go -model facebook/opt-350m -port 8080
+go run web_interface.go -model facebook/opt-350m -backend http://localhost:8080 -port 5000
+
+# OPT-1.3B (1.3B)
+huggingface-cli download facebook/opt-1.3b
+go run serve_model_bytes.go -model facebook/opt-1.3b -port 8080
+go run web_interface.go -model facebook/opt-1.3b -backend http://localhost:8080 -port 5000
+```
+
+### Performance Expectations (CPU)
+
+| Model Size | Tokens/sec (CPU) | Tokens/sec (WebGPU - Coming Soon) |
+| ---------- | ---------------- | --------------------------------- |
+| 360M       | ~2-4 tok/s       | ~50-100 tok/s (estimated)         |
+| 500M       | ~1-3 tok/s       | ~40-80 tok/s (estimated)          |
+| 1.1B       | ~0.5-1.5 tok/s   | ~20-40 tok/s (estimated)          |
+
+**WebGPU acceleration is in development and will provide 10-50x speedup!**
+
 ## Model Servers
 
 ### serve_model_bytes.go ⭐ RECOMMENDED
