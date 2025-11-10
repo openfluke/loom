@@ -6,6 +6,11 @@ wasm/models
 
 # Compiled binaries (C ABI)
 cabi/compiled/
+cabi/*.so
+cabi/*.dylib
+cabi/*.dll
+cabi/*.h
+cabi/libloom.*
 
 # Python package binaries
 python/src/welvet/linux_*/
