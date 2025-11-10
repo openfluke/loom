@@ -31,12 +31,12 @@ case "$ARCH" in
         # Build for x86_64
         OUTPUT_DIR_X64="compiled/macos_x86_64"
         mkdir -p "$OUTPUT_DIR_X64"
-        GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -buildmode=c-shared -o "$OUTPUT_DIR_X64/libloom.dylib" main.go
+        GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
         
         # Build for arm64
         OUTPUT_DIR_ARM="compiled/macos_arm64"
         mkdir -p "$OUTPUT_DIR_ARM"
-        GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -buildmode=c-shared -o "$OUTPUT_DIR_ARM/libloom.dylib" main.go
+        GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
         
         # Create universal binary
         OUTPUT_DIR="compiled/macos_universal"
@@ -70,7 +70,7 @@ mkdir -p "$OUTPUT_DIR"
 
 # Build Go shared library
 echo "Building shared library..."
-GOOS=darwin GOARCH=$GOARCH CGO_ENABLED=1 go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" main.go
+GOOS=darwin GOARCH=$GOARCH CGO_ENABLED=1 go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
 
 echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
 

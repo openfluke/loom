@@ -206,6 +206,8 @@ loom.Loom_FreeCString(resultPtr);
 
 ## Building
 
+**✅ All build scripts now include `transformer.go`** - All platforms will have transformer inference support.
+
 ### Current Platform
 
 ```bash
@@ -220,7 +222,27 @@ loom.Loom_FreeCString(resultPtr);
 ./build_all.sh windows x86_64       # Windows 64-bit
 ./build_all.sh android arm64        # Android ARM64
 ./build_all.sh ios xcframework      # iOS XCFramework
+
+# Build all available platforms at once
+./build_all.sh --clean all
 ```
+
+### Verify Transformer Functions
+
+After building, verify transformer functions are included:
+
+```bash
+# macOS
+nm -gU compiled/macos_universal/libloom.dylib | grep LoadTokenizer
+
+# Linux
+nm -D compiled/linux_x86_64/libloom.so | grep LoadTokenizer
+
+# Windows (on Windows)
+dumpbin /exports compiled/windows_x86_64/libloom.dll | findstr LoadTokenizer
+```
+
+You should see: `LoadTokenizerFromBytes`, `LoadTransformerFromBytes`, `EncodeText`, `DecodeTokens`, `GenerateText`, `GenerateNextToken`
 
 ### Supported Platforms
 

@@ -60,7 +60,7 @@ mkdir -p "$OUTPUT_DIR"
 
 # Build Go shared library
 echo "Building shared library..."
-GOOS=linux GOARCH=$GOARCH CGO_ENABLED=1 CC=$CC go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" main.go
+GOOS=linux GOARCH=$GOARCH CGO_ENABLED=1 CC=$CC go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
 
 echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
 

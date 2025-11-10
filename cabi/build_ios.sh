@@ -59,21 +59,21 @@ case "$ARCH" in
         mkdir -p "$OUTPUT_DIR_DEVICE"
         SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
         CC="$(xcrun --sdk iphoneos --find clang) -isysroot $SDK_PATH -mios-version-min=$IOS_VERSION -arch arm64"
-        GOOS=ios GOARCH=arm64 CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR_DEVICE/libloom.dylib" main.go
+        GOOS=ios GOARCH=arm64 CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
         
         # Build for simulator (x86_64)
         OUTPUT_DIR_SIM_X64="compiled/ios_x86_64_sim"
         mkdir -p "$OUTPUT_DIR_SIM_X64"
         SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
         CC="$(xcrun --sdk iphonesimulator --find clang) -isysroot $SDK_PATH -mios-simulator-version-min=$IOS_VERSION -arch x86_64"
-        GOOS=ios GOARCH=amd64 CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR_SIM_X64/libloom.dylib" main.go
+        GOOS=ios GOARCH=amd64 CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
         
         # Build for simulator (arm64)
         OUTPUT_DIR_SIM_ARM="compiled/ios_arm64_sim"
         mkdir -p "$OUTPUT_DIR_SIM_ARM"
         SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
         CC="$(xcrun --sdk iphonesimulator --find clang) -isysroot $SDK_PATH -mios-simulator-version-min=$IOS_VERSION -arch arm64"
-        GOOS=ios GOARCH=arm64 CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR_SIM_ARM/libloom.dylib" main.go
+        GOOS=ios GOARCH=arm64 CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
         
         # Create fat binary for simulator
         OUTPUT_DIR="compiled/ios_xcframework"
@@ -127,7 +127,7 @@ echo "Compiler: $CC"
 
 # Build Go shared library
 echo "Building shared library..."
-GOOS=ios GOARCH=$GOARCH CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" main.go
+GOOS=ios GOARCH=$GOARCH CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
 
 echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
 
