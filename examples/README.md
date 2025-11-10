@@ -7,9 +7,16 @@ This directory contains comprehensive examples demonstrating LOOM's unique neura
 ## 📁 Subdirectories
 
 - **[`lstm_validation/`](lstm_validation/)** - LSTM vs PyTorch validation suite
+
   - ✅ **Proves LOOM's LSTM matches PyTorch exactly** (max diff: 6-9e-8)
   - Includes test generator and comprehensive validation framework
   - See [`lstm_validation/README.md`](lstm_validation/README.md) for details
+
+- **[`cnn_validation/`](cnn_validation/)** - Conv2D vs PyTorch validation suite
+  - ✅ **Validates LOOM's Conv2D structure matches PyTorch**
+  - Tests dimensions, stride, padding, and multi-channel convolutions
+  - Note: Direct value comparison differs due to activation functions
+  - See [`cnn_validation/README.md`](cnn_validation/README.md) for details
 
 ## Table of Contents
 
