@@ -165,3 +165,129 @@ export enum ActivationType {
   LeakyReLU = 4,
   Linear = 5,
 }
+
+// ============================================================================
+// Transformer Inference Types
+// ============================================================================
+
+/**
+ * Result from tokenizer loading
+ */
+export interface TokenizerLoadResult {
+  success: boolean;
+  vocab_size?: number;
+  message?: string;
+  error?: string;
+}
+
+/**
+ * Result from transformer model loading
+ */
+export interface TransformerLoadResult {
+  success: boolean;
+  num_layers?: number;
+  hidden_size?: number;
+  vocab_size?: number;
+  message?: string;
+  error?: string;
+}
+
+/**
+ * Result from text encoding
+ */
+export interface EncodeResult {
+  success: boolean;
+  ids?: number[];
+  error?: string;
+}
+
+/**
+ * Result from token decoding
+ */
+export interface DecodeResult {
+  success: boolean;
+  text?: string;
+  error?: string;
+}
+
+/**
+ * Result from text generation
+ */
+export interface GenerateResult {
+  success: boolean;
+  generated_text?: string;
+  error?: string;
+}
+
+/**
+ * Result from next token generation
+ */
+export interface NextTokenResult {
+  success: boolean;
+  token?: number;
+  is_eos?: boolean;
+  error?: string;
+}
+
+/**
+ * Transformer API for LLM inference
+ */
+export interface TransformerAPI {
+  /**
+   * Load tokenizer from JSON bytes
+   * @param tokenizerData - Uint8Array of tokenizer.json file
+   */
+  loadTokenizer(tokenizerData: Uint8Array): Promise<TokenizerLoadResult>;
+
+  /**
+   * Load transformer model from config and weights bytes
+   * @param configData - Uint8Array of config.json file
+   * @param weightsData - Uint8Array of model.safetensors file
+   */
+  loadModel(
+    configData: Uint8Array,
+    weightsData: Uint8Array
+  ): Promise<TransformerLoadResult>;
+
+  /**
+   * Encode text to token IDs
+   * @param text - Input text to encode
+   * @param addSpecialTokens - Whether to add special tokens (default: true)
+   */
+  encode(text: string, addSpecialTokens?: boolean): Promise<EncodeResult>;
+
+  /**
+   * Decode token IDs to text
+   * @param tokenIds - Array of token IDs
+   * @param skipSpecialTokens - Whether to skip special tokens (default: true)
+   */
+  decode(
+    tokenIds: number[],
+    skipSpecialTokens?: boolean
+  ): Promise<DecodeResult>;
+
+  /**
+   * Generate text from prompt (blocking, all tokens at once)
+   * @param prompt - Input prompt
+   * @param maxTokens - Maximum tokens to generate (default: 50)
+   * @param temperature - Sampling temperature (default: 0.7)
+   */
+  generate(
+    prompt: string,
+    maxTokens?: number,
+    temperature?: number
+  ): Promise<GenerateResult>;
+
+  /**
+   * Generate text token-by-token (streaming)
+   * @param prompt - Input prompt
+   * @param maxTokens - Maximum tokens to generate (default: 50)
+   * @param temperature - Sampling temperature (default: 0.7)
+   * @yields Token text strings
+   */
+  generateStream(
+    prompt: string,
+    maxTokens?: number,
+    temperature?: number
+  ): AsyncGenerator<string, void, unknown>;
+}

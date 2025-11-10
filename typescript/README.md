@@ -9,7 +9,8 @@
 
 ## ✨ Features
 
-- 🚀 **5.4MB WASM Binary** - Complete neural network framework compiled to WebAssembly
+- 🤖 **Transformer Inference (NEW!)** - Run LLMs like SmolLM2-135M with streaming generation
+- 🚀 **6.0MB WASM Binary** - Complete neural network framework + transformer inference
 - 🧠 **All 5 Layer Types** - Dense, Conv2D, Multi-Head Attention, RNN, LSTM fully supported
 - 🎯 **Registry-based Initialization** - Dynamic layer creation via `CallLayerInit()` with zero manual exports
 - 🔍 **Runtime Introspection** - Discover methods, signatures, and parameters dynamically
@@ -41,6 +42,48 @@ bun add @openfluke/welvet
 ```
 
 ## 🚀 Quick Start
+
+### 🤖 Transformer Inference (NEW!)
+
+Run Large Language Models with streaming generation:
+
+```typescript
+import { initLoom, createTransformerAPI } from "@openfluke/welvet";
+
+// Initialize WASM
+await initLoom();
+
+// Create transformer API
+const transformer = await createTransformerAPI();
+
+// Load tokenizer
+const tokenizerData = await fetch("models/SmolLM2-135M-Instruct/tokenizer.json")
+  .then((r) => r.arrayBuffer())
+  .then((buf) => new Uint8Array(buf));
+await transformer.loadTokenizer(tokenizerData);
+
+// Load model
+const configData = await fetch("models/SmolLM2-135M-Instruct/config.json")
+  .then((r) => r.arrayBuffer())
+  .then((buf) => new Uint8Array(buf));
+const weightsData = await fetch(
+  "models/SmolLM2-135M-Instruct/model.safetensors"
+)
+  .then((r) => r.arrayBuffer())
+  .then((buf) => new Uint8Array(buf));
+await transformer.loadModel(configData, weightsData);
+
+// Stream generation token-by-token
+for await (const token of transformer.generateStream(
+  "The capital of France is",
+  50,
+  0.7
+)) {
+  process.stdout.write(token); // Paris...
+}
+```
+
+**Live Demo:** See `wasm/inference.html` for a beautiful web UI with real-time token streaming!
 
 ### The Easy Way: Load Complete Models
 
@@ -344,6 +387,120 @@ network, _ := nn.LoadModelFromString(modelJSON, "model_id")
 ```
 
 See `examples/all_layers_validation.go` for a complete demo that generates test.json (26.4KB with 16 layers) and verifies all three platforms load it identically!
+
+## 🤖 Transformer API
+
+### Loading Models
+
+```typescript
+import { initLoom, createTransformerAPI } from "@openfluke/welvet";
+
+// Initialize WASM
+await initLoom();
+
+// Create transformer API
+const transformer = await createTransformerAPI();
+
+// Load tokenizer from bytes
+const tokenizerData = await fetch("models/SmolLM2-135M/tokenizer.json")
+  .then((r) => r.arrayBuffer())
+  .then((buf) => new Uint8Array(buf));
+
+const tokResult = await transformer.loadTokenizer(tokenizerData);
+console.log(`Tokenizer loaded: ${tokResult.vocab_size} tokens`);
+
+// Load model from config and weights
+const configData = await fetch("models/SmolLM2-135M/config.json")
+  .then((r) => r.arrayBuffer())
+  .then((buf) => new Uint8Array(buf));
+
+const weightsData = await fetch("models/SmolLM2-135M/model.safetensors")
+  .then((r) => r.arrayBuffer())
+  .then((buf) => new Uint8Array(buf));
+
+const modelResult = await transformer.loadModel(configData, weightsData);
+console.log(
+  `Model loaded: ${modelResult.num_layers} layers, ${modelResult.hidden_size} hidden size`
+);
+```
+
+### Text Encoding/Decoding
+
+```typescript
+// Encode text to token IDs
+const encodeResult = await transformer.encode("Hello world", true);
+console.log(encodeResult.ids); // [1, 9906, 2088]
+
+// Decode token IDs to text
+const decodeResult = await transformer.decode([1, 9906, 2088], true);
+console.log(decodeResult.text); // "Hello world"
+```
+
+### Text Generation
+
+#### Blocking Generation
+
+```typescript
+const result = await transformer.generate(
+  "The capital of France is",
+  50, // maxTokens
+  0.7 // temperature
+);
+console.log(result.generated_text);
+```
+
+#### Streaming Generation
+
+```typescript
+// Stream tokens one at a time
+process.stdout.write("Generated: ");
+for await (const token of transformer.generateStream(
+  "Once upon a time",
+  50, // maxTokens
+  0.7 // temperature
+)) {
+  process.stdout.write(token); // Print each token as it's generated
+}
+console.log();
+```
+
+### Transformer API Reference
+
+```typescript
+interface TransformerAPI {
+  // Load tokenizer from JSON bytes
+  loadTokenizer(tokenizerData: Uint8Array): Promise<TokenizerLoadResult>;
+
+  // Load model from config + weights bytes
+  loadModel(
+    configData: Uint8Array,
+    weightsData: Uint8Array
+  ): Promise<TransformerLoadResult>;
+
+  // Encode text to token IDs
+  encode(text: string, addSpecialTokens?: boolean): Promise<EncodeResult>;
+
+  // Decode token IDs to text
+  decode(
+    tokenIds: number[],
+    skipSpecialTokens?: boolean
+  ): Promise<DecodeResult>;
+
+  // Generate text (blocking)
+  generate(
+    prompt: string,
+    maxTokens?: number,
+    temperature?: number
+  ): Promise<GenerateResult>;
+
+  // Generate text (streaming)
+  generateStream(
+    prompt: string,
+    maxTokens?: number,
+    temperature?: number
+  ): AsyncGenerator<string, void, unknown>;
+}
+```
 
 #### Load Model (Legacy API)
 

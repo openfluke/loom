@@ -1,4 +1,4 @@
-import { isBrowser, isNode } from "./env";
+import { isBrowser, isNode } from "./env.js";
 
 let goRuntimeInjected = false;
 let wasmExecTextBundled: string | undefined;

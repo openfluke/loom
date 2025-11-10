@@ -1,9 +1,9 @@
-import type { InitOptions, LoomAPI } from "./types";
+import type { InitOptions, LoomAPI } from "./types.js";
 import {
   ensureGoRuntime,
   resolvePackagedWasmURL,
   instantiateGoWasm,
-} from "./loader";
+} from "./loader.js";
 
 // tiny helper that waits until WASM has placed symbols on globalThis
 async function waitForExports(keys: string[], timeoutMs = 5000) {
@@ -158,5 +158,19 @@ export async function initLoom(opts: InitOptions = {}): Promise<LoomAPI> {
   return api;
 }
 
-export type { LoomAPI, LoomNetwork, InitOptions } from "./types";
-export { ActivationType } from "./types";
+export type {
+  LoomAPI,
+  LoomNetwork,
+  InitOptions,
+  TransformerAPI,
+} from "./types.js";
+export { ActivationType } from "./types.js";
+export { createTransformerAPI } from "./transformer.js";
+export type {
+  TokenizerLoadResult,
+  TransformerLoadResult,
+  EncodeResult,
+  DecodeResult,
+  GenerateResult,
+  NextTokenResult,
+} from "./types.js";
