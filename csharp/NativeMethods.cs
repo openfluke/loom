@@ -406,6 +406,67 @@ internal static class NativeMethods
         long handle,
         [MarshalAs(UnmanagedType.LPStr)] string modelId);
 
+    // ====================================================================
+    // Transformer Inference API
+    // ====================================================================
+
+    /// <summary>
+    /// Loads a tokenizer from JSON bytes.
+    /// Returns JSON with {"success": true, "vocab_size": ..., ...}
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr LoadTokenizerFromBytes(
+        IntPtr data,
+        int dataLen);
+
+    /// <summary>
+    /// Loads a transformer model from config and weights bytes.
+    /// Returns JSON with {"success": true, "num_layers": ..., ...}
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr LoadTransformerFromBytes(
+        IntPtr configData,
+        int configLen,
+        IntPtr weightsData,
+        int weightsLen);
+
+    /// <summary>
+    /// Encodes text to token IDs.
+    /// Returns JSON with {"success": true, "ids": [...]}
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern IntPtr EncodeText(
+        [MarshalAs(UnmanagedType.LPStr)] string text,
+        [MarshalAs(UnmanagedType.I1)] bool addSpecialTokens);
+
+    /// <summary>
+    /// Decodes token IDs to text.
+    /// Returns JSON with {"success": true, "text": "..."}
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern IntPtr DecodeTokens(
+        [MarshalAs(UnmanagedType.LPStr)] string idsJson,
+        [MarshalAs(UnmanagedType.I1)] bool skipSpecialTokens);
+
+    /// <summary>
+    /// Generates text from prompt (blocking, all tokens at once).
+    /// Returns JSON with {"success": true, "generated_text": "..."}
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern IntPtr GenerateText(
+        [MarshalAs(UnmanagedType.LPStr)] string prompt,
+        int maxTokens,
+        float temperature);
+
+    /// <summary>
+    /// Generates next token given current token sequence (for streaming).
+    /// Returns JSON with {"success": true, "token": ..., "is_eos": ...}
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern IntPtr GenerateNextToken(
+        [MarshalAs(UnmanagedType.LPStr)] string idsJson,
+        float temperature);
+
     /// <summary>
     /// Helper to marshal IntPtr to managed string and free native memory.
     /// </summary>

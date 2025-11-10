@@ -9,6 +9,7 @@
 
 ## ✨ Features
 
+- 🤖 **Transformer Inference** - Run LLMs like SmolLM2-135M with streaming generation
 - 🚀 **Native Performance** - Direct P/Invoke to C library, zero overhead
 - 🧠 **All 5 Layer Types** - Dense, Conv2D, Multi-Head Attention, RNN, LSTM
 - 💾 **One-Line Model Loading** - Load complete models with `LoadFromString()`
@@ -31,6 +32,26 @@ Install-Package Welvet
 ```
 
 ## 🚀 Quick Start
+
+### 🤖 Transformer Inference (NEW!)
+
+Run Large Language Models with streaming generation:
+
+```csharp
+using Welvet;
+
+// Load model and tokenizer
+Transformer.LoadTokenizer("models/SmolLM2-135M-Instruct/tokenizer.json");
+Transformer.LoadModelFromDirectory("models/SmolLM2-135M-Instruct");
+
+// Stream generation token-by-token
+foreach (var token in Transformer.GenerateStream("The capital of France is", maxTokens: 50))
+{
+    Console.Write(token);  // Paris...
+}
+```
+
+**That's it!** Streaming LLM inference in just 3 lines of C#.
 
 ### The Easy Way: Load Complete Models
 
@@ -69,6 +90,57 @@ using var network = Network.Create(
 ```
 
 ## 📚 API Reference
+
+### Transformer Class (NEW!)
+
+#### Static Methods
+
+```csharp
+// Load tokenizer from file or bytes
+TokenizerLoadResult LoadTokenizer(string tokenizerPath)
+TokenizerLoadResult LoadTokenizerFromBytes(byte[] data)
+
+// Load model from directory, files, or bytes
+TransformerLoadResult LoadModelFromDirectory(string modelDir)
+TransformerLoadResult LoadModel(string configPath, string weightsPath)
+TransformerLoadResult LoadModelFromBytes(byte[] configData, byte[] weightsData)
+
+// Encode text to token IDs
+EncodeResult Encode(string text, bool addSpecialTokens = true)
+
+// Decode token IDs to text
+DecodeResult Decode(int[] tokenIds, bool skipSpecialTokens = true)
+
+// Generate text (blocking, all tokens at once)
+GenerateResult Generate(string prompt, int maxTokens = 50, float temperature = 0.7f)
+
+// Generate text (streaming, token-by-token)
+IEnumerable<string> GenerateStream(string prompt, int maxTokens = 50, float temperature = 0.7f)
+```
+
+#### Example: Streaming Generation
+
+```csharp
+using Welvet;
+
+// Load model
+Transformer.LoadTokenizer("models/SmolLM2-135M-Instruct/tokenizer.json");
+var result = Transformer.LoadModelFromDirectory("models/SmolLM2-135M-Instruct");
+
+if (!result.Success)
+{
+    Console.WriteLine($"Error: {result.Error}");
+    return;
+}
+
+Console.WriteLine($"Model loaded: {result.NumLayers} layers, {result.HiddenSize} hidden size");
+
+// Stream generation
+foreach (var token in Transformer.GenerateStream("The capital of France is", maxTokens: 50))
+{
+    Console.Write(token);  // Prints token-by-token in real-time
+}
+```
 
 ### Network Class
 
@@ -191,6 +263,34 @@ class Program
     }
 }
 ```
+
+## 🤖 Transformer Examples
+
+### Test All Functions
+
+Run `TransformerTest.cs` to test loading, encoding, decoding, and streaming:
+
+```bash
+dotnet run --project TransformerTest.cs ../../models/SmolLM2-135M-Instruct
+```
+
+### Web Interface with Streaming
+
+Run `TransformerWebInterface.cs` for a beautiful web UI with real-time streaming:
+
+```bash
+dotnet run --project TransformerWebInterface.cs ../../models/SmolLM2-135M-Instruct 8080
+```
+
+Then open http://localhost:8080/inference.html in your browser to see tokens stream in real-time!
+
+**Features:**
+
+- Server-Sent Events (SSE) streaming
+- Beautiful token-by-token display
+- Adjustable temperature and max tokens
+- CORS enabled for external clients
+- Same HTML UI as Python/Go versions
 
 ## 🌐 Cross-Platform Model Loading
 

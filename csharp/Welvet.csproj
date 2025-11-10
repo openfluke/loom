@@ -21,6 +21,9 @@
     
     <!-- Generate documentation XML -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    
+    <!-- Exclude examples folder from compilation -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);examples/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
