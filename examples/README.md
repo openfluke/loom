@@ -4,6 +4,13 @@ This directory contains comprehensive examples demonstrating LOOM's unique neura
 
 > 🤯 **BREAKTHROUGH:** While building multi-agent game AI, we discovered that LOOM's Grid Softmax layer is actually a complete Mixture of Experts (MoE) implementation - the same architecture used in GPT-4, Switch Transformer, and Mixtral. See `moe_proof_demo.go` for mathematical proof!
 
+## 📁 Subdirectories
+
+- **[`lstm_validation/`](lstm_validation/)** - LSTM vs PyTorch validation suite
+  - ✅ **Proves LOOM's LSTM matches PyTorch exactly** (max diff: 6-9e-8)
+  - Includes test generator and comprehensive validation framework
+  - See [`lstm_validation/README.md`](lstm_validation/README.md) for details
+
 ## Table of Contents
 
 - [Layer Types Overview](#layer-types-overview)
