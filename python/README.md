@@ -153,14 +153,15 @@ Output:
 
 ## Features
 
-- 🚀 **GPU Acceleration**: WebGPU-powered compute shaders for Dense, Conv2D, and Attention layers
-- 🧠 **All 5 Layer Types**: Dense, Conv2D, Multi-Head Attention, RNN, LSTM fully supported
+- 🧠 **7 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants)
+- ✅ **Full CPU Implementation**: Every layer works on CPU with complete forward/backward passes
+- 🚀 **GPU Acceleration (Optional)**: WebGPU compute shaders for Dense, Conv2D, and Attention (10-100x speedup)
 - 🎯 **Registry-based Initialization**: Dynamic layer creation via `call_layer_init()` for any layer type
 - ⚡ **High-Level Training API**: Built-in `train()` function with automatic gradients and loss tracking
 - 🎯 **Cross-Platform**: Pre-compiled binaries for Linux, macOS, Windows, Android
 - 📦 **Easy Integration**: Simple Python API with high-level helpers
 - 🔧 **Low-Level Access**: Direct control over layers and training loop via C-ABI
-- �️ **Grid Architecture**: Flexible grid-based neural network topology
+- 🏗️ **Grid Architecture**: Flexible grid-based neural network topology
 - 📊 **Comprehensive Activations**: ReLU, Sigmoid, Tanh, Softplus, LeakyReLU, Linear
 
 ## API Reference

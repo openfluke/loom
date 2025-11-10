@@ -2,6 +2,15 @@
 
 C Foreign Function Interface (FFI) for LOOM. Use LOOM transformers and neural networks from **any language** that supports C FFI: Python, C#, Rust, C++, Node.js, etc.
 
+**Features:**
+
+- ✅ **7 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants)
+- ✅ **Full CPU Implementation**: Every layer works with complete forward/backward passes
+- ✅ **Transformer Inference**: Run LLMs with streaming generation
+- ⚡ **GPU Acceleration (Optional)**: WebGPU support for Dense, Conv2D, Attention
+- 🌐 **Universal FFI**: Works from any language (Python, C#, Rust, C++, Node.js, etc.)
+- 📦 **Cross-Platform**: Linux, macOS, Windows, Android, iOS
+
 ## 🚀 Transformer Inference
 
 Run LLMs (LLaMA, SmolLM, GPT-2, etc.) from any language via C ABI with **streaming support**.

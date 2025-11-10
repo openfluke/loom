@@ -1,6 +1,6 @@
 # Neural Network Package
 
-A high-performance grid neural network implementation in Go with support for multiple layer types, CPU/GPU execution, automatic differentiation, WebAssembly export, and C ABI for FFI.
+A high-performance grid neural network implementation in Go with **full CPU support for all 7 layer types**, optional GPU acceleration, automatic differentiation, WebAssembly export, and C ABI for FFI.
 
 > 🤯 **BREAKTHROUGH:** The Softmax layer includes **native Mixture of Experts (MoE)** via Grid Softmax. Mathematically proven equivalent to traditional MoE with 97.1% loss reduction and perfect gradient matching. See `../examples/moe_proof_demo.go`!
 
@@ -10,15 +10,20 @@ A high-performance grid neural network implementation in Go with support for mul
 
 - **Grid Structure**: Organizes layers in a 2D grid (rows × columns × layers per cell)
 - **Flexible Configuration**: Each grid position can have different layer types and activations
-- **Registry-based Initialization**: Dynamic layer creation via `CallLayerInit()` for all 6 layer types
-- **Cross-Platform Support**: Same API across Go, WASM, C-ABI, Python, and TypeScript
-- **Layer Types**:
-  - **Dense**: Element-wise activation functions
-  - **Conv2D**: 2D convolutional layers with configurable kernels
-  - **Multi-Head Attention**: Transformer-style attention mechanism
-  - **RNN**: Recurrent Neural Network with hidden state
-  - **LSTM**: Long Short-Term Memory with forget/input/output gates
-  - **Softmax**: First-class layer with 10 variants (includes native MoE!)
+- **Registry-based Initialization**: Dynamic layer creation via `CallLayerInit()` for all layer types
+- **Cross-Platform Support**: Same API across Go, WASM, C-ABI, Python, TypeScript, and C#
+- **Universal CPU Support**: Every layer type has complete CPU forward/backward implementation
+- **Selective GPU Acceleration**: Dense, Conv2D, and Multi-Head Attention with WebGPU compute shaders
+
+**Layer Types (All work on CPU):**
+
+- **Dense**: Fully-connected layers with element-wise activations (CPU + GPU)
+- **Conv2D**: 2D convolutional layers with stride/padding/kernels (CPU + GPU)
+- **Multi-Head Attention**: Transformer-style Q/K/V attention (CPU + GPU)
+- **LayerNorm**: Layer normalization with gamma/beta + residual (CPU)
+- **RNN**: Recurrent Neural Network with hidden state (CPU)
+- **LSTM**: Long Short-Term Memory with forget/input/output gates (CPU)
+- **Softmax**: First-class layer with 10 variants including native MoE (CPU)
 
 ### Activation Functions
 

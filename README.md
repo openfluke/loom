@@ -63,22 +63,25 @@ I'm excited to see what you come up with! Let me know if you have any"
 
 ### 🧠 Neural Network Layers
 
-All layer types support:
+**All layer types support full CPU implementation:**
 
-- **CPU Execution**: Full forward/backward propagation on CPU
-- **GPU Acceleration**: Dense, Conv2D, and Multi-Head Attention with WebGPU compute shaders
-- **Registry System**: Dynamic layer initialization via `CallLayerInit()` across all platforms (Go, WASM, C-ABI, Python, TypeScript)
-- **Automatic Differentiation**: Complete gradient computation with backpropagation
+- ✅ **Complete CPU Forward/Backward**: Every layer works on CPU with full gradient computation
+- ✅ **GPU Acceleration (Selective)**: Dense, Conv2D, and Multi-Head Attention with WebGPU compute shaders
+- ✅ **Registry System**: Dynamic layer initialization via `CallLayerInit()` across all platforms (Go, WASM, C-ABI, Python, TypeScript)
+- ✅ **Automatic Differentiation**: Complete backpropagation through all layer types
+- ✅ **Cross-Platform**: Works everywhere (Go, Python, TypeScript/Node.js, C#, browser WASM, C/C++/Rust via FFI)
 
-**Supported Layer Types:**
+**Supported Layer Types (All with CPU support):**
 
-- **Dense Layers**: Fully-connected layers with element-wise activations
-- **Conv2D**: 2D convolutional layers with configurable kernels
-- **Multi-Head Attention**: Transformer-style attention mechanism with GPU matrix operations
-- **LayerNorm**: Layer normalization with learned gamma/beta parameters and residual connections
-- **RNN**: Recurrent Neural Networks with BPTT (Backpropagation Through Time)
-- **LSTM**: Long Short-Term Memory with gated cells
-- **Softmax**: First-class layer with 10 variants (Standard, Grid, Hierarchical, Temperature, Gumbel, Masked, Sparsemax, Entmax, Adaptive, Mixture)
+- **Dense Layers**: Fully-connected layers with element-wise activations (CPU + GPU)
+- **Conv2D**: 2D convolutional layers with configurable kernels, stride, padding (CPU + GPU)
+- **Multi-Head Attention**: Transformer-style attention with Q/K/V projections (CPU + GPU)
+- **LayerNorm**: Layer normalization with learned gamma/beta parameters and residual connections (CPU)
+- **RNN**: Recurrent Neural Networks with BPTT (Backpropagation Through Time) (CPU)
+- **LSTM**: Long Short-Term Memory with forget/input/output gates (CPU)
+- **Softmax**: First-class layer with 10 variants (CPU) - Standard, Grid, Hierarchical, Temperature, Gumbel, Masked, Sparsemax, Entmax, Adaptive, Mixture
+
+**Performance:** CPU implementations are production-ready and performant. GPU acceleration provides 10-100x speedup for Dense/Conv2D/Attention on large batches.
 
 ### 🎨 Softmax Layer - The Unique Feature
 
@@ -166,16 +169,25 @@ loom/
 │   ├── evaluation.go    # DeviationMetrics evaluation system
 │   ├── introspection.go # Runtime method discovery
 │   ├── serialization.go # Model save/load
+│   ├── transformer.go   # Transformer model loading and inference
 │   └── README.md        # Detailed package documentation
+│
+├── tokenizer/           # Pure Go BPE tokenizer
+│   ├── bpe.go           # Byte Pair Encoding implementation
+│   ├── tokenizer.go     # HuggingFace tokenizer.json loader
+│   └── README.md        # Tokenizer documentation and examples
 │
 ├── wasm/                # WebAssembly module
 │   ├── main.go          # WASM wrapper with type conversion
+│   ├── inference.go     # Transformer inference exports for WASM
 │   ├── build.sh         # Build script for WASM compilation
 │   ├── example.html     # Interactive browser demo
+│   ├── inference.html   # Transformer inference demo
 │   └── README.md        # WASM documentation and examples
 │
 ├── cabi/                # C ABI for FFI
 │   ├── main.go          # C foreign function interface
+│   ├── transformer.go   # Transformer inference C exports
 │   ├── simple_bench.c   # C benchmark program
 │   ├── build.sh         # Build script for shared library
 │   └── README.md        # C API reference and examples
@@ -183,31 +195,45 @@ loom/
 ├── python/              # Python package (welvet)
 │   ├── pyproject.toml   # Python package configuration
 │   ├── README.md        # Python package documentation
-│   └── src/welvet/      # Python bindings via ctypes
-│       ├── __init__.py  # Package initialization
-│       ├── utils.py     # High-level Python API
-│       └── */           # Multi-platform C libraries
+│   ├── src/welvet/      # Python bindings via ctypes
+│   │   ├── __init__.py  # Package initialization
+│   │   ├── utils.py     # High-level Python API
+│   │   └── */           # Multi-platform C libraries
+│   └── examples/        # Python examples
+│       ├── test_transformer.py         # CLI inference example
+│       └── transformer_web_interface.py # Web UI with streaming
 │
-├── model_conversion/    # Model import tools
+├── model_conversion/    # Model import & pure Go inference
 │   ├── README.md        # Conversion documentation
 │   ├── requirements.txt # Python dependencies
 │   ├── convert_tiny.py  # BERT/tiny model converter
 │   ├── convert_model.py # General model converter
+│   ├── serve_model_bytes.go    # Pure Go model serving
+│   ├── web_interface.go        # Pure Go web interface
 │   └── verify_bert_weights.py  # Weight verification tool
 │
 ├── typescript/          # TypeScript/WASM package
 │   ├── package.json     # npm package configuration
 │   ├── README.md        # TypeScript package documentation
-│   └── src/             # TypeScript bindings
+│   ├── src/             # TypeScript bindings
+│   │   ├── index.ts     # Main WASM loader
+│   │   ├── transformer.ts # Transformer API wrapper
+│   │   └── types.ts     # TypeScript type definitions
+│   └── examples/        # TypeScript examples
+│       ├── transformer.ts   # Node.js inference example
+│       └── transformer.html # Browser demo with streaming
 │
 ├── csharp/              # C#/.NET package (Welvet)
 │   ├── Welvet.csproj    # NuGet package configuration
 │   ├── NativeMethods.cs # P/Invoke declarations (C-ABI)
 │   ├── Network.cs       # High-level managed API
+│   ├── Transformer.cs   # Transformer inference API (NEW!)
 │   ├── Activation.cs    # Activation enum
 │   ├── README.md        # C# package documentation
 │   ├── runtimes/        # Native libraries per platform
 │   └── examples/        # C# example programs
+│       ├── TransformerTest.cs          # CLI inference example
+│       └── TransformerWebInterface.cs  # Web UI with streaming
 │
 ├── fabric/              # Demo application
 │   ├── main.go          # Interactive demo menu
@@ -357,6 +383,81 @@ go run all_layers_validation.go
 # Creates: test.json, inputs.txt, outputs.txt
 # Tests: save → load → verify → train
 ```
+
+### 🤖 Transformer Inference - Run LLMs in Browser or Python
+
+Run pretrained transformer models like SmolLM2-135M entirely client-side:
+
+**Python (Server or CLI):**
+
+```python
+import welvet
+
+# Load tokenizer and model
+tokenizer = welvet.load_tokenizer_from_bytes(open("tokenizer.json", "rb").read())
+model = welvet.load_transformer_from_bytes(
+    open("config.json", "rb").read(),
+    open("model.safetensors", "rb").read()
+)
+
+# Generate text with streaming
+for token in welvet.generate_text_stream("The capital of France is", max_tokens=50):
+    print(token, end="", flush=True)
+```
+
+**TypeScript/Browser (100% Client-Side):**
+
+```typescript
+import { initLoom, createTransformerAPI } from "@openfluke/welvet";
+
+await initLoom();
+const transformer = await createTransformerAPI();
+
+// Load from URLs (or File API)
+await transformer.loadTokenizer(tokenizerData);
+await transformer.loadModel(configData, weightsData);
+
+// Stream tokens in real-time
+for await (const token of transformer.generateStream(prompt, 50, 0.7)) {
+  console.log(token); // Updates UI immediately
+}
+```
+
+**C# (.NET 9+):**
+
+```csharp
+using Welvet;
+
+var transformer = new Transformer();
+await transformer.LoadTokenizerAsync("tokenizer.json");
+await transformer.LoadModelAsync("config.json", "model.safetensors");
+
+await foreach (var token in transformer.GenerateStreamAsync(prompt, 50, 0.7f))
+{
+    Console.Write(token);
+}
+```
+
+**Supported Models:**
+
+- ✅ SmolLM2-135M-Instruct (tested, working)
+- ✅ Pythia-70M/160M (tested, working)
+- ✅ Any HuggingFace model with similar architecture (LLaMA, GPT-2, etc.)
+
+**Download models:**
+
+```bash
+pip install huggingface-hub
+huggingface-cli download HuggingFaceTB/SmolLM2-135M-Instruct \
+  --local-dir models/SmolLM2-135M-Instruct
+```
+
+See language-specific READMEs for detailed examples:
+
+- [Python README](python/README.md) - Server & CLI examples
+- [TypeScript README](typescript/README.md) - Browser WASM demo
+- [C# README](csharp/README.md) - .NET console & web interface
+- [WASM README](wasm/README.md) - Pure WASM implementation
 
 **Cross-Platform Tests:**
 

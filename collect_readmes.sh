@@ -30,6 +30,8 @@ declare -A readme_map=(
     ["pods/README.md"]="pods-readme.md"
     ["wasm/README.md"]="wasm-readme.md"
     ["examples/README.md"]="examples-readme.md"
+    ["tokenizer/README.md"]="tokenizer-readme.md"
+    ["model_conversion/README.md"]="model-conversion-readme.md"
 )
 
 for source in "${!readme_map[@]}"; do

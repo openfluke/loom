@@ -11,9 +11,10 @@
 
 - 🤖 **Transformer Inference** - Run LLMs like SmolLM2-135M with streaming generation
 - 🚀 **Native Performance** - Direct P/Invoke to C library, zero overhead
-- 🧠 **All 5 Layer Types** - Dense, Conv2D, Multi-Head Attention, RNN, LSTM
+- 🧠 **7 Layer Types (All CPU)** - Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants)
+- ✅ **Full CPU Implementation** - Every layer works with complete forward/backward passes
 - 💾 **One-Line Model Loading** - Load complete models with `LoadFromString()`
-- ⚡ **GPU Acceleration** - WebGPU support (when enabled)
+- ⚡ **GPU Acceleration (Optional)** - WebGPU support for Dense, Conv2D, Attention
 - 🎯 **Full Training Support** - Forward, backward, weight updates
 - 🌐 **Cross-Platform** - Works on Linux, macOS, Windows (x64, ARM64)
 - 📘 **Strongly Typed** - Full C# API with IntelliSense support
