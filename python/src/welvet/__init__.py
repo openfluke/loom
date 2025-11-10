@@ -26,6 +26,13 @@ from .utils import (
     configure_sequential_network,
     train_epoch,
     train,
+    # Transformer inference
+    load_tokenizer_from_bytes,
+    load_transformer_from_bytes,
+    encode_text,
+    decode_tokens,
+    generate_text,
+    generate_stream,
 )
 
 __version__ = "0.0.1"
@@ -54,4 +61,11 @@ __all__ = [
     "configure_sequential_network",
     "train_epoch",
     "train",
+    # Transformer inference
+    "load_tokenizer_from_bytes",
+    "load_transformer_from_bytes",
+    "encode_text",
+    "decode_tokens",
+    "generate_text",
+    "generate_stream",
 ]

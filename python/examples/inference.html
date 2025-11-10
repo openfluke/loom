@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LOOM C ABI Transformer Inference</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+      }
+      .container {
+        max-width: 900px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 20px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        overflow: hidden;
+      }
+      .header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 30px;
+        color: white;
+      }
+      .header h1 {
+        font-size: 2em;
+        margin-bottom: 10px;
+      }
+      .header p {
+        opacity: 0.9;
+      }
+      .content {
+        padding: 30px;
+      }
+      .section {
+        margin-bottom: 25px;
+      }
+      .section h2 {
+        color: #667eea;
+        margin-bottom: 15px;
+      }
+      label {
+        display: block;
+        margin-bottom: 8px;
+        font-weight: 600;
+        color: #555;
+      }
+      textarea,
+      input[type="number"],
+      input[type="range"] {
+        width: 100%;
+        padding: 12px;
+        border: 2px solid #e0e0e0;
+        border-radius: 8px;
+        font-family: inherit;
+        font-size: 1em;
+        resize: vertical;
+      }
+      textarea:focus,
+      input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+      button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        padding: 12px 30px;
+        font-size: 1em;
+        border-radius: 8px;
+        cursor: pointer;
+        font-weight: 600;
+        transition: transform 0.2s;
+      }
+      button:hover:not(:disabled) {
+        transform: scale(1.05);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .output {
+        background: #f8f9fa;
+        padding: 20px;
+        border-radius: 8px;
+        min-height: 150px;
+        font-family: "Courier New", monospace;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+      .controls {
+        display: flex;
+        gap: 15px;
+        margin-top: 15px;
+        align-items: center;
+      }
+      .slider-container {
+        flex: 1;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 15px;
+        margin-top: 20px;
+      }
+      .stat-card {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 8px;
+        text-align: center;
+      }
+      .stat-value {
+        font-size: 2em;
+        font-weight: bold;
+        color: #667eea;
+      }
+      .stat-label {
+        color: #666;
+        font-size: 0.9em;
+        margin-top: 5px;
+      }
+      .status {
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 15px;
+        font-family: monospace;
+      }
+      .status.success {
+        background: #d4edda;
+        border-left: 4px solid #28a745;
+      }
+      .status.error {
+        background: #f8d7da;
+        border-left: 4px solid #dc3545;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>🔗 LOOM C ABI Transformer</h1>
+        <p>Transformer inference via C Foreign Function Interface</p>
+      </div>
+
+      <div class="content">
+        <div id="status" class="status success">
+          ✅ Ready - Backend: LOOM C ABI
+        </div>
+
+        <div class="section">
+          <h2>Generate Text</h2>
+          <label for="prompt">Prompt:</label>
+          <textarea id="prompt" rows="3" placeholder="Once upon a time...">
+Once upon a time</textarea
+          >
+
+          <div class="controls">
+            <div class="slider-container">
+              <label>Max Tokens: <span id="maxTokensValue">50</span></label>
+              <input type="range" id="maxTokens" min="1" max="200" value="50" />
+            </div>
+            <div class="slider-container">
+              <label>Temperature: <span id="tempValue">0.7</span></label>
+              <input
+                type="range"
+                id="temperature"
+                min="0"
+                max="2"
+                step="0.1"
+                value="0.7"
+              />
+            </div>
+            <button id="generateBtn">Generate</button>
+          </div>
+
+          <div style="margin-top: 20px">
+            <label>Generated Text:</label>
+            <div id="output" class="output">Click Generate to start...</div>
+          </div>
+
+          <div class="stats">
+            <div class="stat-card">
+              <div class="stat-value" id="tokens">0</div>
+              <div class="stat-label">Tokens Generated</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value" id="time">0s</div>
+              <div class="stat-label">Time Elapsed</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-value" id="speed">0</div>
+              <div class="stat-label">Tokens/Second</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const backendURL = "http://localhost:8080";
+
+      // Update slider values
+      document.getElementById("maxTokens").addEventListener("input", (e) => {
+        document.getElementById("maxTokensValue").textContent = e.target.value;
+      });
+      document.getElementById("temperature").addEventListener("input", (e) => {
+        document.getElementById("tempValue").textContent = e.target.value;
+      });
+
+      // Generate button
+      document
+        .getElementById("generateBtn")
+        .addEventListener("click", async () => {
+          const prompt = document.getElementById("prompt").value;
+          const maxTokens = parseInt(
+            document.getElementById("maxTokens").value
+          );
+          const temperature = parseFloat(
+            document.getElementById("temperature").value
+          );
+          const btn = document.getElementById("generateBtn");
+          const output = document.getElementById("output");
+
+          if (!prompt.trim()) {
+            alert("Please enter a prompt");
+            return;
+          }
+
+          btn.disabled = true;
+          output.textContent = prompt;
+
+          const startTime = Date.now();
+          let tokenCount = 0;
+          let generatedText = "";
+
+          try {
+            const response = await fetch(`${backendURL}/generate`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                prompt: prompt,
+                max_tokens: maxTokens,
+                temperature: temperature,
+              }),
+            });
+
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (true) {
+              const { done, value } = await reader.read();
+
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+
+              for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                  const data = JSON.parse(line.slice(6));
+
+                  if (data.error) {
+                    throw new Error(data.error);
+                  }
+
+                  if (data.done) {
+                    const endTime = Date.now();
+                    const elapsed = (endTime - startTime) / 1000;
+                    const tokensPerSec = (tokenCount / elapsed).toFixed(2);
+                    document.getElementById(
+                      "time"
+                    ).textContent = `${elapsed.toFixed(2)}s`;
+                    document.getElementById("speed").textContent = tokensPerSec;
+                    break;
+                  }
+
+                  if (data.token !== undefined) {
+                    generatedText += data.token;
+                    output.textContent = prompt + generatedText;
+                    tokenCount++;
+                    document.getElementById("tokens").textContent = tokenCount;
+
+                    // Update speed in real-time
+                    const currentTime = Date.now();
+                    const elapsed = (currentTime - startTime) / 1000;
+                    const tokensPerSec = (tokenCount / elapsed).toFixed(2);
+                    document.getElementById(
+                      "time"
+                    ).textContent = `${elapsed.toFixed(2)}s`;
+                    document.getElementById("speed").textContent = tokensPerSec;
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            console.error("Generation error:", err);
+            output.textContent = `Error: ${err.message}`;
+          } finally {
+            btn.disabled = false;
+          }
+        });
+
+      // Check backend health on load
+      fetch(`${backendURL}/health`)
+        .then((r) => r.json())
+        .then((data) => {
+          document.getElementById(
+            "status"
+          ).textContent = `✅ Connected - Model: ${data.model} - Backend: ${data.backend}`;
+        })
+        .catch((err) => {
+          document.getElementById("status").className = "status error";
+          document.getElementById(
+            "status"
+          ).textContent = `❌ Backend not available at ${backendURL}`;
+        });
+    </script>
+  </body>
+</html>

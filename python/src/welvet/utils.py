@@ -159,6 +159,46 @@ if _SaveModel:
     _SaveModel.restype = ctypes.c_char_p
     _SaveModel.argtypes = [ctypes.c_longlong, ctypes.c_char_p]
 
+# ---- Transformer Functions ----
+# Use c_void_p for return types to avoid Python's automatic string conversion
+# which would corrupt the pointer before we can free it
+
+# LoadTokenizerFromBytes: load tokenizer from bytes
+_LoadTokenizerFromBytes = _sym("LoadTokenizerFromBytes")
+if _LoadTokenizerFromBytes:
+    _LoadTokenizerFromBytes.restype = ctypes.c_void_p
+    _LoadTokenizerFromBytes.argtypes = [ctypes.c_char_p, ctypes.c_int]
+
+# LoadTransformerFromBytes: load transformer model
+_LoadTransformerFromBytes = _sym("LoadTransformerFromBytes")
+if _LoadTransformerFromBytes:
+    _LoadTransformerFromBytes.restype = ctypes.c_void_p
+    _LoadTransformerFromBytes.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+
+# EncodeText: encode text to token IDs
+_EncodeText = _sym("EncodeText")
+if _EncodeText:
+    _EncodeText.restype = ctypes.c_void_p
+    _EncodeText.argtypes = [ctypes.c_char_p, ctypes.c_bool]
+
+# DecodeTokens: decode token IDs to text
+_DecodeTokens = _sym("DecodeTokens")
+if _DecodeTokens:
+    _DecodeTokens.restype = ctypes.c_void_p
+    _DecodeTokens.argtypes = [ctypes.c_char_p, ctypes.c_bool]
+
+# GenerateText: generate text from prompt
+_GenerateText = _sym("GenerateText")
+if _GenerateText:
+    _GenerateText.restype = ctypes.c_void_p
+    _GenerateText.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_float]
+
+# GenerateNextToken: generate next token
+_GenerateNextToken = _sym("GenerateNextToken")
+if _GenerateNextToken:
+    _GenerateNextToken.restype = ctypes.c_void_p
+    _GenerateNextToken.argtypes = [ctypes.c_char_p, ctypes.c_float]
+
 
 # ---- Activation Types ----
 class Activation:
@@ -883,3 +923,204 @@ def train(handle: int, batches: List[tuple], config: dict = None) -> dict:
         return training_result
     
     raise RuntimeError(f"Unexpected Train response format: {result}")
+
+
+# ---- Transformer Inference API ----
+
+def _free_cstring_ptr(ptr):
+    """Helper to free a c_void_p by casting it to c_char_p."""
+    if _FreeCString and ptr:
+        _FreeCString(ctypes.cast(ptr, ctypes.c_char_p))
+
+
+def load_tokenizer_from_bytes(data: bytes) -> dict:
+    """
+    Load tokenizer from bytes.
+    
+    Args:
+        data: Tokenizer JSON bytes
+    
+    Returns:
+        Dict with 'success', 'vocab_size', etc.
+    """
+    if not _LoadTokenizerFromBytes:
+        raise RuntimeError("LoadTokenizerFromBytes not available in library")
+    
+    result_ptr = _LoadTokenizerFromBytes(data, len(data))
+    if not result_ptr:
+        raise RuntimeError("Failed to load tokenizer")
+    
+    result_json = ctypes.string_at(result_ptr).decode('utf-8')
+    _free_cstring_ptr(result_ptr)
+    
+    result = json.loads(result_json)
+    if not result.get('success'):
+        raise RuntimeError(f"Failed to load tokenizer: {result.get('error', 'Unknown error')}")
+    
+    return result
+
+
+def load_transformer_from_bytes(config_data: bytes, weights_data: bytes) -> dict:
+    """
+    Load transformer model from config and weights bytes.
+    
+    Args:
+        config_data: Config JSON bytes
+        weights_data: Model weights (safetensors format)
+    
+    Returns:
+        Dict with 'success', 'num_layers', 'hidden_size', etc.
+    """
+    if not _LoadTransformerFromBytes:
+        raise RuntimeError("LoadTransformerFromBytes not available in library")
+    
+    result_ptr = _LoadTransformerFromBytes(
+        config_data, len(config_data),
+        weights_data, len(weights_data)
+    )
+    if not result_ptr:
+        raise RuntimeError("Failed to load transformer")
+    
+    result_json = ctypes.string_at(result_ptr).decode('utf-8')
+    _free_cstring_ptr(result_ptr)
+    
+    result = json.loads(result_json)
+    if not result.get('success'):
+        raise RuntimeError(f"Failed to load transformer: {result.get('error', 'Unknown error')}")
+    
+    return result
+
+
+def encode_text(text: str, add_special_tokens: bool = True) -> list:
+    """
+    Encode text to token IDs.
+    
+    Args:
+        text: Text to encode
+        add_special_tokens: Whether to add special tokens
+    
+    Returns:
+        List of token IDs
+    """
+    if not _EncodeText:
+        raise RuntimeError("EncodeText not available in library")
+    
+    result_ptr = _EncodeText(text.encode('utf-8'), add_special_tokens)
+    if not result_ptr:
+        raise RuntimeError("Failed to encode text")
+    
+    result_json = ctypes.string_at(result_ptr).decode('utf-8')
+    _free_cstring_ptr(result_ptr)
+    
+    result = json.loads(result_json)
+    if not result.get('success'):
+        raise RuntimeError(f"Failed to encode text: {result.get('error', 'Unknown error')}")
+    
+    return result['ids']
+
+
+def decode_tokens(ids: list, skip_special_tokens: bool = True) -> str:
+    """
+    Decode token IDs to text.
+    
+    Args:
+        ids: List of token IDs
+        skip_special_tokens: Whether to skip special tokens
+    
+    Returns:
+        Decoded text string
+    """
+    if not _DecodeTokens:
+        raise RuntimeError("DecodeTokens not available in library")
+    
+    ids_json = json.dumps(ids).encode('utf-8')
+    result_ptr = _DecodeTokens(ids_json, skip_special_tokens)
+    if not result_ptr:
+        raise RuntimeError("Failed to decode tokens")
+    
+    result_json = ctypes.string_at(result_ptr).decode('utf-8')
+    _free_cstring_ptr(result_ptr)
+    
+    result = json.loads(result_json)
+    if not result.get('success'):
+        raise RuntimeError(f"Failed to decode tokens: {result.get('error', 'Unknown error')}")
+    
+    return result['text']
+
+
+def generate_text(prompt: str, max_tokens: int = 50, temperature: float = 0.7) -> str:
+    """
+    Generate text from prompt (all at once).
+    
+    Args:
+        prompt: Input prompt
+        max_tokens: Maximum tokens to generate
+        temperature: Sampling temperature
+    
+    Returns:
+        Generated text
+    """
+    if not _GenerateText:
+        raise RuntimeError("GenerateText not available in library")
+    
+    result_ptr = _GenerateText(prompt.encode('utf-8'), max_tokens, temperature)
+    if not result_ptr:
+        raise RuntimeError("Failed to generate text")
+    
+    result_json = ctypes.string_at(result_ptr).decode('utf-8')
+    _free_cstring_ptr(result_ptr)
+    
+    result = json.loads(result_json)
+    if not result.get('success'):
+        raise RuntimeError(f"Failed to generate text: {result.get('error', 'Unknown error')}")
+    
+    return result['generated_text']
+
+
+def generate_stream(prompt: str, max_tokens: int = 50, temperature: float = 0.7):
+    """
+    Generate text token-by-token (streaming).
+    
+    Args:
+        prompt: Input prompt
+        max_tokens: Maximum tokens to generate
+        temperature: Sampling temperature
+    
+    Yields:
+        Token text strings
+    
+    Example:
+        for token in generate_stream("Once upon a time", max_tokens=50):
+            print(token, end='', flush=True)
+    """
+    if not _EncodeText or not _GenerateNextToken or not _DecodeTokens:
+        raise RuntimeError("Streaming functions not available in library")
+    
+    # Encode prompt
+    tokens = encode_text(prompt, add_special_tokens=True)
+    
+    # Generate tokens one at a time
+    for _ in range(max_tokens):
+        # Generate next token
+        tokens_json = json.dumps(tokens).encode('utf-8')
+        result_ptr = _GenerateNextToken(tokens_json, temperature)
+        if not result_ptr:
+            break
+        
+        result_json = ctypes.string_at(result_ptr).decode('utf-8')
+        _free_cstring_ptr(result_ptr)
+        
+        result = json.loads(result_json)
+        if not result.get('success'):
+            break
+        
+        next_token = result['token']
+        tokens.append(next_token)
+        
+        # Decode just this token
+        token_text = decode_tokens([next_token], skip_special_tokens=True)
+        yield token_text
+        
+        # Check for EOS
+        if result.get('is_eos', False):
+            break

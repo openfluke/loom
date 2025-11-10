@@ -2,7 +2,7 @@
 
 **Wrapper for Embedding Loom Via External (C-ABI) Toolchain**
 
-High-performance neural network library with WebGPU acceleration for Python via C-ABI bindings.
+High-performance neural network library with **transformer inference** and WebGPU acceleration for Python via C-ABI bindings.
 
 ## Installation
 
@@ -12,7 +12,44 @@ pip install welvet
 
 ## Quick Start
 
-### ✨ The Easy Way - Load Complete Models
+### 🚀 NEW: Transformer Inference (LLMs)
+
+Run LLaMA, SmolLM, GPT-2, and other transformers with **streaming support**!
+
+```python
+import welvet
+
+# Load tokenizer and model
+with open('models/SmolLM2-135M-Instruct/tokenizer.json', 'rb') as f:
+    welvet.load_tokenizer_from_bytes(f.read())
+
+with open('models/SmolLM2-135M-Instruct/config.json', 'rb') as f:
+    config = f.read()
+with open('models/SmolLM2-135M-Instruct/model.safetensors', 'rb') as f:
+    weights = f.read()
+
+welvet.load_transformer_from_bytes(config, weights)
+
+# Generate text with streaming!
+for token in welvet.generate_stream("Once upon a time", max_tokens=50):
+    print(token, end='', flush=True)
+
+# Or generate all at once
+text = welvet.generate_text("Once upon a time", max_tokens=50, temperature=0.7)
+print(text)
+```
+
+#### Web Interface Example
+
+```bash
+cd examples
+./transformer_web_interface.py ../../models/SmolLM2-135M-Instruct 8080
+# Open http://localhost:8080/inference.html
+```
+
+See `examples/test_transformer.py` for a complete example.
+
+### ✨ Neural Network Training - Load Complete Models
 
 ```python
 import welvet
@@ -457,12 +494,55 @@ print(f"Total layers: {info['total_layers']}")
 welvet.free_network(net)
 ```
 
+## Transformer API Reference
+
+### Loading Models
+
+```python
+# Load tokenizer from bytes
+result = welvet.load_tokenizer_from_bytes(tokenizer_bytes)
+# Returns: {'success': True, 'vocab_size': 49152}
+
+# Load transformer model
+result = welvet.load_transformer_from_bytes(config_bytes, weights_bytes)
+# Returns: {'success': True, 'num_layers': 30, 'hidden_size': 576, 'vocab_size': 49152}
+```
+
+### Text Processing
+
+```python
+# Encode text to token IDs
+ids = welvet.encode_text("Hello world", add_special_tokens=True)
+# Returns: [123, 456, 789]
+
+# Decode token IDs to text
+text = welvet.decode_tokens([123, 456, 789], skip_special_tokens=True)
+# Returns: "Hello world"
+```
+
+### Generation
+
+```python
+# Generate text all at once
+text = welvet.generate_text("Once upon a time", max_tokens=50, temperature=0.7)
+
+# Generate with streaming (yields tokens one by one)
+for token in welvet.generate_stream("Once upon a time", max_tokens=50, temperature=0.7):
+    print(token, end='', flush=True)
+```
+
 ## Testing
 
 Run the included examples to verify installation:
 
 ```bash
-# Basic GPU training test
+# Test transformer inference
+python examples/test_transformer.py ../../models/SmolLM2-135M-Instruct
+
+# Run web interface
+python examples/transformer_web_interface.py ../../models/SmolLM2-135M-Instruct 8080
+
+# Basic GPU training test (neural networks)
 python examples/train_gpu.py
 ```
 
