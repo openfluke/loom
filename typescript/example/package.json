@@ -1,0 +1,11 @@
+{
+  "name": "loom-example",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run grid-scatter.ts"
+  },
+  "dependencies": {
+    "@openfluke/welvet": "link:.."
+  }
+}

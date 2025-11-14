@@ -10,11 +10,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": [
-    "src/index.ts",
-    "src/loader.ts",
-    "src/env.ts",
-    "src/shims.d.ts",
-    "src/types.d.ts"
-  ]
+  "include": ["src/**/*.ts"]
 }
