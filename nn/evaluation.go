@@ -27,6 +27,22 @@ type DeviationBucket struct {
 	Samples  []int   `json:"samples"` // Track which sample indices fall in this bucket
 }
 
+// MarshalJSON implements custom JSON marshaling to handle infinity values
+func (db DeviationBucket) MarshalJSON() ([]byte, error) {
+	type Alias DeviationBucket
+	return json.Marshal(&struct {
+		RangeMin float64 `json:"range_min"`
+		RangeMax float64 `json:"range_max"`
+		Count    int     `json:"count"`
+		Samples  []int   `json:"samples"`
+	}{
+		RangeMin: sanitizeFloat(db.RangeMin),
+		RangeMax: sanitizeFloat(db.RangeMax),
+		Count:    db.Count,
+		Samples:  db.Samples,
+	})
+}
+
 // PredictionResult represents the performance of the model on one prediction
 type PredictionResult struct {
 	SampleIndex    int     `json:"sample_index"`

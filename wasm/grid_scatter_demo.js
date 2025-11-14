@@ -212,6 +212,111 @@ function runGridScatterTest() {
       );
     }
 
+    // Use EvaluateNetwork for detailed accuracy metrics
+    log("info", "\n📊 Evaluating with EvaluateNetwork...");
+
+    // Prepare inputs and expected outputs for evaluation
+    // Note: inputs must be [][]float32 and expectedOutputs must be []float64
+    const inputs = batches.map((b) => b.Input);
+    const expectedOutputs = batches.map((b) =>
+      b.Target[0] > b.Target[1] ? 0.0 : 1.0
+    ); // Convert to class labels
+
+    try {
+      // Pass as array of two elements: [inputs_2d_array, expected_outputs_1d_array]
+      const evalResult = agentNetwork.EvaluateNetwork(
+        JSON.stringify([inputs, expectedOutputs])
+      );
+
+      // Check for error string
+      if (
+        typeof evalResult === "string" &&
+        (evalResult.includes("Error:") || evalResult.includes("parameter"))
+      ) {
+        log("error", "EvaluateNetwork error: " + evalResult);
+        return;
+      }
+
+      // Parse result - should be [metrics_object, error_or_null]
+      const parsed = JSON.parse(evalResult);
+
+      // Check if we got an error as second element
+      if (parsed[1] !== null && parsed[1] !== undefined) {
+        log("error", "Evaluation error: " + JSON.stringify(parsed[1]));
+        return;
+      }
+
+      const metrics = parsed[0];
+
+      if (!metrics || !metrics.total_samples) {
+        log(
+          "error",
+          "Invalid metrics returned: " +
+            JSON.stringify(parsed).substring(0, 200)
+        );
+        return;
+      }
+
+      log("success", "\n=== Evaluation Metrics ===");
+      log("info", `Total Samples: ${metrics.total_samples}`);
+      log("info", `Quality Score: ${metrics.score.toFixed(2)}/100`);
+      log("info", `Average Deviation: ${metrics.avg_deviation.toFixed(2)}%`);
+      log("info", `Failures (>100% deviation): ${metrics.failures}`);
+
+      log("info", "\nDeviation Distribution:");
+      const bucketOrder = [
+        "0-10%",
+        "10-20%",
+        "20-30%",
+        "30-40%",
+        "40-50%",
+        "50-100%",
+        "100%+",
+      ];
+      for (const bucketName of bucketOrder) {
+        const bucket = metrics.buckets[bucketName];
+        if (bucket && bucket.count > 0) {
+          const percentage = (
+            (bucket.count / metrics.total_samples) *
+            100
+          ).toFixed(1);
+          const bar = "█".repeat(
+            Math.floor((bucket.count / metrics.total_samples) * 20)
+          );
+          log(
+            "info",
+            `  ${bucketName.padEnd(8)}: ${
+              bucket.count
+            } samples (${percentage}%) ${bar}`
+          );
+        }
+      }
+
+      // Show worst predictions if any
+      if (metrics.results && metrics.results.length > 0) {
+        const sorted = metrics.results.sort(
+          (a, b) => b.deviation - a.deviation
+        );
+        const worst = sorted.slice(0, 2);
+        if (worst.length > 0 && worst[0].deviation > 10) {
+          log("info", "\nWorst predictions:");
+          for (const r of worst) {
+            log(
+              "info",
+              `  Sample ${r.sample_index}: Expected ${r.expected.toFixed(
+                2
+              )}, Got ${r.actual.toFixed(2)}, Deviation ${r.deviation.toFixed(
+                2
+              )}%`
+            );
+          }
+        }
+      }
+    } catch (e) {
+      log("error", "Failed to evaluate network: " + e.message);
+      console.error(e);
+    }
+
     log("success", "\n✅ Multi-agent training complete!");
   } catch (e) {
     log("error", "❌ Exception: " + e.message);

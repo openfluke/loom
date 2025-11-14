@@ -154,6 +154,39 @@ func LoomGetNetworkInfo() *C.char {
 	return C.CString(string(infoJSON))
 }
 
+//export LoomEvaluateNetwork
+func LoomEvaluateNetwork(inputsJSON *C.char, expectedOutputsJSON *C.char) *C.char {
+	if currentNetwork == nil {
+		return C.CString(`{"error": "no network created"}`)
+	}
+
+	// Parse inputs (2D array of float32)
+	var inputs [][]float32
+	if err := json.Unmarshal([]byte(C.GoString(inputsJSON)), &inputs); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid inputs JSON: %v"}`, err))
+	}
+
+	// Parse expected outputs (1D array of float64)
+	var expectedOutputs []float64
+	if err := json.Unmarshal([]byte(C.GoString(expectedOutputsJSON)), &expectedOutputs); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid expected outputs JSON: %v"}`, err))
+	}
+
+	// Evaluate
+	metrics, err := currentNetwork.EvaluateNetwork(inputs, expectedOutputs)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	// Convert metrics to JSON
+	metricsJSON, err := json.Marshal(metrics)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "failed to marshal metrics: %v"}`, err))
+	}
+
+	return C.CString(string(metricsJSON))
+}
+
 //export FreeLoomString
 func FreeLoomString(str *C.char) {
 	C.free(unsafe.Pointer(str))
