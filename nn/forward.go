@@ -185,7 +185,9 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					for _, preAct := range branchPreActs {
 						totalPreActSize += len(preAct)
 					}
-					n.preActivations[layerIdx] = make([]float32, totalPreActSize+4) // +4 for metadata
+					// Metadata: 1 for numBranches + 1 per branch for size = 1 + len(branchPreActs)
+					metadataSize := 1 + len(branchPreActs)
+					n.preActivations[layerIdx] = make([]float32, totalPreActSize+metadataSize)
 					// Store metadata: number of branches and their sizes
 					n.preActivations[layerIdx][0] = float32(len(branchPreActs))
 					offset := 1

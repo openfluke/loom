@@ -137,8 +137,20 @@ type LayerConfig struct {
 	ResidualSkip int // How many layers back to skip for residual (0 = no residual)
 
 	// Parallel layer specific parameters
-	ParallelBranches []LayerConfig // Sub-layers to run in parallel
-	CombineMode      string        // How to combine outputs: "concat", "add", "avg"
+	ParallelBranches []LayerConfig  // Sub-layers to run in parallel
+	CombineMode      string         // How to combine outputs: "concat", "add", "avg", "grid_scatter"
+	GridPositions    []GridPosition // For grid_scatter: where to place each branch output
+	GridOutputRows   int            // For grid_scatter: output grid dimensions
+	GridOutputCols   int
+	GridOutputLayers int
+}
+
+// GridPosition specifies where a parallel branch output should be placed in the grid
+type GridPosition struct {
+	BranchIndex int // Which branch this position is for
+	TargetRow   int // Grid row to place output
+	TargetCol   int // Grid column to place output
+	TargetLayer int // Layer index within that cell
 }
 
 // Network represents a grid neural network

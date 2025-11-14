@@ -95,6 +95,9 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int) ([]flo
 
 		if cfg.CombineMode == "concat" || cfg.CombineMode == "" {
 			totalOutputSize += len(postAct)
+		} else if cfg.CombineMode == "grid_scatter" {
+			// For grid_scatter, branches can have different sizes (accumulated later)
+			totalOutputSize += len(postAct)
 		} else {
 			// For add/avg, all outputs must be same size
 			if i == 0 {
@@ -137,6 +140,74 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int) ([]flo
 		scale := 1.0 / float32(len(cfg.ParallelBranches))
 		for j := range combined {
 			combined[j] *= scale
+		}
+
+	case "grid_scatter": // Place outputs at specific grid positions
+		if len(cfg.GridPositions) != len(cfg.ParallelBranches) {
+			return nil, nil, fmt.Errorf("grid_scatter requires GridPositions to match number of branches (%d != %d)",
+				len(cfg.GridPositions), len(cfg.ParallelBranches))
+		}
+
+		// Calculate total features per grid position
+		// First pass: determine max features needed per grid cell
+		gridCells := cfg.GridOutputRows * cfg.GridOutputCols * cfg.GridOutputLayers
+		if gridCells == 0 {
+			return nil, nil, fmt.Errorf("grid_scatter requires GridOutputRows/Cols/Layers to be set")
+		}
+
+		// Determine output size per grid position from branch outputs
+		featuresPerPosition := make([]int, gridCells)
+		for i, branchOut := range branchOutputs {
+			pos := cfg.GridPositions[i]
+
+			// Validate position
+			if pos.TargetRow >= cfg.GridOutputRows || pos.TargetCol >= cfg.GridOutputCols || pos.TargetLayer >= cfg.GridOutputLayers {
+				return nil, nil, fmt.Errorf("branch %d grid position (%d,%d,%d) exceeds grid bounds (%d,%d,%d)",
+					i, pos.TargetRow, pos.TargetCol, pos.TargetLayer,
+					cfg.GridOutputRows, cfg.GridOutputCols, cfg.GridOutputLayers)
+			}
+
+			// Calculate flat index for this grid position
+			gridIdx := pos.TargetRow*cfg.GridOutputCols*cfg.GridOutputLayers +
+				pos.TargetCol*cfg.GridOutputLayers +
+				pos.TargetLayer
+
+			// Each branch contributes features to its grid position
+			branchOutputPerSample := len(branchOut) / batchSize
+			featuresPerPosition[gridIdx] = branchOutputPerSample
+		}
+
+		// Calculate total output size
+		totalFeatures := 0
+		for _, f := range featuresPerPosition {
+			totalFeatures += f
+		}
+
+		// Initialize output
+		combined = make([]float32, batchSize*totalFeatures)
+
+		// Place each branch output at its designated position
+		for i, branchOut := range branchOutputs {
+			pos := cfg.GridPositions[i]
+			branchOutputPerSample := len(branchOut) / batchSize
+
+			// Calculate offset: sum of features from all previous grid positions
+			gridIdx := pos.TargetRow*cfg.GridOutputCols*cfg.GridOutputLayers +
+				pos.TargetCol*cfg.GridOutputLayers +
+				pos.TargetLayer
+
+			offset := 0
+			for j := 0; j < gridIdx; j++ {
+				offset += featuresPerPosition[j]
+			}
+
+			// Copy branch output for each sample in batch
+			for b := 0; b < batchSize; b++ {
+				srcStart := b * branchOutputPerSample
+				srcEnd := srcStart + branchOutputPerSample
+				dstStart := b*totalFeatures + offset
+				copy(combined[dstStart:dstStart+branchOutputPerSample], branchOut[srcStart:srcEnd])
+			}
 		}
 
 	default:
@@ -215,6 +286,118 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			branchGrads[i] = make([]float32, len(gradOutput))
 			for j := range gradOutput {
 				branchGrads[i][j] = gradOutput[j] * scale
+			}
+		}
+
+	case "grid_scatter": // Extract gradients from specific grid positions
+		branchGrads = make([][]float32, len(cfg.ParallelBranches))
+
+		// Reconstruct features per position (same logic as forward)
+		gridCells := cfg.GridOutputRows * cfg.GridOutputCols * cfg.GridOutputLayers
+		featuresPerPosition := make([]int, gridCells)
+
+		for i := range cfg.ParallelBranches {
+			branchCfg := &cfg.ParallelBranches[i]
+			pos := cfg.GridPositions[i]
+
+			// Calculate output size for this branch
+			var branchOutputSize int
+			switch branchCfg.Type {
+			case LayerDense:
+				branchOutputSize = batchSize * branchCfg.OutputHeight
+			case LayerConv2D:
+				branchOutputSize = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
+			case LayerMultiHeadAttention:
+				branchOutputSize = batchSize * branchCfg.SeqLength * branchCfg.DModel
+			case LayerRNN:
+				branchOutputSize = batchSize * branchCfg.SeqLength * branchCfg.HiddenSize
+			case LayerLSTM:
+				branchOutputSize = batchSize * branchCfg.SeqLength * branchCfg.HiddenSize
+			case LayerSwiGLU:
+				branchOutputSize = len(input)
+			case LayerNorm:
+				branchOutputSize = len(input)
+			case LayerRMSNorm:
+				branchOutputSize = len(input)
+			case LayerSoftmax:
+				branchOutputSize = len(input)
+			case LayerParallel:
+				dummyOut, _, err := parallelForwardCPU(input, branchCfg, batchSize)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
+				}
+				branchOutputSize = len(dummyOut)
+			default:
+				return nil, nil, nil, fmt.Errorf("cannot determine output size for layer type %d", branchCfg.Type)
+			}
+
+			branchOutputPerSample := branchOutputSize / batchSize
+			gridIdx := pos.TargetRow*cfg.GridOutputCols*cfg.GridOutputLayers +
+				pos.TargetCol*cfg.GridOutputLayers +
+				pos.TargetLayer
+			featuresPerPosition[gridIdx] = branchOutputPerSample
+		}
+
+		// Calculate total features
+		totalFeatures := 0
+		for _, f := range featuresPerPosition {
+			totalFeatures += f
+		}
+
+		// Extract gradient for each branch from its grid position
+		for i := range cfg.ParallelBranches {
+			branchCfg := &cfg.ParallelBranches[i]
+			pos := cfg.GridPositions[i]
+
+			// Calculate branch output size
+			var branchOutputSize int
+			switch branchCfg.Type {
+			case LayerDense:
+				branchOutputSize = batchSize * branchCfg.OutputHeight
+			case LayerConv2D:
+				branchOutputSize = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
+			case LayerMultiHeadAttention:
+				branchOutputSize = batchSize * branchCfg.SeqLength * branchCfg.DModel
+			case LayerRNN:
+				branchOutputSize = batchSize * branchCfg.SeqLength * branchCfg.HiddenSize
+			case LayerLSTM:
+				branchOutputSize = batchSize * branchCfg.SeqLength * branchCfg.HiddenSize
+			case LayerSwiGLU:
+				branchOutputSize = len(input)
+			case LayerNorm:
+				branchOutputSize = len(input)
+			case LayerRMSNorm:
+				branchOutputSize = len(input)
+			case LayerSoftmax:
+				branchOutputSize = len(input)
+			case LayerParallel:
+				dummyOut, _, err := parallelForwardCPU(input, branchCfg, batchSize)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
+				}
+				branchOutputSize = len(dummyOut)
+			default:
+				return nil, nil, nil, fmt.Errorf("cannot determine output size for layer type %d", branchCfg.Type)
+			}
+
+			branchOutputPerSample := branchOutputSize / batchSize
+
+			// Calculate offset: sum of features from all previous grid positions
+			gridIdx := pos.TargetRow*cfg.GridOutputCols*cfg.GridOutputLayers +
+				pos.TargetCol*cfg.GridOutputLayers +
+				pos.TargetLayer
+
+			offset := 0
+			for j := 0; j < gridIdx; j++ {
+				offset += featuresPerPosition[j]
+			}
+
+			// Extract gradient from grid position
+			branchGrads[i] = make([]float32, branchOutputSize)
+			for b := 0; b < batchSize; b++ {
+				srcStart := b*totalFeatures + offset
+				dstStart := b * branchOutputPerSample
+				copy(branchGrads[i][dstStart:dstStart+branchOutputPerSample], gradOutput[srcStart:srcStart+branchOutputPerSample])
 			}
 		}
 

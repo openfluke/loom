@@ -79,8 +79,20 @@ type LayerDefinition struct {
 	Epsilon  float32 `json:"epsilon,omitempty"`
 
 	// Parallel layer fields
-	Branches    []LayerDefinition `json:"branches,omitempty"`
-	CombineMode string            `json:"combine_mode,omitempty"` // "concat", "add", "avg"
+	Branches         []LayerDefinition `json:"branches,omitempty"`
+	CombineMode      string            `json:"combine_mode,omitempty"` // "concat", "add", "avg", "grid_scatter"
+	GridPositions    []GridPositionDef `json:"grid_positions,omitempty"`
+	GridOutputRows   int               `json:"grid_output_rows,omitempty"`
+	GridOutputCols   int               `json:"grid_output_cols,omitempty"`
+	GridOutputLayers int               `json:"grid_output_layers,omitempty"`
+}
+
+// GridPositionDef is the JSON representation of a grid position
+type GridPositionDef struct {
+	BranchIndex int `json:"branch_index"`
+	TargetRow   int `json:"target_row"`
+	TargetCol   int `json:"target_col"`
+	TargetLayer int `json:"target_layer"`
 }
 
 // EncodedWeights stores weights in base64-encoded JSON format
@@ -1201,6 +1213,24 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		config.CombineMode = def.CombineMode
 		if config.CombineMode == "" {
 			config.CombineMode = "concat" // Default to concatenation
+		}
+
+		// Grid scatter specific fields
+		config.GridOutputRows = def.GridOutputRows
+		config.GridOutputCols = def.GridOutputCols
+		config.GridOutputLayers = def.GridOutputLayers
+
+		// Convert GridPositionDef to GridPosition
+		if len(def.GridPositions) > 0 {
+			config.GridPositions = make([]GridPosition, len(def.GridPositions))
+			for i, posDef := range def.GridPositions {
+				config.GridPositions[i] = GridPosition{
+					BranchIndex: posDef.BranchIndex,
+					TargetRow:   posDef.TargetRow,
+					TargetCol:   posDef.TargetCol,
+					TargetLayer: posDef.TargetLayer,
+				}
+			}
 		}
 
 		// Build branch configurations
