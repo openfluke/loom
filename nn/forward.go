@@ -171,16 +171,31 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					data = normalized
 				} else if config.Type == LayerParallel {
 					// Parallel layer - run multiple sub-layers and combine outputs
-					output, err := parallelForwardCPU(data, config, n.BatchSize)
+					output, branchPreActs, err := parallelForwardCPU(data, config, n.BatchSize)
 					if err != nil {
 						fmt.Printf("Parallel layer error: %v\n", err)
 						// On error, pass through unchanged
 						output = data
+						branchPreActs = nil
 					}
 
-					// Store input as pre-activation
-					n.preActivations[layerIdx] = make([]float32, len(data))
-					copy(n.preActivations[layerIdx], data)
+					// Store branch pre-activations (needed for backward)
+					// Flatten all branch pre-acts into single slice
+					totalPreActSize := 0
+					for _, preAct := range branchPreActs {
+						totalPreActSize += len(preAct)
+					}
+					n.preActivations[layerIdx] = make([]float32, totalPreActSize+4) // +4 for metadata
+					// Store metadata: number of branches and their sizes
+					n.preActivations[layerIdx][0] = float32(len(branchPreActs))
+					offset := 1
+					for i, preAct := range branchPreActs {
+						n.preActivations[layerIdx][offset] = float32(len(preAct))
+						offset++
+						copy(n.preActivations[layerIdx][offset:], preAct)
+						offset += len(preAct)
+						_ = i // suppress unused warning
+					}
 
 					// Use parallel output for next layer
 					data = output

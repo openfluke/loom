@@ -165,6 +165,9 @@ type Network struct {
 	// Gradient storage for kernel weights (Conv2D layers)
 	kernelGradients [][]float32
 	biasGradients   [][]float32
+
+	// Learning rate for parallel layer branch updates (set during UpdateWeights)
+	learningRate float32
 }
 
 // GPUDeviceInfo holds WebGPU resources for GPU execution

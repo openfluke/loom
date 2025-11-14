@@ -125,13 +125,44 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 		} else if config.Type == LayerParallel {
 			// Parallel layer backward
 			input := n.activations[layerIdx]
-			gradInput, err := parallelBackwardCPU(input, grad, config, n.BatchSize)
+
+			// Unflatten branch pre-activations from storage
+			preActData := n.preActivations[layerIdx]
+			numBranches := int(preActData[0])
+			branchPreActs := make([][]float32, numBranches)
+			offset := 1
+			for i := 0; i < numBranches; i++ {
+				size := int(preActData[offset])
+				offset++
+				branchPreActs[i] = preActData[offset : offset+size]
+				offset += size
+			}
+
+			gradInput, kernelGrads, biasGrads, err := parallelBackwardCPU(input, grad, branchPreActs, config, n.BatchSize)
 			if err != nil {
 				// Log error but continue backprop
 				fmt.Printf("Warning: parallel backward error at layer %d: %v\n", layerIdx, err)
 				// Pass gradient through unchanged
 			} else {
 				grad = gradInput
+				// Store gradients for weight updates
+				// Flatten all branch gradients
+				totalKernelGrads := 0
+				totalBiasGrads := 0
+				for i := range kernelGrads {
+					totalKernelGrads += len(kernelGrads[i])
+					totalBiasGrads += len(biasGrads[i])
+				}
+				n.kernelGradients[layerIdx] = make([]float32, totalKernelGrads)
+				n.biasGradients[layerIdx] = make([]float32, totalBiasGrads)
+				kOffset := 0
+				bOffset := 0
+				for i := range kernelGrads {
+					copy(n.kernelGradients[layerIdx][kOffset:], kernelGrads[i])
+					kOffset += len(kernelGrads[i])
+					copy(n.biasGradients[layerIdx][bOffset:], biasGrads[i])
+					bOffset += len(biasGrads[i])
+				}
 			}
 		} else if config.Type == LayerSoftmax {
 			// Softmax layer backward - NOT element-wise!
