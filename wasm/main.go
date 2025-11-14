@@ -246,14 +246,53 @@ func createNetworkFromJSON(this js.Value, args []js.Value) interface{} {
 	return obj
 }
 
+// loadNetworkFromString loads a network from saved JSON string
+func loadNetworkFromString(this js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		errMsg := "Expected 2 arguments: JSON string and model ID"
+		js.Global().Get("console").Call("error", errMsg)
+		return errMsg
+	}
+
+	jsonString := args[0].String()
+	modelID := args[1].String()
+
+	// Load network from JSON string
+	network, err := nn.LoadModelFromString(jsonString, modelID)
+	if err != nil {
+		errMsg := fmt.Sprintf("Error: failed to load network: %v", err)
+		js.Global().Get("console").Call("error", errMsg)
+		return errMsg
+	}
+
+	// Create JS object with all network methods
+	obj := js.Global().Get("Object").New()
+
+	// Use reflection to get all methods
+	networkValue := reflect.ValueOf(network)
+	networkType := networkValue.Type()
+
+	for i := 0; i < networkType.NumMethod(); i++ {
+		method := networkType.Method(i)
+		// Only export public methods
+		if method.Name[0] >= 'A' && method.Name[0] <= 'Z' {
+			obj.Set(method.Name, methodWrapper(network, method.Name))
+		}
+	}
+
+	return obj
+}
+
 func main() {
 	fmt.Println("Loom WASM Framework Initialized")
 
 	// Register the network creation function
 	js.Global().Set("createLoomNetwork", js.FuncOf(createNetworkFromJSON))
+	js.Global().Set("loadLoomNetwork", js.FuncOf(loadNetworkFromString))
 
 	fmt.Println("Available functions:")
 	fmt.Println("  - createLoomNetwork(jsonConfig) - Create network from JSON and get object with all methods")
+	fmt.Println("  - loadLoomNetwork(jsonString, modelID) - Load network from saved JSON string")
 
 	// Keep the program running
 	select {}

@@ -194,12 +194,14 @@ function runGridScatterTest() {
 
     // Test final predictions on each sample
     log("info", "\nFinal predictions:");
+    const originalPredictions = [];
     for (let i = 0; i < 4; i++) {
       const testResult = agentNetwork.ForwardCPU(
         JSON.stringify([batches[i].Input])
       );
       const testParsed = JSON.parse(testResult);
       const pred = testParsed[0];
+      originalPredictions.push(pred);
 
       const predClass = pred[0] > pred[1] ? 0 : 1;
       const expectedClass = batches[i].Target[0] > batches[i].Target[1] ? 0 : 1;
@@ -318,6 +320,68 @@ function runGridScatterTest() {
     }
 
     log("success", "\n✅ Multi-agent training complete!");
+
+    // Save and reload model to verify serialization
+    log("info", "\n💾 Testing model save/load...");
+    try {
+      const savedModelResult = agentNetwork.SaveModelToString(
+        JSON.stringify(["grid_scatter_test"])
+      );
+
+      // WASM returns results as [value, error] array
+      const parsedResult = JSON.parse(savedModelResult);
+      const savedModel = parsedResult[0]; // Get the actual JSON string from the result array
+
+      log("success", `✓ Model saved (${savedModel.length} bytes)`);
+
+      // Load the model back using loadLoomNetwork (global WASM function)
+      log("info", "Loading model from saved state...");
+      const reloadedNetwork = loadLoomNetwork(savedModel, "grid_scatter_test");
+      log("success", "✓ Model loaded");
+
+      // Test predictions with reloaded model
+      log("info", "\nVerifying predictions match:");
+      let allMatch = true;
+      for (let i = 0; i < 4; i++) {
+        const testResult = reloadedNetwork.ForwardCPU(
+          JSON.stringify([batches[i].Input])
+        );
+        const testParsed = JSON.parse(testResult);
+        const pred = testParsed[0];
+
+        // Compare with original predictions
+        const diff0 = Math.abs(pred[0] - originalPredictions[i][0]);
+        const diff1 = Math.abs(pred[1] - originalPredictions[i][1]);
+        const maxDiff = Math.max(diff0, diff1);
+
+        const match = maxDiff < 1e-6;
+        allMatch = allMatch && match;
+
+        const icon = match ? "✓" : "✗";
+        const logType = match ? "success" : "error";
+        log(
+          logType,
+          `Sample ${i}: [${pred[0].toFixed(3)}, ${pred[1].toFixed(
+            3
+          )}] (diff: ${maxDiff.toExponential(2)}) ${icon}`
+        );
+      }
+
+      if (allMatch) {
+        log(
+          "success",
+          "\n✅ Save/Load verification passed! All predictions match."
+        );
+      } else {
+        log(
+          "error",
+          "\n❌ Save/Load verification failed! Predictions don't match."
+        );
+      }
+    } catch (e) {
+      log("error", "Failed to save/load model: " + e.message);
+      console.error(e);
+    }
   } catch (e) {
     log("error", "❌ Exception: " + e.message);
     console.error(e);

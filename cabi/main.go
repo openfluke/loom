@@ -136,6 +136,22 @@ func LoomSaveModel(modelID *C.char) *C.char {
 	return C.CString(jsonStr)
 }
 
+//export LoomLoadModel
+func LoomLoadModel(jsonString *C.char, modelID *C.char) *C.char {
+	jsonStr := C.GoString(jsonString)
+	id := C.GoString(modelID)
+
+	network, err := nn.LoadModelFromString(jsonStr, id)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	// Replace current network with loaded one
+	currentNetwork = network
+
+	return C.CString(`{"success": true}`)
+}
+
 //export LoomGetNetworkInfo
 func LoomGetNetworkInfo() *C.char {
 	if currentNetwork == nil {

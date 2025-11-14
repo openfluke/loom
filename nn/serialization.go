@@ -255,6 +255,20 @@ func serializeBranches(branches []LayerConfig) []LayerDefinition {
 			def.OutputHeight = branch.OutputHeight
 		case LayerParallel:
 			def.CombineMode = branch.CombineMode
+			def.GridOutputRows = branch.GridOutputRows
+			def.GridOutputCols = branch.GridOutputCols
+			def.GridOutputLayers = branch.GridOutputLayers
+
+			// Convert GridPosition to GridPositionDef
+			for _, gp := range branch.GridPositions {
+				def.GridPositions = append(def.GridPositions, GridPositionDef{
+					BranchIndex: gp.BranchIndex,
+					TargetRow:   gp.TargetRow,
+					TargetCol:   gp.TargetCol,
+					TargetLayer: gp.TargetLayer,
+				})
+			}
+
 			def.Branches = serializeBranches(branch.ParallelBranches) // Recursive call
 		}
 
@@ -452,10 +466,26 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 			if err != nil {
 				return nil, fmt.Errorf("failed to deserialize nested branches: %w", err)
 			}
+
+			// Convert GridPositionDef to GridPosition
+			var gridPositions []GridPosition
+			for _, gp := range def.GridPositions {
+				gridPositions = append(gridPositions, GridPosition{
+					BranchIndex: gp.BranchIndex,
+					TargetRow:   gp.TargetRow,
+					TargetCol:   gp.TargetCol,
+					TargetLayer: gp.TargetLayer,
+				})
+			}
+
 			config = LayerConfig{
 				Type:             LayerParallel,
 				CombineMode:      def.CombineMode,
 				ParallelBranches: nestedBranches,
+				GridPositions:    gridPositions,
+				GridOutputRows:   def.GridOutputRows,
+				GridOutputCols:   def.GridOutputCols,
+				GridOutputLayers: def.GridOutputLayers,
 			}
 		default:
 			return nil, fmt.Errorf("unknown branch type: %s", def.Type)
@@ -597,6 +627,20 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 
 		case LayerParallel:
 			layerDef.CombineMode = layerConfig.CombineMode
+			layerDef.GridOutputRows = layerConfig.GridOutputRows
+			layerDef.GridOutputCols = layerConfig.GridOutputCols
+			layerDef.GridOutputLayers = layerConfig.GridOutputLayers
+
+			// Convert GridPosition to GridPositionDef
+			for _, gp := range layerConfig.GridPositions {
+				layerDef.GridPositions = append(layerDef.GridPositions, GridPositionDef{
+					BranchIndex: gp.BranchIndex,
+					TargetRow:   gp.TargetRow,
+					TargetCol:   gp.TargetCol,
+					TargetLayer: gp.TargetLayer,
+				})
+			}
+
 			// Serialize each branch recursively
 			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
 			layerWeights.BranchWeights = serializeBranchWeights(layerConfig.ParallelBranches)
@@ -903,10 +947,26 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to deserialize parallel branches: %w", err)
 			}
+
+			// Convert GridPositionDef to GridPosition
+			var gridPositions []GridPosition
+			for _, gp := range layerDef.GridPositions {
+				gridPositions = append(gridPositions, GridPosition{
+					BranchIndex: gp.BranchIndex,
+					TargetRow:   gp.TargetRow,
+					TargetCol:   gp.TargetCol,
+					TargetLayer: gp.TargetLayer,
+				})
+			}
+
 			layerConfig = LayerConfig{
 				Type:             LayerParallel,
 				CombineMode:      layerDef.CombineMode,
 				ParallelBranches: branches,
+				GridPositions:    gridPositions,
+				GridOutputRows:   layerDef.GridOutputRows,
+				GridOutputCols:   layerDef.GridOutputCols,
+				GridOutputLayers: layerDef.GridOutputLayers,
 			}
 
 		default:

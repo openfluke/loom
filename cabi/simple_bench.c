@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include "libloom.h"
 
 void parse_output(const char* json, float* out1, float* out2) {
@@ -173,9 +174,12 @@ int main() {
 
     // Test AFTER training
     printf("\n📊 After Training:\n");
+    float original_preds[4][2]; // Store original predictions
     
     pred = LoomForward(batch1_input, 8);
     parse_output(pred, &out[0], &out[1]);
+    original_preds[0][0] = out[0];
+    original_preds[0][1] = out[1];
     printf("Sample 0: [%.3f, %.3f] → Class %d (expected 0) %s\n", 
            out[0], out[1], out[1] > out[0] ? 1 : 0,
            (out[1] > out[0] ? 1 : 0) == 0 ? "✓" : "✗");
@@ -183,6 +187,8 @@ int main() {
     
     pred = LoomForward(batch2_input, 8);
     parse_output(pred, &out[0], &out[1]);
+    original_preds[1][0] = out[0];
+    original_preds[1][1] = out[1];
     printf("Sample 1: [%.3f, %.3f] → Class %d (expected 1) %s\n", 
            out[0], out[1], out[1] > out[0] ? 1 : 0,
            (out[1] > out[0] ? 1 : 0) == 1 ? "✓" : "✗");
@@ -190,6 +196,8 @@ int main() {
     
     pred = LoomForward(batch3_input, 8);
     parse_output(pred, &out[0], &out[1]);
+    original_preds[2][0] = out[0];
+    original_preds[2][1] = out[1];
     printf("Sample 2: [%.3f, %.3f] → Class %d (expected 1) %s\n", 
            out[0], out[1], out[1] > out[0] ? 1 : 0,
            (out[1] > out[0] ? 1 : 0) == 1 ? "✓" : "✗");
@@ -197,6 +205,8 @@ int main() {
     
     pred = LoomForward(batch4_input, 8);
     parse_output(pred, &out[0], &out[1]);
+    original_preds[3][0] = out[0];
+    original_preds[3][1] = out[1];
     printf("Sample 3: [%.3f, %.3f] → Class %d (expected 0) %s\n", 
            out[0], out[1], out[1] > out[0] ? 1 : 0,
            (out[1] > out[0] ? 1 : 0) == 0 ? "✓" : "✗");
@@ -278,5 +288,65 @@ int main() {
     FreeLoomString(eval_result);
 
     printf("\n✅ Multi-agent training complete!\n");
+
+    // Save and reload model to verify serialization
+    printf("\n💾 Testing model save/load...\n");
+    
+    char* saved_model = LoomSaveModel("grid_scatter_test");
+    if (strstr(saved_model, "error")) {
+        printf("Failed to save model: %s\n", saved_model);
+        FreeLoomString(saved_model);
+        return 1;
+    }
+    
+    printf("✓ Model saved (%zu bytes)\n", strlen(saved_model));
+    
+    // Load the model back
+    printf("Loading model from saved state...\n");
+    char* load_result = LoomLoadModel(saved_model, "grid_scatter_test");
+    FreeLoomString(saved_model);
+    
+    if (strstr(load_result, "error")) {
+        printf("Failed to load model: %s\n", load_result);
+        FreeLoomString(load_result);
+        return 1;
+    }
+    FreeLoomString(load_result);
+    
+    printf("✓ Model loaded\n");
+    
+    // Test predictions with reloaded model
+    printf("\nVerifying predictions match:\n");
+    int all_match = 1;
+    float inputs[4][8] = {
+        {0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8},
+        {0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1, 0.1},
+        {0.7, 0.7, 0.7, 0.7, 0.3, 0.3, 0.3, 0.3},
+        {0.3, 0.3, 0.3, 0.3, 0.7, 0.7, 0.7, 0.7}
+    };
+    
+    for (int i = 0; i < 4; i++) {
+        char* pred = LoomForward(inputs[i], 8);
+        float new_out[2];
+        parse_output(pred, &new_out[0], &new_out[1]);
+        FreeLoomString(pred);
+        
+        float diff0 = fabsf(new_out[0] - original_preds[i][0]);
+        float diff1 = fabsf(new_out[1] - original_preds[i][1]);
+        float max_diff = diff0 > diff1 ? diff0 : diff1;
+        
+        int match = max_diff < 1e-6;
+        all_match = all_match && match;
+        
+        printf("Sample %d: [%.3f, %.3f] (diff: %.2e) %s\n",
+               i, new_out[0], new_out[1], max_diff, match ? "✓" : "✗");
+    }
+    
+    if (all_match) {
+        printf("\n✅ Save/Load verification passed! All predictions match.\n");
+    } else {
+        printf("\n❌ Save/Load verification failed! Predictions don't match.\n");
+    }
+    
     return 0;
 }
