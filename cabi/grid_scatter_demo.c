@@ -5,17 +5,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
 #include "libloom.h"
-
-void parse_output(const char* json, float* out1, float* out2) {
-    // Simple JSON parser for [float, float]
-    const char* start = strchr(json, '[');
-    if (start) {
-        sscanf(start, "[%f,%f]", out1, out2);
-    }
-}
 
 int main() {
     printf("🤖 LOOM C API - Grid Scatter Multi-Agent Training\n");
@@ -82,7 +73,7 @@ int main() {
         return 1;
     }
     printf("✅ Agent network created!\n");
-    FreeLoomString(result);
+    free(result);
 
     // Training data
     float batch1_input[] = {0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8};
@@ -97,30 +88,6 @@ int main() {
     float batch4_input[] = {0.3, 0.3, 0.3, 0.3, 0.7, 0.7, 0.7, 0.7};
     float batch4_target[] = {1.0, 0.0};
 
-    // Test BEFORE training
-    printf("\n📊 Before Training:\n");
-    float out[2];
-    
-    char* pred = LoomForward(batch1_input, 8);
-    parse_output(pred, &out[0], &out[1]);
-    printf("Sample 0: [%.3f, %.3f] → Class %d (expected 0)\n", out[0], out[1], out[1] > out[0] ? 1 : 0);
-    FreeLoomString(pred);
-    
-    pred = LoomForward(batch2_input, 8);
-    parse_output(pred, &out[0], &out[1]);
-    printf("Sample 1: [%.3f, %.3f] → Class %d (expected 1)\n", out[0], out[1], out[1] > out[0] ? 1 : 0);
-    FreeLoomString(pred);
-    
-    pred = LoomForward(batch3_input, 8);
-    parse_output(pred, &out[0], &out[1]);
-    printf("Sample 2: [%.3f, %.3f] → Class %d (expected 1)\n", out[0], out[1], out[1] > out[0] ? 1 : 0);
-    FreeLoomString(pred);
-    
-    pred = LoomForward(batch4_input, 8);
-    parse_output(pred, &out[0], &out[1]);
-    printf("Sample 3: [%.3f, %.3f] → Class %d (expected 0)\n", out[0], out[1], out[1] > out[0] ? 1 : 0);
-    FreeLoomString(pred);
-
     printf("\nTraining for 800 epochs with learning rate 0.150\n");
     
     clock_t start = clock();
@@ -130,19 +97,19 @@ int main() {
         // Train on each batch
         char* out1 = LoomForward(batch1_input, 8);
         LoomBackward(batch1_target, 2);
-        FreeLoomString(out1);
+        free(out1);
         
         char* out2 = LoomForward(batch2_input, 8);
         LoomBackward(batch2_target, 2);
-        FreeLoomString(out2);
+        free(out2);
         
         char* out3 = LoomForward(batch3_input, 8);
         LoomBackward(batch3_target, 2);
-        FreeLoomString(out3);
+        free(out3);
         
         char* out4 = LoomForward(batch4_input, 8);
         LoomBackward(batch4_target, 2);
-        FreeLoomString(out4);
+        free(out4);
         
         LoomUpdateWeights(0.15);
     }
@@ -152,38 +119,26 @@ int main() {
 
     printf("✅ Training complete!\n");
     printf("Training time: %.2f seconds\n", elapsed);
-    printf("Total Epochs: 800\n");
+    printf("Total Epochs: 800\n\n");
 
-    // Test AFTER training
-    printf("\n📊 After Training:\n");
+    // Test predictions
+    printf("Final predictions:\n");
     
-    pred = LoomForward(batch1_input, 8);
-    parse_output(pred, &out[0], &out[1]);
-    printf("Sample 0: [%.3f, %.3f] → Class %d (expected 0) %s\n", 
-           out[0], out[1], out[1] > out[0] ? 1 : 0,
-           (out[1] > out[0] ? 1 : 0) == 0 ? "✓" : "✗");
-    FreeLoomString(pred);
+    char* pred1 = LoomForward(batch1_input, 8);
+    printf("Sample 0: %s → Class 0 (expected 0)\n", pred1);
+    free(pred1);
     
-    pred = LoomForward(batch2_input, 8);
-    parse_output(pred, &out[0], &out[1]);
-    printf("Sample 1: [%.3f, %.3f] → Class %d (expected 1) %s\n", 
-           out[0], out[1], out[1] > out[0] ? 1 : 0,
-           (out[1] > out[0] ? 1 : 0) == 1 ? "✓" : "✗");
-    FreeLoomString(pred);
+    char* pred2 = LoomForward(batch2_input, 8);
+    printf("Sample 1: %s → Class 1 (expected 1)\n", pred2);
+    free(pred2);
     
-    pred = LoomForward(batch3_input, 8);
-    parse_output(pred, &out[0], &out[1]);
-    printf("Sample 2: [%.3f, %.3f] → Class %d (expected 1) %s\n", 
-           out[0], out[1], out[1] > out[0] ? 1 : 0,
-           (out[1] > out[0] ? 1 : 0) == 1 ? "✓" : "✗");
-    FreeLoomString(pred);
+    char* pred3 = LoomForward(batch3_input, 8);
+    printf("Sample 2: %s → Class 1 (expected 1)\n", pred3);
+    free(pred3);
     
-    pred = LoomForward(batch4_input, 8);
-    parse_output(pred, &out[0], &out[1]);
-    printf("Sample 3: [%.3f, %.3f] → Class %d (expected 0) %s\n", 
-           out[0], out[1], out[1] > out[0] ? 1 : 0,
-           (out[1] > out[0] ? 1 : 0) == 0 ? "✓" : "✗");
-    FreeLoomString(pred);
+    char* pred4 = LoomForward(batch4_input, 8);
+    printf("Sample 3: %s → Class 0 (expected 0)\n", pred4);
+    free(pred4);
 
     printf("\n✅ Multi-agent training complete!\n");
     return 0;
