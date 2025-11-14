@@ -144,6 +144,9 @@ type LayerWeights struct {
 	GateBias    []float32 `json:"gate_bias,omitempty"`
 	UpBias      []float32 `json:"up_bias,omitempty"`
 	DownBias    []float32 `json:"down_bias,omitempty"`
+
+	// Parallel layer branch weights (recursive)
+	BranchWeights []LayerWeights `json:"branch_weights,omitempty"`
 }
 
 // SaveModel saves a single model to a file
@@ -181,6 +184,274 @@ func SaveBundle(filename string, models map[string]*Network) error {
 	}
 
 	return bundle.SaveToFile(filename)
+}
+
+// serializeBranches recursively serializes parallel layer branches
+func serializeBranches(branches []LayerConfig) []LayerDefinition {
+	defs := make([]LayerDefinition, len(branches))
+	for i, branch := range branches {
+		def := LayerDefinition{
+			Type:       layerTypeToString(branch.Type),
+			Activation: activationToString(branch.Activation),
+		}
+
+		switch branch.Type {
+		case LayerDense:
+			def.InputHeight = branch.InputHeight
+			def.OutputHeight = branch.OutputHeight
+		case LayerConv2D:
+			def.InputChannels = branch.InputChannels
+			def.Filters = branch.Filters
+			def.KernelSize = branch.KernelSize
+			def.Stride = branch.Stride
+			def.Padding = branch.Padding
+			def.InputHeight = branch.InputHeight
+			def.InputWidth = branch.InputWidth
+			def.OutputHeight = branch.OutputHeight
+			def.OutputWidth = branch.OutputWidth
+		case LayerMultiHeadAttention:
+			def.DModel = branch.DModel
+			def.NumHeads = branch.NumHeads
+			def.SeqLength = branch.SeqLength
+		case LayerRNN:
+			def.InputSize = branch.RNNInputSize
+			def.HiddenSize = branch.HiddenSize
+			def.SeqLength = branch.SeqLength
+		case LayerLSTM:
+			def.InputSize = branch.RNNInputSize
+			def.HiddenSize = branch.HiddenSize
+			def.SeqLength = branch.SeqLength
+		case LayerSoftmax:
+			def.SoftmaxVariant = softmaxTypeToString(branch.SoftmaxVariant)
+			def.SoftmaxRows = branch.SoftmaxRows
+			def.SoftmaxCols = branch.SoftmaxCols
+			def.Temperature = branch.Temperature
+			def.GumbelNoise = branch.GumbelNoise
+			def.Mask = branch.Mask
+			def.HierarchyLevels = branch.HierarchyLevels
+			def.AdaptiveClusters = branch.AdaptiveClusters
+			def.MixtureWeights = branch.MixtureWeights
+			def.EntmaxAlpha = branch.EntmaxAlpha
+		case LayerNorm:
+			def.NormSize = branch.NormSize
+			def.Epsilon = branch.Epsilon
+		case LayerRMSNorm:
+			def.NormSize = branch.NormSize
+			def.Epsilon = branch.Epsilon
+		case LayerSwiGLU:
+			def.InputHeight = branch.InputHeight
+			def.OutputHeight = branch.OutputHeight
+		case LayerParallel:
+			def.CombineMode = branch.CombineMode
+			def.Branches = serializeBranches(branch.ParallelBranches) // Recursive call
+		}
+
+		defs[i] = def
+	}
+	return defs
+}
+
+// serializeBranchWeights recursively serializes weights for parallel layer branches
+func serializeBranchWeights(branches []LayerConfig) []LayerWeights {
+	weights := make([]LayerWeights, len(branches))
+	for i, branch := range branches {
+		var w LayerWeights
+
+		switch branch.Type {
+		case LayerDense:
+			w.Kernel = branch.Kernel
+			w.Biases = branch.Bias
+		case LayerConv2D:
+			w.Kernel = branch.Kernel
+			w.ConvBias = branch.Bias
+		case LayerMultiHeadAttention:
+			w.QWeights = branch.QWeights
+			w.KWeights = branch.KWeights
+			w.VWeights = branch.VWeights
+			w.OutputWeight = branch.OutputWeight
+			w.QBias = branch.QBias
+			w.KBias = branch.KBias
+			w.VBias = branch.VBias
+			w.OutputBias = branch.OutputBias
+		case LayerRNN:
+			w.WeightIH = branch.WeightIH
+			w.WeightHH = branch.WeightHH
+			w.BiasH = branch.BiasH
+		case LayerLSTM:
+			w.WeightII = branch.WeightIH_i
+			w.WeightIF = branch.WeightIH_f
+			w.WeightIG = branch.WeightIH_g
+			w.WeightIO = branch.WeightIH_o
+			w.WeightHI = branch.WeightHH_i
+			w.WeightHF = branch.WeightHH_f
+			w.WeightHG = branch.WeightHH_g
+			w.WeightHO = branch.WeightHH_o
+			w.BiasI = branch.BiasH_i
+			w.BiasF = branch.BiasH_f
+			w.BiasG = branch.BiasH_g
+			w.BiasO = branch.BiasH_o
+		case LayerNorm:
+			w.Gamma = branch.Gamma
+			w.Beta = branch.Beta
+		case LayerRMSNorm:
+			w.Gamma = branch.Gamma
+		case LayerSwiGLU:
+			w.GateWeights = branch.GateWeights
+			w.UpWeights = branch.UpWeights
+			w.DownWeights = branch.DownWeights
+			w.GateBias = branch.GateBias
+			w.UpBias = branch.UpBias
+			w.DownBias = branch.DownBias
+		case LayerParallel:
+			// Recursively serialize nested branch weights
+			w.BranchWeights = serializeBranchWeights(branch.ParallelBranches)
+		}
+
+		weights[i] = w
+	}
+	return weights
+}
+
+// deserializeBranches recursively deserializes parallel layer branches with weights
+func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]LayerConfig, error) {
+	branches := make([]LayerConfig, len(defs))
+	for i, def := range defs {
+		var config LayerConfig
+		var w LayerWeights
+		if i < len(weights) {
+			w = weights[i]
+		}
+
+		switch def.Type {
+		case "dense":
+			config = LayerConfig{
+				Type:         LayerDense,
+				Activation:   stringToActivation(def.Activation),
+				InputHeight:  def.InputHeight,
+				OutputHeight: def.OutputHeight,
+				Kernel:       w.Kernel,
+				Bias:         w.Biases,
+			}
+		case "conv2d":
+			config = LayerConfig{
+				Type:          LayerConv2D,
+				Activation:    stringToActivation(def.Activation),
+				InputChannels: def.InputChannels,
+				Filters:       def.Filters,
+				KernelSize:    def.KernelSize,
+				Stride:        def.Stride,
+				Padding:       def.Padding,
+				InputHeight:   def.InputHeight,
+				InputWidth:    def.InputWidth,
+				OutputHeight:  def.OutputHeight,
+				OutputWidth:   def.OutputWidth,
+				Kernel:        w.Kernel,
+				Bias:          w.ConvBias,
+			}
+		case "multi_head_attention", "mha":
+			config = LayerConfig{
+				Type:         LayerMultiHeadAttention,
+				DModel:       def.DModel,
+				NumHeads:     def.NumHeads,
+				SeqLength:    def.SeqLength,
+				QWeights:     w.QWeights,
+				KWeights:     w.KWeights,
+				VWeights:     w.VWeights,
+				OutputWeight: w.OutputWeight,
+				QBias:        w.QBias,
+				KBias:        w.KBias,
+				VBias:        w.VBias,
+				OutputBias:   w.OutputBias,
+			}
+		case "rnn":
+			config = LayerConfig{
+				Type:         LayerRNN,
+				Activation:   stringToActivation(def.Activation),
+				RNNInputSize: def.InputSize,
+				HiddenSize:   def.HiddenSize,
+				SeqLength:    def.SeqLength,
+				WeightIH:     w.WeightIH,
+				WeightHH:     w.WeightHH,
+				BiasH:        w.BiasH,
+			}
+		case "lstm":
+			config = LayerConfig{
+				Type:         LayerLSTM,
+				RNNInputSize: def.InputSize,
+				HiddenSize:   def.HiddenSize,
+				SeqLength:    def.SeqLength,
+				WeightIH_i:   w.WeightII,
+				WeightIH_f:   w.WeightIF,
+				WeightIH_g:   w.WeightIG,
+				WeightIH_o:   w.WeightIO,
+				WeightHH_i:   w.WeightHI,
+				WeightHH_f:   w.WeightHF,
+				WeightHH_g:   w.WeightHG,
+				WeightHH_o:   w.WeightHO,
+				BiasH_i:      w.BiasI,
+				BiasH_f:      w.BiasF,
+				BiasH_g:      w.BiasG,
+				BiasH_o:      w.BiasO,
+			}
+		case "softmax":
+			config = LayerConfig{
+				Type:             LayerSoftmax,
+				SoftmaxVariant:   stringToSoftmaxType(def.SoftmaxVariant),
+				SoftmaxRows:      def.SoftmaxRows,
+				SoftmaxCols:      def.SoftmaxCols,
+				Temperature:      def.Temperature,
+				GumbelNoise:      def.GumbelNoise,
+				Mask:             def.Mask,
+				HierarchyLevels:  def.HierarchyLevels,
+				AdaptiveClusters: def.AdaptiveClusters,
+				MixtureWeights:   def.MixtureWeights,
+				EntmaxAlpha:      def.EntmaxAlpha,
+			}
+		case "layer_norm", "layernorm":
+			config = LayerConfig{
+				Type:     LayerNorm,
+				NormSize: def.NormSize,
+				Epsilon:  def.Epsilon,
+				Gamma:    w.Gamma,
+				Beta:     w.Beta,
+			}
+		case "rms_norm", "rmsnorm":
+			config = LayerConfig{
+				Type:     LayerRMSNorm,
+				NormSize: def.NormSize,
+				Epsilon:  def.Epsilon,
+				Gamma:    w.Gamma,
+			}
+		case "swiglu":
+			config = LayerConfig{
+				Type:         LayerSwiGLU,
+				InputHeight:  def.InputHeight,
+				OutputHeight: def.OutputHeight,
+				GateWeights:  w.GateWeights,
+				UpWeights:    w.UpWeights,
+				DownWeights:  w.DownWeights,
+				GateBias:     w.GateBias,
+				UpBias:       w.UpBias,
+				DownBias:     w.DownBias,
+			}
+		case "parallel":
+			// Recursively deserialize nested branches with their weights
+			nestedBranches, err := deserializeBranches(def.Branches, w.BranchWeights)
+			if err != nil {
+				return nil, fmt.Errorf("failed to deserialize nested branches: %w", err)
+			}
+			config = LayerConfig{
+				Type:             LayerParallel,
+				CombineMode:      def.CombineMode,
+				ParallelBranches: nestedBranches,
+			}
+		default:
+			return nil, fmt.Errorf("unknown branch type: %s", def.Type)
+		}
+
+		branches[i] = config
+	}
+	return branches, nil
 }
 
 // SerializeModel converts the network to a SavedModel structure
@@ -311,6 +582,12 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 			layerWeights.GateBias = layerConfig.GateBias
 			layerWeights.UpBias = layerConfig.UpBias
 			layerWeights.DownBias = layerConfig.DownBias
+
+		case LayerParallel:
+			layerDef.CombineMode = layerConfig.CombineMode
+			// Serialize each branch recursively
+			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
+			layerWeights.BranchWeights = serializeBranchWeights(layerConfig.ParallelBranches)
 		}
 
 		config.Layers = append(config.Layers, layerDef)
@@ -608,6 +885,18 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				DownBias:     layerWeights.DownBias,
 			}
 
+		case "parallel":
+			// Deserialize branches recursively with their weights
+			branches, err := deserializeBranches(layerDef.Branches, layerWeights.BranchWeights)
+			if err != nil {
+				return nil, fmt.Errorf("failed to deserialize parallel branches: %w", err)
+			}
+			layerConfig = LayerConfig{
+				Type:             LayerParallel,
+				CombineMode:      layerDef.CombineMode,
+				ParallelBranches: branches,
+			}
+
 		default:
 			return nil, fmt.Errorf("unknown layer type: %s", layerDef.Type)
 		}
@@ -641,6 +930,8 @@ func layerTypeToString(lt LayerType) string {
 		return "swiglu"
 	case LayerResidual:
 		return "residual"
+	case LayerParallel:
+		return "parallel"
 	default:
 		return "unknown"
 	}
