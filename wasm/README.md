@@ -57,7 +57,7 @@ bash serve_wasm.sh
 ## Neural Network Features
 
 - ✅ **6.4MB Binary**: Complete framework + transformer inference in a single WASM module
-- ✅ **7 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants)
+- ✅ **8 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants), Parallel (4 combine modes)
 - ✅ **Full CPU Implementation**: Every layer works with complete forward/backward passes
 - ✅ **Registry-based Initialization**: Dynamic layer creation via `CallLayerInit()` with zero manual exports
 - ✅ **24+ Methods**: All Network methods automatically exposed via reflection

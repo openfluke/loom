@@ -24,6 +24,11 @@ A high-performance grid neural network implementation in Go with **full CPU supp
 - **RNN**: Recurrent Neural Network with hidden state (CPU)
 - **LSTM**: Long Short-Term Memory with forget/input/output gates (CPU)
 - **Softmax**: First-class layer with 10 variants including native MoE (CPU)
+- **Parallel**: Run multiple sub-layers in parallel with 4 combine modes (CPU)
+  - **Combine Modes**: concat, add, avg, grid_scatter
+  - **Nested Support**: Parallel layers can contain parallel layers (infinite recursion)
+  - **Heterogeneous**: Each branch can be ANY layer type (LSTM + MHA + RNN + Dense)
+  - **Grid Scatter**: Place branch outputs at specific 2D/3D grid positions
 
 ### Activation Functions
 

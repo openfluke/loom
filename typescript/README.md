@@ -11,7 +11,7 @@
 
 - 🤖 **Transformer Inference (NEW!)** - Run LLMs like SmolLM2-135M with streaming generation
 - 🚀 **6.0MB WASM Binary** - Complete neural network framework + transformer inference
-- 🧠 **7 Layer Types (All CPU)** - Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants)
+- 🧠 **8 Layer Types (All CPU)** - Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants), Parallel (4 combine modes)
 - ✅ **Full CPU Implementation** - Every layer works with complete forward/backward passes
 - 🎯 **Registry-based Initialization** - Dynamic layer creation via `CallLayerInit()` with zero manual exports
 - 🔍 **Runtime Introspection** - Discover methods, signatures, and parameters dynamically

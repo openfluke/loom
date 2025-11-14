@@ -6,6 +6,8 @@ A high-performance GPU-accelerated neural network framework written in Go, featu
 
 > 🤯 **BREAKTHROUGH:** LOOM's Softmax layer includes **native Mixture of Experts (MoE)** via Grid Softmax - the same architecture used in GPT-4, Switch Transformer, and Mixtral. **Mathematically proven** equivalent with 97.1% loss reduction and perfect gradient matching. See `examples/moe_proof_demo.go` for rigorous proof!
 
+> ⚡ **NEW:** **Grid Scatter Mode** - Place parallel branch outputs at **specific 2D/3D grid positions** instead of concatenating! Build multi-agent systems with heterogeneous architectures (LSTM + MHA + RNN + Dense in same layer), hierarchical RL with spatial decomposition, and ensemble methods with explicit topology. **Impossible in traditional neural networks!** See `examples/json_grid_scatter_demo.go` and `examples/json_grid_scatter_agents.go` for mind-bending examples.
+
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/welvet.svg)](https://pypi.org/project/welvet/)
@@ -80,6 +82,10 @@ I'm excited to see what you come up with! Let me know if you have any"
 - **RNN**: Recurrent Neural Networks with BPTT (Backpropagation Through Time) (CPU)
 - **LSTM**: Long Short-Term Memory with forget/input/output gates (CPU)
 - **Softmax**: First-class layer with 10 variants (CPU) - Standard, Grid, Hierarchical, Temperature, Gumbel, Masked, Sparsemax, Entmax, Adaptive, Mixture
+- **Parallel**: Run multiple sub-layers in parallel with 4 combine modes (CPU) - concat, add, avg, **grid_scatter**
+  - **Nested Support**: Parallel layers can contain parallel layers (infinite recursion)
+  - **Heterogeneous Branches**: Each branch can be ANY layer type (LSTM + MHA + RNN + Dense in same layer!)
+  - **Grid Scatter**: Place outputs at specific 2D/3D grid positions for spatial topology
 
 **Performance:** CPU implementations are production-ready and performant. GPU acceleration provides 10-100x speedup for Dense/Conv2D/Attention on large batches.
 
@@ -101,11 +107,50 @@ LOOM makes **softmax a first-class layer** (not just a function), enabling:
 - ✅ Validated with finite difference check
 - ✅ Simpler than PyTorch/TensorFlow (2 lines vs 200+)
 
-### 🏗️ Grid Architecture
+### 🏗️ Grid Architecture & Parallel Layers
 
 - **Flexible Structure**: Organize layers in a 2D grid (rows × columns × layers per cell)
 - **Mixed Layer Types**: Different layer types at different grid positions
 - **Deep Networks**: Support for 100+ layers in a single network
+- **Parallel Layers**: Run multiple heterogeneous branches simultaneously with 4 combine modes:
+  - `concat` - Concatenate outputs sequentially (default)
+  - `add` - Element-wise addition (all branches must have same output size)
+  - `avg` - Element-wise average (all branches must have same output size)
+  - `grid_scatter` - **Place outputs at specific 2D/3D grid positions** (NEW!)
+
+**Grid Scatter Mode** enables impossible architectures:
+
+- **Multi-Agent Systems**: Each agent (grid position) has different architecture (LSTM, MHA, RNN, Dense)
+- **Hierarchical RL**: Strategy → Tactics → Actions decomposed spatially using grid depth
+- **Ensemble Learning**: Diverse architectures at different spatial locations
+- **Multi-Scale Processing**: Different resolutions in different grid layers
+- **Nested Grid Scatter**: Grid scatter within grid scatter for hierarchical spatial decomposition
+
+Example:
+
+```json
+{
+  "type": "parallel",
+  "combine_mode": "grid_scatter",
+  "grid_output_rows": 2,
+  "grid_output_cols": 2,
+  "grid_output_layers": 1,
+  "grid_positions": [
+    { "branch_index": 0, "target_row": 0, "target_col": 0, "target_layer": 0 },
+    { "branch_index": 1, "target_row": 0, "target_col": 1, "target_layer": 0 },
+    { "branch_index": 2, "target_row": 1, "target_col": 0, "target_layer": 0 },
+    { "branch_index": 3, "target_row": 1, "target_col": 1, "target_layer": 0 }
+  ],
+  "branches": [
+    { "type": "lstm", "hidden_size": 10 },
+    { "type": "mha", "num_heads": 4 },
+    { "type": "rnn", "hidden_size": 10 },
+    { "type": "dense", "output_size": 10 }
+  ]
+}
+```
+
+See `examples/json_grid_scatter_demo.go` and `examples/json_grid_scatter_agents.go` for complete examples!
 
 ### 📊 Activation Functions
 

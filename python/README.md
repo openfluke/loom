@@ -73,12 +73,12 @@ model_json = welvet.save_model_to_string(network, "my_model")
 ```python
 import welvet
 
-# Create a neural network with all 5 layer types
+# Create a neural network with all 6 layer types
 network = welvet.create_network(
     input_size=32,
     grid_rows=1,
     grid_cols=1,
-    layers_per_cell=6,
+    layers_per_cell=7,
     use_gpu=True
 )
 
@@ -88,6 +88,7 @@ conv2d = welvet.call_layer_init("InitConv2DLayer", [4, 4, 2, 4, 3, 2, 1, welvet.
 attention = welvet.call_layer_init("InitMultiHeadAttentionLayer", [4, 4, 2, welvet.Activation.TANH])
 rnn = welvet.call_layer_init("InitRNNLayer", [4, 8, 4, 32])
 lstm = welvet.call_layer_init("InitLSTMLayer", [8, 4, 4, 16])
+parallel = welvet.call_layer_init("InitParallelLayer", [0, 2])  # concat mode, 2 branches
 dense2 = welvet.call_layer_init("InitDenseLayer", [16, 2, welvet.Activation.SIGMOID])
 
 # Set layers in network
@@ -96,7 +97,8 @@ welvet.set_layer(network, 0, 0, 1, conv2d)
 welvet.set_layer(network, 0, 0, 2, attention)
 welvet.set_layer(network, 0, 0, 3, rnn)
 welvet.set_layer(network, 0, 0, 4, lstm)
-welvet.set_layer(network, 0, 0, 5, dense2)
+welvet.set_layer(network, 0, 0, 5, parallel)
+welvet.set_layer(network, 0, 0, 6, dense2)
 
 # Prepare training data
 batches = [
@@ -153,7 +155,7 @@ Output:
 
 ## Features
 
-- 🧠 **7 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants)
+- 🧠 **8 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants), Parallel (4 combine modes)
 - ✅ **Full CPU Implementation**: Every layer works on CPU with complete forward/backward passes
 - 🚀 **GPU Acceleration (Optional)**: WebGPU compute shaders for Dense, Conv2D, and Attention (10-100x speedup)
 - 🎯 **Registry-based Initialization**: Dynamic layer creation via `call_layer_init()` for any layer type

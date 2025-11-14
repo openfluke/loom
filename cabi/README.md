@@ -4,7 +4,7 @@ C Foreign Function Interface (FFI) for LOOM. Use LOOM transformers and neural ne
 
 **Features:**
 
-- ✅ **7 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants)
+- ✅ **8 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants), Parallel (4 combine modes)
 - ✅ **Full CPU Implementation**: Every layer works with complete forward/backward passes
 - ✅ **Transformer Inference**: Run LLMs with streaming generation
 - ⚡ **GPU Acceleration (Optional)**: WebGPU support for Dense, Conv2D, Attention
