@@ -36,3 +36,5 @@ cabi/*.zip
 **/.DS_Store
 **/._*
 docs/readmes
+
+*.wasm

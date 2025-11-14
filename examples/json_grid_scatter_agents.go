@@ -348,7 +348,7 @@ func main() {
 	fmt.Println()
 
 	trainingJSON := `{
-		"batch_size": 4,
+		"batch_size": 1,
 		"grid_rows": 1,
 		"grid_cols": 3,
 		"layers_per_cell": 1,
@@ -423,41 +423,38 @@ func main() {
 	}
 	netTrain.InitializeWeights()
 
-	// Create training data: XOR-like problem
-	trainData := make([]float32, 4*8)
-	trainLabels := []float32{
-		1, 0, // Sample 0: Class 0
-		0, 1, // Sample 1: Class 1
-		0, 1, // Sample 2: Class 1
-		1, 0, // Sample 3: Class 0
+	// Create training data batches
+	batches := []nn.TrainingBatch{
+		{
+			Input:  []float32{0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8},
+			Target: []float32{1.0, 0.0},
+		},
+		{
+			Input:  []float32{0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1, 0.1},
+			Target: []float32{0.0, 1.0},
+		},
+		{
+			Input:  []float32{0.7, 0.7, 0.7, 0.7, 0.3, 0.3, 0.3, 0.3},
+			Target: []float32{0.0, 1.0},
+		},
+		{
+			Input:  []float32{0.3, 0.3, 0.3, 0.3, 0.7, 0.7, 0.7, 0.7},
+			Target: []float32{1.0, 0.0},
+		},
 	}
 
-	// Pattern: if first 4 features sum > second 4 features sum → class 1
-	// Sample 0: [0.2, 0.2, 0.2, 0.2,  0.8, 0.8, 0.8, 0.8] → class 0
-	for i := 0; i < 4; i++ {
-		trainData[0*8+i] = 0.2
-		trainData[0*8+4+i] = 0.8
-	}
-	// Sample 1: [0.9, 0.9, 0.9, 0.9,  0.1, 0.1, 0.1, 0.1] → class 1
-	for i := 0; i < 4; i++ {
-		trainData[1*8+i] = 0.9
-		trainData[1*8+4+i] = 0.1
-	}
-	// Sample 2: [0.7, 0.7, 0.7, 0.7,  0.3, 0.3, 0.3, 0.3] → class 1
-	for i := 0; i < 4; i++ {
-		trainData[2*8+i] = 0.7
-		trainData[2*8+4+i] = 0.3
-	}
-	// Sample 3: [0.3, 0.3, 0.3, 0.3,  0.7, 0.7, 0.7, 0.7] → class 0
-	for i := 0; i < 4; i++ {
-		trainData[3*8+i] = 0.3
-		trainData[3*8+4+i] = 0.7
+	// Training configuration
+	config := &nn.TrainingConfig{
+		Epochs:          800,
+		LearningRate:    0.15,
+		UseGPU:          false,
+		PrintEveryBatch: 0,
+		GradientClip:    1.0,
+		LossType:        "mse",
+		Verbose:         false,
 	}
 
-	epochs := 800
-	learningRate := float32(0.15)
-
-	fmt.Printf("Training for %d epochs with learning rate %.3f\n", epochs, learningRate)
+	fmt.Printf("Training for %d epochs with learning rate %.3f\n", config.Epochs, config.LearningRate)
 	fmt.Printf("Architecture:\n")
 	fmt.Printf("  Shared Layer → Grid Scatter (3 agents) → Decision\n")
 	fmt.Printf("  Agent 0: Feature Extractor (ensemble of 2 dense)\n")
@@ -466,57 +463,24 @@ func main() {
 	fmt.Printf("Task: Binary classification (sum comparison)\n")
 	fmt.Println()
 
-	initialLoss := float64(0)
-	finalLoss := float64(0)
-
-	for epoch := 0; epoch < epochs; epoch++ {
-		// Forward pass
-		output, _ := netTrain.ForwardCPU(trainData)
-
-		// Compute loss (MSE)
-		loss := float32(0.0)
-		for i := range trainLabels {
-			diff := output[i] - trainLabels[i]
-			loss += diff * diff
-		}
-		loss /= float32(len(trainLabels))
-
-		if epoch == 0 {
-			initialLoss = float64(loss)
-		}
-		if epoch == epochs-1 {
-			finalLoss = float64(loss)
-		}
-
-		// Compute gradients
-		gradOutput := make([]float32, len(trainLabels))
-		for i := range trainLabels {
-			gradOutput[i] = 2 * (output[i] - trainLabels[i]) / float32(len(trainLabels))
-		}
-
-		// Backward pass
-		netTrain.BackwardCPU(gradOutput)
-
-		// Update weights
-		netTrain.UpdateWeights(learningRate)
-
-		if (epoch+1)%200 == 0 || epoch == 0 {
-			fmt.Printf("Epoch %4d: Loss = %.6f\n", epoch+1, loss)
-		}
+	// Train using TrainingConfig
+	result, err := netTrain.Train(batches, config)
+	if err != nil {
+		log.Fatalf("Training failed: %v", err)
 	}
 
 	fmt.Println()
-	fmt.Printf("Initial Loss: %.6f\n", initialLoss)
-	fmt.Printf("Final Loss:   %.6f\n", finalLoss)
-	fmt.Printf("Improvement:  %.2f%%\n", (1.0-finalLoss/initialLoss)*100)
+	fmt.Printf("Initial Loss: %.6f\n", result.LossHistory[0])
+	fmt.Printf("Final Loss:   %.6f\n", result.FinalLoss)
+	fmt.Printf("Improvement:  %.2f%%\n", (1.0-result.FinalLoss/result.LossHistory[0])*100)
 	fmt.Println()
 
 	// Test final predictions
 	fmt.Println("Final predictions:")
-	finalOutput, _ := netTrain.ForwardCPU(trainData)
 	for i := 0; i < 4; i++ {
-		predicted := finalOutput[i*2 : i*2+2]
-		expected := trainLabels[i*2 : i*2+2]
+		output, _ := netTrain.ForwardCPU(batches[i].Input)
+		predicted := output[0:2]
+		expected := batches[i].Target
 
 		predClass := 0
 		if predicted[1] > predicted[0] {

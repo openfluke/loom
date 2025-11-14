@@ -1,125 +1,446 @@
 # LOOM WASM Module
 
-WebAssembly bindings for the LOOM neural network framework, enabling transformer inference and neural network training directly in the browser with zero dependencies.
+WebAssembly bindings for the LOOM neural network framework, enabling neural network creation, training, and transformer inference directly in the browser with zero dependencies.
 
-## 🎉 Transformer Inference Working!
-
-**SmolLM2-135M-Instruct successfully running in browser WASM!**
-
-Example generation from `Once upon a time`:
-
-```
-hi
-
-I'm excited to see what you come up with! Let me know if you have any
-```
-
-✅ **Full sequence context processing** (no KV cache yet, but works correctly!)  
-✅ **Pure Go implementation** (zero Python/C dependencies)  
-✅ **Loads from local files** (models downloaded via `huggingface-cli`)  
-✅ **Interactive web UI** with model selection and generation controls
-
-### Quick Start: Transformer Inference
-
-1. **Download a model:**
-
-```bash
-huggingface-cli download HuggingFaceTB/SmolLM2-135M-Instruct \
-  --local-dir models/SmolLM2-135M-Instruct \
-  --include "*.json" "*.safetensors"
-```
-
-2. **Create symlink for web server:**
+## � Quick Start
 
 ```bash
 cd wasm
-ln -sf ../models models
+./build_wasm.sh          # Build main.wasm
+python3 -m http.server 8080
+# Open http://localhost:8080/test.html
 ```
 
-3. **Run the server:**
+## 🚀 What's New: Dynamic Method Exposure
 
-```bash
-bash serve_wasm.sh
-# Open http://localhost:8888/inference.html
+**Every Network method automatically available in JavaScript!**
+
+The WASM wrapper uses Go reflection to dynamically expose ALL `nn.Network` methods - no manual bindings required!
+
+```javascript
+// Create network from JSON
+const network = createLoomNetwork(jsonConfig);
+
+// All 27+ methods automatically available:
+network.ForwardCPU(inputJSON);
+network.BackwardCPU(gradientsJSON);
+network.Train(batchesJSON);
+network.SaveModelToString(idJSON);
+network.GetMethodsJSON();
+// ... and 20+ more!
 ```
 
-### Supported Models (32-bit WASM, 4GB limit)
+## ✨ Features
 
-| Model                        | Parameters | Memory | Status         |
-| ---------------------------- | ---------- | ------ | -------------- |
-| **SmolLM2-135M-Instruct** ⭐ | 135M       | ~1.5GB | ✅ **WORKING** |
-| Pythia-70M                   | 70M        | ~0.5GB | ✅ Supported   |
-| Pythia-160M                  | 160M       | ~1.2GB | ✅ Supported   |
-| SmolLM2-360M-Instruct        | 360M       | ~4.3GB | ❌ OOM         |
+- ✅ **Zero Manual Bindings**: All Network methods auto-exposed via reflection
+- ✅ **27+ Methods**: Complete API including Train, Forward, Backward, SaveModel, LoadModel
+- ✅ **JSON-Based Network Creation**: Build networks from JSON config (no Go code needed)
+- ✅ **Full Training Support**: `Train(batches, config)` with automatic gradient computation
+- ✅ **All Layer Types**: Dense, Conv2D, LSTM, RNN, MHA, Parallel, Grid Scatter, Softmax (10+ variants)
+- ✅ **Grid Scatter Demo**: Multi-agent heterogeneous neural networks training in browser
+- ✅ **Runtime Introspection**: Query available methods and signatures
+- ✅ **Type Conversion**: Automatic JavaScript ↔ Go type conversion
+- ✅ **6.4MB Binary**: Complete framework in single WASM module
+- ✅ **Pure CPU**: All operations (GPU via WebGPU coming soon)
 
-**Note:** Generation is slow (reprocesses full sequence each token). KV caching will be added for speed.
+## 📝 API Overview
 
-## Neural Network Features
+### Creating Networks from JSON
 
-- ✅ **6.4MB Binary**: Complete framework + transformer inference in a single WASM module
-- ✅ **8 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants), Parallel (4 combine modes)
-- ✅ **Full CPU Implementation**: Every layer works with complete forward/backward passes
-- ✅ **Registry-based Initialization**: Dynamic layer creation via `CallLayerInit()` with zero manual exports
-- ✅ **24+ Methods**: All Network methods automatically exposed via reflection
-- ✅ **CPU-based Neural Networks**: Create and train networks in the browser
-- ✅ **Full Training Support**: `network.Train()` API with automatic gradient computation
-- ✅ **Runtime Introspection**: Query methods, signatures, and parameters at runtime
-- ✅ **Model Serialization**: Save/load models as JSON strings (no file system needed)
-- ✅ **Type Conversion**: Automatic JavaScript ↔ Go type conversion (structs, slices, custom types)
-- ✅ **Zero Dependencies**: Pure WASM + Go stdlib, no external libraries
-- ⚠️ **GPU Support**: Coming soon via WebGPU (CPU-only for now)
+```javascript
+// Define network architecture
+const config = {
+  input_size: 10,
+  batch_size: 1,
+  grid_rows: 1,
+  grid_cols: 1,
+  layers_per_cell: 3,
+  layers: [
+    {
+      type: "dense",
+      output_size: 8,
+      activation: "relu",
+    },
+    {
+      type: "dense",
+      output_size: 4,
+      activation: "relu",
+    },
+    {
+      type: "dense",
+      output_size: 2,
+      activation: "sigmoid",
+    },
+  ],
+};
 
-## Quick Start
+// Create network (returns object with ALL methods)
+const network = createLoomNetwork(JSON.stringify(config));
+```
 
-### Building
+### Training Networks
+
+```javascript
+// Prepare training data
+const batches = [
+  {
+    Input: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    Target: [1.0, 0.0],
+  },
+  // ... more samples
+];
+
+// Training configuration
+const config = {
+  Epochs: 100,
+  LearningRate: 0.01,
+  UseGPU: false,
+  PrintEveryBatch: 0,
+  GradientClip: 1.0,
+  LossType: "mse",
+  Verbose: false,
+};
+
+// Train the network
+const result = JSON.parse(network.Train(JSON.stringify([batches, config])));
+
+console.log("Initial Loss:", result[0].LossHistory[0]);
+console.log("Final Loss:", result[0].FinalLoss);
+console.log(
+  "Improvement:",
+  (
+    ((result[0].LossHistory[0] - result[0].FinalLoss) /
+      result[0].LossHistory[0]) *
+    100
+  ).toFixed(2) + "%"
+);
+```
+
+### Forward Pass
+
+```javascript
+// Run inference
+const input = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+const result = JSON.parse(network.ForwardCPU(JSON.stringify([input])));
+
+const output = result[0]; // Output array
+const duration = result[1]; // Execution time (nanoseconds)
+
+console.log("Predictions:", output);
+```
+
+### Method Introspection
+
+```javascript
+// List all available methods
+const methods = JSON.parse(network.ListMethods())[0];
+console.log("Available methods:", methods);
+// Output: ["Activations", "BackwardCPU", "ForwardCPU", "GetMethodsJSON",
+//          "InitializeWeights", "ListMethods", "SaveModelToString", "Train", ...]
+
+// Get detailed method information
+const methodsJSON = JSON.parse(network.GetMethodsJSON())[0];
+const parsedMethods = JSON.parse(methodsJSON);
+
+parsedMethods.forEach((method) => {
+  console.log(
+    `${method.method_name}(${method.parameters
+      .map((p) => p.type)
+      .join(", ")}) -> ${method.returns.join(", ")}`
+  );
+});
+```
+
+### Save/Load Models
+
+```javascript
+// Save model to JSON string
+const modelJSON = JSON.parse(
+  network.SaveModelToString(JSON.stringify(["my_model"]))
+)[0];
+
+// Store in localStorage
+localStorage.setItem("loom_model", modelJSON);
+
+// Load model later
+const savedModel = localStorage.getItem("loom_model");
+const loadedNetwork = createLoomNetwork(savedModel);
+
+// Use loaded network immediately
+const output = JSON.parse(loadedNetwork.ForwardCPU(JSON.stringify([input])))[0];
+```
+
+## 🎮 Interactive Demos
+
+### test.html - Complete Neural Network Demo
+
+**Features:**
+
+- 🎨 Beautiful gradient UI with multiple test sections
+- 🔧 JSON config editor for network architecture
+- 🏋️ Training demo with pattern recognition
+- 🤖 Grid Scatter multi-agent training
+- 📊 Real-time loss tracking and predictions
+- 💾 Method introspection and network info
+
+**Test 1: Grid Scatter - Multi-Agent Coordination**
+
+- 3 heterogeneous agents (Feature Extractor, LSTM, RNN)
+- Binary classification task
+- 800 epochs training in ~0.4 seconds
+- 99.5% improvement (0.25 → 0.001 loss)
+- 100% classification accuracy
+
+**Test 2: Pattern Recognition Training**
+
+- Learns to classify patterns: high values in first half vs second half
+- Configurable epochs, learning rate, and sample count
+- Real-time loss display
+- Post-training validation
+
+**Try it:**
 
 ```bash
 cd wasm
-./build.sh
+python3 -m http.server 8080
+# Open http://localhost:8080/test.html
 ```
 
-This produces:
+### Example Output: Grid Scatter Training
 
-- `loom.wasm` (5.4MB) - The compiled WebAssembly binary
-- `wasm_exec.js` (17KB) - Go's WASM runtime
+```
+🤖 Running Grid Scatter Multi-Agent Training...
+Task: 3 agents learn to collaborate for binary classification
 
-### Running the Demos
+Architecture:
+  Shared Layer → Grid Scatter (3 agents) → Decision
+  Agent 0: Feature Extractor (ensemble of 2 dense)
+  Agent 1: Transformer (LSTM)
+  Agent 2: Integrator (RNN)
+
+✅ Training complete!
+Training time: 0.36 seconds
+Initial Loss: 0.252357
+Final Loss: 0.001175
+Improvement: 99.53%
+
+Final predictions:
+Sample 0: [0.989, 0.011] → Class 0 (expected 0) ✓
+Sample 1: [0.023, 0.977] → Class 1 (expected 1) ✓
+Sample 2: [0.049, 0.951] → Class 1 (expected 1) ✓
+Sample 3: [0.960, 0.040] → Class 0 (expected 0) ✓
+```
+
+## 🏗️ Architecture
+
+### Dynamic Method Wrapping
+
+The WASM module (`wasm/main.go`) uses reflection to expose methods:
+
+1. **Network Creation**: `createLoomNetwork(jsonConfig)` builds network from JSON
+2. **Method Discovery**: Uses `reflect.ValueOf(network)` to find all methods
+3. **Dynamic Wrapping**: Each method wrapped with `js.FuncOf(methodWrapper)`
+4. **Type Conversion**: Automatic JSON ↔ Go type conversion
+5. **Result Serialization**: All results returned as JSON arrays
+
+```go
+// Pseudo-code of the wrapper
+func createNetworkFromJSON(jsonConfig string) js.Value {
+    network := nn.BuildNetworkFromJSON(jsonConfig)
+    networkObj := js.Global().Get("Object").New()
+
+    // Wrap EVERY method dynamically
+    networkValue := reflect.ValueOf(network)
+    for i := 0; i < networkValue.NumMethod(); i++ {
+        method := networkValue.Type().Method(i)
+        networkObj.Set(method.Name, js.FuncOf(methodWrapper(network, method.Name)))
+    }
+
+    return networkObj
+}
+```
+
+### Key Components
+
+- **`main.go`**: WASM entry point, reflection-based method exposure
+- **`grid_scatter_demo.js`**: Multi-agent training demo
+- **`test.html`**: Interactive UI with all demos
+- **`build_wasm.sh`**: Build script
+- **`nn/introspection.go`**: Method discovery and signature extraction
+
+## 🔧 Available Network Methods
+
+All 27+ methods automatically exposed:
+
+**Core Operations:**
+
+- `ForwardCPU([]float32)` - Forward pass
+- `BackwardCPU([]float32)` - Backward pass
+- `UpdateWeights(float32)` - Update weights with learning rate
+- `Train([]TrainingBatch, *TrainingConfig)` - Full training loop
+
+**Model Management:**
+
+- `SaveModelToString(string)` - Export model as JSON
+- `LoadModelFromString(string, string)` - Import model from JSON
+- `InitializeWeights()` - Initialize random weights
+- `ResetState()` - Reset RNN/LSTM hidden states
+
+**Introspection:**
+
+- `GetMethodsJSON()` - Get all method signatures
+- `ListMethods()` - Get method names only
+- `GetMethodSignature(string)` - Get specific method signature
+- `HasMethod(string)` - Check if method exists
+
+**Layer Operations:**
+
+- `GetLayer(int, int, int)` - Get layer config
+- `SetLayer(int, int, int, LayerConfig)` - Set layer config
+- `TotalLayers()` - Get layer count
+- `Activations()` - Get activation outputs
+
+**And many more!** Use `network.ListMethods()` to see all available methods.
+
+## 📊 Supported Layer Types
+
+All layer types from the Go framework:
+
+- **Dense**: Fully connected layers with 15+ activation functions
+- **Conv2D**: 2D convolution (CPU implementation)
+- **LSTM**: Long Short-Term Memory
+- **RNN**: Recurrent Neural Network
+- **Multi-Head Attention**: Transformer attention mechanism
+- **Layer Norm**: Layer normalization
+- **RMS Norm**: Root Mean Square normalization
+- **SwiGLU**: Gated linear units
+- **Softmax**: 10+ variants (standard, temperature, grid, spatial, etc.)
+- **Parallel**: 4 combine modes (concat, add, avg, grid_scatter)
+
+## 🎯 Grid Scatter: Multi-Agent Networks
+
+**What makes this special:**
+
+Grid Scatter enables **heterogeneous multi-agent neural networks** where each agent has a completely different architecture:
+
+```javascript
+{
+  type: "parallel",
+  combine_mode: "grid_scatter",
+  grid_output_rows: 3,
+  grid_output_cols: 1,
+  branches: [
+    {
+      type: "parallel",
+      combine_mode: "add",
+      branches: [
+        {type: "dense", output_size: 8, activation: "relu"},
+        {type: "dense", output_size: 8, activation: "gelu"}
+      ]
+    },
+    {type: "lstm", hidden_size: 8},
+    {type: "rnn", hidden_size: 8}
+  ]
+}
+```
+
+**Key Features:**
+
+- ✅ **Heterogeneous Architectures**: LSTM + RNN + Dense ensemble in same layer
+- ✅ **Spatial Topology**: Explicit 2D/3D grid positioning
+- ✅ **Emergent Specialization**: Agents learn complementary roles
+- ✅ **Trainable**: Full gradient flow through all agents
+
+**Real-world Applications:**
+
+- Multi-robot coordination (heterogeneous robots)
+- Hierarchical reinforcement learning
+- Multi-agent game playing
+- Distributed sensor networks
+- Ensemble methods with architectural diversity
+
+## 🚧 Current Limitations
+
+- **CPU Only**: WebGPU support coming soon
+- **No Transformer Inference**: Removed in this version (see separate transformer branch)
+- **4GB Memory Limit**: Standard 32-bit WASM
+- **Performance**: 2-3x slower than native Go
+
+## 🔮 Future Enhancements
+
+- [ ] WebGPU acceleration for GPU support
+- [ ] Memory64 support (unlimited memory)
+- [ ] Optimize binary size (tree shaking)
+- [ ] Add transformer inference back
+- [ ] Web Workers for parallel training
+- [ ] Quantization support (int8/int4)
+- [ ] Streaming model loading
+- [ ] Performance profiling tools
+
+## 🛠️ Building
 
 ```bash
-./serve.sh  # Starts server on port 8080
-# Open http://localhost:8080/example.html
-# Open http://localhost:8080/all_layers_test.html
+cd wasm
+./build_wasm.sh
 ```
 
-**Demos included:**
+**Output:**
 
-- `example.html` - Network creation, training, introspection
-- `all_layers_test.html` - ✨ **Load complete models from JSON!**
+- `main.wasm` (6.4MB) - Complete LOOM framework
+- `wasm_exec.js` (17KB) - Go WASM runtime
 
-### ✨ All Layers Test Demo
+**Requirements:**
 
-The `all_layers_test.html` demo showcases the **one-line model loading** feature:
+- Go 1.21+ with WASM support
+- Any modern browser with WebAssembly support
 
-````javascript
-// Load a complete model (structure + all weights) in ONE LINE!
+## 🌐 Browser Compatibility
+
+**Requires WebAssembly support:**
+
+- ✅ Chrome/Edge 57+
+- ✅ Firefox 52+
+- ✅ Safari 11+
+
+**Tested on:**
+
+- ✅ Firefox 120+ (Linux)
+- ✅ Chrome 119+ (Linux, macOS, Windows)
+
+## 📄 License
+
+Apache License 2.0 - see [LICENSE](../LICENSE) file for details.
+
 ## Transformer Inference API
 
 ### JavaScript API
 
 ```javascript
 // 1. Load tokenizer
-const tokenizerData = new Uint8Array(await (await fetch('models/SmolLM2-135M-Instruct/tokenizer.json')).arrayBuffer());
+const tokenizerData = new Uint8Array(
+  await (
+    await fetch("models/SmolLM2-135M-Instruct/tokenizer.json")
+  ).arrayBuffer()
+);
 const tokResult = JSON.parse(LoadTokenizerFromBytes(tokenizerData));
 
 // 2. Load transformer model
-const configData = new Uint8Array(await (await fetch('models/SmolLM2-135M-Instruct/config.json')).arrayBuffer());
-const weightsData = new Uint8Array(await (await fetch('models/SmolLM2-135M-Instruct/model.safetensors')).arrayBuffer());
-const modelResult = JSON.parse(LoadTransformerFromBytes(configData, weightsData));
+const configData = new Uint8Array(
+  await (await fetch("models/SmolLM2-135M-Instruct/config.json")).arrayBuffer()
+);
+const weightsData = new Uint8Array(
+  await (
+    await fetch("models/SmolLM2-135M-Instruct/model.safetensors")
+  ).arrayBuffer()
+);
+const modelResult = JSON.parse(
+  LoadTransformerFromBytes(configData, weightsData)
+);
 
 // 3. Generate text
 const result = JSON.parse(GenerateText("Once upon a time", 50, 0.7));
 console.log(result.generated_text);
-````
+```
 
 ### Available Functions
 
