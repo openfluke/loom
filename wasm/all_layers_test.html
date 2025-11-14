@@ -138,15 +138,25 @@
         <button id="loadFilesBtn" onclick="loadAllFiles()">
           Load Model + Inputs/Outputs
         </button>
+        <button id="generateDataBtn" onclick="generateTestData()">
+          🎲 Generate Random Test Data
+        </button>
       </div>
       <div id="loadStatus"></div>
     </div>
 
     <div class="section">
-      <h2>🔄 Step 2: Load Model in WASM</h2>
+      <h2>🔄 Step 2: Load or Create Model in WASM</h2>
+      <p class="label">
+        Choose to load a pre-trained model from file, or create a fresh network
+        from JSON config
+      </p>
       <div class="controls">
         <button id="loadModelBtn" onclick="loadModelInWASM()" disabled>
-          Load Model in WASM
+          📥 Load Pre-trained Model
+        </button>
+        <button id="createModelBtn" onclick="createModelFromJSON()">
+          ✨ Create New Model from JSON
         </button>
       </div>
       <div id="modelStatus"></div>
@@ -303,6 +313,65 @@
         }
       }
 
+      function generateTestData() {
+        clearLog("loadStatus");
+        log("loadStatus", "🎲 Generating random test data...", "loading");
+
+        const btn = document.getElementById("generateDataBtn");
+        btn.disabled = true;
+
+        try {
+          // Generate random input data (32 values as expected by the network)
+          inputsData = new Array(32);
+          for (let i = 0; i < 32; i++) {
+            inputsData[i] = Math.random();
+          }
+
+          log(
+            "loadStatus",
+            `✅ Generated ${inputsData.length} random input values`,
+            "success"
+          );
+
+          // Generate expected output (2 values for the softmax output)
+          // Just random values for comparison purposes
+          outputsData = [Math.random(), Math.random()];
+
+          // Normalize to sum to 1 (like softmax)
+          const sum = outputsData[0] + outputsData[1];
+          outputsData[0] /= sum;
+          outputsData[1] /= sum;
+
+          log(
+            "loadStatus",
+            `✅ Generated ${outputsData.length} random output values`,
+            "success"
+          );
+
+          // Display expected output
+          document.getElementById("expectedOutput").textContent = outputsData
+            .map((v, i) => `[${i}] ${v.toFixed(6)}`)
+            .join("\n");
+
+          // Enable next step (for loading pre-trained model)
+          document.getElementById("loadModelBtn").disabled = false;
+
+          log("loadStatus", "🎉 Test data generated successfully!", "success");
+          log(
+            "loadStatus",
+            "   You can now create a model or load one from file",
+            "info"
+          );
+        } catch (error) {
+          log(
+            "loadStatus",
+            "❌ Error generating data: " + error.message,
+            "error"
+          );
+          btn.disabled = false;
+        }
+      }
+
       function loadModelInWASM() {
         clearLog("modelStatus");
 
@@ -320,7 +389,11 @@
         btn.disabled = true;
 
         try {
-          log("modelStatus", "🔄 Loading model into WASM...", "loading");
+          log(
+            "modelStatus",
+            "🔄 Loading pre-trained model into WASM...",
+            "loading"
+          );
 
           // Call WASM function to load model
           network = window.LoadModelFromString(modelJSON, modelID);
@@ -329,7 +402,7 @@
             modelLoaded = true;
             log(
               "modelStatus",
-              "✅ Model loaded in WASM successfully!",
+              "✅ Pre-trained model loaded in WASM successfully!",
               "success"
             );
             log("modelStatus", `   Model ID: ${modelID}`, "info");
@@ -344,6 +417,170 @@
           log(
             "modelStatus",
             "❌ Error loading model: " + error.message,
+            "error"
+          );
+          btn.disabled = false;
+        }
+      }
+
+      function createModelFromJSON() {
+        clearLog("modelStatus");
+
+        if (!wasmReady) {
+          log("modelStatus", "❌ WASM not ready yet", "error");
+          return;
+        }
+
+        const btn = document.getElementById("createModelBtn");
+        btn.disabled = true;
+
+        try {
+          log(
+            "modelStatus",
+            "🔄 Creating new network from JSON config...",
+            "loading"
+          );
+
+          // Embedded JSON configuration - all layer types
+          const jsonConfig = {
+            id: "all_layers_test",
+            batch_size: 1,
+            grid_rows: 1,
+            grid_cols: 1,
+            layers_per_cell: 11,
+            layers: [
+              {
+                type: "dense",
+                activation: "leaky_relu",
+                input_height: 32,
+                output_height: 32,
+              },
+              {
+                type: "rms_norm",
+                norm_size: 32,
+                epsilon: 1e-6,
+              },
+              {
+                type: "conv2d",
+                activation: "leaky_relu",
+                input_channels: 2,
+                filters: 4,
+                kernel_size: 3,
+                stride: 2,
+                padding: 1,
+                input_height: 4,
+                input_width: 4,
+                output_height: 2,
+                output_width: 2,
+              },
+              {
+                type: "multi_head_attention",
+                activation: "relu",
+                d_model: 4,
+                num_heads: 2,
+                seq_length: 4,
+              },
+              {
+                type: "dense",
+                activation: "sigmoid",
+                input_height: 16,
+                output_height: 16,
+              },
+              {
+                type: "rnn",
+                activation: "tanh",
+                input_size: 4,
+                hidden_size: 4,
+                seq_length: 4,
+              },
+              {
+                type: "lstm",
+                activation: "tanh",
+                input_size: 4,
+                hidden_size: 4,
+                seq_length: 4,
+              },
+              {
+                type: "swiglu",
+                input_height: 16,
+                output_height: 24,
+              },
+              {
+                type: "layer_norm",
+                norm_size: 16,
+                epsilon: 1e-5,
+              },
+              {
+                type: "dense",
+                activation: "sigmoid",
+                input_height: 16,
+                output_height: 2,
+              },
+              {
+                type: "softmax",
+                softmax_variant: "standard",
+                softmax_rows: 1,
+                softmax_cols: 2,
+              },
+            ],
+          };
+
+          const jsonConfigStr = JSON.stringify(jsonConfig);
+          log(
+            "modelStatus",
+            `   Config size: ${(jsonConfigStr.length / 1024).toFixed(1)} KB`,
+            "info"
+          );
+          log(
+            "modelStatus",
+            "   Layers: Dense → RMSNorm → Conv2D → Attention → Dense → RNN → LSTM → SwiGLU → LayerNorm → Dense → Softmax",
+            "info"
+          );
+
+          // Call WASM function to build network from JSON
+          network = window.BuildNetworkFromJSON(jsonConfigStr);
+
+          if (network) {
+            log(
+              "modelStatus",
+              "✅ Network created from JSON successfully!",
+              "success"
+            );
+            log(
+              "modelStatus",
+              "   Network structure: 1 row × 1 col × 11 layers = 11 total layers",
+              "info"
+            );
+
+            // Initialize weights with random values
+            log("modelStatus", "🔄 Initializing random weights...", "loading");
+
+            // Call WASM function to initialize weights (no parameters needed)
+            const initResult = network.InitializeWeights(JSON.stringify([]));
+
+            modelLoaded = true;
+            log(
+              "modelStatus",
+              "✅ Fresh network ready with random weights!",
+              "success"
+            );
+
+            // Enable inference and training
+            document.getElementById("runInferenceBtn").disabled = false;
+            document.getElementById("trainBtn").disabled = false;
+
+            log(
+              "modelStatus",
+              "   You can now run inference or train the model",
+              "info"
+            );
+          } else {
+            throw new Error("BuildNetworkFromJSON returned null");
+          }
+        } catch (error) {
+          log(
+            "modelStatus",
+            "❌ Error creating model: " + error.message,
             "error"
           );
           btn.disabled = false;

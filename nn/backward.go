@@ -122,6 +122,17 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 
 			// Update gradient for next layer
 			grad = gradInput
+		} else if config.Type == LayerParallel {
+			// Parallel layer backward
+			input := n.activations[layerIdx]
+			gradInput, err := parallelBackwardCPU(input, grad, config, n.BatchSize)
+			if err != nil {
+				// Log error but continue backprop
+				fmt.Printf("Warning: parallel backward error at layer %d: %v\n", layerIdx, err)
+				// Pass gradient through unchanged
+			} else {
+				grad = gradInput
+			}
 		} else if config.Type == LayerSoftmax {
 			// Softmax layer backward - NOT element-wise!
 			// Get the softmax output (which is stored in activations)

@@ -2,7 +2,13 @@ package nn
 
 import (
 	"math"
+	"math/rand"
 )
+
+// randomFloat returns a random float32 between 0 and 1
+func randomFloat() float32 {
+	return rand.Float32()
+}
 
 // MaxAbsDiff calculates the maximum absolute difference between two slices
 func MaxAbsDiff(a, b []float32) float64 {

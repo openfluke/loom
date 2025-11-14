@@ -169,6 +169,21 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 					// Use normalized output for next layer
 					data = normalized
+				} else if config.Type == LayerParallel {
+					// Parallel layer - run multiple sub-layers and combine outputs
+					output, err := parallelForwardCPU(data, config, n.BatchSize)
+					if err != nil {
+						fmt.Printf("Parallel layer error: %v\n", err)
+						// On error, pass through unchanged
+						output = data
+					}
+
+					// Store input as pre-activation
+					n.preActivations[layerIdx] = make([]float32, len(data))
+					copy(n.preActivations[layerIdx], data)
+
+					// Use parallel output for next layer
+					data = output
 				} else {
 					// Default: element-wise activation only
 					// Store pre-activation values

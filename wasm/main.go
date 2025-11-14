@@ -488,6 +488,79 @@ func loadModelFromStringWrapper() js.Func {
 	})
 }
 
+// buildNetworkFromJSONWrapper creates a wrapper for nn.BuildNetworkFromJSON
+func buildNetworkFromJSONWrapper() js.Func {
+	return js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			errMsg := "Expected 1 argument: jsonConfig"
+			js.Global().Get("console").Call("error", errMsg)
+			return errMsg
+		}
+
+		jsonConfig := args[0].String()
+
+		// Build the network from JSON config
+		network, err := nn.BuildNetworkFromJSON(jsonConfig)
+		if err != nil {
+			errMsg := fmt.Sprintf("Error building network from JSON: %v", err)
+			js.Global().Get("console").Call("error", errMsg)
+			return errMsg
+		}
+
+		// Create JavaScript object with all methods
+		obj := js.Global().Get("Object").New()
+
+		// Use reflection to get all methods
+		networkValue := reflect.ValueOf(network)
+		networkType := networkValue.Type()
+
+		for i := 0; i < networkType.NumMethod(); i++ {
+			method := networkType.Method(i)
+			// Only export public methods
+			if method.Name[0] >= 'A' && method.Name[0] <= 'Z' {
+				obj.Set(method.Name, methodWrapper(network, method.Name))
+			}
+		}
+
+		// Add introspection methods (using Network's built-in introspection)
+		obj.Set("GetMethods", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			methodsJSON, err := network.GetMethodsJSON()
+			if err != nil {
+				return fmt.Sprintf("Error getting methods: %v", err)
+			}
+			return methodsJSON
+		}))
+
+		obj.Set("ListMethods", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			methods := network.ListMethods()
+			data, _ := json.Marshal(methods)
+			return string(data)
+		}))
+
+		obj.Set("GetMethodSignature", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			if len(args) < 1 {
+				return "Error: method name required"
+			}
+			methodName := args[0].String()
+			signature, err := network.GetMethodSignature(methodName)
+			if err != nil {
+				return fmt.Sprintf("Error: %v", err)
+			}
+			return signature
+		}))
+
+		obj.Set("HasMethod", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			if len(args) < 1 {
+				return false
+			}
+			methodName := args[0].String()
+			return network.HasMethod(methodName)
+		}))
+
+		return obj
+	})
+}
+
 // callNNFunction calls a function from the nn package via reflection
 func callNNFunction() js.Func {
 	return js.FuncOf(func(this js.Value, args []js.Value) interface{} {
@@ -555,6 +628,7 @@ func main() {
 	// Register factory functions
 	js.Global().Set("NewNetwork", newNetworkWrapper())
 	js.Global().Set("LoadModelFromString", loadModelFromStringWrapper())
+	js.Global().Set("BuildNetworkFromJSON", buildNetworkFromJSONWrapper())
 
 	// Layer initialization via registry
 	js.Global().Set("CallLayerInit", callNNFunction())
@@ -578,6 +652,7 @@ func main() {
 	fmt.Println("LOOM WASM API ready. Available functions:")
 	fmt.Println("  - NewNetwork(inputSize, gridRows, gridCols, layersPerCell)")
 	fmt.Println("  - LoadModelFromString(jsonString, modelID)")
+	fmt.Println("  - BuildNetworkFromJSON(jsonConfig)")
 	fmt.Println("  - CallLayerInit(functionName, paramsJSON) - Call any layer init function:")
 	for _, fn := range functions {
 		argStr := ""

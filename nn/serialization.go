@@ -37,9 +37,11 @@ type LayerDefinition struct {
 	Type       string `json:"type"`
 	Activation string `json:"activation"`
 
-	// Dense layer fields
-	Width  int `json:"width,omitempty"`
-	Height int `json:"height,omitempty"`
+	// Dense layer fields (also shared with RNN/LSTM)
+	Width      int `json:"width,omitempty"`
+	Height     int `json:"height,omitempty"`
+	InputSize  int `json:"input_size,omitempty"`  // Used for Dense, RNN, LSTM
+	OutputSize int `json:"output_size,omitempty"` // Used for Dense
 
 	// Conv2D fields
 	InputChannels int `json:"input_channels,omitempty"`
@@ -58,7 +60,6 @@ type LayerDefinition struct {
 	SeqLength int `json:"seq_length,omitempty"`
 
 	// RNN/LSTM fields
-	InputSize  int `json:"input_size,omitempty"`
 	HiddenSize int `json:"hidden_size,omitempty"`
 
 	// Softmax fields
@@ -76,6 +77,10 @@ type LayerDefinition struct {
 	// Normalization fields
 	NormSize int     `json:"norm_size,omitempty"`
 	Epsilon  float32 `json:"epsilon,omitempty"`
+
+	// Parallel layer fields
+	Branches    []LayerDefinition `json:"branches,omitempty"`
+	CombineMode string            `json:"combine_mode,omitempty"` // "concat", "add", "avg"
 }
 
 // EncodedWeights stores weights in base64-encoded JSON format
@@ -729,4 +734,197 @@ func stringToActivation(s string) ActivationType {
 	default:
 		return ActivationScaledReLU
 	}
+}
+
+// BuildNetworkFromJSON creates a neural network from a JSON configuration string
+// This allows building complete neural networks from JSON without manually assigning layers
+// The JSON structure matches the NetworkConfig format used in serialization
+func BuildNetworkFromJSON(jsonConfig string) (*Network, error) {
+	var config NetworkConfig
+	if err := json.Unmarshal([]byte(jsonConfig), &config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+
+	// Default batch size to 1 if not specified
+	batchSize := config.BatchSize
+	if batchSize == 0 {
+		batchSize = 1
+	}
+
+	// Create network with grid structure
+	network := NewNetwork(
+		batchSize,
+		config.GridRows,
+		config.GridCols,
+		config.LayersPerCell,
+	)
+	network.BatchSize = batchSize
+
+	// Validate layer count
+	expectedLayers := config.GridRows * config.GridCols * config.LayersPerCell
+	if len(config.Layers) != expectedLayers {
+		return nil, fmt.Errorf("layer count mismatch: expected %d (rows=%d × cols=%d × layers_per_cell=%d), got %d",
+			expectedLayers, config.GridRows, config.GridCols, config.LayersPerCell, len(config.Layers))
+	}
+
+	// Build each layer from configuration
+	for i, layerDef := range config.Layers {
+		row := i / (config.GridCols * config.LayersPerCell)
+		col := (i / config.LayersPerCell) % config.GridCols
+		layer := i % config.LayersPerCell
+
+		layerConfig, err := buildLayerConfig(layerDef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build layer %d (row=%d, col=%d, layer=%d): %w",
+				i, row, col, layer, err)
+		}
+
+		network.SetLayer(row, col, layer, layerConfig)
+	}
+
+	return network, nil
+}
+
+// BuildNetworkFromFile creates a neural network from a JSON configuration file
+func BuildNetworkFromFile(filename string) (*Network, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	return BuildNetworkFromJSON(string(data))
+}
+
+// buildLayerConfig constructs a LayerConfig from a LayerDefinition
+func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
+	var config LayerConfig
+
+	// Parse activation
+	config.Activation = stringToActivation(def.Activation)
+
+	// Build layer based on type
+	switch def.Type {
+	case "dense":
+		config.Type = LayerDense
+		// Use InputSize/OutputSize for dense layers if Width/Height aren't specified
+		if def.Width > 0 {
+			config.InputHeight = def.Width
+		} else if def.InputSize > 0 {
+			config.InputHeight = def.InputSize
+		} else if def.InputHeight > 0 {
+			config.InputHeight = def.InputHeight
+		}
+
+		if def.Height > 0 {
+			config.OutputHeight = def.Height
+		} else if def.OutputSize > 0 {
+			config.OutputHeight = def.OutputSize
+		} else if def.OutputHeight > 0 {
+			config.OutputHeight = def.OutputHeight
+		}
+		// Initialize weights if not provided (random initialization will happen elsewhere)
+
+	case "conv2d":
+		config.Type = LayerConv2D
+		config.InputChannels = def.InputChannels
+		config.Filters = def.Filters
+		config.KernelSize = def.KernelSize
+		config.Stride = def.Stride
+		config.Padding = def.Padding
+		config.InputHeight = def.InputHeight
+		config.InputWidth = def.InputWidth
+		config.OutputHeight = def.OutputHeight
+		config.OutputWidth = def.OutputWidth
+
+	case "mha", "multi_head_attention":
+		config.Type = LayerMultiHeadAttention
+		config.DModel = def.DModel
+		config.NumHeads = def.NumHeads
+		config.SeqLength = def.SeqLength
+		config.HeadDim = def.DModel / def.NumHeads
+
+	case "rnn":
+		config.Type = LayerRNN
+		config.RNNInputSize = def.InputSize
+		config.HiddenSize = def.HiddenSize
+		config.SeqLength = def.SeqLength
+
+	case "lstm":
+		config.Type = LayerLSTM
+		config.RNNInputSize = def.InputSize
+		config.HiddenSize = def.HiddenSize
+		config.SeqLength = def.SeqLength
+
+	case "softmax":
+		config.Type = LayerSoftmax
+		config.SoftmaxVariant = stringToSoftmaxType(def.SoftmaxVariant)
+		config.SoftmaxRows = def.SoftmaxRows
+		config.SoftmaxCols = def.SoftmaxCols
+		config.Temperature = def.Temperature
+		config.GumbelNoise = def.GumbelNoise
+		config.Mask = def.Mask
+		config.HierarchyLevels = def.HierarchyLevels
+		config.AdaptiveClusters = def.AdaptiveClusters
+		config.MixtureWeights = def.MixtureWeights
+		config.EntmaxAlpha = def.EntmaxAlpha
+
+	case "layer_norm", "layernorm":
+		config.Type = LayerNorm
+		config.NormSize = def.NormSize
+		if def.Epsilon == 0 {
+			config.Epsilon = 1e-5 // Default epsilon
+		} else {
+			config.Epsilon = def.Epsilon
+		}
+
+	case "rms_norm", "rmsnorm":
+		config.Type = LayerRMSNorm
+		config.NormSize = def.NormSize
+		if def.Epsilon == 0 {
+			config.Epsilon = 1e-5 // Default epsilon
+		} else {
+			config.Epsilon = def.Epsilon
+		}
+
+	case "swiglu":
+		config.Type = LayerSwiGLU
+		// Use InputSize/OutputSize for SwiGLU if Width/Height aren't specified
+		if def.InputSize > 0 {
+			config.InputHeight = def.InputSize
+		} else if def.InputHeight > 0 {
+			config.InputHeight = def.InputHeight
+		}
+
+		if def.OutputSize > 0 {
+			config.OutputHeight = def.OutputSize
+		} else if def.OutputHeight > 0 {
+			config.OutputHeight = def.OutputHeight
+		}
+
+	case "residual":
+		config.Type = LayerResidual
+		// Residual layers typically configured via ResidualSkip field
+
+	case "parallel":
+		config.Type = LayerParallel
+		config.CombineMode = def.CombineMode
+		if config.CombineMode == "" {
+			config.CombineMode = "concat" // Default to concatenation
+		}
+
+		// Build branch configurations
+		config.ParallelBranches = make([]LayerConfig, len(def.Branches))
+		for i, branchDef := range def.Branches {
+			branchConfig, err := buildLayerConfig(branchDef)
+			if err != nil {
+				return config, fmt.Errorf("parallel branch %d: %w", i, err)
+			}
+			config.ParallelBranches[i] = branchConfig
+		}
+
+	default:
+		return config, fmt.Errorf("unknown layer type: %s", def.Type)
+	}
+
+	return config, nil
 }
