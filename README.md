@@ -31,11 +31,11 @@ I'm excited to see what you come up with! Let me know if you have any"
 
 ## Key Features
 
-### 🚀 GPU Acceleration
+### 🚀 GPU Acceleration (Experimental - Untested)
 
-- **WebGPU Compute Shaders**: Native GPU acceleration using WGSL (WebGPU Shading Language)
-- **Hybrid CPU/GPU**: Intelligent routing between CPU and GPU execution
-- **Multi-layer Support**: Dense, Conv2D, Multi-Head Attention with GPU acceleration
+- **WebGPU Compute Shaders**: Native GPU acceleration using WGSL (WebGPU Shading Language) - _code exists but untested_
+- **Hybrid CPU/GPU**: Intelligent routing between CPU and GPU execution - _primarily Dense layer only_
+- **CPU-First Focus**: All layers work reliably on CPU with full backward pass; GPU is experimental side feature
 
 ### 🌐 WebAssembly Support
 
@@ -52,16 +52,21 @@ I'm excited to see what you come up with! Let me know if you have any"
 - **Zero Dependencies**: Pure WASM + Go stdlib, no external libraries needed
 - **Model Serialization**: Save/load models as JSON strings in the browser
 - **Full Training Support**: Train networks with all layer types (Dense, Conv2D, Attention, LayerNorm, RNN, LSTM, Softmax) in browser
+- **Simple API**: New `createNetworkFromJSON`, `loadLoomNetwork`, `forward`, `train`, `evaluate` functions
+- **CPU-Only in Browser**: GPU/WebGPU code exists but is untested; all demos run on CPU
 
 ### 🔗 C ABI (Foreign Function Interface)
 
 - **Language Interop**: Call LOOM from C, C++, Rust, Python (ctypes/cffi), and more
-- **Handle-based Management**: Safe object lifecycle with automatic cleanup
+- **Simple API**: New streamlined functions - `CreateLoomNetwork`, `LoomForward`, `LoomTrain`, `LoomSaveModel`, `LoomLoadModel`, `LoomEvaluateNetwork`
+- **Global Network Pattern**: Single active network, no handle management needed
 - **JSON Parameters**: Simple, language-agnostic API
 - **Registry-based Layer Creation**: Dynamic layer initialization for all layer types via `CallLayerInit()`
-- **Dynamic Method Calling**: Access all Network methods via reflection
+- **Dynamic Method Calling**: Access all Network methods via reflection (legacy API)
 - **Shared Library**: Build as .so/.dylib/.dll for system-wide integration
 - **Multi-Platform**: Linux, macOS, Windows, Android, iOS with cross-compilation support
+- **Cross-Language Consistency**: Same API across Python, C#, TypeScript, and C/C++/Rust
+- **CPU-First Design**: Reliable CPU execution; GPU code exists but untested
 
 ### 🧠 Neural Network Layers
 
@@ -73,11 +78,11 @@ I'm excited to see what you come up with! Let me know if you have any"
 - ✅ **Automatic Differentiation**: Complete backpropagation through all layer types
 - ✅ **Cross-Platform**: Works everywhere (Go, Python, TypeScript/Node.js, C#, browser WASM, C/C++/Rust via FFI)
 
-**Supported Layer Types (All with CPU support):**
+**Supported Layer Types (All with full CPU support):**
 
-- **Dense Layers**: Fully-connected layers with element-wise activations (CPU + GPU)
-- **Conv2D**: 2D convolutional layers with configurable kernels, stride, padding (CPU + GPU)
-- **Multi-Head Attention**: Transformer-style attention with Q/K/V projections (CPU + GPU)
+- **Dense Layers**: Fully-connected layers with element-wise activations (CPU fully tested, GPU exists but untested)
+- **Conv2D**: 2D convolutional layers with configurable kernels, stride, padding (CPU fully tested, GPU code exists)
+- **Multi-Head Attention**: Transformer-style attention with Q/K/V projections (CPU fully tested, GPU code exists)
 - **LayerNorm**: Layer normalization with learned gamma/beta parameters and residual connections (CPU)
 - **RNN**: Recurrent Neural Networks with BPTT (Backpropagation Through Time) (CPU)
 - **LSTM**: Long Short-Term Memory with forget/input/output gates (CPU)
@@ -87,7 +92,7 @@ I'm excited to see what you come up with! Let me know if you have any"
   - **Heterogeneous Branches**: Each branch can be ANY layer type (LSTM + MHA + RNN + Dense in same layer!)
   - **Grid Scatter**: Place outputs at specific 2D/3D grid positions for spatial topology
 
-**Performance:** CPU implementations are production-ready and performant. GPU acceleration provides 10-100x speedup for Dense/Conv2D/Attention on large batches.
+**Performance:** CPU implementations are production-ready, tested, and reliable. GPU acceleration code exists (WebGPU shaders) but is untested/experimental - use at your own risk!
 
 ### 🎨 Softmax Layer - The Unique Feature
 
@@ -171,6 +176,35 @@ Supported across all layer types and platforms:
 - **Validation Integration**: Automatic periodic evaluation during training
 - **Quality Scoring**: Standardized 0-100 score for model comparison
 - **Metrics Persistence**: Save/load evaluation results to JSON
+- **Cross-Platform Evaluation**: `EvaluateNetwork()` available in Go, Python, TypeScript, C#, and C
+
+### 🌍 Cross-Platform API Consistency
+
+**All platforms now share the same simple API:**
+
+| Function       | Go                       | Python                       | TypeScript/JS             | C#                      | C/C++/Rust              |
+| -------------- | ------------------------ | ---------------------------- | ------------------------- | ----------------------- | ----------------------- |
+| Create Network | `BuildNetworkFromJSON()` | `create_network_from_json()` | `createNetworkFromJSON()` | `CreateLoomNetwork()`   | `CreateLoomNetwork()`   |
+| Forward Pass   | `ForwardCPU()`           | `forward_simple()`           | `forward()`               | `LoomForward()`         | `LoomForward()`         |
+| Train          | `Train()`                | `train_simple()`             | `train()`                 | `LoomTrain()`           | `LoomTrain()`           |
+| Save Model     | `SaveModelToString()`    | `save_model_simple()`        | `saveModel()`             | `LoomSaveModel()`       | `LoomSaveModel()`       |
+| Load Model     | `LoadModelFromString()`  | `load_model_simple()`        | `loadLoomNetwork()`       | `LoomLoadModel()`       | `LoomLoadModel()`       |
+| Evaluate       | `EvaluateNetwork()`      | `evaluate_network_simple()`  | `evaluate()`              | `LoomEvaluateNetwork()` | `LoomEvaluateNetwork()` |
+
+**Verified identical behavior:**
+
+- ✅ Same training results (99.3-99.5% improvement, 100/100 quality score)
+- ✅ Bit-for-bit identical predictions after save/load (0.00 difference)
+- ✅ Same evaluation metrics (7-bucket deviation distribution)
+- ✅ Same model serialization format (~25-26KB JSON)
+
+See platform-specific demos:
+
+- **Python**: `python/examples/grid_scatter_demo.py`
+- **TypeScript**: `typescript/example/grid-scatter.ts`
+- **JavaScript/WASM**: `wasm/grid_scatter_demo.js`
+- **C#**: `csharp/examples/GridScatterDemo.cs`
+- **C**: `cabi/simple_bench.c`
 
 ### 💾 Model Serialization
 

@@ -2,14 +2,133 @@
 
 WebAssembly bindings for the LOOM neural network framework, enabling neural network creation, training, and transformer inference directly in the browser with zero dependencies.
 
-## � Quick Start
+## 🚀 Quick Start
 
 ```bash
 cd wasm
 ./build_wasm.sh          # Build main.wasm
 python3 -m http.server 8080
-# Open http://localhost:8080/test.html
+# Open http://localhost:8080/grid_scatter_demo.html
 ```
+
+## 🎉 NEW: Simple API
+
+Streamlined functions for common operations with **cross-platform consistency**:
+
+```javascript
+// Create network from JSON
+const config = {
+  batch_size: 1,
+  grid_rows: 1,
+  grid_cols: 3,
+  layers_per_cell: 1,
+  layers: [
+    { type: "dense", input_size: 8, output_size: 16, activation: "relu" },
+    {
+      type: "parallel",
+      combine_mode: "grid_scatter",
+      grid_output_rows: 3,
+      grid_output_cols: 1,
+      grid_output_layers: 1,
+      grid_positions: [
+        { branch_index: 0, target_row: 0, target_col: 0, target_layer: 0 },
+        { branch_index: 1, target_row: 1, target_col: 0, target_layer: 0 },
+        { branch_index: 2, target_row: 2, target_col: 0, target_layer: 0 },
+      ],
+      branches: [
+        {
+          type: "parallel",
+          combine_mode: "add",
+          branches: [
+            {
+              type: "dense",
+              input_size: 16,
+              output_size: 8,
+              activation: "relu",
+            },
+            {
+              type: "dense",
+              input_size: 16,
+              output_size: 8,
+              activation: "gelu",
+            },
+          ],
+        },
+        { type: "lstm", input_size: 16, hidden_size: 8, seq_length: 1 },
+        { type: "rnn", input_size: 16, hidden_size: 8, seq_length: 1 },
+      ],
+    },
+    { type: "dense", input_size: 24, output_size: 2, activation: "sigmoid" },
+  ],
+};
+
+const network = createNetworkFromJSON(JSON.stringify(config));
+
+// Training
+const batches = [
+  { Input: [0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8], Target: [1.0, 0.0] },
+  { Input: [0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1, 0.1], Target: [0.0, 1.0] },
+  { Input: [0.7, 0.7, 0.7, 0.7, 0.3, 0.3, 0.3, 0.3], Target: [0.0, 1.0] },
+  { Input: [0.3, 0.3, 0.3, 0.3, 0.7, 0.7, 0.7, 0.7], Target: [1.0, 0.0] },
+];
+
+const trainingConfig = {
+  Epochs: 800,
+  LearningRate: 0.15,
+  UseGPU: false,
+  PrintEveryBatch: 0,
+  GradientClip: 1.0,
+  LossType: "mse",
+  Verbose: false,
+};
+
+const [result, error] = network.Train(
+  JSON.stringify([batches, trainingConfig])
+);
+console.log("Training complete! Final loss:", JSON.parse(result).FinalLoss);
+
+// Forward pass
+const [output] = network.ForwardCPU(
+  JSON.stringify([[0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8]])
+);
+console.log("Output:", JSON.parse(output)); // [0.950, 0.050]
+
+// Evaluate network
+const inputs = batches.map((b) => b.Input);
+const expected = [0, 1, 1, 0];
+const [metrics] = network.EvaluateNetwork(JSON.stringify([inputs, expected]));
+const metricsData = JSON.parse(metrics);
+console.log(
+  `Quality Score: ${metricsData.score}/100, Avg Deviation: ${metricsData.avg_deviation}%`
+);
+
+// Save/Load
+const [modelJSON] = network.SaveModelToString(JSON.stringify(["my_model"]));
+console.log(`Model saved (${modelJSON.length} bytes)`);
+
+// Load model
+const loadedNetwork = loadLoomNetwork(modelJSON, "my_model");
+const [output2] = loadedNetwork.ForwardCPU(
+  JSON.stringify([[0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8]])
+);
+// output2 === output (bit-for-bit identical!)
+```
+
+**Simple API Functions:**
+
+- `createNetworkFromJSON(jsonConfig)` - Create from JSON configuration
+- `loadLoomNetwork(jsonString, modelID)` - Load saved model
+- `network.ForwardCPU(inputJSON)` - Forward pass
+- `network.BackwardCPU(gradientsJSON)` - Backward pass
+- `network.Train(batchesJSON)` - Train network
+- `network.SaveModelToString(idJSON)` - Save to JSON string
+- `network.EvaluateNetwork(inputsJSON)` - Evaluate with metrics
+- `network.UpdateWeights(lrJSON)` - Update weights
+
+**Cross-Platform Consistency:**
+The simple API matches Python, TypeScript, C#, and C - identical behavior and results!
+
+See `grid_scatter_demo.html` and `grid_scatter_demo.js` for complete working examples.
 
 ## 🚀 What's New: Dynamic Method Exposure
 
