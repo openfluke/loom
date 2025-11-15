@@ -45,8 +45,11 @@ case "$ARCH" in
         
         echo "✓ Universal binary created: $OUTPUT_DIR/libloom.dylib"
         
+        # Copy header from one of the builds
+        cp "$OUTPUT_DIR_ARM/libloom.h" "$OUTPUT_DIR/libloom.h"
+        
         # Build benchmark (will run on current arch)
-        clang -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
+        clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
         
         ls -lh "$OUTPUT_DIR"
         echo "Build complete: $OUTPUT_DIR"
@@ -76,7 +79,7 @@ echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
 
 # Build C benchmark
 echo "Building simple_bench..."
-clang -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
+clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
 
 echo "✓ Benchmark compiled: $OUTPUT_DIR/simple_bench"
 echo ""

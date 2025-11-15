@@ -78,7 +78,7 @@ echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
 
 # Build C benchmark
 echo "Building simple_bench.exe..."
-$CC -o "$OUTPUT_DIR/simple_bench.exe" simple_bench.c -L"$OUTPUT_DIR" -lloom -lm
+$CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench.exe" simple_bench.c -L"$OUTPUT_DIR" -lloom -lm
 
 echo "✓ Benchmark compiled: $OUTPUT_DIR/simple_bench.exe"
 echo ""
