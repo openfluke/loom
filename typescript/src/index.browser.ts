@@ -1,29 +1,28 @@
 /**
- * @openfluke/welvet - Isomorphic WASM Wrapper
+ * @openfluke/welvet - Browser Entry Point
  *
- * Direct wrapper around Loom WASM that mirrors main.go exports exactly.
- * Provides the same API in both Node.js and browser environments.
+ * Browser-only build without Node.js dependencies
+ * Isomorphic wrapper that mirrors main.go WASM exports
  */
 
 import { Network } from "./types.js";
-import { loadLoomWASM } from "./loader.js";
 import { loadLoomWASMBrowser } from "./loader.browser.js";
 
 export * from "./types.js";
-export { loadLoomWASM, loadLoomWASMBrowser };
-
-/**
- * Initialize WASM for Node.js environment
- */
-export async function init(): Promise<void> {
-  await loadLoomWASM();
-}
+export { loadLoomWASMBrowser };
 
 /**
  * Initialize WASM for Browser environment
  */
 export async function initBrowser(): Promise<void> {
   await loadLoomWASMBrowser();
+}
+
+/**
+ * Initialize - alias for initBrowser in browser context
+ */
+export async function init(): Promise<void> {
+  return initBrowser();
 }
 
 /**

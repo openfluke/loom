@@ -33,6 +33,16 @@ from .utils import (
     decode_tokens,
     generate_text,
     generate_stream,
+    # New Simple API (global network instance)
+    create_network_from_json,
+    forward_simple,
+    backward_simple,
+    update_weights_simple,
+    train_simple,
+    save_model_simple,
+    load_model_simple,
+    get_network_info_simple,
+    evaluate_network_simple,
 )
 
 __version__ = "0.0.1"
@@ -68,4 +78,14 @@ __all__ = [
     "decode_tokens",
     "generate_text",
     "generate_stream",
+    # New Simple API
+    "create_network_from_json",
+    "forward_simple",
+    "backward_simple",
+    "update_weights_simple",
+    "train_simple",
+    "save_model_simple",
+    "load_model_simple",
+    "get_network_info_simple",
+    "evaluate_network_simple",
 ]

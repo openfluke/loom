@@ -50,7 +50,9 @@
     "clean": "rm -rf dist",
     "build": "tsc -p tsconfig.json",
     "postbuild": "cp -r assets/* dist/",
-    "prepare": "bun run build"
+    "prepare": "bun run build",
+    "serve": "python3 serve.py",
+    "dev": "bun run build && bun run serve"
   },
   "devDependencies": {
     "@types/node": "^22.7.5",

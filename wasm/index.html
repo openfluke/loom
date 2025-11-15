@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loom WASM - Neural Network Framework</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+        overflow: hidden;
+      }
+
+      .header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 30px;
+        text-align: center;
+      }
+
+      .header h1 {
+        font-size: 2.5em;
+        margin-bottom: 10px;
+      }
+
+      .header p {
+        font-size: 1.2em;
+        opacity: 0.9;
+      }
+
+      .content {
+        padding: 30px;
+      }
+
+      .section {
+        margin-bottom: 30px;
+        padding: 20px;
+        background: #f8f9fa;
+        border-radius: 8px;
+        border-left: 4px solid #667eea;
+      }
+
+      .section h2 {
+        color: #667eea;
+        margin-bottom: 15px;
+        font-size: 1.5em;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 300px;
+        padding: 15px;
+        border: 2px solid #ddd;
+        border-radius: 8px;
+        font-family: "Courier New", monospace;
+        font-size: 14px;
+        resize: vertical;
+        background: #fff;
+      }
+
+      textarea:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        padding: 12px 30px;
+        border-radius: 6px;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.2s, box-shadow 0.2s;
+        margin-right: 10px;
+        margin-top: 10px;
+      }
+
+      button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .output {
+        background: #1e1e1e;
+        color: #d4d4d4;
+        padding: 20px;
+        border-radius: 8px;
+        font-family: "Courier New", monospace;
+        font-size: 14px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        max-height: 400px;
+        overflow-y: auto;
+        margin-top: 15px;
+      }
+
+      .success {
+        color: #4ade80;
+      }
+
+      .error {
+        color: #f87171;
+      }
+
+      .info {
+        color: #60a5fa;
+      }
+
+      .input-group {
+        margin-bottom: 15px;
+      }
+
+      .input-group label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: 600;
+        color: #333;
+      }
+
+      .input-group input {
+        width: 100%;
+        padding: 10px;
+        border: 2px solid #ddd;
+        border-radius: 6px;
+        font-size: 14px;
+      }
+
+      .input-group input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      .button-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 15px;
+      }
+
+      .status {
+        padding: 10px 15px;
+        border-radius: 6px;
+        margin-bottom: 15px;
+        font-weight: 500;
+      }
+
+      .status.loading {
+        background: #dbeafe;
+        color: #1e40af;
+      }
+
+      .status.ready {
+        background: #d1fae5;
+        color: #065f46;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>🧠 Loom WASM</h1>
+        <p>
+          Neural Network Framework - Build, Train, and Execute in the Browser
+        </p>
+      </div>
+
+      <div class="content">
+        <div id="status" class="status loading">Loading WASM module...</div>
+
+        <div class="section">
+          <h2>📝 Network Configuration (JSON)</h2>
+          <textarea id="jsonConfig">
+{
+  "batch_size": 1,
+  "grid_rows": 1,
+  "grid_cols": 1,
+  "layers_per_cell": 3,
+  "layers": [
+    {
+      "type": "dense",
+      "input_size": 10,
+      "output_size": 8,
+      "activation": "relu"
+    },
+    {
+      "type": "dense",
+      "input_size": 8,
+      "output_size": 4,
+      "activation": "relu"
+    },
+    {
+      "type": "dense",
+      "input_size": 4,
+      "output_size": 2,
+      "activation": "sigmoid"
+    }
+  ]
+}</textarea
+          >
+          <div class="button-group">
+            <button onclick="createNetwork()" id="createBtn">
+              🚀 Create Network
+            </button>
+            <button onclick="getMethods()" id="methodsBtn" disabled>
+              📋 Get Methods
+            </button>
+            <button onclick="listMethods()" id="listBtn" disabled>
+              📃 List Methods
+            </button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>🎯 Test Forward Pass</h2>
+          <div class="input-group">
+            <label>Input Data (comma-separated floats):</label>
+            <input
+              type="text"
+              id="inputData"
+              value="0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0"
+              placeholder="Enter 10 values"
+            />
+          </div>
+          <div class="button-group">
+            <button onclick="runForward()" id="forwardBtn" disabled>
+              ▶️ Run Forward Pass
+            </button>
+            <button onclick="getNetworkInfo()" id="infoBtn" disabled>
+              ℹ️ Network Info
+            </button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>🤖 Test 1: Grid Scatter - Multi-Agent Coordination</h2>
+          <p style="margin-bottom: 15px; color: #666">
+            4 heterogeneous agents in a 2x2 grid: Scout (LSTM), Analyzer (MHA),
+            Executor (3xDense), Coordinator (RNN)
+          </p>
+          <div class="button-group">
+            <button onclick="runGridScatterTest()" id="gridScatterBtn" disabled>
+              🤖 Run Grid Scatter Demo
+            </button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>🏋️ Test 2: Train Simple Pattern Recognition</h2>
+          <p style="margin-bottom: 15px; color: #666">
+            Trains the network to classify patterns: high values in first half
+            (output [1,0]) vs second half (output [0,1])
+          </p>
+          <div class="input-group">
+            <label>Number of Training Samples:</label>
+            <input
+              type="number"
+              id="numSamples"
+              value="50"
+              min="10"
+              max="500"
+              style="width: 150px"
+            />
+          </div>
+          <div class="input-group">
+            <label>Epochs:</label>
+            <input
+              type="number"
+              id="epochs"
+              value="100"
+              min="10"
+              max="1000"
+              style="width: 150px"
+            />
+          </div>
+          <div class="input-group">
+            <label>Learning Rate:</label>
+            <input
+              type="number"
+              id="learningRate"
+              value="0.01"
+              step="0.001"
+              min="0.001"
+              max="1"
+              style="width: 150px"
+            />
+          </div>
+          <div class="button-group">
+            <button onclick="trainNetwork()" id="trainBtn" disabled>
+              🏋️ Start Training
+            </button>
+            <button onclick="testTrainedNetwork()" id="testBtn" disabled>
+              🧪 Test Trained Network
+            </button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>💻 Output</h2>
+          <div id="output" class="output">Waiting for commands...</div>
+        </div>
+      </div>
+    </div>
+
+    <script src="wasm_exec.js"></script>
+    <script src="grid_scatter_demo.js"></script>
+    <script>
+      let wasmReady = false;
+      let network = null;
+
+      // Load WASM
+      const go = new Go();
+      WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject)
+        .then((result) => {
+          go.run(result.instance);
+          wasmReady = true;
+          updateStatus("ready", "✅ WASM module loaded and ready!");
+          document.getElementById("createBtn").disabled = false;
+        })
+        .catch((err) => {
+          updateStatus("error", "❌ Failed to load WASM: " + err);
+          log("error", "Error loading WASM: " + err);
+        });
+
+      function updateStatus(type, message) {
+        const status = document.getElementById("status");
+        status.className = "status " + type;
+        status.textContent = message;
+      }
+
+      function log(type, message) {
+        const output = document.getElementById("output");
+        const timestamp = new Date().toLocaleTimeString();
+        const className = type || "info";
+        output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+        output.scrollTop = output.scrollHeight;
+      }
+
+      function clearLog() {
+        document.getElementById("output").innerHTML = "";
+      }
+
+      function createNetwork() {
+        clearLog();
+        log("info", "🔨 Creating network from JSON...");
+
+        const jsonConfig = document.getElementById("jsonConfig").value;
+
+        try {
+          network = createLoomNetwork(jsonConfig);
+
+          if (typeof network === "string") {
+            // Error occurred
+            log("error", "❌ Error: " + network);
+            network = null;
+          } else {
+            log("success", "✅ Network created successfully!");
+            log("info", "Network object created with all methods exposed");
+
+            // List available methods
+            const methods = Object.keys(network);
+            log("info", `Available methods: ${methods.length} total`);
+
+            // Enable buttons
+            document.getElementById("methodsBtn").disabled = false;
+            document.getElementById("listBtn").disabled = false;
+            document.getElementById("forwardBtn").disabled = false;
+            document.getElementById("infoBtn").disabled = false;
+            document.getElementById("trainBtn").disabled = false;
+            document.getElementById("gridScatterBtn").disabled = false;
+          }
+        } catch (e) {
+          log("error", "❌ Exception: " + e.message);
+          network = null;
+        }
+      }
+
+      function getMethods() {
+        clearLog();
+        log("info", "📋 Retrieving all methods...");
+
+        if (!network) {
+          log("error", "❌ Network not created");
+          return;
+        }
+
+        try {
+          const result = network.GetMethodsJSON();
+          const parsed = JSON.parse(result);
+
+          if (parsed.length > 0 && !parsed[0].error) {
+            const methods = JSON.parse(parsed[0]);
+            log("success", "✅ Methods retrieved:");
+            log("info", JSON.stringify(methods, null, 2));
+          } else {
+            log("error", "❌ Error: " + (parsed[0].error || parsed[0]));
+          }
+        } catch (e) {
+          log("error", "❌ Exception: " + e.message);
+        }
+      }
+
+      function listMethods() {
+        clearLog();
+        log("info", "📃 Listing all method names...");
+
+        if (!network) {
+          log("error", "❌ Network not created");
+          return;
+        }
+
+        try {
+          const result = network.ListMethods();
+          const parsed = JSON.parse(result);
+
+          if (parsed.length > 0 && Array.isArray(parsed[0])) {
+            log("success", "✅ Available methods:");
+            parsed[0].forEach((method, idx) => {
+              log("info", `  ${idx + 1}. ${method}`);
+            });
+          } else {
+            log("error", "❌ Unexpected response");
+          }
+        } catch (e) {
+          log("error", "❌ Exception: " + e.message);
+        }
+      }
+
+      function runForward() {
+        clearLog();
+        log("info", "▶️ Running forward pass...");
+
+        if (!network) {
+          log("error", "❌ Network not created");
+          return;
+        }
+
+        try {
+          // Parse input data
+          const inputStr = document.getElementById("inputData").value;
+          const inputArray = inputStr
+            .split(",")
+            .map((s) => parseFloat(s.trim()));
+
+          log("info", `Input: [${inputArray.join(", ")}]`);
+
+          // Call ForwardCPU method
+          const result = network.ForwardCPU(JSON.stringify([inputArray]));
+          const parsed = JSON.parse(result);
+
+          if (parsed.length >= 2) {
+            const output = parsed[0]; // First return value is the output
+            const duration = parsed[1]; // Second is duration
+
+            log("success", "✅ Forward pass completed!");
+            log("info", "Output:");
+            if (Array.isArray(output)) {
+              log(
+                "success",
+                `  [${output
+                  .map((v) => (typeof v === "number" ? v.toFixed(6) : v))
+                  .join(", ")}]`
+              );
+            } else {
+              log("success", `  ${JSON.stringify(output, null, 2)}`);
+            }
+
+            log("info", `Duration: ${duration / 1000000} ms`);
+          } else {
+            log("error", "❌ Unexpected response format");
+          }
+        } catch (e) {
+          log("error", "❌ Exception: " + e.message);
+        }
+      }
+
+      function getNetworkInfo() {
+        clearLog();
+        log("info", "ℹ️ Getting network information...");
+
+        if (!network) {
+          log("error", "❌ Network not created");
+          return;
+        }
+
+        try {
+          // Get TotalLayers
+          const layersResult = network.TotalLayers();
+          const layersParsed = JSON.parse(layersResult);
+          log("info", `Total Layers: ${layersParsed[0]}`);
+
+          // Get methods list
+          const methodsResult = network.ListMethods();
+          const methodsParsed = JSON.parse(methodsResult);
+
+          if (methodsParsed.length > 0 && Array.isArray(methodsParsed[0])) {
+            log(
+              "success",
+              `\n✅ Available methods (${methodsParsed[0].length} total):`
+            );
+            methodsParsed[0].forEach((method, idx) => {
+              log("info", `  ${idx + 1}. ${method}`);
+            });
+          }
+        } catch (e) {
+          log("error", "❌ Exception: " + e.message);
+        }
+      }
+
+      function trainNetwork() {
+        clearLog();
+        log("info", "🏋️ Starting training...");
+
+        if (!network) {
+          log("error", "❌ Network not created");
+          return;
+        }
+
+        const numSamples = parseInt(
+          document.getElementById("numSamples").value
+        );
+        const epochs = parseInt(document.getElementById("epochs").value);
+        const learningRate = parseFloat(
+          document.getElementById("learningRate").value
+        );
+
+        try {
+          // Generate training data
+          log("info", `Generating ${numSamples} training samples...`);
+          const batches = [];
+
+          for (let i = 0; i < numSamples; i++) {
+            let input, target;
+
+            if (i % 2 === 0) {
+              // Pattern type 0: higher values in first half
+              input = [];
+              for (let j = 0; j < 5; j++) {
+                input.push(0.7 + Math.random() * 0.3);
+              }
+              for (let j = 5; j < 10; j++) {
+                input.push(Math.random() * 0.3);
+              }
+              target = [1.0, 0.0];
+            } else {
+              // Pattern type 1: higher values in second half
+              input = [];
+              for (let j = 0; j < 5; j++) {
+                input.push(Math.random() * 0.3);
+              }
+              for (let j = 5; j < 10; j++) {
+                input.push(0.7 + Math.random() * 0.3);
+              }
+              target = [0.0, 1.0];
+            }
+
+            batches.push({
+              Input: input,
+              Target: target,
+            });
+          }
+
+          log("success", `✅ Generated ${numSamples} training samples`);
+
+          // Test forward pass before training
+          log("info", "Running forward pass before training...");
+          const beforeResult = network.ForwardCPU(
+            JSON.stringify([batches[0].Input])
+          );
+          const beforeParsed = JSON.parse(beforeResult);
+          log(
+            "info",
+            `Output before training: [${beforeParsed[0]
+              .map((v) => v.toFixed(6))
+              .join(", ")}]`
+          );
+
+          // Training configuration
+          const config = {
+            Epochs: epochs,
+            LearningRate: learningRate,
+            UseGPU: false,
+            PrintEveryBatch: 0,
+            GradientClip: 1.0,
+            LossType: "mse",
+            Verbose: false,
+          };
+
+          log(
+            "info",
+            `Training for ${epochs} epochs with learning rate ${learningRate}...`
+          );
+          log("info", "This may take a moment...");
+
+          // Start training
+          const startTime = performance.now();
+          const trainResult = network.Train(JSON.stringify([batches, config]));
+          const endTime = performance.now();
+
+          const trainParsed = JSON.parse(trainResult);
+
+          if (trainParsed[0] && trainParsed[0].FinalLoss !== undefined) {
+            const result = trainParsed[0];
+            log("success", `\n✅ Training complete!`);
+            log(
+              "info",
+              `Training time: ${((endTime - startTime) / 1000).toFixed(
+                2
+              )} seconds`
+            );
+            log("info", `Initial Loss: ${result.LossHistory[0].toFixed(6)}`);
+            log("info", `Final Loss: ${result.FinalLoss.toFixed(6)}`);
+            log("info", `Total Epochs: ${result.LossHistory.length}`);
+
+            // Test after training
+            const afterResult = network.ForwardCPU(
+              JSON.stringify([batches[0].Input])
+            );
+            const afterParsed = JSON.parse(afterResult);
+            log(
+              "info",
+              `\nOutput after training: [${afterParsed[0]
+                .map((v) => v.toFixed(6))
+                .join(", ")}]`
+            );
+            log("success", `Expected: [${batches[0].Target.join(", ")}]`);
+
+            // Enable test button
+            document.getElementById("testBtn").disabled = false;
+          } else {
+            log("error", "❌ Training failed: " + JSON.stringify(trainParsed));
+          }
+        } catch (e) {
+          log("error", "❌ Exception during training: " + e.message);
+          console.error(e);
+        }
+      }
+
+      function testTrainedNetwork() {
+        clearLog();
+        log("info", "🧪 Testing trained network with new samples...");
+
+        if (!network) {
+          log("error", "❌ Network not created");
+          return;
+        }
+
+        try {
+          // Test pattern 1: high values in first half
+          const test1 = [];
+          for (let j = 0; j < 5; j++) {
+            test1.push(0.8 + Math.random() * 0.2);
+          }
+          for (let j = 5; j < 10; j++) {
+            test1.push(Math.random() * 0.2);
+          }
+
+          const result1 = network.ForwardCPU(JSON.stringify([test1]));
+          const parsed1 = JSON.parse(result1);
+          log("info", `\nTest 1 (high first half):`);
+          log(
+            "info",
+            `  Input: [${test1.map((v) => v.toFixed(2)).join(", ")}]`
+          );
+          log(
+            "success",
+            `  Output: [${parsed1[0].map((v) => v.toFixed(6)).join(", ")}]`
+          );
+          log("info", `  Expected: [1.0, 0.0]`);
+
+          // Test pattern 2: high values in second half
+          const test2 = [];
+          for (let j = 0; j < 5; j++) {
+            test2.push(Math.random() * 0.2);
+          }
+          for (let j = 5; j < 10; j++) {
+            test2.push(0.8 + Math.random() * 0.2);
+          }
+
+          const result2 = network.ForwardCPU(JSON.stringify([test2]));
+          const parsed2 = JSON.parse(result2);
+          log("info", `\nTest 2 (high second half):`);
+          log(
+            "info",
+            `  Input: [${test2.map((v) => v.toFixed(2)).join(", ")}]`
+          );
+          log(
+            "success",
+            `  Output: [${parsed2[0].map((v) => v.toFixed(6)).join(", ")}]`
+          );
+          log("info", `  Expected: [0.0, 1.0]`);
+
+          log("success", `\n✅ Testing complete!`);
+        } catch (e) {
+          log("error", "❌ Exception during testing: " + e.message);
+        }
+      }
+    </script>
+  </body>
+</html>

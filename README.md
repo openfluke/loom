@@ -6,6 +6,8 @@ A high-performance GPU-accelerated neural network framework written in Go, featu
 
 > 🤯 **BREAKTHROUGH:** LOOM's Softmax layer includes **native Mixture of Experts (MoE)** via Grid Softmax - the same architecture used in GPT-4, Switch Transformer, and Mixtral. **Mathematically proven** equivalent with 97.1% loss reduction and perfect gradient matching. See `examples/moe_proof_demo.go` for rigorous proof!
 
+> ⚡ **NEW:** **Grid Scatter Mode** - Place parallel branch outputs at **specific 2D/3D grid positions** instead of concatenating! Build multi-agent systems with heterogeneous architectures (LSTM + MHA + RNN + Dense in same layer), hierarchical RL with spatial decomposition, and ensemble methods with explicit topology. **Impossible in traditional neural networks!** See `examples/json_grid_scatter_demo.go` and `examples/json_grid_scatter_agents.go` for mind-bending examples.
+
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/welvet.svg)](https://pypi.org/project/welvet/)
@@ -29,11 +31,11 @@ I'm excited to see what you come up with! Let me know if you have any"
 
 ## Key Features
 
-### 🚀 GPU Acceleration
+### 🚀 GPU Acceleration (Experimental - Untested)
 
-- **WebGPU Compute Shaders**: Native GPU acceleration using WGSL (WebGPU Shading Language)
-- **Hybrid CPU/GPU**: Intelligent routing between CPU and GPU execution
-- **Multi-layer Support**: Dense, Conv2D, Multi-Head Attention with GPU acceleration
+- **WebGPU Compute Shaders**: Native GPU acceleration using WGSL (WebGPU Shading Language) - _code exists but untested_
+- **Hybrid CPU/GPU**: Intelligent routing between CPU and GPU execution - _primarily Dense layer only_
+- **CPU-First Focus**: All layers work reliably on CPU with full backward pass; GPU is experimental side feature
 
 ### 🌐 WebAssembly Support
 
@@ -50,16 +52,21 @@ I'm excited to see what you come up with! Let me know if you have any"
 - **Zero Dependencies**: Pure WASM + Go stdlib, no external libraries needed
 - **Model Serialization**: Save/load models as JSON strings in the browser
 - **Full Training Support**: Train networks with all layer types (Dense, Conv2D, Attention, LayerNorm, RNN, LSTM, Softmax) in browser
+- **Simple API**: New `createNetworkFromJSON`, `loadLoomNetwork`, `forward`, `train`, `evaluate` functions
+- **CPU-Only in Browser**: GPU/WebGPU code exists but is untested; all demos run on CPU
 
 ### 🔗 C ABI (Foreign Function Interface)
 
 - **Language Interop**: Call LOOM from C, C++, Rust, Python (ctypes/cffi), and more
-- **Handle-based Management**: Safe object lifecycle with automatic cleanup
+- **Simple API**: New streamlined functions - `CreateLoomNetwork`, `LoomForward`, `LoomTrain`, `LoomSaveModel`, `LoomLoadModel`, `LoomEvaluateNetwork`
+- **Global Network Pattern**: Single active network, no handle management needed
 - **JSON Parameters**: Simple, language-agnostic API
 - **Registry-based Layer Creation**: Dynamic layer initialization for all layer types via `CallLayerInit()`
-- **Dynamic Method Calling**: Access all Network methods via reflection
+- **Dynamic Method Calling**: Access all Network methods via reflection (legacy API)
 - **Shared Library**: Build as .so/.dylib/.dll for system-wide integration
 - **Multi-Platform**: Linux, macOS, Windows, Android, iOS with cross-compilation support
+- **Cross-Language Consistency**: Same API across Python, C#, TypeScript, and C/C++/Rust
+- **CPU-First Design**: Reliable CPU execution; GPU code exists but untested
 
 ### 🧠 Neural Network Layers
 
@@ -71,17 +78,21 @@ I'm excited to see what you come up with! Let me know if you have any"
 - ✅ **Automatic Differentiation**: Complete backpropagation through all layer types
 - ✅ **Cross-Platform**: Works everywhere (Go, Python, TypeScript/Node.js, C#, browser WASM, C/C++/Rust via FFI)
 
-**Supported Layer Types (All with CPU support):**
+**Supported Layer Types (All with full CPU support):**
 
-- **Dense Layers**: Fully-connected layers with element-wise activations (CPU + GPU)
-- **Conv2D**: 2D convolutional layers with configurable kernels, stride, padding (CPU + GPU)
-- **Multi-Head Attention**: Transformer-style attention with Q/K/V projections (CPU + GPU)
+- **Dense Layers**: Fully-connected layers with element-wise activations (CPU fully tested, GPU exists but untested)
+- **Conv2D**: 2D convolutional layers with configurable kernels, stride, padding (CPU fully tested, GPU code exists)
+- **Multi-Head Attention**: Transformer-style attention with Q/K/V projections (CPU fully tested, GPU code exists)
 - **LayerNorm**: Layer normalization with learned gamma/beta parameters and residual connections (CPU)
 - **RNN**: Recurrent Neural Networks with BPTT (Backpropagation Through Time) (CPU)
 - **LSTM**: Long Short-Term Memory with forget/input/output gates (CPU)
 - **Softmax**: First-class layer with 10 variants (CPU) - Standard, Grid, Hierarchical, Temperature, Gumbel, Masked, Sparsemax, Entmax, Adaptive, Mixture
+- **Parallel**: Run multiple sub-layers in parallel with 4 combine modes (CPU) - concat, add, avg, **grid_scatter**
+  - **Nested Support**: Parallel layers can contain parallel layers (infinite recursion)
+  - **Heterogeneous Branches**: Each branch can be ANY layer type (LSTM + MHA + RNN + Dense in same layer!)
+  - **Grid Scatter**: Place outputs at specific 2D/3D grid positions for spatial topology
 
-**Performance:** CPU implementations are production-ready and performant. GPU acceleration provides 10-100x speedup for Dense/Conv2D/Attention on large batches.
+**Performance:** CPU implementations are production-ready, tested, and reliable. GPU acceleration code exists (WebGPU shaders) but is untested/experimental - use at your own risk!
 
 ### 🎨 Softmax Layer - The Unique Feature
 
@@ -101,11 +112,50 @@ LOOM makes **softmax a first-class layer** (not just a function), enabling:
 - ✅ Validated with finite difference check
 - ✅ Simpler than PyTorch/TensorFlow (2 lines vs 200+)
 
-### 🏗️ Grid Architecture
+### 🏗️ Grid Architecture & Parallel Layers
 
 - **Flexible Structure**: Organize layers in a 2D grid (rows × columns × layers per cell)
 - **Mixed Layer Types**: Different layer types at different grid positions
 - **Deep Networks**: Support for 100+ layers in a single network
+- **Parallel Layers**: Run multiple heterogeneous branches simultaneously with 4 combine modes:
+  - `concat` - Concatenate outputs sequentially (default)
+  - `add` - Element-wise addition (all branches must have same output size)
+  - `avg` - Element-wise average (all branches must have same output size)
+  - `grid_scatter` - **Place outputs at specific 2D/3D grid positions** (NEW!)
+
+**Grid Scatter Mode** enables impossible architectures:
+
+- **Multi-Agent Systems**: Each agent (grid position) has different architecture (LSTM, MHA, RNN, Dense)
+- **Hierarchical RL**: Strategy → Tactics → Actions decomposed spatially using grid depth
+- **Ensemble Learning**: Diverse architectures at different spatial locations
+- **Multi-Scale Processing**: Different resolutions in different grid layers
+- **Nested Grid Scatter**: Grid scatter within grid scatter for hierarchical spatial decomposition
+
+Example:
+
+```json
+{
+  "type": "parallel",
+  "combine_mode": "grid_scatter",
+  "grid_output_rows": 2,
+  "grid_output_cols": 2,
+  "grid_output_layers": 1,
+  "grid_positions": [
+    { "branch_index": 0, "target_row": 0, "target_col": 0, "target_layer": 0 },
+    { "branch_index": 1, "target_row": 0, "target_col": 1, "target_layer": 0 },
+    { "branch_index": 2, "target_row": 1, "target_col": 0, "target_layer": 0 },
+    { "branch_index": 3, "target_row": 1, "target_col": 1, "target_layer": 0 }
+  ],
+  "branches": [
+    { "type": "lstm", "hidden_size": 10 },
+    { "type": "mha", "num_heads": 4 },
+    { "type": "rnn", "hidden_size": 10 },
+    { "type": "dense", "output_size": 10 }
+  ]
+}
+```
+
+See `examples/json_grid_scatter_demo.go` and `examples/json_grid_scatter_agents.go` for complete examples!
 
 ### 📊 Activation Functions
 
@@ -126,6 +176,35 @@ Supported across all layer types and platforms:
 - **Validation Integration**: Automatic periodic evaluation during training
 - **Quality Scoring**: Standardized 0-100 score for model comparison
 - **Metrics Persistence**: Save/load evaluation results to JSON
+- **Cross-Platform Evaluation**: `EvaluateNetwork()` available in Go, Python, TypeScript, C#, and C
+
+### 🌍 Cross-Platform API Consistency
+
+**All platforms now share the same simple API:**
+
+| Function       | Go                       | Python                       | TypeScript/JS             | C#                      | C/C++/Rust              |
+| -------------- | ------------------------ | ---------------------------- | ------------------------- | ----------------------- | ----------------------- |
+| Create Network | `BuildNetworkFromJSON()` | `create_network_from_json()` | `createNetworkFromJSON()` | `CreateLoomNetwork()`   | `CreateLoomNetwork()`   |
+| Forward Pass   | `ForwardCPU()`           | `forward_simple()`           | `forward()`               | `LoomForward()`         | `LoomForward()`         |
+| Train          | `Train()`                | `train_simple()`             | `train()`                 | `LoomTrain()`           | `LoomTrain()`           |
+| Save Model     | `SaveModelToString()`    | `save_model_simple()`        | `saveModel()`             | `LoomSaveModel()`       | `LoomSaveModel()`       |
+| Load Model     | `LoadModelFromString()`  | `load_model_simple()`        | `loadLoomNetwork()`       | `LoomLoadModel()`       | `LoomLoadModel()`       |
+| Evaluate       | `EvaluateNetwork()`      | `evaluate_network_simple()`  | `evaluate()`              | `LoomEvaluateNetwork()` | `LoomEvaluateNetwork()` |
+
+**Verified identical behavior:**
+
+- ✅ Same training results (99.3-99.5% improvement, 100/100 quality score)
+- ✅ Bit-for-bit identical predictions after save/load (0.00 difference)
+- ✅ Same evaluation metrics (7-bucket deviation distribution)
+- ✅ Same model serialization format (~25-26KB JSON)
+
+See platform-specific demos:
+
+- **Python**: `python/examples/grid_scatter_demo.py`
+- **TypeScript**: `typescript/example/grid-scatter.ts`
+- **JavaScript/WASM**: `wasm/grid_scatter_demo.js`
+- **C#**: `csharp/examples/GridScatterDemo.cs`
+- **C**: `cabi/simple_bench.c`
 
 ### 💾 Model Serialization
 

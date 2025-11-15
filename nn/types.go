@@ -19,16 +19,17 @@ const (
 type LayerType int
 
 const (
-	LayerDense              LayerType = 0 // Dense/Fully-connected layer (element-wise activation)
-	LayerConv2D             LayerType = 1 // 2D Convolutional layer
-	LayerMultiHeadAttention LayerType = 2 // Multi-Head Attention layer
-	LayerRNN                LayerType = 3 // Recurrent Neural Network layer
-	LayerLSTM               LayerType = 4 // Long Short-Term Memory layer
-	LayerSoftmax            LayerType = 5 // Softmax layer with multiple variants
-	LayerNorm               LayerType = 6 // Layer Normalization
-	LayerResidual           LayerType = 7 // Residual/Skip connection (adds stored input)
-	LayerRMSNorm            LayerType = 8 // RMS Normalization (Llama-style, no beta)
-	LayerSwiGLU             LayerType = 9 // SwiGLU gated activation (gate_proj * silu(up_proj))
+	LayerDense              LayerType = 0  // Dense/Fully-connected layer (element-wise activation)
+	LayerConv2D             LayerType = 1  // 2D Convolutional layer
+	LayerMultiHeadAttention LayerType = 2  // Multi-Head Attention layer
+	LayerRNN                LayerType = 3  // Recurrent Neural Network layer
+	LayerLSTM               LayerType = 4  // Long Short-Term Memory layer
+	LayerSoftmax            LayerType = 5  // Softmax layer with multiple variants
+	LayerNorm               LayerType = 6  // Layer Normalization
+	LayerResidual           LayerType = 7  // Residual/Skip connection (adds stored input)
+	LayerRMSNorm            LayerType = 8  // RMS Normalization (Llama-style, no beta)
+	LayerSwiGLU             LayerType = 9  // SwiGLU gated activation (gate_proj * silu(up_proj))
+	LayerParallel           LayerType = 10 // Parallel layer (runs multiple sub-layers and concatenates outputs)
 )
 
 // SoftmaxType defines the variant of softmax to use
@@ -134,6 +135,22 @@ type LayerConfig struct {
 
 	// Residual connection
 	ResidualSkip int // How many layers back to skip for residual (0 = no residual)
+
+	// Parallel layer specific parameters
+	ParallelBranches []LayerConfig  // Sub-layers to run in parallel
+	CombineMode      string         // How to combine outputs: "concat", "add", "avg", "grid_scatter"
+	GridPositions    []GridPosition // For grid_scatter: where to place each branch output
+	GridOutputRows   int            // For grid_scatter: output grid dimensions
+	GridOutputCols   int
+	GridOutputLayers int
+}
+
+// GridPosition specifies where a parallel branch output should be placed in the grid
+type GridPosition struct {
+	BranchIndex int // Which branch this position is for
+	TargetRow   int // Grid row to place output
+	TargetCol   int // Grid column to place output
+	TargetLayer int // Layer index within that cell
 }
 
 // Network represents a grid neural network
@@ -160,6 +177,9 @@ type Network struct {
 	// Gradient storage for kernel weights (Conv2D layers)
 	kernelGradients [][]float32
 	biasGradients   [][]float32
+
+	// Learning rate for parallel layer branch updates (set during UpdateWeights)
+	learningRate float32
 }
 
 // GPUDeviceInfo holds WebGPU resources for GPU execution
@@ -305,5 +325,185 @@ func (n *Network) ReleaseGPU() {
 			n.deviceInfo.release()
 		}
 		n.deviceInfo = nil
+	}
+}
+
+// InitializeWeights initializes all trainable weights in the network with random values
+func (n *Network) InitializeWeights() {
+	for i := 0; i < n.TotalLayers(); i++ {
+		row := i / (n.GridCols * n.LayersPerCell)
+		col := (i / n.LayersPerCell) % n.GridCols
+		layer := i % n.LayersPerCell
+
+		cfg := n.GetLayer(row, col, layer)
+		if cfg == nil {
+			continue
+		}
+
+		switch cfg.Type {
+		case LayerDense:
+			// Xavier initialization for dense layers
+			if cfg.InputHeight > 0 && cfg.OutputHeight > 0 {
+				numWeights := cfg.InputHeight * cfg.OutputHeight
+				cfg.Kernel = make([]float32, numWeights)
+				scale := float32(1.0) / float32(cfg.InputHeight)
+				for j := range cfg.Kernel {
+					cfg.Kernel[j] = (randomFloat()*2 - 1) * scale
+				}
+				cfg.Bias = make([]float32, cfg.OutputHeight)
+				for j := range cfg.Bias {
+					cfg.Bias[j] = randomFloat() * 0.01
+				}
+			}
+
+		case LayerConv2D:
+			// He initialization for conv layers
+			if cfg.Filters > 0 && cfg.InputChannels > 0 && cfg.KernelSize > 0 {
+				kernelSize := cfg.Filters * cfg.InputChannels * cfg.KernelSize * cfg.KernelSize
+				cfg.Kernel = make([]float32, kernelSize)
+				scale := float32(1.0) / float32(cfg.InputChannels*cfg.KernelSize*cfg.KernelSize)
+				for j := range cfg.Kernel {
+					cfg.Kernel[j] = (randomFloat()*2 - 1) * scale
+				}
+				cfg.Bias = make([]float32, cfg.Filters)
+				for j := range cfg.Bias {
+					cfg.Bias[j] = randomFloat() * 0.01
+				}
+			}
+
+		case LayerMultiHeadAttention:
+			// Small random initialization for attention
+			if cfg.DModel > 0 {
+				size := cfg.DModel * cfg.DModel
+				cfg.QWeights = make([]float32, size)
+				cfg.KWeights = make([]float32, size)
+				cfg.VWeights = make([]float32, size)
+				cfg.OutputWeight = make([]float32, size)
+				for j := range cfg.QWeights {
+					cfg.QWeights[j] = randomFloat()*0.2 - 0.1
+					cfg.KWeights[j] = randomFloat()*0.2 - 0.1
+					cfg.VWeights[j] = randomFloat()*0.2 - 0.1
+					cfg.OutputWeight[j] = randomFloat()*0.2 - 0.1
+				}
+				cfg.QBias = make([]float32, cfg.DModel)
+				cfg.KBias = make([]float32, cfg.DModel)
+				cfg.VBias = make([]float32, cfg.DModel)
+				cfg.OutputBias = make([]float32, cfg.DModel)
+			}
+
+		case LayerRNN:
+			// Small random initialization for RNN
+			if cfg.RNNInputSize > 0 && cfg.HiddenSize > 0 {
+				cfg.WeightIH = make([]float32, cfg.HiddenSize*cfg.RNNInputSize)
+				cfg.WeightHH = make([]float32, cfg.HiddenSize*cfg.HiddenSize)
+				for j := range cfg.WeightIH {
+					cfg.WeightIH[j] = randomFloat()*0.2 - 0.1
+				}
+				for j := range cfg.WeightHH {
+					cfg.WeightHH[j] = randomFloat()*0.2 - 0.1
+				}
+				cfg.BiasH = make([]float32, cfg.HiddenSize)
+			}
+
+		case LayerLSTM:
+			// LSTM weights for 4 gates
+			if cfg.RNNInputSize > 0 && cfg.HiddenSize > 0 {
+				ihSize := cfg.HiddenSize * cfg.RNNInputSize
+				hhSize := cfg.HiddenSize * cfg.HiddenSize
+
+				cfg.WeightIH_i = make([]float32, ihSize)
+				cfg.WeightIH_f = make([]float32, ihSize)
+				cfg.WeightIH_g = make([]float32, ihSize)
+				cfg.WeightIH_o = make([]float32, ihSize)
+
+				cfg.WeightHH_i = make([]float32, hhSize)
+				cfg.WeightHH_f = make([]float32, hhSize)
+				cfg.WeightHH_g = make([]float32, hhSize)
+				cfg.WeightHH_o = make([]float32, hhSize)
+
+				for j := 0; j < ihSize; j++ {
+					cfg.WeightIH_i[j] = randomFloat()*0.2 - 0.1
+					cfg.WeightIH_f[j] = randomFloat()*0.2 - 0.1
+					cfg.WeightIH_g[j] = randomFloat()*0.2 - 0.1
+					cfg.WeightIH_o[j] = randomFloat()*0.2 - 0.1
+				}
+				for j := 0; j < hhSize; j++ {
+					cfg.WeightHH_i[j] = randomFloat()*0.2 - 0.1
+					cfg.WeightHH_f[j] = randomFloat()*0.2 - 0.1
+					cfg.WeightHH_g[j] = randomFloat()*0.2 - 0.1
+					cfg.WeightHH_o[j] = randomFloat()*0.2 - 0.1
+				}
+
+				cfg.BiasH_i = make([]float32, cfg.HiddenSize)
+				cfg.BiasH_f = make([]float32, cfg.HiddenSize)
+				cfg.BiasH_g = make([]float32, cfg.HiddenSize)
+				cfg.BiasH_o = make([]float32, cfg.HiddenSize)
+			}
+
+		case LayerSwiGLU:
+			// SwiGLU weights
+			if cfg.InputHeight > 0 && cfg.OutputHeight > 0 {
+				gateSize := cfg.InputHeight * cfg.OutputHeight
+				downSize := cfg.OutputHeight * cfg.InputHeight
+
+				cfg.GateWeights = make([]float32, gateSize)
+				cfg.UpWeights = make([]float32, gateSize)
+				cfg.DownWeights = make([]float32, downSize)
+
+				for j := range cfg.GateWeights {
+					cfg.GateWeights[j] = randomFloat()*0.2 - 0.1
+					cfg.UpWeights[j] = randomFloat()*0.2 - 0.1
+				}
+				for j := range cfg.DownWeights {
+					cfg.DownWeights[j] = randomFloat()*0.2 - 0.1
+				}
+
+				cfg.GateBias = make([]float32, cfg.OutputHeight)
+				cfg.UpBias = make([]float32, cfg.OutputHeight)
+				cfg.DownBias = make([]float32, cfg.InputHeight)
+			}
+
+		case LayerNorm:
+			// LayerNorm parameters (scale=1, shift=0)
+			if cfg.NormSize > 0 {
+				cfg.Gamma = make([]float32, cfg.NormSize)
+				cfg.Beta = make([]float32, cfg.NormSize)
+				for j := range cfg.Gamma {
+					cfg.Gamma[j] = 1.0
+					cfg.Beta[j] = 0.0
+				}
+			}
+
+		case LayerRMSNorm:
+			// RMSNorm parameters (scale=1)
+			if cfg.NormSize > 0 {
+				cfg.Gamma = make([]float32, cfg.NormSize)
+				for j := range cfg.Gamma {
+					cfg.Gamma[j] = 1.0
+				}
+			}
+
+		case LayerParallel:
+			// Initialize each branch recursively
+			for b := range cfg.ParallelBranches {
+				branchCfg := &cfg.ParallelBranches[b]
+
+				// Create a temporary mini-network for initialization
+				tempNet := &Network{
+					GridRows:      1,
+					GridCols:      1,
+					LayersPerCell: 1,
+					Layers:        []LayerConfig{*branchCfg},
+				}
+
+				// Initialize the branch
+				tempNet.InitializeWeights()
+
+				// Copy back the initialized config
+				cfg.ParallelBranches[b] = tempNet.Layers[0]
+			}
+		}
+
+		n.SetLayer(row, col, layer, *cfg)
 	}
 }

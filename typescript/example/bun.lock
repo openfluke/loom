@@ -1,0 +1,14 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "loom-example",
+      "dependencies": {
+        "@openfluke/welvet": "link:..",
+      },
+    },
+  },
+  "packages": {
+    "@openfluke/welvet": ["@openfluke/welvet@link:..", {}],
+  }
+}

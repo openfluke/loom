@@ -37,9 +37,11 @@ type LayerDefinition struct {
 	Type       string `json:"type"`
 	Activation string `json:"activation"`
 
-	// Dense layer fields
-	Width  int `json:"width,omitempty"`
-	Height int `json:"height,omitempty"`
+	// Dense layer fields (also shared with RNN/LSTM)
+	Width      int `json:"width,omitempty"`
+	Height     int `json:"height,omitempty"`
+	InputSize  int `json:"input_size,omitempty"`  // Used for Dense, RNN, LSTM
+	OutputSize int `json:"output_size,omitempty"` // Used for Dense
 
 	// Conv2D fields
 	InputChannels int `json:"input_channels,omitempty"`
@@ -58,7 +60,6 @@ type LayerDefinition struct {
 	SeqLength int `json:"seq_length,omitempty"`
 
 	// RNN/LSTM fields
-	InputSize  int `json:"input_size,omitempty"`
 	HiddenSize int `json:"hidden_size,omitempty"`
 
 	// Softmax fields
@@ -76,6 +77,22 @@ type LayerDefinition struct {
 	// Normalization fields
 	NormSize int     `json:"norm_size,omitempty"`
 	Epsilon  float32 `json:"epsilon,omitempty"`
+
+	// Parallel layer fields
+	Branches         []LayerDefinition `json:"branches,omitempty"`
+	CombineMode      string            `json:"combine_mode,omitempty"` // "concat", "add", "avg", "grid_scatter"
+	GridPositions    []GridPositionDef `json:"grid_positions,omitempty"`
+	GridOutputRows   int               `json:"grid_output_rows,omitempty"`
+	GridOutputCols   int               `json:"grid_output_cols,omitempty"`
+	GridOutputLayers int               `json:"grid_output_layers,omitempty"`
+}
+
+// GridPositionDef is the JSON representation of a grid position
+type GridPositionDef struct {
+	BranchIndex int `json:"branch_index"`
+	TargetRow   int `json:"target_row"`
+	TargetCol   int `json:"target_col"`
+	TargetLayer int `json:"target_layer"`
 }
 
 // EncodedWeights stores weights in base64-encoded JSON format
@@ -139,6 +156,9 @@ type LayerWeights struct {
 	GateBias    []float32 `json:"gate_bias,omitempty"`
 	UpBias      []float32 `json:"up_bias,omitempty"`
 	DownBias    []float32 `json:"down_bias,omitempty"`
+
+	// Parallel layer branch weights (recursive)
+	BranchWeights []LayerWeights `json:"branch_weights,omitempty"`
 }
 
 // SaveModel saves a single model to a file
@@ -176,6 +196,304 @@ func SaveBundle(filename string, models map[string]*Network) error {
 	}
 
 	return bundle.SaveToFile(filename)
+}
+
+// serializeBranches recursively serializes parallel layer branches
+func serializeBranches(branches []LayerConfig) []LayerDefinition {
+	defs := make([]LayerDefinition, len(branches))
+	for i, branch := range branches {
+		def := LayerDefinition{
+			Type:       layerTypeToString(branch.Type),
+			Activation: activationToString(branch.Activation),
+		}
+
+		switch branch.Type {
+		case LayerDense:
+			def.InputHeight = branch.InputHeight
+			def.OutputHeight = branch.OutputHeight
+		case LayerConv2D:
+			def.InputChannels = branch.InputChannels
+			def.Filters = branch.Filters
+			def.KernelSize = branch.KernelSize
+			def.Stride = branch.Stride
+			def.Padding = branch.Padding
+			def.InputHeight = branch.InputHeight
+			def.InputWidth = branch.InputWidth
+			def.OutputHeight = branch.OutputHeight
+			def.OutputWidth = branch.OutputWidth
+		case LayerMultiHeadAttention:
+			def.DModel = branch.DModel
+			def.NumHeads = branch.NumHeads
+			def.SeqLength = branch.SeqLength
+		case LayerRNN:
+			def.InputSize = branch.RNNInputSize
+			def.HiddenSize = branch.HiddenSize
+			def.SeqLength = branch.SeqLength
+		case LayerLSTM:
+			def.InputSize = branch.RNNInputSize
+			def.HiddenSize = branch.HiddenSize
+			def.SeqLength = branch.SeqLength
+		case LayerSoftmax:
+			def.SoftmaxVariant = softmaxTypeToString(branch.SoftmaxVariant)
+			def.SoftmaxRows = branch.SoftmaxRows
+			def.SoftmaxCols = branch.SoftmaxCols
+			def.Temperature = branch.Temperature
+			def.GumbelNoise = branch.GumbelNoise
+			def.Mask = branch.Mask
+			def.HierarchyLevels = branch.HierarchyLevels
+			def.AdaptiveClusters = branch.AdaptiveClusters
+			def.MixtureWeights = branch.MixtureWeights
+			def.EntmaxAlpha = branch.EntmaxAlpha
+		case LayerNorm:
+			def.NormSize = branch.NormSize
+			def.Epsilon = branch.Epsilon
+		case LayerRMSNorm:
+			def.NormSize = branch.NormSize
+			def.Epsilon = branch.Epsilon
+		case LayerSwiGLU:
+			def.InputHeight = branch.InputHeight
+			def.OutputHeight = branch.OutputHeight
+		case LayerParallel:
+			def.CombineMode = branch.CombineMode
+			def.GridOutputRows = branch.GridOutputRows
+			def.GridOutputCols = branch.GridOutputCols
+			def.GridOutputLayers = branch.GridOutputLayers
+
+			// Convert GridPosition to GridPositionDef
+			for _, gp := range branch.GridPositions {
+				def.GridPositions = append(def.GridPositions, GridPositionDef{
+					BranchIndex: gp.BranchIndex,
+					TargetRow:   gp.TargetRow,
+					TargetCol:   gp.TargetCol,
+					TargetLayer: gp.TargetLayer,
+				})
+			}
+
+			def.Branches = serializeBranches(branch.ParallelBranches) // Recursive call
+		}
+
+		defs[i] = def
+	}
+	return defs
+}
+
+// serializeBranchWeights recursively serializes weights for parallel layer branches
+func serializeBranchWeights(branches []LayerConfig) []LayerWeights {
+	weights := make([]LayerWeights, len(branches))
+	for i, branch := range branches {
+		var w LayerWeights
+
+		switch branch.Type {
+		case LayerDense:
+			w.Kernel = branch.Kernel
+			w.Biases = branch.Bias
+		case LayerConv2D:
+			w.Kernel = branch.Kernel
+			w.ConvBias = branch.Bias
+		case LayerMultiHeadAttention:
+			w.QWeights = branch.QWeights
+			w.KWeights = branch.KWeights
+			w.VWeights = branch.VWeights
+			w.OutputWeight = branch.OutputWeight
+			w.QBias = branch.QBias
+			w.KBias = branch.KBias
+			w.VBias = branch.VBias
+			w.OutputBias = branch.OutputBias
+		case LayerRNN:
+			w.WeightIH = branch.WeightIH
+			w.WeightHH = branch.WeightHH
+			w.BiasH = branch.BiasH
+		case LayerLSTM:
+			w.WeightII = branch.WeightIH_i
+			w.WeightIF = branch.WeightIH_f
+			w.WeightIG = branch.WeightIH_g
+			w.WeightIO = branch.WeightIH_o
+			w.WeightHI = branch.WeightHH_i
+			w.WeightHF = branch.WeightHH_f
+			w.WeightHG = branch.WeightHH_g
+			w.WeightHO = branch.WeightHH_o
+			w.BiasI = branch.BiasH_i
+			w.BiasF = branch.BiasH_f
+			w.BiasG = branch.BiasH_g
+			w.BiasO = branch.BiasH_o
+		case LayerNorm:
+			w.Gamma = branch.Gamma
+			w.Beta = branch.Beta
+		case LayerRMSNorm:
+			w.Gamma = branch.Gamma
+		case LayerSwiGLU:
+			w.GateWeights = branch.GateWeights
+			w.UpWeights = branch.UpWeights
+			w.DownWeights = branch.DownWeights
+			w.GateBias = branch.GateBias
+			w.UpBias = branch.UpBias
+			w.DownBias = branch.DownBias
+		case LayerParallel:
+			// Recursively serialize nested branch weights
+			w.BranchWeights = serializeBranchWeights(branch.ParallelBranches)
+		}
+
+		weights[i] = w
+	}
+	return weights
+}
+
+// deserializeBranches recursively deserializes parallel layer branches with weights
+func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]LayerConfig, error) {
+	branches := make([]LayerConfig, len(defs))
+	for i, def := range defs {
+		var config LayerConfig
+		var w LayerWeights
+		if i < len(weights) {
+			w = weights[i]
+		}
+
+		switch def.Type {
+		case "dense":
+			config = LayerConfig{
+				Type:         LayerDense,
+				Activation:   stringToActivation(def.Activation),
+				InputHeight:  def.InputHeight,
+				OutputHeight: def.OutputHeight,
+				Kernel:       w.Kernel,
+				Bias:         w.Biases,
+			}
+		case "conv2d":
+			config = LayerConfig{
+				Type:          LayerConv2D,
+				Activation:    stringToActivation(def.Activation),
+				InputChannels: def.InputChannels,
+				Filters:       def.Filters,
+				KernelSize:    def.KernelSize,
+				Stride:        def.Stride,
+				Padding:       def.Padding,
+				InputHeight:   def.InputHeight,
+				InputWidth:    def.InputWidth,
+				OutputHeight:  def.OutputHeight,
+				OutputWidth:   def.OutputWidth,
+				Kernel:        w.Kernel,
+				Bias:          w.ConvBias,
+			}
+		case "multi_head_attention", "mha":
+			config = LayerConfig{
+				Type:         LayerMultiHeadAttention,
+				DModel:       def.DModel,
+				NumHeads:     def.NumHeads,
+				SeqLength:    def.SeqLength,
+				QWeights:     w.QWeights,
+				KWeights:     w.KWeights,
+				VWeights:     w.VWeights,
+				OutputWeight: w.OutputWeight,
+				QBias:        w.QBias,
+				KBias:        w.KBias,
+				VBias:        w.VBias,
+				OutputBias:   w.OutputBias,
+			}
+		case "rnn":
+			config = LayerConfig{
+				Type:         LayerRNN,
+				Activation:   stringToActivation(def.Activation),
+				RNNInputSize: def.InputSize,
+				HiddenSize:   def.HiddenSize,
+				SeqLength:    def.SeqLength,
+				WeightIH:     w.WeightIH,
+				WeightHH:     w.WeightHH,
+				BiasH:        w.BiasH,
+			}
+		case "lstm":
+			config = LayerConfig{
+				Type:         LayerLSTM,
+				RNNInputSize: def.InputSize,
+				HiddenSize:   def.HiddenSize,
+				SeqLength:    def.SeqLength,
+				WeightIH_i:   w.WeightII,
+				WeightIH_f:   w.WeightIF,
+				WeightIH_g:   w.WeightIG,
+				WeightIH_o:   w.WeightIO,
+				WeightHH_i:   w.WeightHI,
+				WeightHH_f:   w.WeightHF,
+				WeightHH_g:   w.WeightHG,
+				WeightHH_o:   w.WeightHO,
+				BiasH_i:      w.BiasI,
+				BiasH_f:      w.BiasF,
+				BiasH_g:      w.BiasG,
+				BiasH_o:      w.BiasO,
+			}
+		case "softmax":
+			config = LayerConfig{
+				Type:             LayerSoftmax,
+				SoftmaxVariant:   stringToSoftmaxType(def.SoftmaxVariant),
+				SoftmaxRows:      def.SoftmaxRows,
+				SoftmaxCols:      def.SoftmaxCols,
+				Temperature:      def.Temperature,
+				GumbelNoise:      def.GumbelNoise,
+				Mask:             def.Mask,
+				HierarchyLevels:  def.HierarchyLevels,
+				AdaptiveClusters: def.AdaptiveClusters,
+				MixtureWeights:   def.MixtureWeights,
+				EntmaxAlpha:      def.EntmaxAlpha,
+			}
+		case "layer_norm", "layernorm":
+			config = LayerConfig{
+				Type:     LayerNorm,
+				NormSize: def.NormSize,
+				Epsilon:  def.Epsilon,
+				Gamma:    w.Gamma,
+				Beta:     w.Beta,
+			}
+		case "rms_norm", "rmsnorm":
+			config = LayerConfig{
+				Type:     LayerRMSNorm,
+				NormSize: def.NormSize,
+				Epsilon:  def.Epsilon,
+				Gamma:    w.Gamma,
+			}
+		case "swiglu":
+			config = LayerConfig{
+				Type:         LayerSwiGLU,
+				InputHeight:  def.InputHeight,
+				OutputHeight: def.OutputHeight,
+				GateWeights:  w.GateWeights,
+				UpWeights:    w.UpWeights,
+				DownWeights:  w.DownWeights,
+				GateBias:     w.GateBias,
+				UpBias:       w.UpBias,
+				DownBias:     w.DownBias,
+			}
+		case "parallel":
+			// Recursively deserialize nested branches with their weights
+			nestedBranches, err := deserializeBranches(def.Branches, w.BranchWeights)
+			if err != nil {
+				return nil, fmt.Errorf("failed to deserialize nested branches: %w", err)
+			}
+
+			// Convert GridPositionDef to GridPosition
+			var gridPositions []GridPosition
+			for _, gp := range def.GridPositions {
+				gridPositions = append(gridPositions, GridPosition{
+					BranchIndex: gp.BranchIndex,
+					TargetRow:   gp.TargetRow,
+					TargetCol:   gp.TargetCol,
+					TargetLayer: gp.TargetLayer,
+				})
+			}
+
+			config = LayerConfig{
+				Type:             LayerParallel,
+				CombineMode:      def.CombineMode,
+				ParallelBranches: nestedBranches,
+				GridPositions:    gridPositions,
+				GridOutputRows:   def.GridOutputRows,
+				GridOutputCols:   def.GridOutputCols,
+				GridOutputLayers: def.GridOutputLayers,
+			}
+		default:
+			return nil, fmt.Errorf("unknown branch type: %s", def.Type)
+		}
+
+		branches[i] = config
+	}
+	return branches, nil
 }
 
 // SerializeModel converts the network to a SavedModel structure
@@ -306,6 +624,26 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 			layerWeights.GateBias = layerConfig.GateBias
 			layerWeights.UpBias = layerConfig.UpBias
 			layerWeights.DownBias = layerConfig.DownBias
+
+		case LayerParallel:
+			layerDef.CombineMode = layerConfig.CombineMode
+			layerDef.GridOutputRows = layerConfig.GridOutputRows
+			layerDef.GridOutputCols = layerConfig.GridOutputCols
+			layerDef.GridOutputLayers = layerConfig.GridOutputLayers
+
+			// Convert GridPosition to GridPositionDef
+			for _, gp := range layerConfig.GridPositions {
+				layerDef.GridPositions = append(layerDef.GridPositions, GridPositionDef{
+					BranchIndex: gp.BranchIndex,
+					TargetRow:   gp.TargetRow,
+					TargetCol:   gp.TargetCol,
+					TargetLayer: gp.TargetLayer,
+				})
+			}
+
+			// Serialize each branch recursively
+			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
+			layerWeights.BranchWeights = serializeBranchWeights(layerConfig.ParallelBranches)
 		}
 
 		config.Layers = append(config.Layers, layerDef)
@@ -603,6 +941,34 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				DownBias:     layerWeights.DownBias,
 			}
 
+		case "parallel":
+			// Deserialize branches recursively with their weights
+			branches, err := deserializeBranches(layerDef.Branches, layerWeights.BranchWeights)
+			if err != nil {
+				return nil, fmt.Errorf("failed to deserialize parallel branches: %w", err)
+			}
+
+			// Convert GridPositionDef to GridPosition
+			var gridPositions []GridPosition
+			for _, gp := range layerDef.GridPositions {
+				gridPositions = append(gridPositions, GridPosition{
+					BranchIndex: gp.BranchIndex,
+					TargetRow:   gp.TargetRow,
+					TargetCol:   gp.TargetCol,
+					TargetLayer: gp.TargetLayer,
+				})
+			}
+
+			layerConfig = LayerConfig{
+				Type:             LayerParallel,
+				CombineMode:      layerDef.CombineMode,
+				ParallelBranches: branches,
+				GridPositions:    gridPositions,
+				GridOutputRows:   layerDef.GridOutputRows,
+				GridOutputCols:   layerDef.GridOutputCols,
+				GridOutputLayers: layerDef.GridOutputLayers,
+			}
+
 		default:
 			return nil, fmt.Errorf("unknown layer type: %s", layerDef.Type)
 		}
@@ -636,6 +1002,8 @@ func layerTypeToString(lt LayerType) string {
 		return "swiglu"
 	case LayerResidual:
 		return "residual"
+	case LayerParallel:
+		return "parallel"
 	default:
 		return "unknown"
 	}
@@ -729,4 +1097,215 @@ func stringToActivation(s string) ActivationType {
 	default:
 		return ActivationScaledReLU
 	}
+}
+
+// BuildNetworkFromJSON creates a neural network from a JSON configuration string
+// This allows building complete neural networks from JSON without manually assigning layers
+// The JSON structure matches the NetworkConfig format used in serialization
+func BuildNetworkFromJSON(jsonConfig string) (*Network, error) {
+	var config NetworkConfig
+	if err := json.Unmarshal([]byte(jsonConfig), &config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+
+	// Default batch size to 1 if not specified
+	batchSize := config.BatchSize
+	if batchSize == 0 {
+		batchSize = 1
+	}
+
+	// Create network with grid structure
+	network := NewNetwork(
+		batchSize,
+		config.GridRows,
+		config.GridCols,
+		config.LayersPerCell,
+	)
+	network.BatchSize = batchSize
+
+	// Validate layer count
+	expectedLayers := config.GridRows * config.GridCols * config.LayersPerCell
+	if len(config.Layers) != expectedLayers {
+		return nil, fmt.Errorf("layer count mismatch: expected %d (rows=%d × cols=%d × layers_per_cell=%d), got %d",
+			expectedLayers, config.GridRows, config.GridCols, config.LayersPerCell, len(config.Layers))
+	}
+
+	// Build each layer from configuration
+	for i, layerDef := range config.Layers {
+		row := i / (config.GridCols * config.LayersPerCell)
+		col := (i / config.LayersPerCell) % config.GridCols
+		layer := i % config.LayersPerCell
+
+		layerConfig, err := buildLayerConfig(layerDef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build layer %d (row=%d, col=%d, layer=%d): %w",
+				i, row, col, layer, err)
+		}
+
+		network.SetLayer(row, col, layer, layerConfig)
+	}
+
+	return network, nil
+}
+
+// BuildNetworkFromFile creates a neural network from a JSON configuration file
+func BuildNetworkFromFile(filename string) (*Network, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	return BuildNetworkFromJSON(string(data))
+}
+
+// buildLayerConfig constructs a LayerConfig from a LayerDefinition
+func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
+	var config LayerConfig
+
+	// Parse activation
+	config.Activation = stringToActivation(def.Activation)
+
+	// Build layer based on type
+	switch def.Type {
+	case "dense":
+		config.Type = LayerDense
+		// Use InputSize/OutputSize for dense layers if Width/Height aren't specified
+		if def.Width > 0 {
+			config.InputHeight = def.Width
+		} else if def.InputSize > 0 {
+			config.InputHeight = def.InputSize
+		} else if def.InputHeight > 0 {
+			config.InputHeight = def.InputHeight
+		}
+
+		if def.Height > 0 {
+			config.OutputHeight = def.Height
+		} else if def.OutputSize > 0 {
+			config.OutputHeight = def.OutputSize
+		} else if def.OutputHeight > 0 {
+			config.OutputHeight = def.OutputHeight
+		}
+		// Initialize weights if not provided (random initialization will happen elsewhere)
+
+	case "conv2d":
+		config.Type = LayerConv2D
+		config.InputChannels = def.InputChannels
+		config.Filters = def.Filters
+		config.KernelSize = def.KernelSize
+		config.Stride = def.Stride
+		config.Padding = def.Padding
+		config.InputHeight = def.InputHeight
+		config.InputWidth = def.InputWidth
+		config.OutputHeight = def.OutputHeight
+		config.OutputWidth = def.OutputWidth
+
+	case "mha", "multi_head_attention":
+		config.Type = LayerMultiHeadAttention
+		config.DModel = def.DModel
+		config.NumHeads = def.NumHeads
+		config.SeqLength = def.SeqLength
+		config.HeadDim = def.DModel / def.NumHeads
+
+	case "rnn":
+		config.Type = LayerRNN
+		config.RNNInputSize = def.InputSize
+		config.HiddenSize = def.HiddenSize
+		config.SeqLength = def.SeqLength
+
+	case "lstm":
+		config.Type = LayerLSTM
+		config.RNNInputSize = def.InputSize
+		config.HiddenSize = def.HiddenSize
+		config.SeqLength = def.SeqLength
+
+	case "softmax":
+		config.Type = LayerSoftmax
+		config.SoftmaxVariant = stringToSoftmaxType(def.SoftmaxVariant)
+		config.SoftmaxRows = def.SoftmaxRows
+		config.SoftmaxCols = def.SoftmaxCols
+		config.Temperature = def.Temperature
+		config.GumbelNoise = def.GumbelNoise
+		config.Mask = def.Mask
+		config.HierarchyLevels = def.HierarchyLevels
+		config.AdaptiveClusters = def.AdaptiveClusters
+		config.MixtureWeights = def.MixtureWeights
+		config.EntmaxAlpha = def.EntmaxAlpha
+
+	case "layer_norm", "layernorm":
+		config.Type = LayerNorm
+		config.NormSize = def.NormSize
+		if def.Epsilon == 0 {
+			config.Epsilon = 1e-5 // Default epsilon
+		} else {
+			config.Epsilon = def.Epsilon
+		}
+
+	case "rms_norm", "rmsnorm":
+		config.Type = LayerRMSNorm
+		config.NormSize = def.NormSize
+		if def.Epsilon == 0 {
+			config.Epsilon = 1e-5 // Default epsilon
+		} else {
+			config.Epsilon = def.Epsilon
+		}
+
+	case "swiglu":
+		config.Type = LayerSwiGLU
+		// Use InputSize/OutputSize for SwiGLU if Width/Height aren't specified
+		if def.InputSize > 0 {
+			config.InputHeight = def.InputSize
+		} else if def.InputHeight > 0 {
+			config.InputHeight = def.InputHeight
+		}
+
+		if def.OutputSize > 0 {
+			config.OutputHeight = def.OutputSize
+		} else if def.OutputHeight > 0 {
+			config.OutputHeight = def.OutputHeight
+		}
+
+	case "residual":
+		config.Type = LayerResidual
+		// Residual layers typically configured via ResidualSkip field
+
+	case "parallel":
+		config.Type = LayerParallel
+		config.CombineMode = def.CombineMode
+		if config.CombineMode == "" {
+			config.CombineMode = "concat" // Default to concatenation
+		}
+
+		// Grid scatter specific fields
+		config.GridOutputRows = def.GridOutputRows
+		config.GridOutputCols = def.GridOutputCols
+		config.GridOutputLayers = def.GridOutputLayers
+
+		// Convert GridPositionDef to GridPosition
+		if len(def.GridPositions) > 0 {
+			config.GridPositions = make([]GridPosition, len(def.GridPositions))
+			for i, posDef := range def.GridPositions {
+				config.GridPositions[i] = GridPosition{
+					BranchIndex: posDef.BranchIndex,
+					TargetRow:   posDef.TargetRow,
+					TargetCol:   posDef.TargetCol,
+					TargetLayer: posDef.TargetLayer,
+				}
+			}
+		}
+
+		// Build branch configurations
+		config.ParallelBranches = make([]LayerConfig, len(def.Branches))
+		for i, branchDef := range def.Branches {
+			branchConfig, err := buildLayerConfig(branchDef)
+			if err != nil {
+				return config, fmt.Errorf("parallel branch %d: %w", i, err)
+			}
+			config.ParallelBranches[i] = branchConfig
+		}
+
+	default:
+		return config, fmt.Errorf("unknown layer type: %s", def.Type)
+	}
+
+	return config, nil
 }

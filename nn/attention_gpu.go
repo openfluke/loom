@@ -768,6 +768,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 // UpdateWeights applies gradients to network weights using simple SGD
 // This should be called after BackwardGPU/BackwardCPU to update the model parameters
 func (n *Network) UpdateWeights(learningRate float32) {
+	// Store learning rate for parallel layer updates during backward
+	n.learningRate = learningRate
+
 	kernelGrads := n.KernelGradients()
 	biasGrads := n.BiasGradients()
 
@@ -879,12 +882,192 @@ func (n *Network) UpdateWeights(learningRate float32) {
 						}
 					}
 				}
+
+				// Update Parallel layer branches
+				if layer.Type == LayerParallel && len(layer.ParallelBranches) > 0 {
+					// Update each branch using its gradients
+					if layerIdx < len(kernelGrads) && kernelGrads[layerIdx] != nil {
+						kOffset := 0
+						bOffset := 0
+
+						for i := range layer.ParallelBranches {
+							branchCfg := &layer.ParallelBranches[i]
+
+							// Update weights based on branch layer type
+							switch branchCfg.Type {
+							case LayerDense:
+								// Update kernel (weights)
+								kernelSize := len(branchCfg.Kernel)
+								if kOffset+kernelSize <= len(kernelGrads[layerIdx]) {
+									for j := range branchCfg.Kernel {
+										branchCfg.Kernel[j] -= learningRate * kernelGrads[layerIdx][kOffset+j]
+									}
+								}
+								kOffset += kernelSize
+
+								// Update bias
+								if layerIdx < len(biasGrads) && biasGrads[layerIdx] != nil {
+									biasSize := len(branchCfg.Bias)
+									if bOffset+biasSize <= len(biasGrads[layerIdx]) {
+										for j := range branchCfg.Bias {
+											branchCfg.Bias[j] -= learningRate * biasGrads[layerIdx][bOffset+j]
+										}
+									}
+									bOffset += biasSize
+								}
+
+							case LayerConv2D:
+								// Update Conv2D kernel and bias
+								kernelSize := len(branchCfg.Kernel)
+								if kOffset+kernelSize <= len(kernelGrads[layerIdx]) {
+									for j := range branchCfg.Kernel {
+										branchCfg.Kernel[j] -= learningRate * kernelGrads[layerIdx][kOffset+j]
+									}
+								}
+								kOffset += kernelSize
+
+								if layerIdx < len(biasGrads) && biasGrads[layerIdx] != nil {
+									biasSize := len(branchCfg.Bias)
+									if bOffset+biasSize <= len(biasGrads[layerIdx]) {
+										for j := range branchCfg.Bias {
+											branchCfg.Bias[j] -= learningRate * biasGrads[layerIdx][bOffset+j]
+										}
+									}
+									bOffset += biasSize
+								}
+
+							case LayerMultiHeadAttention:
+								// Update Q, K, V, Output weights and biases
+								// Weights are concatenated: [QWeights, KWeights, VWeights, OutputWeight]
+								for _, weights := range []*[]float32{&branchCfg.QWeights, &branchCfg.KWeights, &branchCfg.VWeights, &branchCfg.OutputWeight} {
+									wSize := len(*weights)
+									if kOffset+wSize <= len(kernelGrads[layerIdx]) {
+										for j := range *weights {
+											(*weights)[j] -= learningRate * kernelGrads[layerIdx][kOffset+j]
+										}
+									}
+									kOffset += wSize
+								}
+
+								// Biases: [QBias, KBias, VBias, OutputBias]
+								if layerIdx < len(biasGrads) && biasGrads[layerIdx] != nil {
+									for _, biases := range []*[]float32{&branchCfg.QBias, &branchCfg.KBias, &branchCfg.VBias, &branchCfg.OutputBias} {
+										bSize := len(*biases)
+										if bOffset+bSize <= len(biasGrads[layerIdx]) {
+											for j := range *biases {
+												(*biases)[j] -= learningRate * biasGrads[layerIdx][bOffset+j]
+											}
+										}
+										bOffset += bSize
+									}
+								}
+
+							case LayerRNN:
+								// Update RNN weights: [WeightIH, WeightHH, BiasH]
+								for _, weights := range []*[]float32{&branchCfg.WeightIH, &branchCfg.WeightHH, &branchCfg.BiasH} {
+									wSize := len(*weights)
+									if kOffset+wSize <= len(kernelGrads[layerIdx]) {
+										for j := range *weights {
+											(*weights)[j] -= learningRate * kernelGrads[layerIdx][kOffset+j]
+										}
+									}
+									kOffset += wSize
+								}
+
+							case LayerLSTM:
+								// Update LSTM weights for all gates
+								for _, weights := range []*[]float32{
+									&branchCfg.WeightIH_i, &branchCfg.WeightHH_i, &branchCfg.BiasH_i,
+									&branchCfg.WeightIH_f, &branchCfg.WeightHH_f, &branchCfg.BiasH_f,
+									&branchCfg.WeightIH_g, &branchCfg.WeightHH_g, &branchCfg.BiasH_g,
+									&branchCfg.WeightIH_o, &branchCfg.WeightHH_o, &branchCfg.BiasH_o,
+								} {
+									wSize := len(*weights)
+									if kOffset+wSize <= len(kernelGrads[layerIdx]) {
+										for j := range *weights {
+											(*weights)[j] -= learningRate * kernelGrads[layerIdx][kOffset+j]
+										}
+									}
+									kOffset += wSize
+								}
+
+							case LayerSwiGLU:
+								// Update SwiGLU weights: GateWeights, UpWeights, DownWeights
+								for _, weights := range []*[]float32{&branchCfg.GateWeights, &branchCfg.UpWeights, &branchCfg.DownWeights} {
+									wSize := len(*weights)
+									if kOffset+wSize <= len(kernelGrads[layerIdx]) {
+										for j := range *weights {
+											(*weights)[j] -= learningRate * kernelGrads[layerIdx][kOffset+j]
+										}
+									}
+									kOffset += wSize
+								}
+								// Update biases
+								if layerIdx < len(biasGrads) && biasGrads[layerIdx] != nil {
+									for _, biases := range []*[]float32{&branchCfg.GateBias, &branchCfg.UpBias, &branchCfg.DownBias} {
+										bSize := len(*biases)
+										if bOffset+bSize <= len(biasGrads[layerIdx]) {
+											for j := range *biases {
+												(*biases)[j] -= learningRate * biasGrads[layerIdx][bOffset+j]
+											}
+										}
+										bOffset += bSize
+									}
+								}
+
+							case LayerNorm:
+								// Update LayerNorm parameters: Gamma and Beta
+								if branchCfg.Gamma != nil {
+									gSize := len(branchCfg.Gamma)
+									if kOffset+gSize <= len(kernelGrads[layerIdx]) {
+										for j := range branchCfg.Gamma {
+											branchCfg.Gamma[j] -= learningRate * kernelGrads[layerIdx][kOffset+j]
+										}
+									}
+									kOffset += gSize
+								}
+								if branchCfg.Beta != nil {
+									bSize := len(branchCfg.Beta)
+									if kOffset+bSize <= len(kernelGrads[layerIdx]) {
+										for j := range branchCfg.Beta {
+											branchCfg.Beta[j] -= learningRate * kernelGrads[layerIdx][kOffset+j]
+										}
+									}
+									kOffset += bSize
+								}
+
+							case LayerRMSNorm:
+								// Update RMSNorm parameter: Gamma only (no Beta)
+								if branchCfg.Gamma != nil {
+									gSize := len(branchCfg.Gamma)
+									if kOffset+gSize <= len(kernelGrads[layerIdx]) {
+										for j := range branchCfg.Gamma {
+											branchCfg.Gamma[j] -= learningRate * kernelGrads[layerIdx][kOffset+j]
+										}
+									}
+									kOffset += gSize
+								}
+
+							case LayerSoftmax:
+								// Softmax has no trainable parameters, skip
+
+							case LayerParallel:
+								// Nested parallel - recursively update weights
+								// For nested parallel, gradients are already flattened
+								// We need to split them by branch and recurse
+								// This is complex, so for now we'll skip it
+								// TODO: Implement proper nested parallel weight updates
+							}
+						}
+
+						// Copy updated branches back to network
+						n.Layers[layerIdx] = *layer
+					}
+				}
 			}
 		}
 	}
-}
-
-// ZeroGradients clears all accumulated gradients after weight update
+} // ZeroGradients clears all accumulated gradients after weight update
 func (n *Network) ZeroGradients() {
 	// Zero all kernel gradients
 	for i := range n.kernelGradients {

@@ -33,16 +33,17 @@ This directory contains comprehensive examples demonstrating LOOM's unique neura
 
 ## Layer Types Overview
 
-LOOM supports 6 layer types that can be mixed and matched:
+LOOM supports 7 layer types that can be mixed and matched:
 
-| Layer Type             | Purpose                | Example Use Case                            |
-| ---------------------- | ---------------------- | ------------------------------------------- |
-| **Dense**              | Fully-connected layer  | Standard neural networks                    |
-| **Conv2D**             | 2D Convolution         | Image processing, spatial features          |
-| **MultiHeadAttention** | Transformer attention  | Sequence modeling, relational reasoning     |
-| **RNN**                | Recurrent network      | Temporal sequences                          |
-| **LSTM**               | Long Short-Term Memory | Long-term dependencies                      |
-| **Softmax**            | 10 different variants  | Action selection, probability distributions |
+| Layer Type             | Purpose                           | Example Use Case                            |
+| ---------------------- | --------------------------------- | ------------------------------------------- |
+| **Dense**              | Fully-connected layer             | Standard neural networks                    |
+| **Conv2D**             | 2D Convolution                    | Image processing, spatial features          |
+| **MultiHeadAttention** | Transformer attention             | Sequence modeling, relational reasoning     |
+| **RNN**                | Recurrent network                 | Temporal sequences                          |
+| **LSTM**               | Long Short-Term Memory            | Long-term dependencies                      |
+| **Softmax**            | 10 different variants             | Action selection, probability distributions |
+| **Parallel**           | 4 combine modes + nested branches | Multi-agent, heterogeneous, grid scatter    |
 
 ---
 
@@ -486,6 +487,117 @@ Unit 3: [0.333, 0.333, 0.333] sum=1.0 → confused
 
 ```bash
 go run softmax_comparison.go
+```
+
+---
+
+#### `json_grid_scatter_demo.go` ⚡ **← GRID SCATTER MODE!**
+
+**Purpose:** Demonstrates the new **grid scatter** parallel layer mode - place branch outputs at specific 2D/3D grid positions
+
+**The 4 Examples:**
+
+1. **Spatial Feature Router**
+
+   - 4 branches (Dense, LSTM, Dense, MHA) → 2×2 spatial grid
+   - Different architectures per grid position
+   - Use case: Different processing for different spatial regions
+
+2. **Multi-Resolution Pyramid**
+
+   - 3 branches → 1×1×3 grid using depth dimension
+   - Demonstrates 3D grid positioning
+   - Use case: Multi-scale feature processing
+
+3. **Training - Dynamic Spatial Routing**
+
+   - Trains grid scatter network on classification task
+   - **Result:** 100% accuracy (6/6), 28.24% loss reduction
+   - Proves backpropagation works through grid scatter
+
+4. **Nested Grid Scatter**
+   - Grid scatter WITHIN grid scatter (recursive composition)
+   - Demonstrates unlimited nesting capability
+   - Use case: Complex hierarchical architectures
+
+**What makes grid scatter unique:**
+
+- **Heterogeneous branches:** Each branch can be different layer type
+- **Explicit spatial topology:** 2D/3D positioning vs flat concatenation
+- **Selective placement:** Choose exactly where each output goes
+- **Nested support:** Grid scatter can contain more grid scatter
+
+**Architecture example:**
+
+```go
+// Parallel layer with grid_scatter mode
+parallel := nn.InitParallelLayer(
+    nn.GridScatter,  // Place outputs at specific positions
+    4,               // 4 branches
+    gridPositions,   // Where each branch output goes
+    2, 2, 1,        // 2×2 grid output
+)
+```
+
+```bash
+go run json_grid_scatter_demo.go
+```
+
+---
+
+#### `json_grid_scatter_agents.go` 🤖 **← MULTI-AGENT GRID SCATTER!**
+
+**Purpose:** Advanced grid scatter examples with heterogeneous architectures doing things traditional neural networks can't
+
+**The 4 Examples:**
+
+1. **Heterogeneous Agent Swarm**
+
+   - 6 different branch types: LSTM + MHA + RNN + Dense×3
+   - Each agent type has different architecture
+   - Use case: Multi-robot swarms with specialized capabilities
+
+2. **Multi-Scale Normalization**
+
+   - LayerNorm + RMSNorm + SwiGLU in spatial grid
+   - Different normalization per grid position
+   - Use case: Adaptive normalization strategies
+
+3. **Hierarchical Reinforcement Learning**
+
+   - Strategy layer (Softmax) → Tactics (LSTM/RNN/Dense) → Actions
+   - Uses grid depth for hierarchy
+   - Use case: Complex decision hierarchies in games/robotics
+
+4. **Training Multi-Agent Coordination**
+   - 3 heterogeneous agents collaborate on task
+   - **Result:** 100% accuracy (6/6), 52.52% loss reduction
+   - Agents: Softmax router + LSTM temporal + Dense reactive
+
+**What traditional NNs can't do:**
+
+- **Heterogeneous ensembles:** Different architectures per agent
+- **Explicit spatial structure:** 2D/3D topology encoded in network
+- **Selective gradient routing:** Each branch gets gradients from its position
+- **Dynamic architecture:** Change grid structure at runtime
+
+**Hierarchical RL example:**
+
+```go
+// Strategy layer decides high-level plan
+strategy := nn.InitSoftmaxLayer()
+
+// Tactics layer - different per strategy type
+tactics := nn.InitParallelLayer(
+    nn.GridScatter,
+    3,  // LSTM, RNN, Dense
+    positions,  // Depth positions for hierarchy
+    1, 1, 3,   // 1×1×3 grid (using depth)
+)
+```
+
+```bash
+go run json_grid_scatter_agents.go
 ```
 
 ---

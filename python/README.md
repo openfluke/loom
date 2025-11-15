@@ -2,7 +2,7 @@
 
 **Wrapper for Embedding Loom Via External (C-ABI) Toolchain**
 
-High-performance neural network library with **transformer inference** and WebGPU acceleration for Python via C-ABI bindings.
+High-performance neural network library with **transformer inference** for Python via C-ABI bindings. CPU-first with reliable execution.
 
 ## Installation
 
@@ -12,7 +12,108 @@ pip install welvet
 
 ## Quick Start
 
-### 🚀 NEW: Transformer Inference (LLMs)
+### 🎉 NEW: Simple API (Recommended)
+
+The new simple API provides a streamlined interface with **cross-platform consistency**:
+
+```python
+import welvet
+import json
+
+# Create network from JSON configuration
+config = {
+    "batch_size": 1,
+    "grid_rows": 1,
+    "grid_cols": 3,
+    "layers_per_cell": 1,
+    "layers": [
+        {"type": "dense", "input_size": 8, "output_size": 16, "activation": "relu"},
+        {
+            "type": "parallel",
+            "combine_mode": "grid_scatter",
+            "grid_output_rows": 3,
+            "grid_output_cols": 1,
+            "grid_output_layers": 1,
+            "grid_positions": [
+                {"branch_index": 0, "target_row": 0, "target_col": 0, "target_layer": 0},
+                {"branch_index": 1, "target_row": 1, "target_col": 0, "target_layer": 0},
+                {"branch_index": 2, "target_row": 2, "target_col": 0, "target_layer": 0}
+            ],
+            "branches": [
+                {"type": "parallel", "combine_mode": "add", "branches": [
+                    {"type": "dense", "input_size": 16, "output_size": 8, "activation": "relu"},
+                    {"type": "dense", "input_size": 16, "output_size": 8, "activation": "gelu"}
+                ]},
+                {"type": "lstm", "input_size": 16, "hidden_size": 8, "seq_length": 1},
+                {"type": "rnn", "input_size": 16, "hidden_size": 8, "seq_length": 1}
+            ]
+        },
+        {"type": "dense", "input_size": 24, "output_size": 2, "activation": "sigmoid"}
+    ]
+}
+
+# Create network (no handle management!)
+welvet.create_network_from_json(config)
+
+# Training data
+batches = [
+    {"Input": [0.2] * 4 + [0.8] * 4, "Target": [1.0, 0.0]},
+    {"Input": [0.9] * 4 + [0.1] * 4, "Target": [0.0, 1.0]},
+    {"Input": [0.7] * 4 + [0.3] * 4, "Target": [0.0, 1.0]},
+    {"Input": [0.3] * 4 + [0.7] * 4, "Target": [1.0, 0.0]},
+]
+
+# Train
+training_config = {
+    "Epochs": 800,
+    "LearningRate": 0.15,
+    "UseGPU": False,
+    "PrintEveryBatch": 0,
+    "GradientClip": 1.0,
+    "LossType": "mse",
+    "Verbose": False
+}
+result = welvet.train_simple(batches, training_config)
+
+# Forward pass
+output = welvet.forward_simple([0.2] * 4 + [0.8] * 4)
+print(f"Output: {output}")  # [0.950, 0.050] → Class 0
+
+# Evaluate with deviation metrics
+inputs = [batch["Input"] for batch in batches]
+expected = [0, 1, 1, 0]
+metrics = welvet.evaluate_network_simple(inputs, expected)
+print(f"Quality Score: {metrics['score']}/100")  # 100/100
+print(f"Average Deviation: {metrics['avg_deviation']:.2f}%")  # 0.00%
+
+# Save/Load model
+model_json = welvet.save_model_simple("my_model")
+print(f"Model size: {len(model_json)} bytes")  # ~26KB
+
+# Load in new session
+welvet.load_model_simple(model_json, "my_model")
+output2 = welvet.forward_simple([0.2] * 4 + [0.8] * 4)
+# output2 == output (bit-for-bit identical!)
+```
+
+**Simple API Functions:**
+
+- `create_network_from_json(config)` - Create from JSON
+- `forward_simple(inputs)` - Forward pass
+- `backward_simple(gradients)` - Backward pass
+- `update_weights_simple(learning_rate)` - Update weights
+- `train_simple(batches, config)` - Train network
+- `save_model_simple(model_id)` - Save to JSON string
+- `load_model_simple(json_string, model_id)` - Load from JSON
+- `get_network_info_simple()` - Get network info
+- `evaluate_network_simple(inputs, expected)` - Evaluate with metrics
+
+**Cross-Platform Consistency:**
+The simple API matches the API in TypeScript, C#, C, and WASM - identical function signatures and behavior!
+
+See `examples/grid_scatter_demo.py` for a complete working example.
+
+### 🚀 Transformer Inference (LLMs)
 
 Run LLaMA, SmolLM, GPT-2, and other transformers with **streaming support**!
 
@@ -73,12 +174,12 @@ model_json = welvet.save_model_to_string(network, "my_model")
 ```python
 import welvet
 
-# Create a neural network with all 5 layer types
+# Create a neural network with all 6 layer types
 network = welvet.create_network(
     input_size=32,
     grid_rows=1,
     grid_cols=1,
-    layers_per_cell=6,
+    layers_per_cell=7,
     use_gpu=True
 )
 
@@ -88,6 +189,7 @@ conv2d = welvet.call_layer_init("InitConv2DLayer", [4, 4, 2, 4, 3, 2, 1, welvet.
 attention = welvet.call_layer_init("InitMultiHeadAttentionLayer", [4, 4, 2, welvet.Activation.TANH])
 rnn = welvet.call_layer_init("InitRNNLayer", [4, 8, 4, 32])
 lstm = welvet.call_layer_init("InitLSTMLayer", [8, 4, 4, 16])
+parallel = welvet.call_layer_init("InitParallelLayer", [0, 2])  # concat mode, 2 branches
 dense2 = welvet.call_layer_init("InitDenseLayer", [16, 2, welvet.Activation.SIGMOID])
 
 # Set layers in network
@@ -96,7 +198,8 @@ welvet.set_layer(network, 0, 0, 1, conv2d)
 welvet.set_layer(network, 0, 0, 2, attention)
 welvet.set_layer(network, 0, 0, 3, rnn)
 welvet.set_layer(network, 0, 0, 4, lstm)
-welvet.set_layer(network, 0, 0, 5, dense2)
+welvet.set_layer(network, 0, 0, 5, parallel)
+welvet.set_layer(network, 0, 0, 6, dense2)
 
 # Prepare training data
 batches = [
@@ -153,9 +256,9 @@ Output:
 
 ## Features
 
-- 🧠 **7 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants)
+- 🧠 **8 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants), Parallel (4 combine modes)
 - ✅ **Full CPU Implementation**: Every layer works on CPU with complete forward/backward passes
-- 🚀 **GPU Acceleration (Optional)**: WebGPU compute shaders for Dense, Conv2D, and Attention (10-100x speedup)
+- 🚀 **Reliable CPU Execution**: All layers fully tested on CPU with complete forward/backward passes (GPU code exists but untested)
 - 🎯 **Registry-based Initialization**: Dynamic layer creation via `call_layer_init()` for any layer type
 - ⚡ **High-Level Training API**: Built-in `train()` function with automatic gradients and loss tracking
 - 🎯 **Cross-Platform**: Pre-compiled binaries for Linux, macOS, Windows, Android
@@ -221,7 +324,7 @@ Creates a new grid-based neural network.
 - `grid_rows` (int): Grid rows (default: 2)
 - `grid_cols` (int): Grid columns (default: 2)
 - `layers_per_cell` (int): Layers per grid cell (default: 3)
-- `use_gpu` (bool): Enable GPU acceleration (default: False)
+- `use_gpu` (bool): Enable GPU acceleration (default: False) - **Note: GPU code exists but is untested; use CPU for reliable execution**
 
 **Simplified API:**
 

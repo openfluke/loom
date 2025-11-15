@@ -1,214 +1,352 @@
+/*
+ * Grid Scatter Multi-Agent Demo - LOOM C API
+ * 3 heterogeneous agents collaborate for binary classification
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <stdint.h>
-#include <stdbool.h>
+#include <math.h>
+#include "libloom.h"
 
-// Forward declarations of LOOM C ABI functions
-extern char* Loom_NewNetwork(int inputSize, int gridRows, int gridCols, int layersPerCell, bool useGPU);
-extern char* Loom_InitDenseLayer(int inputSize, int outputSize, int activation);
-extern char* Loom_SetLayer(int64_t handle, int row, int col, int layer, char* configJSON);
-extern char* Loom_Call(int64_t handle, char* method, char* argsJSON);
-extern char* Loom_ListMethods(int64_t handle);
-extern char* Loom_GetInfo(int64_t handle);
-extern char* Loom_SaveModel(int64_t handle, char* modelID);
-extern char* Loom_LoadModel(char* jsonString, char* modelID);
-extern void Loom_Free(int64_t handle);
-extern void Loom_FreeCString(char* p);
-extern char* Loom_GetVersion();
-
-// Helper to extract integer from JSON
-int64_t extractHandle(const char* json) {
-    const char* handleKey = "\"handle\":";
-    const char* pos = strstr(json, handleKey);
-    if (!pos) return -1;
-    return atoll(pos + strlen(handleKey));
-}
-
-// Helper to measure time in milliseconds
-double getTime() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+void parse_output(const char* json, float* out1, float* out2) {
+    // Simple JSON parser for [float, float]
+    const char* start = strchr(json, '[');
+    if (start) {
+        sscanf(start, "[%f,%f]", out1, out2);
+    }
 }
 
 int main() {
-    printf("=== LOOM C ABI Simple Benchmark ===\n");
+    printf("🤖 LOOM C API - Grid Scatter Multi-Agent Training\n");
+    printf("Task: 3 agents learn to collaborate for binary classification\n\n");
+
+    // Multi-agent network configuration
+    const char* config = 
+        "{"
+        "  \"batch_size\": 1,"
+        "  \"grid_rows\": 1,"
+        "  \"grid_cols\": 3,"
+        "  \"layers_per_cell\": 1,"
+        "  \"layers\": ["
+        "    {"
+        "      \"type\": \"dense\","
+        "      \"input_size\": 8,"
+        "      \"output_size\": 16,"
+        "      \"activation\": \"relu\""
+        "    },"
+        "    {"
+        "      \"type\": \"parallel\","
+        "      \"combine_mode\": \"grid_scatter\","
+        "      \"grid_output_rows\": 3,"
+        "      \"grid_output_cols\": 1,"
+        "      \"grid_output_layers\": 1,"
+        "      \"grid_positions\": ["
+        "        {\"branch_index\": 0, \"target_row\": 0, \"target_col\": 0, \"target_layer\": 0},"
+        "        {\"branch_index\": 1, \"target_row\": 1, \"target_col\": 0, \"target_layer\": 0},"
+        "        {\"branch_index\": 2, \"target_row\": 2, \"target_col\": 0, \"target_layer\": 0}"
+        "      ],"
+        "      \"branches\": ["
+        "        {"
+        "          \"type\": \"parallel\","
+        "          \"combine_mode\": \"add\","
+        "          \"branches\": ["
+        "            {\"type\": \"dense\", \"input_size\": 16, \"output_size\": 8, \"activation\": \"relu\"},"
+        "            {\"type\": \"dense\", \"input_size\": 16, \"output_size\": 8, \"activation\": \"gelu\"}"
+        "          ]"
+        "        },"
+        "        {\"type\": \"lstm\", \"input_size\": 16, \"hidden_size\": 8, \"seq_length\": 1},"
+        "        {\"type\": \"rnn\", \"input_size\": 16, \"hidden_size\": 8, \"seq_length\": 1}"
+        "      ]"
+        "    },"
+        "    {"
+        "      \"type\": \"dense\","
+        "      \"input_size\": 24,"
+        "      \"output_size\": 2,"
+        "      \"activation\": \"sigmoid\""
+        "    }"
+        "  ]"
+        "}";
+
+    printf("Architecture:\n");
+    printf("  Shared Layer → Grid Scatter (3 agents) → Decision\n");
+    printf("  Agent 0: Feature Extractor (ensemble of 2 dense)\n");
+    printf("  Agent 1: Transformer (LSTM)\n");
+    printf("  Agent 2: Integrator (RNN)\n");
+    printf("Task: Binary classification (sum comparison)\n\n");
+
+    printf("Building network from JSON...\n");
+    char* result = CreateLoomNetwork(config);
+    if (!result) {
+        fprintf(stderr, "Failed to create network\n");
+        return 1;
+    }
+    printf("✅ Agent network created!\n");
+    FreeLoomString(result);
+
+    // Training data
+    float batch1_input[] = {0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8};
+    float batch1_target[] = {1.0, 0.0};
     
-    // Get version
-    char* version = Loom_GetVersion();
-    printf("Version: %s\n\n", version);
-    Loom_FreeCString(version);
+    float batch2_input[] = {0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1, 0.1};
+    float batch2_target[] = {0.0, 1.0};
     
-    // Test configuration
-    int inputSize = 784;    // MNIST-like input
-    int gridRows = 2;
-    int gridCols = 1;
-    int layersPerCell = 1;
-    int iterations = 100;
+    float batch3_input[] = {0.7, 0.7, 0.7, 0.7, 0.3, 0.3, 0.3, 0.3};
+    float batch3_target[] = {0.0, 1.0};
     
-    printf("Network: %dx%dx%d grid, input_size=%d\n", gridRows, gridCols, layersPerCell, inputSize);
-    printf("Iterations: %d\n\n", iterations);
+    float batch4_input[] = {0.3, 0.3, 0.3, 0.3, 0.7, 0.7, 0.7, 0.7};
+    float batch4_target[] = {1.0, 0.0};
+
+    // Test BEFORE training
+    printf("\n📊 Before Training:\n");
+    float out[2];
     
-    // ===== CPU Test =====
-    printf("--- CPU Test ---\n");
-    double cpuCreateStart = getTime();
-    char* cpuNetResult = Loom_NewNetwork(inputSize, gridRows, gridCols, layersPerCell, false);
-    double cpuCreateEnd = getTime();
+    char* pred = LoomForward(batch1_input, 8);
+    parse_output(pred, &out[0], &out[1]);
+    printf("Sample 0: [%.3f, %.3f] → Class %d (expected 0)\n", out[0], out[1], out[1] > out[0] ? 1 : 0);
+    FreeLoomString(pred);
     
-    int64_t cpuHandle = extractHandle(cpuNetResult);
-    if (cpuHandle < 0) {
-        printf("Error: Failed to create CPU network: %s\n", cpuNetResult);
-        Loom_FreeCString(cpuNetResult);
+    pred = LoomForward(batch2_input, 8);
+    parse_output(pred, &out[0], &out[1]);
+    printf("Sample 1: [%.3f, %.3f] → Class %d (expected 1)\n", out[0], out[1], out[1] > out[0] ? 1 : 0);
+    FreeLoomString(pred);
+    
+    pred = LoomForward(batch3_input, 8);
+    parse_output(pred, &out[0], &out[1]);
+    printf("Sample 2: [%.3f, %.3f] → Class %d (expected 1)\n", out[0], out[1], out[1] > out[0] ? 1 : 0);
+    FreeLoomString(pred);
+    
+    pred = LoomForward(batch4_input, 8);
+    parse_output(pred, &out[0], &out[1]);
+    printf("Sample 3: [%.3f, %.3f] → Class %d (expected 0)\n", out[0], out[1], out[1] > out[0] ? 1 : 0);
+    FreeLoomString(pred);
+
+    printf("\nTraining for 800 epochs with learning rate 0.150\n");
+    
+    // Use LoomTrain like the JavaScript version
+    const char* batches_json = 
+        "["
+        "  {\"Input\": [0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8], \"Target\": [1.0, 0.0]},"
+        "  {\"Input\": [0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1, 0.1], \"Target\": [0.0, 1.0]},"
+        "  {\"Input\": [0.7, 0.7, 0.7, 0.7, 0.3, 0.3, 0.3, 0.3], \"Target\": [0.0, 1.0]},"
+        "  {\"Input\": [0.3, 0.3, 0.3, 0.3, 0.7, 0.7, 0.7, 0.7], \"Target\": [1.0, 0.0]}"
+        "]";
+    
+    const char* config_json = 
+        "{"
+        "  \"Epochs\": 800,"
+        "  \"LearningRate\": 0.15,"
+        "  \"UseGPU\": false,"
+        "  \"PrintEveryBatch\": 0,"
+        "  \"GradientClip\": 1.0,"
+        "  \"LossType\": \"mse\","
+        "  \"Verbose\": false"
+        "}";
+    
+    clock_t start = clock();
+    char* train_result = LoomTrain((char*)batches_json, (char*)config_json);
+    clock_t end = clock();
+    double elapsed = (double)(end - start) / CLOCKS_PER_SEC;
+    
+    // Parse training result
+    float initial_loss = 0.0, final_loss = 0.0;
+    const char* p = train_result;
+    if ((p = strstr(p, "\"LossHistory\":["))) {
+        sscanf(p, "\"LossHistory\":[%f", &initial_loss);
+    }
+    p = train_result;
+    if ((p = strstr(p, "\"FinalLoss\":"))) {
+        sscanf(p, "\"FinalLoss\":%f", &final_loss);
+    }
+    
+    printf("✅ Training complete!\n");
+    printf("Training time: %.2f seconds\n", elapsed);
+    if (initial_loss > 0) {
+        printf("Initial Loss: %.6f\n", initial_loss);
+        printf("Final Loss: %.6f\n", final_loss);
+        float improvement = ((initial_loss - final_loss) / initial_loss) * 100.0;
+        printf("Improvement: %.2f%%\n", improvement);
+    }
+    printf("Total Epochs: 800\n");
+    
+    FreeLoomString(train_result);
+
+    // Test AFTER training
+    printf("\n📊 After Training:\n");
+    float original_preds[4][2]; // Store original predictions
+    
+    pred = LoomForward(batch1_input, 8);
+    parse_output(pred, &out[0], &out[1]);
+    original_preds[0][0] = out[0];
+    original_preds[0][1] = out[1];
+    printf("Sample 0: [%.3f, %.3f] → Class %d (expected 0) %s\n", 
+           out[0], out[1], out[1] > out[0] ? 1 : 0,
+           (out[1] > out[0] ? 1 : 0) == 0 ? "✓" : "✗");
+    FreeLoomString(pred);
+    
+    pred = LoomForward(batch2_input, 8);
+    parse_output(pred, &out[0], &out[1]);
+    original_preds[1][0] = out[0];
+    original_preds[1][1] = out[1];
+    printf("Sample 1: [%.3f, %.3f] → Class %d (expected 1) %s\n", 
+           out[0], out[1], out[1] > out[0] ? 1 : 0,
+           (out[1] > out[0] ? 1 : 0) == 1 ? "✓" : "✗");
+    FreeLoomString(pred);
+    
+    pred = LoomForward(batch3_input, 8);
+    parse_output(pred, &out[0], &out[1]);
+    original_preds[2][0] = out[0];
+    original_preds[2][1] = out[1];
+    printf("Sample 2: [%.3f, %.3f] → Class %d (expected 1) %s\n", 
+           out[0], out[1], out[1] > out[0] ? 1 : 0,
+           (out[1] > out[0] ? 1 : 0) == 1 ? "✓" : "✗");
+    FreeLoomString(pred);
+    
+    pred = LoomForward(batch4_input, 8);
+    parse_output(pred, &out[0], &out[1]);
+    original_preds[3][0] = out[0];
+    original_preds[3][1] = out[1];
+    printf("Sample 3: [%.3f, %.3f] → Class %d (expected 0) %s\n", 
+           out[0], out[1], out[1] > out[0] ? 1 : 0,
+           (out[1] > out[0] ? 1 : 0) == 0 ? "✓" : "✗");
+    FreeLoomString(pred);
+
+    // Use EvaluateNetwork for detailed accuracy metrics
+    printf("\n📊 Evaluating with EvaluateNetwork...\n");
+    
+    // Prepare inputs and expected outputs as JSON
+    const char* inputs_json = 
+        "["
+        "  [0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8],"
+        "  [0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1, 0.1],"
+        "  [0.7, 0.7, 0.7, 0.7, 0.3, 0.3, 0.3, 0.3],"
+        "  [0.3, 0.3, 0.3, 0.3, 0.7, 0.7, 0.7, 0.7]"
+        "]";
+    
+    const char* expected_json = "[0.0, 1.0, 1.0, 0.0]";  // Class labels
+    
+    char* eval_result = LoomEvaluateNetwork((char*)inputs_json, (char*)expected_json);
+    
+    if (strstr(eval_result, "error")) {
+        printf("Evaluation error: %s\n", eval_result);
+    } else {
+        // Parse metrics from JSON (simplified parsing)
+        int total_samples = 0;
+        float quality_score = 0.0;
+        float avg_deviation = 0.0;
+        int failures = 0;
+        
+        // Simple JSON parsing
+        const char* p = eval_result;
+        if ((p = strstr(p, "\"total_samples\":"))) {
+            sscanf(p, "\"total_samples\":%d", &total_samples);
+        }
+        p = eval_result;
+        if ((p = strstr(p, "\"score\":"))) {
+            sscanf(p, "\"score\":%f", &quality_score);
+        }
+        p = eval_result;
+        if ((p = strstr(p, "\"avg_deviation\":"))) {
+            sscanf(p, "\"avg_deviation\":%f", &avg_deviation);
+        }
+        p = eval_result;
+        if ((p = strstr(p, "\"failures\":"))) {
+            sscanf(p, "\"failures\":%d", &failures);
+        }
+        
+        printf("\n=== Evaluation Metrics ===\n");
+        printf("Total Samples: %d\n", total_samples);
+        printf("Quality Score: %.2f/100\n", quality_score);
+        printf("Average Deviation: %.2f%%\n", avg_deviation);
+        printf("Failures (>100%% deviation): %d\n", failures);
+        
+        // Parse bucket counts
+        printf("\nDeviation Distribution:\n");
+        const char* buckets[] = {"0-10%", "10-20%", "20-30%", "30-40%", "40-50%", "50-100%", "100%+"};
+        for (int i = 0; i < 7; i++) {
+            char search[100];
+            sprintf(search, "\"%s\":{\"range_min\"", buckets[i]);
+            p = strstr(eval_result, search);
+            if (p) {
+                p = strstr(p, "\"count\":");
+                if (p) {
+                    int count = 0;
+                    sscanf(p, "\"count\":%d", &count);
+                    if (count > 0) {
+                        float percentage = (count * 100.0) / total_samples;
+                        int bar_length = (int)((count * 20.0) / total_samples);
+                        printf("  %-8s: %d samples (%.1f%%) ", buckets[i], count, percentage);
+                        for (int j = 0; j < bar_length; j++) printf("█");
+                        printf("\n");
+                    }
+                }
+            }
+        }
+    }
+    
+    FreeLoomString(eval_result);
+
+    printf("\n✅ Multi-agent training complete!\n");
+
+    // Save and reload model to verify serialization
+    printf("\n💾 Testing model save/load...\n");
+    
+    char* saved_model = LoomSaveModel("grid_scatter_test");
+    if (strstr(saved_model, "error")) {
+        printf("Failed to save model: %s\n", saved_model);
+        FreeLoomString(saved_model);
         return 1;
     }
     
-    printf("CPU Network created in %.2f ms (handle: %ld)\n", cpuCreateEnd - cpuCreateStart, cpuHandle);
-    Loom_FreeCString(cpuNetResult);
+    printf("✓ Model saved (%zu bytes)\n", strlen(saved_model));
     
-    // Initialize layers for CPU network
-    char* layer0Config = Loom_InitDenseLayer(inputSize, 392, 1); // ReLU
-    Loom_SetLayer(cpuHandle, 0, 0, 0, layer0Config);
-    Loom_FreeCString(layer0Config);
+    // Load the model back
+    printf("Loading model from saved state...\n");
+    char* load_result = LoomLoadModel(saved_model, "grid_scatter_test");
+    FreeLoomString(saved_model);
     
-    char* layer1Config = Loom_InitDenseLayer(392, 10, 0); // Linear
-    Loom_SetLayer(cpuHandle, 1, 0, 0, layer1Config);
-    Loom_FreeCString(layer1Config);
-    
-    printf("Layers initialized\n");
-    
-    // Get info
-    char* cpuInfo = Loom_GetInfo(cpuHandle);
-    printf("CPU Info: %s\n\n", cpuInfo);
-    Loom_FreeCString(cpuInfo);
-    
-    // Prepare input (784 zeros)
-    char inputJSON[4096];
-    strcpy(inputJSON, "[[");
-    for (int i = 0; i < inputSize; i++) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%.1f%s", 0.0, i < inputSize-1 ? "," : "");
-        strcat(inputJSON, buf);
+    if (strstr(load_result, "error")) {
+        printf("Failed to load model: %s\n", load_result);
+        FreeLoomString(load_result);
+        return 1;
     }
-    strcat(inputJSON, "]]");
+    FreeLoomString(load_result);
     
-    // CPU Forward Pass Benchmark
-    printf("Running CPU forward passes...\n");
-    double cpuForwardStart = getTime();
-    for (int i = 0; i < iterations; i++) {
-        char* output = Loom_Call(cpuHandle, "ForwardCPU", inputJSON);
-        Loom_FreeCString(output);
-    }
-    double cpuForwardEnd = getTime();
-    double cpuTotal = cpuForwardEnd - cpuForwardStart;
-    double cpuAvg = cpuTotal / iterations;
+    printf("✓ Model loaded\n");
     
-    printf("CPU Forward: %d iterations in %.2f ms (avg: %.4f ms/iter)\n", iterations, cpuTotal, cpuAvg);
+    // Test predictions with reloaded model
+    printf("\nVerifying predictions match:\n");
+    int all_match = 1;
+    float inputs[4][8] = {
+        {0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8},
+        {0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1, 0.1},
+        {0.7, 0.7, 0.7, 0.7, 0.3, 0.3, 0.3, 0.3},
+        {0.3, 0.3, 0.3, 0.3, 0.7, 0.7, 0.7, 0.7}
+    };
     
-    // Single forward pass to show output
-    char* cpuOutput = Loom_Call(cpuHandle, "ForwardCPU", inputJSON);
-    printf("Sample CPU Output: %.100s...\n\n", cpuOutput);
-    Loom_FreeCString(cpuOutput);
-    
-    // ===== GPU Test =====
-    printf("--- GPU Test ---\n");
-    double gpuCreateStart = getTime();
-    char* gpuNetResult = Loom_NewNetwork(inputSize, gridRows, gridCols, layersPerCell, true);
-    double gpuCreateEnd = getTime();
-    
-    int64_t gpuHandle = extractHandle(gpuNetResult);
-    if (gpuHandle < 0) {
-        printf("Error: Failed to create GPU network: %s\n", gpuNetResult);
-        Loom_FreeCString(gpuNetResult);
-        // Continue with CPU only
-        Loom_Free(cpuHandle);
-        return 0;
+    for (int i = 0; i < 4; i++) {
+        char* pred = LoomForward(inputs[i], 8);
+        float new_out[2];
+        parse_output(pred, &new_out[0], &new_out[1]);
+        FreeLoomString(pred);
+        
+        float diff0 = fabsf(new_out[0] - original_preds[i][0]);
+        float diff1 = fabsf(new_out[1] - original_preds[i][1]);
+        float max_diff = diff0 > diff1 ? diff0 : diff1;
+        
+        int match = max_diff < 1e-6;
+        all_match = all_match && match;
+        
+        printf("Sample %d: [%.3f, %.3f] (diff: %.2e) %s\n",
+               i, new_out[0], new_out[1], max_diff, match ? "✓" : "✗");
     }
     
-    printf("GPU Network created in %.2f ms (handle: %ld)\n", gpuCreateEnd - gpuCreateStart, gpuHandle);
-    
-    // Check if GPU actually initialized
-    if (strstr(gpuNetResult, "\"gpu\":false") || strstr(gpuNetResult, "\"gpu\":0")) {
-        printf("GPU initialization failed, skipping GPU benchmark\n");
-        printf("GPU Result: %s\n", gpuNetResult);
-        Loom_FreeCString(gpuNetResult);
-        Loom_Free(cpuHandle);
-        Loom_Free(gpuHandle);
-        return 0;
+    if (all_match) {
+        printf("\n✅ Save/Load verification passed! All predictions match.\n");
+    } else {
+        printf("\n❌ Save/Load verification failed! Predictions don't match.\n");
     }
-    
-    Loom_FreeCString(gpuNetResult);
-    
-    // Initialize layers for GPU network (same as CPU)
-    layer0Config = Loom_InitDenseLayer(inputSize, 392, 1);
-    Loom_SetLayer(gpuHandle, 0, 0, 0, layer0Config);
-    Loom_FreeCString(layer0Config);
-    
-    layer1Config = Loom_InitDenseLayer(392, 10, 0);
-    Loom_SetLayer(gpuHandle, 1, 0, 0, layer1Config);
-    Loom_FreeCString(layer1Config);
-    
-    printf("Layers initialized\n");
-    
-    // Get info
-    char* gpuInfo = Loom_GetInfo(gpuHandle);
-    printf("GPU Info: %s\n\n", gpuInfo);
-    Loom_FreeCString(gpuInfo);
-    
-    // GPU Forward Pass Benchmark
-    printf("Running GPU forward passes...\n");
-    double gpuForwardStart = getTime();
-    for (int i = 0; i < iterations; i++) {
-        char* output = Loom_Call(gpuHandle, "ForwardGPU", inputJSON);
-        Loom_FreeCString(output);
-    }
-    double gpuForwardEnd = getTime();
-    double gpuTotal = gpuForwardEnd - gpuForwardStart;
-    double gpuAvg = gpuTotal / iterations;
-    
-    printf("GPU Forward: %d iterations in %.2f ms (avg: %.4f ms/iter)\n", iterations, gpuTotal, gpuAvg);
-    
-    // Single forward pass to show output
-    char* gpuOutput = Loom_Call(gpuHandle, "ForwardGPU", inputJSON);
-    printf("Sample GPU Output: %.100s...\n\n", gpuOutput);
-    Loom_FreeCString(gpuOutput);
-    
-    // ===== Comparison =====
-    printf("=== Results ===\n");
-    printf("CPU Avg: %.4f ms/iter\n", cpuAvg);
-    printf("GPU Avg: %.4f ms/iter\n", gpuAvg);
-    double speedup = cpuAvg / gpuAvg;
-    printf("Speedup: %.2fx %s\n", speedup > 1.0 ? speedup : 1.0/speedup, speedup > 1.0 ? "(GPU faster)" : "(CPU faster)");
-    
-    // Test method listing
-    printf("\n=== Available Methods ===\n");
-    char* methods = Loom_ListMethods(cpuHandle);
-    printf("%s\n", methods);
-    Loom_FreeCString(methods);
-    
-    // Test model serialization
-    printf("\n=== Model Serialization ===\n");
-    char* modelJSON = Loom_SaveModel(cpuHandle, "test_model");
-    printf("Model JSON (first 200 chars): %.200s...\n", modelJSON);
-    printf("Model size: %zu bytes\n", strlen(modelJSON));
-    
-    // Test loading
-    char* loadResult = Loom_LoadModel(modelJSON, "test_model");
-    int64_t loadedHandle = extractHandle(loadResult);
-    printf("Loaded model handle: %ld\n", loadedHandle);
-    Loom_FreeCString(loadResult);
-    Loom_FreeCString(modelJSON);
-    
-    if (loadedHandle >= 0) {
-        Loom_Free(loadedHandle);
-    }
-    
-    // Cleanup
-    printf("\n=== Cleanup ===\n");
-    Loom_Free(cpuHandle);
-    Loom_Free(gpuHandle);
-    printf("Handles freed\n");
     
     return 0;
 }

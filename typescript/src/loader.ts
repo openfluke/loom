@@ -1,106 +1,38 @@
-import { isBrowser, isNode } from "./env.js";
+/**
+ * LOOM WASM Loader
+ * Loads and initializes the LOOM WebAssembly module (Node.js only)
+ */
 
-let goRuntimeInjected = false;
-let wasmExecTextBundled: string | undefined;
-let wasmUrlBundled: string | undefined;
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 
-async function tryLoadBundlerAssets() {
-  try {
-    const raw = await import("./wasm_exec.js?raw");
-    wasmExecTextBundled = (raw as any).default as string;
-  } catch {}
-  try {
-    const url = await import("./loom.wasm?url");
-    wasmUrlBundled = (url as any).default as string;
-  } catch {}
-}
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-export async function ensureGoRuntime(inject = true): Promise<void> {
-  if (!inject || goRuntimeInjected) return;
+export async function loadLoomWASM(): Promise<void> {
+  // Load wasm_exec.js
+  const wasmExecPath = join(__dirname, "../assets/wasm_exec.js");
+  const wasmExecCode = readFileSync(wasmExecPath, "utf-8");
 
-  if (isBrowser) {
-    if (!wasmExecTextBundled) await tryLoadBundlerAssets();
-    if (wasmExecTextBundled) {
-      new Function(wasmExecTextBundled)(); // defines global Go
-      goRuntimeInjected = true;
-      return;
-    }
-    const url = new URL("./wasm_exec.js", import.meta.url);
-    const res = await fetch(url);
-    if (!res.ok)
-      throw new Error(
-        `Failed to fetch wasm_exec.js (${res.status} ${res.statusText}) from ${url}`
-      );
-    const jsText = await res.text();
-    new Function(jsText)();
-    goRuntimeInjected = true;
-    return;
-  }
+  // Execute wasm_exec.js to get the Go runtime
+  eval(wasmExecCode);
 
-  const { readFile } = await import("node:fs/promises");
-  const { fileURLToPath } = await import("node:url");
-  const wasmExecUrl = new URL("./wasm_exec.js", import.meta.url);
-  const filePath = fileURLToPath(wasmExecUrl);
-  const jsText = await readFile(filePath, "utf8");
-  new Function(jsText)();
-  goRuntimeInjected = true;
-}
+  // Load main.wasm
+  const wasmPath = join(__dirname, "../assets/main.wasm");
+  const wasmBuffer = readFileSync(wasmPath);
 
-export async function resolvePackagedWasmURL(
-  override?: string | URL
-): Promise<string | URL> {
-  if (override) return override;
+  // @ts-ignore - Go is defined by wasm_exec.js
+  const go = new Go();
 
-  if (isBrowser) {
-    if (!wasmUrlBundled) await tryLoadBundlerAssets();
-    if (wasmUrlBundled) return wasmUrlBundled;
-    return new URL("./loom.wasm", import.meta.url);
-  }
+  const { instance } = await WebAssembly.instantiate(
+    wasmBuffer,
+    go.importObject
+  );
 
-  return new URL("./loom.wasm", import.meta.url);
-}
+  // Run the Go WASM module
+  go.run(instance);
 
-export async function instantiateGoWasm(go: any, wasmUrl: string | URL) {
-  const asString = typeof wasmUrl === "string" ? wasmUrl : wasmUrl.toString();
-
-  if (isBrowser) {
-    if (typeof WebAssembly.instantiateStreaming === "function") {
-      const res = await fetch(asString);
-      try {
-        const { instance } = await WebAssembly.instantiateStreaming(
-          res,
-          go.importObject
-        );
-        return instance;
-      } catch {
-        const buf = await res.arrayBuffer();
-        const result = (await WebAssembly.instantiate(
-          buf,
-          go.importObject
-        )) as any;
-        const instance: WebAssembly.Instance = result.instance ?? result;
-        return instance;
-      }
-    } else {
-      const res = await fetch(asString);
-      const buf = await res.arrayBuffer();
-      const result = (await WebAssembly.instantiate(
-        buf,
-        go.importObject
-      )) as any;
-      const instance: WebAssembly.Instance = result.instance ?? result;
-      return instance;
-    }
-  }
-
-  // Node/Bun
-  const { readFile } = await import("node:fs/promises");
-  const { fileURLToPath } = await import("node:url");
-  const url =
-    typeof wasmUrl === "string" ? new URL(wasmUrl, import.meta.url) : wasmUrl;
-  const filePath = fileURLToPath(url);
-  const buf = await readFile(filePath);
-  const result = (await WebAssembly.instantiate(buf, go.importObject)) as any;
-  const instance: WebAssembly.Instance = result.instance ?? result;
-  return instance;
+  // Wait a bit for initialization
+  await new Promise((resolve) => setTimeout(resolve, 100));
 }
