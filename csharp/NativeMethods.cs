@@ -19,26 +19,26 @@ internal static class NativeMethods
     {
         // Register a custom DLL import resolver to help locate the native library
         NativeLibrary.SetDllImportResolver(typeof(NativeMethods).Assembly, DllImportResolver);
-        
+
         // Print debug information
-    Debug.WriteLine("=== Welvet Native Library Loader ===");
-    Debug.WriteLine($"OS: {RuntimeInformation.OSDescription}");
-    Debug.WriteLine($"OS Platform: Windows={RuntimeInformation.IsOSPlatform(OSPlatform.Windows)}, Linux={RuntimeInformation.IsOSPlatform(OSPlatform.Linux)}, macOS={RuntimeInformation.IsOSPlatform(OSPlatform.OSX)}");
-    Debug.WriteLine($"Architecture: {RuntimeInformation.ProcessArchitecture}");
-    Debug.WriteLine($"Runtime ID: {RuntimeInformation.RuntimeIdentifier}");
-    Debug.WriteLine($"Framework: {RuntimeInformation.FrameworkDescription}");
-    Debug.WriteLine($"Expected library: {GetLibraryFileName()}");
-    Debug.WriteLine($"Custom RID: {GetCustomRuntimeIdentifier()}");
-    Debug.WriteLine($"Standard RID: {GetRuntimeIdentifier()}");
-    Debug.WriteLine($"AppContext.BaseDirectory: {AppContext.BaseDirectory}");
-        
+        Debug.WriteLine("=== Welvet Native Library Loader ===");
+        Debug.WriteLine($"OS: {RuntimeInformation.OSDescription}");
+        Debug.WriteLine($"OS Platform: Windows={RuntimeInformation.IsOSPlatform(OSPlatform.Windows)}, Linux={RuntimeInformation.IsOSPlatform(OSPlatform.Linux)}, macOS={RuntimeInformation.IsOSPlatform(OSPlatform.OSX)}");
+        Debug.WriteLine($"Architecture: {RuntimeInformation.ProcessArchitecture}");
+        Debug.WriteLine($"Runtime ID: {RuntimeInformation.RuntimeIdentifier}");
+        Debug.WriteLine($"Framework: {RuntimeInformation.FrameworkDescription}");
+        Debug.WriteLine($"Expected library: {GetLibraryFileName()}");
+        Debug.WriteLine($"Custom RID: {GetCustomRuntimeIdentifier()}");
+        Debug.WriteLine($"Standard RID: {GetRuntimeIdentifier()}");
+        Debug.WriteLine($"AppContext.BaseDirectory: {AppContext.BaseDirectory}");
+
         var assemblyLocation = typeof(NativeMethods).Assembly.Location;
         if (!string.IsNullOrEmpty(assemblyLocation))
         {
             var assemblyDir = Path.GetDirectoryName(assemblyLocation);
             Debug.WriteLine($"Assembly directory: {assemblyDir}");
         }
-        
+
         // On Windows, add the base directory to the DLL search path
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -47,7 +47,7 @@ internal static class NativeMethods
                 var baseDir = AppContext.BaseDirectory;
                 SetDllDirectory(baseDir);
                 Debug.WriteLine($"✅ Set DLL search directory to: {baseDir}");
-                
+
                 // Also try AddDllDirectory (Windows 8+)
                 var handle = AddDllDirectory(baseDir);
                 if (handle != IntPtr.Zero)
@@ -60,26 +60,26 @@ internal static class NativeMethods
                 Debug.WriteLine($"⚠️ Failed to set DLL directory: {ex.Message}");
             }
         }
-        
+
         Debug.WriteLine("====================================");
     }
 
     // Windows API to add directory to DLL search path
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool SetDllDirectory(string lpPathName);
-    
+
     // Windows API to add directory to DLL search path (Windows 8+)
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr AddDllDirectory(string lpPathName);
 
     private static IntPtr DllImportResolver(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
     {
-    Debug.WriteLine($"\n[DllImportResolver] Resolving: {libraryName}");
-        
+        Debug.WriteLine($"\n[DllImportResolver] Resolving: {libraryName}");
+
         // Only handle our library (accept both "libloom" and platform-specific names)
-        if (libraryName != "libloom" && 
-            libraryName != "libloom.dll" && 
-            libraryName != "libloom.so" && 
+        if (libraryName != "libloom" &&
+            libraryName != "libloom.dll" &&
+            libraryName != "libloom.so" &&
             libraryName != "libloom.dylib")
         {
             Debug.WriteLine($"[DllImportResolver] Not our library, skipping");
@@ -88,7 +88,7 @@ internal static class NativeMethods
 
         string libFileName = GetLibraryFileName();
         string assemblyLocation = assembly.Location;
-        
+
         Debug.WriteLine($"[DllImportResolver] Looking for: {libFileName}");
         Debug.WriteLine($"[DllImportResolver] Assembly location: {assemblyLocation}");
 
@@ -116,11 +116,11 @@ internal static class NativeMethods
                 }
             }
         }
-        
+
         if (!string.IsNullOrEmpty(assemblyLocation))
         {
             string assemblyDir = Path.GetDirectoryName(assemblyLocation)!;
-            
+
             // Try 1: Check if it's directly in the output directory (from .targets file)
             string directPath = Path.Combine(assemblyDir, libFileName);
             Debug.WriteLine($"[DllImportResolver] Try 1 - Direct: {directPath}");
@@ -142,7 +142,7 @@ internal static class NativeMethods
                     Debug.WriteLine($"[DllImportResolver] ⚠️ Exception loading from direct path: {ex.Message}");
                 }
             }
-            
+
             // Try 2: Check our custom runtime paths (windows_x86_64, linux_x86_64, etc.)
             string customRid = GetCustomRuntimeIdentifier();
             string customPath = Path.Combine(assemblyDir, "runtimes", customRid, libFileName);
@@ -165,7 +165,7 @@ internal static class NativeMethods
                     Debug.WriteLine($"[DllImportResolver] ⚠️ Exception loading from custom RID path: {ex.Message}");
                 }
             }
-            
+
             // Try 3: Check standard .NET runtime paths (win-x64, linux-x64, etc.)
             string standardRid = GetRuntimeIdentifier();
             string standardPath = Path.Combine(assemblyDir, "runtimes", standardRid, "native", libFileName);
@@ -188,7 +188,7 @@ internal static class NativeMethods
                     Debug.WriteLine($"[DllImportResolver] ⚠️ Exception loading from standard RID path: {ex.Message}");
                 }
             }
-            
+
             // Try 4: List what's actually in the directory
             Debug.WriteLine($"[DllImportResolver] Listing files in assembly directory:");
             try
@@ -198,7 +198,7 @@ internal static class NativeMethods
                 {
                     Debug.WriteLine($"  - {Path.GetFileName(file)}");
                 }
-                
+
                 var runtimesDir = Path.Combine(assemblyDir, "runtimes");
                 if (Directory.Exists(runtimesDir))
                 {
@@ -249,7 +249,7 @@ internal static class NativeMethods
         }
         else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             return "macos_arm64";
-        
+
         return "unknown";
     }
 
@@ -278,7 +278,7 @@ internal static class NativeMethods
                     _ => "android-arm64"
                 };
             }
-            
+
             return RuntimeInformation.ProcessArchitecture switch
             {
                 Architecture.X64 => "linux-x64",
@@ -405,6 +405,82 @@ internal static class NativeMethods
     internal static extern IntPtr Loom_SaveModel(
         long handle,
         [MarshalAs(UnmanagedType.LPStr)] string modelId);
+
+    // ====================================================================
+    // New Simple API (global network instance)
+    // ====================================================================
+
+    /// <summary>
+    /// Creates a network from JSON configuration (new simple API).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern IntPtr CreateLoomNetwork(
+        [MarshalAs(UnmanagedType.LPStr)] string jsonConfig);
+
+    /// <summary>
+    /// Forward pass with float array input (new simple API).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr LoomForward(
+        [MarshalAs(UnmanagedType.LPArray)] float[] inputs,
+        int length);
+
+    /// <summary>
+    /// Backward pass with gradients (new simple API).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr LoomBackward(
+        [MarshalAs(UnmanagedType.LPArray)] float[] gradients,
+        int length);
+
+    /// <summary>
+    /// Update weights with learning rate (new simple API).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void LoomUpdateWeights(float learningRate);
+
+    /// <summary>
+    /// Train network with batches and config JSON (new simple API).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern IntPtr LoomTrain(
+        [MarshalAs(UnmanagedType.LPStr)] string batchesJSON,
+        [MarshalAs(UnmanagedType.LPStr)] string configJSON);
+
+    /// <summary>
+    /// Save model to JSON string (new simple API).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern IntPtr LoomSaveModel(
+        [MarshalAs(UnmanagedType.LPStr)] string modelID);
+
+    /// <summary>
+    /// Load model from JSON string (new simple API).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern IntPtr LoomLoadModel(
+        [MarshalAs(UnmanagedType.LPStr)] string jsonString,
+        [MarshalAs(UnmanagedType.LPStr)] string modelID);
+
+    /// <summary>
+    /// Get network information JSON (new simple API).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr LoomGetNetworkInfo();
+
+    /// <summary>
+    /// Evaluate network with inputs and expected outputs (new simple API).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern IntPtr LoomEvaluateNetwork(
+        [MarshalAs(UnmanagedType.LPStr)] string inputsJSON,
+        [MarshalAs(UnmanagedType.LPStr)] string expectedOutputsJSON);
+
+    /// <summary>
+    /// Free a C string returned by LOOM (new simple API).
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void FreeLoomString(IntPtr str);
 
     // ====================================================================
     // Transformer Inference API

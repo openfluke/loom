@@ -88,19 +88,17 @@ def _json(obj: Any) -> bytes:
 
 # ---- C Function Bindings ----
 
-# Loom_NewNetwork: creates a network, returns JSON with handle
+# Loom_NewNetwork: creates a network, returns JSON with handle (legacy API - optional)
 _NewNetwork = _sym("Loom_NewNetwork")
-if not _NewNetwork:
-    raise AttributeError("Loom_NewNetwork not found in LOOM library")
-_NewNetwork.restype = ctypes.c_char_p
-_NewNetwork.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_bool]
+if _NewNetwork:
+    _NewNetwork.restype = ctypes.c_char_p
+    _NewNetwork.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_bool]
 
-# Loom_Call: calls a method on a handle, returns JSON
+# Loom_Call: calls a method on a handle, returns JSON (legacy API - optional)
 _Call = _sym("Loom_Call")
-if not _Call:
-    raise AttributeError("Loom_Call not found in LOOM library")
-_Call.restype = ctypes.c_char_p
-_Call.argtypes = [ctypes.c_longlong, ctypes.c_char_p, ctypes.c_char_p]
+if _Call:
+    _Call.restype = ctypes.c_char_p
+    _Call.argtypes = [ctypes.c_longlong, ctypes.c_char_p, ctypes.c_char_p]
 
 # Loom_Free: frees a handle
 _Free = _sym("Loom_Free")
@@ -198,6 +196,67 @@ _GenerateNextToken = _sym("GenerateNextToken")
 if _GenerateNextToken:
     _GenerateNextToken.restype = ctypes.c_void_p
     _GenerateNextToken.argtypes = [ctypes.c_char_p, ctypes.c_float]
+
+# ---- New Simple API (global network instance) ----
+
+# CreateLoomNetwork: creates a network from JSON config
+_CreateLoomNetwork = _sym("CreateLoomNetwork")
+if _CreateLoomNetwork:
+    _CreateLoomNetwork.restype = ctypes.c_char_p
+    _CreateLoomNetwork.argtypes = [ctypes.c_char_p]
+
+# LoomForward: forward pass with float array
+_LoomForward = _sym("LoomForward")
+if _LoomForward:
+    _LoomForward.restype = ctypes.c_char_p
+    _LoomForward.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+
+# LoomBackward: backward pass with gradients
+_LoomBackward = _sym("LoomBackward")
+if _LoomBackward:
+    _LoomBackward.restype = ctypes.c_char_p
+    _LoomBackward.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+
+# LoomUpdateWeights: update weights with learning rate
+_LoomUpdateWeights = _sym("LoomUpdateWeights")
+if _LoomUpdateWeights:
+    _LoomUpdateWeights.restype = None
+    _LoomUpdateWeights.argtypes = [ctypes.c_float]
+
+# LoomTrain: train network with batches
+_LoomTrain = _sym("LoomTrain")
+if _LoomTrain:
+    _LoomTrain.restype = ctypes.c_char_p
+    _LoomTrain.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+
+# LoomSaveModel: save model to JSON string
+_LoomSaveModel = _sym("LoomSaveModel")
+if _LoomSaveModel:
+    _LoomSaveModel.restype = ctypes.c_char_p
+    _LoomSaveModel.argtypes = [ctypes.c_char_p]
+
+# LoomLoadModel: load model from JSON string
+_LoomLoadModel = _sym("LoomLoadModel")
+if _LoomLoadModel:
+    _LoomLoadModel.restype = ctypes.c_char_p
+    _LoomLoadModel.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+
+# LoomGetNetworkInfo: get network information
+_LoomGetNetworkInfo = _sym("LoomGetNetworkInfo")
+if _LoomGetNetworkInfo:
+    _LoomGetNetworkInfo.restype = ctypes.c_char_p
+    _LoomGetNetworkInfo.argtypes = []
+
+# LoomEvaluateNetwork: evaluate network
+_LoomEvaluateNetwork = _sym("LoomEvaluateNetwork")
+if _LoomEvaluateNetwork:
+    _LoomEvaluateNetwork.restype = ctypes.c_char_p
+    _LoomEvaluateNetwork.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+
+# FreeLoomString: free C strings returned by LOOM
+_FreeLoomString = _sym("FreeLoomString")
+if _FreeLoomString:
+    _FreeLoomString.argtypes = [ctypes.c_char_p]
 
 
 # ---- Activation Types ----
@@ -1124,3 +1183,254 @@ def generate_stream(prompt: str, max_tokens: int = 50, temperature: float = 0.7)
         # Check for EOS
         if result.get('is_eos', False):
             break
+
+
+# ---- New Simple API (global network instance) ----
+
+def create_network_from_json(json_config: str) -> None:
+    """
+    Create a network from JSON configuration (new simple API).
+    Uses a global network instance - no handle management needed!
+    
+    Args:
+        json_config: JSON string or dict with network configuration
+    
+    Raises:
+        RuntimeError: If network creation fails
+    
+    Example:
+        config = {
+            "batch_size": 1,
+            "grid_rows": 1,
+            "grid_cols": 3,
+            "layers_per_cell": 1,
+            "layers": [
+                {"type": "dense", "input_size": 8, "output_size": 16, "activation": "relu"},
+                # ... more layers
+            ]
+        }
+        create_network_from_json(json.dumps(config))
+    """
+    if not _CreateLoomNetwork:
+        raise RuntimeError("CreateLoomNetwork not available in library")
+    
+    # Convert dict to JSON string if needed
+    if isinstance(json_config, dict):
+        json_config = json.dumps(json_config)
+    
+    response = _CreateLoomNetwork(json_config.encode('utf-8'))
+    if not response:
+        raise RuntimeError("Failed to create network")
+    
+    result = json.loads(response.decode('utf-8'))
+    
+    if "error" in result:
+        raise RuntimeError(f"Failed to create network: {result['error']}")
+
+
+def forward_simple(inputs: List[float]) -> List[float]:
+    """
+    Forward pass with the global network (new simple API).
+    
+    Args:
+        inputs: Input vector as list of floats
+    
+    Returns:
+        Output vector as list of floats
+    """
+    if not _LoomForward:
+        raise RuntimeError("LoomForward not available in library")
+    
+    # Convert to ctypes array
+    input_array = (ctypes.c_float * len(inputs))(*inputs)
+    
+    response = _LoomForward(input_array, len(inputs))
+    if not response:
+        raise RuntimeError("Forward pass failed")
+    
+    result = json.loads(response.decode('utf-8'))
+    
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(f"Forward pass failed: {result['error']}")
+    
+    return result
+
+
+def backward_simple(gradients: List[float]) -> None:
+    """
+    Backward pass with the global network (new simple API).
+    
+    Args:
+        gradients: Gradient vector as list of floats
+    """
+    if not _LoomBackward:
+        raise RuntimeError("LoomBackward not available in library")
+    
+    # Convert to ctypes array
+    grad_array = (ctypes.c_float * len(gradients))(*gradients)
+    
+    response = _LoomBackward(grad_array, len(gradients))
+    if not response:
+        raise RuntimeError("Backward pass failed")
+    
+    result = json.loads(response.decode('utf-8'))
+    
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(f"Backward pass failed: {result['error']}")
+
+
+def update_weights_simple(learning_rate: float) -> None:
+    """
+    Update weights with the global network (new simple API).
+    
+    Args:
+        learning_rate: Learning rate for gradient descent
+    """
+    if not _LoomUpdateWeights:
+        raise RuntimeError("LoomUpdateWeights not available in library")
+    
+    _LoomUpdateWeights(float(learning_rate))
+
+
+def train_simple(batches: List[dict], config: dict) -> dict:
+    """
+    Train the global network with batches (new simple API).
+    
+    Args:
+        batches: List of training batches, each with "inputs" and "targets"
+        config: Training configuration with "epochs", "learning_rate", etc.
+    
+    Returns:
+        Training result dictionary
+    
+    Example:
+        batches = [
+            {"inputs": [[1, 2], [3, 4]], "targets": [[0, 1], [1, 0]]}
+        ]
+        config = {"epochs": 100, "learning_rate": 0.1}
+        result = train_simple(batches, config)
+    """
+    if not _LoomTrain:
+        raise RuntimeError("LoomTrain not available in library")
+    
+    batches_json = json.dumps(batches).encode('utf-8')
+    config_json = json.dumps(config).encode('utf-8')
+    
+    response = _LoomTrain(batches_json, config_json)
+    if not response:
+        raise RuntimeError("Training failed")
+    
+    result = json.loads(response.decode('utf-8'))
+    
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(f"Training failed: {result['error']}")
+    
+    return result
+
+
+def save_model_simple(model_id: str = "my_model") -> str:
+    """
+    Save the global network to JSON string (new simple API).
+    
+    Args:
+        model_id: Model identifier
+    
+    Returns:
+        JSON string with complete model (structure + weights)
+    """
+    if not _LoomSaveModel:
+        raise RuntimeError("LoomSaveModel not available in library")
+    
+    response = _LoomSaveModel(model_id.encode('utf-8'))
+    if not response:
+        raise RuntimeError("Failed to save model")
+    
+    result_str = response.decode('utf-8')
+    
+    # Check if it's an error
+    try:
+        result = json.loads(result_str)
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(f"Failed to save model: {result['error']}")
+    except json.JSONDecodeError:
+        pass
+    
+    return result_str
+
+
+def load_model_simple(json_string: str, model_id: str = "my_model") -> None:
+    """
+    Load a model into the global network (new simple API).
+    
+    Args:
+        json_string: JSON string with complete model
+        model_id: Model identifier
+    """
+    if not _LoomLoadModel:
+        raise RuntimeError("LoomLoadModel not available in library")
+    
+    response = _LoomLoadModel(json_string.encode('utf-8'), model_id.encode('utf-8'))
+    if not response:
+        raise RuntimeError("Failed to load model")
+    
+    result = json.loads(response.decode('utf-8'))
+    
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(f"Failed to load model: {result['error']}")
+
+
+def get_network_info_simple() -> dict:
+    """
+    Get information about the global network (new simple API).
+    
+    Returns:
+        Dictionary with network information
+    """
+    if not _LoomGetNetworkInfo:
+        raise RuntimeError("LoomGetNetworkInfo not available in library")
+    
+    response = _LoomGetNetworkInfo()
+    if not response:
+        raise RuntimeError("Failed to get network info")
+    
+    result = json.loads(response.decode('utf-8'))
+    
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(f"Failed to get network info: {result['error']}")
+    
+    return result
+
+
+def evaluate_network_simple(inputs: List[List[float]], expected_outputs: List[float]) -> dict:
+    """
+    Evaluate the global network with deviation metrics (new simple API).
+    
+    Args:
+        inputs: 2D array of input samples
+        expected_outputs: 1D array of expected class labels
+    
+    Returns:
+        Dictionary with evaluation metrics including deviation buckets
+    
+    Example:
+        inputs = [[1, 2, 3], [4, 5, 6]]
+        expected = [0, 1]
+        metrics = evaluate_network_simple(inputs, expected)
+        print(f"Quality Score: {metrics['score']}/100")
+    """
+    if not _LoomEvaluateNetwork:
+        raise RuntimeError("LoomEvaluateNetwork not available in library")
+    
+    inputs_json = json.dumps(inputs).encode('utf-8')
+    expected_json = json.dumps(expected_outputs).encode('utf-8')
+    
+    response = _LoomEvaluateNetwork(inputs_json, expected_json)
+    if not response:
+        raise RuntimeError("Evaluation failed")
+    
+    result = json.loads(response.decode('utf-8'))
+    
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(f"Evaluation failed: {result['error']}")
+    
+    return result
