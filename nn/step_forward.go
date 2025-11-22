@@ -49,11 +49,17 @@ func (n *Network) InitStepState(inputSize int) *StepState {
 				// This is a simplified estimation - you may need to adjust
 				outputSize := inputSize
 				if config.Type == LayerConv2D {
-					outputSize = config.OutChannels * config.OutputHeight * config.OutputWidth * n.BatchSize
+					outputSize = config.Filters * config.OutputHeight * config.OutputWidth * n.BatchSize
 				} else if config.Type == LayerDense {
-					outputSize = config.OutputSize
+					outputSize = config.OutputHeight
 				} else if config.Type == LayerRNN || config.Type == LayerLSTM {
 					outputSize = n.BatchSize * config.SeqLength * config.HiddenSize
+				} else if config.Type == LayerMultiHeadAttention {
+					outputSize = n.BatchSize * config.SeqLength * config.DModel
+				} else if config.Type == LayerSwiGLU {
+					outputSize = config.InputHeight // SwiGLU returns same size as input after gating
+				} else if config.Type == LayerNorm || config.Type == LayerRMSNorm {
+					outputSize = config.NormSize
 				}
 
 				state.layerData[layerIdx+1] = make([]float32, outputSize)
@@ -102,6 +108,13 @@ func (state *StepState) GetLayerOutput(layerIdx int) []float32 {
 	output := make([]float32, len(state.layerData[layerIdx]))
 	copy(output, state.layerData[layerIdx])
 	return output
+}
+
+// GetLayerData returns the internal layer data (for debugging)
+func (state *StepState) GetLayerData() [][]float32 {
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.layerData
 }
 
 // StepForward executes one step for ALL layers simultaneously

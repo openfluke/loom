@@ -304,7 +304,6 @@ func main() {
 
 		if step%20 == 0 {
 			// Show activity in all layers
-			allActive := true
 			layerActivity := "["
 			for l := 0; l < 4; l++ {
 				layerOut := state.GetLayerOutput(l + 1)
@@ -312,7 +311,6 @@ func main() {
 					layerActivity += "✓"
 				} else {
 					layerActivity += "✗"
-					allActive = false
 				}
 			}
 			layerActivity += "]"
@@ -391,27 +389,4 @@ func maxDuration(durations []time.Duration) time.Duration {
 		}
 	}
 	return max
-}
-
-// Bonus: Demonstrate circular/recurrent behavior
-func demonstrateCircularPropagation() {
-	fmt.Println("\n=== BONUS: Circular Propagation Demo ===")
-	fmt.Println("Create a network where outputs can feed back to inputs")
-	fmt.Println("(This requires extending the stepping mechanism)")
-	fmt.Println()
-
-	// This would show how you could:
-	// 1. Connect layer N output back to layer 0 input
-	// 2. Create true recurrent loops in the grid
-	// 3. Make information cycle through the network indefinitely
-
-	fmt.Println("Pseudocode for circular connection:")
-	fmt.Println("  for each step:")
-	fmt.Println("    output = StepForward(state)")
-	fmt.Println("    // Feed output back as input")
-	fmt.Println("    state.SetInput(mix(external_input, output))")
-	fmt.Println("    // Network now processes its own output!")
-	fmt.Println()
-	fmt.Println("This creates a true 'thinking' loop - network processes,")
-	fmt.Println("outputs, receives its output, processes again, forever.")
 }
