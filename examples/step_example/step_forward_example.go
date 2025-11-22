@@ -9,8 +9,9 @@ import (
 )
 
 func main() {
-	fmt.Println("=== LOOM Stepping Neural Network: Real-Time Learning ===")
+	fmt.Println("=== LOOM Stepping Neural Network: Real-Time Micro-Learning ===")
 	fmt.Println("Continuous propagation where ALL layers step simultaneously")
+	fmt.Println("WITH micro-training after each step!")
 	fmt.Println()
 
 	// Create a simple network for binary classification
@@ -23,31 +24,27 @@ func main() {
 		"layers": [
 			{
 				"type": "dense",
-				"input_size": 4,
-				"output_size": 8,
-				"activation": "relu",
-				"comment": "Agent [0,0]: Feature extractor"
+				"input_height": 4,
+				"output_height": 8,
+				"activation": "relu"
 			},
 			{
 				"type": "dense",
-				"input_size": 8,
-				"output_size": 8,
-				"activation": "gelu",
-				"comment": "Agent [0,1]: Feature transformer"
+				"input_height": 8,
+				"output_height": 8,
+				"activation": "gelu"
 			},
 			{
 				"type": "dense",
-				"input_size": 8,
-				"output_size": 4,
-				"activation": "tanh",
-				"comment": "Agent [1,0]: Feature reducer"
+				"input_height": 8,
+				"output_height": 4,
+				"activation": "tanh"
 			},
 			{
 				"type": "dense",
-				"input_size": 4,
-				"output_size": 2,
-				"activation": "sigmoid",
-				"comment": "Agent [1,1]: Decision maker"
+				"input_height": 4,
+				"output_height": 2,
+				"activation": "sigmoid"
 			}
 		]
 	}`
@@ -112,15 +109,26 @@ func main() {
 	fmt.Println()
 
 	// Stepping parameters
-	stepsPerSecond := 100
+	stepsPerSecond := 50 // Slower to allow for micro-training
 	stepInterval := time.Duration(1000000/stepsPerSecond) * time.Microsecond
-	totalSeconds := 5
+	totalSeconds := 10
 	totalSteps := stepsPerSecond * totalSeconds
 
-	fmt.Printf("=== Starting Continuous Stepping ===\n")
+	fmt.Printf("=== Starting Continuous Stepping with Micro-Learning ===\n")
 	fmt.Printf("Step Rate: %d steps/second (%v per step)\n", stepsPerSecond, stepInterval)
 	fmt.Printf("Duration: %d seconds (%d total steps)\n", totalSeconds, totalSteps)
 	fmt.Println()
+
+	// Micro-training configuration (1 epoch per step)
+	microConfig := &nn.TrainingConfig{
+		Epochs:          1,    // Just 1 epoch per step!
+		LearningRate:    0.05, // Small learning rate for stability
+		UseGPU:          false,
+		PrintEveryBatch: 0,
+		GradientClip:    1.0,
+		LossType:        "mse",
+		Verbose:         false,
+	}
 
 	// Sample index for round-robin training
 	currentSample := 0
@@ -128,10 +136,11 @@ func main() {
 	// Metrics tracking
 	lossHistory := make([]float32, 0)
 	stepTimes := make([]time.Duration, 0)
+	trainTimes := make([]time.Duration, 0)
 
 	// Start stepping loop
-	fmt.Println("Network is now ALIVE - stepping continuously...")
-	fmt.Println("Press Ctrl+C to stop (or wait for completion)")
+	fmt.Println("Network is now ALIVE - stepping and learning continuously...")
+	fmt.Println("Each step: Forward propagation → Micro-training (1 epoch) → Weight update")
 	fmt.Println()
 
 	ticker := time.NewTicker(stepInterval)
@@ -141,25 +150,27 @@ func main() {
 	stepCount := 0
 
 	// Display header
-	fmt.Printf("%-8s %-12s %-15s %-25s %-15s %-10s\n",
-		"Step", "Sample", "Step Time", "Output", "Target", "Loss")
-	fmt.Println("─────────────────────────────────────────────────────────────────────────────────────")
+	fmt.Printf("%-8s %-12s %-15s %-15s %-25s %-15s %-10s\n",
+		"Step", "Sample", "Step Time", "Train Time", "Output", "Target", "Loss")
+	fmt.Println("────────────────────────────────────────────────────────────────────────────────────────────────────")
 
 	for stepCount < totalSteps {
 		select {
 		case <-ticker.C:
-			// Set input from current training sample
+			// Get current training sample
 			sample := trainingData[currentSample]
+
+			// 1. Set input from current training sample
 			state.SetInput(sample.input)
 
-			// Execute ONE step for ALL layers
+			// 2. Execute ONE step for ALL layers (forward propagation)
 			stepTime := net.StepForward(state)
 			stepTimes = append(stepTimes, stepTime)
 
-			// Get current output
+			// 3. Get current output
 			output := state.GetOutput()
 
-			// Calculate loss (MSE)
+			// 4. Calculate loss (MSE)
 			loss := float32(0.0)
 			for i := 0; i < len(output); i++ {
 				diff := output[i] - sample.target[i]
@@ -168,12 +179,29 @@ func main() {
 			loss /= float32(len(output))
 			lossHistory = append(lossHistory, loss)
 
+			// 5. MICRO-TRAINING: Do 1 epoch of training on this sample
+			trainStart := time.Now()
+			batch := []nn.TrainingBatch{
+				{
+					Input:  sample.input,
+					Target: sample.target,
+				},
+			}
+			_, err := net.Train(batch, microConfig)
+			trainTime := time.Since(trainStart)
+			trainTimes = append(trainTimes, trainTime)
+
+			if err != nil {
+				fmt.Printf("Warning: micro-training error at step %d: %v\n", stepCount, err)
+			}
+
 			// Print update every 10 steps
 			if stepCount%10 == 0 || stepCount < 5 {
-				fmt.Printf("%-8d %-12s %-15v [%.3f, %.3f] [%.3f, %.3f] %.6f\n",
+				fmt.Printf("%-8d %-12s %-15v %-15v [%.3f, %.3f] [%.3f, %.3f] %.6f\n",
 					stepCount,
 					sample.label,
 					stepTime,
+					trainTime,
 					output[0], output[1],
 					sample.target[0], sample.target[1],
 					loss)
@@ -181,8 +209,8 @@ func main() {
 
 			stepCount++
 
-			// Rotate to next sample every 25 steps (show it all samples)
-			if stepCount%25 == 0 {
+			// Rotate to next sample every 5 steps (faster rotation for better learning)
+			if stepCount%5 == 0 {
 				currentSample = (currentSample + 1) % len(trainingData)
 			}
 		}
@@ -198,14 +226,22 @@ func main() {
 	fmt.Printf("Actual step rate: %.1f steps/second\n", float64(stepCount)/totalTime.Seconds())
 	fmt.Println()
 
-	// Calculate average step time
+	// Calculate average step and train times
 	avgStepTime := time.Duration(0)
 	for _, t := range stepTimes {
 		avgStepTime += t
 	}
 	avgStepTime /= time.Duration(len(stepTimes))
 
-	fmt.Printf("Average step time: %v\n", avgStepTime)
+	avgTrainTime := time.Duration(0)
+	for _, t := range trainTimes {
+		avgTrainTime += t
+	}
+	avgTrainTime /= time.Duration(len(trainTimes))
+
+	fmt.Printf("Average step time (forward): %v\n", avgStepTime)
+	fmt.Printf("Average train time (1 epoch): %v\n", avgTrainTime)
+	fmt.Printf("Total time per cycle: %v\n", avgStepTime+avgTrainTime)
 	fmt.Printf("Min step time: %v\n", minDuration(stepTimes))
 	fmt.Printf("Max step time: %v\n", maxDuration(stepTimes))
 	fmt.Println()
@@ -217,10 +253,14 @@ func main() {
 
 	// Calculate average loss in first 100 steps vs last 100 steps
 	firstLoss := float32(0)
-	for i := 0; i < 100 && i < len(lossHistory); i++ {
+	count := 100
+	if count > len(lossHistory) {
+		count = len(lossHistory)
+	}
+	for i := 0; i < count; i++ {
 		firstLoss += lossHistory[i]
 	}
-	firstLoss /= 100
+	firstLoss /= float32(count)
 
 	lastLoss := float32(0)
 	start := len(lossHistory) - 100
@@ -232,22 +272,23 @@ func main() {
 	}
 	lastLoss /= float32(len(lossHistory) - start)
 
-	fmt.Printf("  Avg first 100: %.6f\n", firstLoss)
+	fmt.Printf("  Avg first %d: %.6f\n", count, firstLoss)
 	fmt.Printf("  Avg last 100:  %.6f\n", lastLoss)
 
 	if firstLoss > lastLoss {
 		improvement := (firstLoss - lastLoss) / firstLoss * 100
-		fmt.Printf("  Improvement: %.2f%%\n", improvement)
+		fmt.Printf("  ✓ Improvement: %.2f%%\n", improvement)
 	} else {
-		fmt.Println("  No improvement (may need learning mechanism)")
+		fmt.Println("  No improvement detected")
 	}
 	fmt.Println()
 
 	// Test final predictions on all samples
-	fmt.Println("=== Final Network State ===")
+	fmt.Println("=== Final Network State (After Continuous Learning) ===")
 	fmt.Println("Testing all samples:")
 	fmt.Println()
 
+	correctCount := 0
 	for i, sample := range trainingData {
 		state.SetInput(sample.input)
 
@@ -270,7 +311,9 @@ func main() {
 		}
 
 		correct := "✓"
-		if predClass != expClass {
+		if predClass == expClass {
+			correctCount++
+		} else {
 			correct = "✗"
 		}
 
@@ -282,6 +325,10 @@ func main() {
 		fmt.Println()
 	}
 
+	accuracy := float32(correctCount) / float32(len(trainingData)) * 100
+	fmt.Printf("Final Accuracy: %d/%d (%.1f%%)\n", correctCount, len(trainingData), accuracy)
+	fmt.Println()
+
 	// Demonstrate continuous stepping behavior
 	fmt.Println("=== Demonstrating Continuous Behavior ===")
 	fmt.Println("Setting input and watching network 'think' for 2 seconds...")
@@ -292,17 +339,17 @@ func main() {
 	fmt.Println()
 
 	// Watch it step for 2 seconds at higher rate
-	watchSteps := 200
-	watchInterval := 10 * time.Millisecond
+	watchSteps := 100
+	watchInterval := 20 * time.Millisecond
 
-	fmt.Printf("%-6s %-20s %-15s\n", "Step", "Output", "All Layers Active")
-	fmt.Println("─────────────────────────────────────────────────")
+	fmt.Printf("%-6s %-25s %-15s\n", "Step", "Output", "All Layers Active")
+	fmt.Println("─────────────────────────────────────────────────────────")
 
 	for step := 0; step < watchSteps; step++ {
 		net.StepForward(state)
 		output := state.GetOutput()
 
-		if step%20 == 0 {
+		if step%10 == 0 {
 			// Show activity in all layers
 			layerActivity := "["
 			for l := 0; l < 4; l++ {
@@ -327,40 +374,46 @@ func main() {
 		watchSteps, state.GetOutput()[0], state.GetOutput()[1])
 	fmt.Println()
 
+	// Plot loss over time (text-based)
+	fmt.Println("=== Loss History (text plot) ===")
+	plotLossHistory(lossHistory, 20)
+	fmt.Println()
+
 	fmt.Println("=== Key Insights ===")
 	fmt.Println()
-	fmt.Println("1. CONTINUOUS PROPAGATION:")
-	fmt.Println("   • Network never stops - always stepping")
-	fmt.Println("   • All layers process simultaneously")
-	fmt.Println("   • Information flows continuously through grid")
+	fmt.Println("1. CONTINUOUS PROPAGATION + LEARNING:")
+	fmt.Println("   • Network steps forward continuously")
+	fmt.Println("   • After each step, does 1 epoch of micro-training")
+	fmt.Println("   • Weights update in real-time as it runs")
 	fmt.Println()
-	fmt.Println("2. REAL-TIME BEHAVIOR:")
+	fmt.Println("2. REAL-TIME ADAPTIVE BEHAVIOR:")
 	fmt.Println("   • Timer-driven execution (not event-driven)")
-	fmt.Printf("   • Achieved ~%.1f steps/second\n", float64(stepCount)/totalTime.Seconds())
-	fmt.Println("   • Predictable, rhythmic computation")
+	fmt.Printf("   • Achieved ~%.1f steps/second (with learning!)\n", float64(stepCount)/totalTime.Seconds())
+	fmt.Println("   • Network adapts while it's alive")
 	fmt.Println()
-	fmt.Println("3. SPATIAL COMPUTATION:")
-	fmt.Println("   • Each grid cell [row,col] is an independent agent")
-	fmt.Println("   • All agents step in parallel")
-	fmt.Println("   • Creates wave-like propagation pattern")
+	fmt.Println("3. MICRO-LEARNING:")
+	fmt.Println("   • 1 epoch per step = gentle, continuous learning")
+	fmt.Println("   • Prevents catastrophic forgetting")
+	fmt.Println("   • More biologically plausible than batch training")
 	fmt.Println()
-	fmt.Println("4. LIVING NETWORK:")
+	fmt.Println("4. LIVING, LEARNING NETWORK:")
 	fmt.Println("   • Network has 'heartbeat' - continuous activity")
-	fmt.Println("   • Can process streams of data in real-time")
-	fmt.Println("   • More biological - neurons fire continuously")
+	fmt.Println("   • Learns from experience in real-time")
+	fmt.Println("   • Can adapt to changing patterns on the fly")
 	fmt.Println()
-	fmt.Println("Next steps to add learning:")
-	fmt.Println("→ Implement step-wise backprop (gradient per step)")
-	fmt.Println("→ Add temporal credit assignment")
-	fmt.Println("→ Hebbian-style local learning rules")
-	fmt.Println("→ Online gradient descent with step-based updates")
+	fmt.Println("Potential enhancements:")
+	fmt.Println("→ Adaptive learning rate (decay over time)")
+	fmt.Println("→ Experience replay buffer (like DQN)")
+	fmt.Println("→ Eligibility traces for temporal credit")
+	fmt.Println("→ Hebbian local learning rules")
+	fmt.Println("→ Meta-learning: learning to learn")
 	fmt.Println()
 	fmt.Println("Potential applications:")
-	fmt.Println("→ Real-time control systems (robotics)")
-	fmt.Println("→ Streaming data processing")
-	fmt.Println("→ Asynchronous neural computation")
-	fmt.Println("→ Spiking neural network simulation")
-	fmt.Println("→ Brain-like continuous processing")
+	fmt.Println("→ Online learning from data streams")
+	fmt.Println("→ Real-time robotics control with adaptation")
+	fmt.Println("→ Continual learning (lifelong learning)")
+	fmt.Println("→ Reactive AI that learns while acting")
+	fmt.Println("→ Brain-like continuous learning systems")
 }
 
 // Helper functions
@@ -389,4 +442,101 @@ func maxDuration(durations []time.Duration) time.Duration {
 		}
 	}
 	return max
+}
+
+// plotLossHistory creates a simple text-based plot of loss over time
+func plotLossHistory(history []float32, height int) {
+	if len(history) == 0 {
+		return
+	}
+
+	// Find min and max loss
+	minLoss := history[0]
+	maxLoss := history[0]
+	for _, loss := range history {
+		if loss < minLoss {
+			minLoss = loss
+		}
+		if loss > maxLoss {
+			maxLoss = loss
+		}
+	}
+
+	// Add some padding
+	lossRange := maxLoss - minLoss
+	if lossRange < 0.001 {
+		lossRange = 0.001
+	}
+	minLoss -= lossRange * 0.1
+	maxLoss += lossRange * 0.1
+	lossRange = maxLoss - minLoss
+
+	// Sample points for plotting (max 80 columns)
+	width := 80
+	if len(history) < width {
+		width = len(history)
+	}
+	stride := len(history) / width
+	if stride < 1 {
+		stride = 1
+	}
+
+	fmt.Printf("Loss: %.6f (min) to %.6f (max)\n", minLoss, maxLoss)
+	fmt.Println()
+
+	// Draw plot from top to bottom
+	for row := 0; row < height; row++ {
+		threshold := maxLoss - (float32(row)/float32(height-1))*lossRange
+
+		// Y-axis label
+		fmt.Printf("%8.5f │", threshold)
+
+		// Plot points
+		for col := 0; col < width; col++ {
+			idx := col * stride
+			if idx >= len(history) {
+				idx = len(history) - 1
+			}
+
+			loss := history[idx]
+
+			// Check if this cell should be filled
+			prevLoss := loss
+			if idx > 0 {
+				prevLoss = history[idx-1]
+			}
+
+			// Simple filled plot
+			if (loss <= threshold && prevLoss >= threshold) ||
+				(loss >= threshold && prevLoss <= threshold) {
+				fmt.Print("●")
+			} else if loss >= threshold {
+				fmt.Print("·")
+			} else {
+				fmt.Print(" ")
+			}
+		}
+		fmt.Println()
+	}
+
+	// X-axis
+	fmt.Print("         └")
+	for i := 0; i < width; i++ {
+		fmt.Print("─")
+	}
+	fmt.Println()
+
+	fmt.Printf("          0%s%d steps\n",
+		spaces(width-15), len(history))
+}
+
+func spaces(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	s := ""
+	for i := 0; i < n; i++ {
+		s += " "
+	}
+	return s
 }
