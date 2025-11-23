@@ -5,15 +5,163 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"os"
+	"strings"
 	"time"
 
 	nn "github.com/openfluke/loom/nn"
-	tokenizer "github.com/openfluke/loom/tokenizer"
 )
 
-// TargetQueue handles the delay between input and output in the stepping network
+// Custom BPE Tokenizer
+type BPETokenizer struct {
+	vocab     map[string]int
+	idToToken map[int]string
+	merges    [][]string
+	vocabSize int
+}
+
+func NewBPETokenizer(text string, numMerges int) *BPETokenizer {
+	vocab := make(map[string]int)
+	idToToken := make(map[int]string)
+
+	// Special tokens
+	vocab["<UNK>"] = 0
+	idToToken[0] = "<UNK>"
+	vocab["<PAD>"] = 1
+	idToToken[1] = "<PAD>"
+
+	idx := 2
+
+	// Add all unique characters
+	charSet := make(map[rune]bool)
+	for _, r := range text {
+		charSet[r] = true
+	}
+
+	for char := range charSet {
+		s := string(char)
+		vocab[s] = idx
+		idToToken[idx] = s
+		idx++
+	}
+
+	// Learn BPE merges
+	merges := make([][]string, 0)
+	words := strings.Fields(strings.ToLower(text))
+
+	for merge := 0; merge < numMerges; merge++ {
+		// Count pairs
+		pairCounts := make(map[string]int)
+
+		for _, word := range words {
+			tokens := tokenizeWord(word, merges)
+			for i := 0; i < len(tokens)-1; i++ {
+				pair := tokens[i] + " " + tokens[i+1]
+				pairCounts[pair]++
+			}
+		}
+
+		if len(pairCounts) == 0 {
+			break
+		}
+
+		// Find most frequent pair
+		maxPair := ""
+		maxCount := 0
+		for pair, count := range pairCounts {
+			if count > maxCount {
+				maxCount = count
+				maxPair = pair
+			}
+		}
+
+		if maxPair == "" {
+			break
+		}
+
+		// Add merge
+		parts := strings.Split(maxPair, " ")
+		merges = append(merges, parts)
+
+		// Add merged token to vocab
+		merged := parts[0] + parts[1]
+		if _, exists := vocab[merged]; !exists {
+			vocab[merged] = idx
+			idToToken[idx] = merged
+			idx++
+		}
+	}
+
+	return &BPETokenizer{
+		vocab:     vocab,
+		idToToken: idToToken,
+		merges:    merges,
+		vocabSize: idx,
+	}
+}
+
+func tokenizeWord(word string, merges [][]string) []string {
+	// Start with individual characters
+	tokens := make([]string, 0)
+	for _, r := range word {
+		tokens = append(tokens, string(r))
+	}
+
+	// Apply merges
+	for _, merge := range merges {
+		newTokens := make([]string, 0)
+		i := 0
+		for i < len(tokens) {
+			if i < len(tokens)-1 && tokens[i] == merge[0] && tokens[i+1] == merge[1] {
+				newTokens = append(newTokens, merge[0]+merge[1])
+				i += 2
+			} else {
+				newTokens = append(newTokens, tokens[i])
+				i++
+			}
+		}
+		tokens = newTokens
+	}
+
+	return tokens
+}
+
+func (t *BPETokenizer) Encode(text string) []int {
+	words := strings.Fields(strings.ToLower(text))
+	ids := make([]int, 0)
+
+	for _, word := range words {
+		tokens := tokenizeWord(word, t.merges)
+		for _, token := range tokens {
+			if id, exists := t.vocab[token]; exists {
+				ids = append(ids, id)
+			} else {
+				ids = append(ids, 0) // <UNK>
+			}
+		}
+	}
+
+	return ids
+}
+
+func (t *BPETokenizer) Decode(id int) string {
+	if token, exists := t.idToToken[id]; exists {
+		return token
+	}
+	return "<UNK>"
+}
+
+func (t *BPETokenizer) OneHot(id int) []float32 {
+	vec := make([]float32, t.vocabSize)
+	if id >= 0 && id < t.vocabSize {
+		vec[id] = 1.0
+	}
+	return vec
+}
+
+// TargetQueue for delayed targets
 type TargetQueue struct {
-	targets []int // Changed to int for Token IDs
+	targets []int
 	maxSize int
 }
 
@@ -41,213 +189,158 @@ func (q *TargetQueue) IsFull() bool {
 	return len(q.targets) >= q.maxSize
 }
 
-// --- Helper: Build Tokenizer ---
-func buildSimpleTokenizer(text string) *tokenizer.Tokenizer {
-	uniqueChars := []string{"<UNK>", "<PAD>"}
-	seen := make(map[rune]bool)
-	for _, r := range text {
-		if !seen[r] {
-			seen[r] = true
-			uniqueChars = append(uniqueChars, string(r))
-		}
-	}
-
-	vocab := make(map[string]int)
-	for i, c := range uniqueChars {
-		vocab[c] = i
-	}
-
-	// Construct minimal JSON config for loader
-	// We just need a dummy config since we aren't using the full tokenizer loader capabilities for this simple test
-	// But to keep it compatible with the existing struct if needed, we can just manually build it or ignore.
-	// Actually, the original code used LoadFromBytes with a JSON. Let's just manually construct the Tokenizer struct if possible,
-	// or simpler: just use the map we built.
-	// The original code used: tok, _ := tokenizer.LoadFromBytes([]byte(config))
-	// Let's stick to that but we need "encoding/json" back if we use it.
-	// Wait, I removed encoding/json. Let's put it back or find a simpler way.
-	// Actually, I can just manually instantiate the tokenizer if the package allows, or just keep encoding/json.
-	// Re-adding encoding/json to imports is cleaner than rewriting this whole helper logic to avoid it.
-	// BUT, I already removed it in the first chunk.
-	// Let's just construct the JSON string manually without json.Marshal to avoid the import if it's simple map[string]int.
-	// Or better, I will just re-add encoding/json in the first chunk? No, I can't edit previous chunks.
-	// I will just use fmt.Sprintf to build the json for the vocab since it is simple.
-
-	vocabStr := "{"
-	first := true
-	for k, v := range vocab {
-		if !first {
-			vocabStr += ","
-		}
-		// Escape keys if needed, but for simple text it's fine.
-		// For safety let's quote them.
-		vocabStr += fmt.Sprintf("%q:%d", k, v)
-		first = false
-	}
-	vocabStr += "}"
-
-	config := fmt.Sprintf(`{"model":{"type":"BPE","vocab":%s,"merges":[]}}`, vocabStr)
-	tok, _ := tokenizer.LoadFromBytes([]byte(config))
-	return tok
+func (q *TargetQueue) Clear() {
+	q.targets = q.targets[:0]
 }
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
-	// 1. Prepare Data
-	// Hardcoded sentence for POC
-	text := "the quick brown fox jumps over the lazy dog "
-	// Repeat it a few times to give it a bit more substance, but keep it simple
-	text = text + text + text + text
-
-	tok := buildSimpleTokenizer(text)
-	vocabSize := len(tok.Vocab)
-	fmt.Printf("=== LOOM Stepping Language Model (Vocab: %d) ===\n", vocabSize)
-	fmt.Println("Architecture: Dense(Embed) -> LSTM -> Dense(Logits)")
-	fmt.Println("Dataset: '" + text[:40] + "...'")
+	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║  LOOM Stepping Text Generator v6 - TRUE BPE Token Prediction      ║")
+	fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// Convert text to integer IDs
-	var dataIDs []int
-	unkID, _ := tok.TokenToID("<UNK>")
-	for _, r := range text {
-		id, ok := tok.TokenToID(string(r))
-		if !ok {
-			id = unkID
+	// 1. Load data
+	text := ""
+	data, err := os.ReadFile("alice.txt")
+	if err == nil {
+		text = string(data)
+		text = strings.ReplaceAll(text, "\n", " ")
+		text = strings.ReplaceAll(text, "\r", "")
+		text = strings.ReplaceAll(text, "  ", " ")
+		if len(text) > 10000 {
+			text = text[:10000]
 		}
-		dataIDs = append(dataIDs, id)
+		fmt.Println("✓ Loaded alice.txt!")
+	} else {
+		text = `the quick brown fox jumps over the lazy dog ` +
+			`the cat sat on the mat and looked around ` +
+			`a bird flew across the blue sky today `
+		fmt.Println("Using default text")
 	}
 
-	// 2. Define Network Architecture
-	// INCREASED SIZE: 64 -> 128 to give it enough memory to escape the "Space Trap"
+	fmt.Printf("Text length: %d characters\n", len(text))
+	previewLen := 60
+	if len(text) < previewLen {
+		previewLen = len(text)
+	}
+	fmt.Printf("Preview: \"%s...\"\n\n", text[:previewLen])
+
+	// 2. Build BPE tokenizer
+	fmt.Println("Building BPE tokenizer (learning subword units)...")
+	tok := NewBPETokenizer(text, 150)
+
+	fmt.Printf("✓ Vocabulary: %d tokens\n", tok.vocabSize)
+	fmt.Printf("  - Learned %d merge operations\n", len(tok.merges))
+	fmt.Printf("  - Example merges: ")
+	for i := 0; i < 5 && i < len(tok.merges); i++ {
+		fmt.Printf("'%s'+'%s' ", tok.merges[i][0], tok.merges[i][1])
+	}
+	fmt.Println("\n")
+
+	// 3. Tokenize text
+	tokenIDs := tok.Encode(text)
+	fmt.Printf("Total tokens: %d (from %d characters)\n", len(tokenIDs), len(text))
+	fmt.Printf("Compression ratio: %.2fx\n\n", float64(len(text))/float64(len(tokenIDs)))
+
+	// 4. Build network
 	networkJSON := fmt.Sprintf(`{
-        "batch_size": 1,
-        "grid_rows": 1,
-        "grid_cols": 3,
-        "layers_per_cell": 1,
-        "layers": [
-            {
-                "type": "dense",
-                "input_height": %d,
-                "output_height": 32,
-                "activation": "tanh"
-            },
-            {
-                "type": "lstm",
-                "input_size": 32,
-                "hidden_size": 64,
-                "seq_length": 1,
-                "activation": "tanh"
-            },
-            {
-                "type": "dense",
-                "input_height": 64,
-                "output_height": %d,
-                "activation": "linear"
-            }
-        ]
-    }`, vocabSize, vocabSize)
+		"batch_size": 1,
+		"grid_rows": 1,
+		"grid_cols": 3,
+		"layers_per_cell": 1,
+		"layers": [
+			{ "type": "dense", "input_height": %d, "output_height": 64, "activation": "relu" },
+			{ "type": "lstm", "input_size": 64, "hidden_size": 64, "seq_length": 1, "activation": "tanh" },
+			{ "type": "dense", "input_height": 64, "output_height": %d, "activation": "softmax" }
+		]
+	}`, tok.vocabSize, tok.vocabSize)
 
 	net, err := nn.BuildNetworkFromJSON(networkJSON)
 	if err != nil {
 		log.Fatalf("Failed to build network: %v", err)
 	}
 	net.InitializeWeights()
+	state := net.InitStepState(tok.vocabSize)
 
-	state := net.InitStepState(vocabSize)
+	fmt.Println("Network: Input → Dense(64) → LSTM(64) → Softmax")
+	fmt.Println()
 
-	// 3. Setup Continuous Training Loop
-	// Pipeline Depth = 3 layers (Dense->LSTM->Dense)
+	// 5. Training
+	totalSteps := 15000
 	targetDelay := 3
 	targetQueue := NewTargetQueue(targetDelay)
 
-	// TUNED HYPERPARAMETERS
-	learningRate := float32(0.05) // Increased LR significantly
-	gradientClip := float32(5.0)  // Looser clipping
+	learningRate := float32(0.1)
+	minLR := float32(0.001)
+	decayRate := float32(0.9998)
+	gradClip := float32(5.0)
 
-	totalSteps := 10000 // Increased steps
-	fmt.Printf("Training for %d steps (Pipeline Delay: %d)\n", totalSteps, targetDelay)
+	fmt.Printf("Training: %d steps\n", totalSteps)
+	fmt.Printf("Learning rate: %.3f → %.3f\n", learningRate, minLR)
+	fmt.Println()
+	fmt.Println("Progress:")
+	fmt.Println("─────────────────────────────────────────────────────────────────────")
 
 	startTime := time.Now()
 	dataPtr := 0
+	inputVec := make([]float32, tok.vocabSize)
 
-	// Pre-allocate input vector to reuse memory
-	inputVec := make([]float32, vocabSize)
+	for step := 0; step < totalSteps; step++ {
+		currID := tokenIDs[dataPtr]
+		nextPtr := (dataPtr + 1) % len(tokenIDs)
+		targetID := tokenIDs[nextPtr]
 
-	fmt.Println("Total Steps:", totalSteps)
-
-	for stepCount := 0; stepCount < totalSteps; stepCount++ {
-		// A. Get Current & Target Token
-		currID := dataIDs[dataPtr]
-		nextPtr := (dataPtr + 1) % len(dataIDs)
-		targetID := dataIDs[nextPtr]
-
-		// B. Set Input (One-Hot)
+		// One-hot input
 		for i := range inputVec {
 			inputVec[i] = 0
 		}
 		inputVec[currID] = 1.0
 		state.SetInput(inputVec)
 
-		// C. Step Forward
 		net.StepForward(state)
-
-		// D. Manage Delay
 		targetQueue.Push(targetID)
 
 		if targetQueue.IsFull() {
-			delayedTargetID := targetQueue.Pop()
+			delayedTarget := targetQueue.Pop()
 			output := state.GetOutput()
 
-			// E. Loss & Gradient
-			// Softmax logic
-			maxVal := output[0]
-			for _, v := range output {
-				if v > maxVal {
-					maxVal = v
-				}
+			// Cross-entropy loss
+			prob := output[delayedTarget]
+			if prob < 1e-7 {
+				prob = 1e-7
 			}
-			sumExp := float32(0.0)
-			exps := make([]float32, len(output))
-			for i, v := range output {
-				exps[i] = float32(math.Exp(float64(v - maxVal)))
-				sumExp += exps[i]
-			}
+			loss := -float32(math.Log(float64(prob)))
 
-			gradOutput := make([]float32, len(output))
-			loss := float32(0.0)
-
+			// Gradient
+			gradOutput := make([]float32, tok.vocabSize)
 			for i := range output {
-				probs := exps[i] / sumExp
-				tVal := float32(0.0)
-				if i == delayedTargetID {
-					tVal = 1.0
+				if i == delayedTarget {
+					gradOutput[i] = output[i] - 1.0
+				} else {
+					gradOutput[i] = output[i]
 				}
-
-				if tVal > 0.5 {
-					loss -= float32(math.Log(float64(probs + 1e-7)))
-				}
-				gradOutput[i] = probs - tVal
 			}
 
-			// Gradient Clipping (Crucial for LSTM stability)
+			// Clip gradient
 			gradNorm := float32(0.0)
 			for _, g := range gradOutput {
 				gradNorm += g * g
 			}
 			gradNorm = float32(math.Sqrt(float64(gradNorm)))
-			if gradNorm > gradientClip {
-				scale := gradientClip / gradNorm
+			if gradNorm > gradClip {
+				scale := gradClip / gradNorm
 				for i := range gradOutput {
 					gradOutput[i] *= scale
 				}
 			}
 
-			// F. Backward & Update
 			net.StepBackward(state, gradOutput)
 			net.ApplyGradients(learningRate)
 
 			// Logging
-			if stepCount%500 == 0 {
+			if step%500 == 0 {
 				predID := 0
 				for i := 1; i < len(output); i++ {
 					if output[i] > output[predID] {
@@ -255,87 +348,109 @@ func main() {
 					}
 				}
 
-				pChar, _ := tok.IDToToken(predID)
-				tChar, _ := tok.IDToToken(delayedTargetID)
-				if pChar == "\n" {
-					pChar = "\\n"
-				}
-				if tChar == "\n" {
-					tChar = "\\n"
+				currToken := tok.Decode(currID)
+				predToken := tok.Decode(predID)
+				targetToken := tok.Decode(delayedTarget)
+
+				mark := "✗"
+				if predID == delayedTarget {
+					mark = "✓"
 				}
 
-				fmt.Printf("Step %-6d Loss: %.4f | Pred: '%s' Exp: '%s'\n", stepCount, loss, pChar, tChar)
+				fmt.Printf("Step %5d | Loss: %.4f | LR: %.4f | '%s' → pred:'%s' target:'%s' %s\n",
+					step, loss, learningRate, currToken, predToken, targetToken, mark)
 			}
+		}
+
+		learningRate *= decayRate
+		if learningRate < minLR {
+			learningRate = minLR
 		}
 
 		dataPtr = nextPtr
 	}
 
-	fmt.Printf("Training Complete in %v\n\n", time.Since(startTime))
+	elapsed := time.Since(startTime)
+	fmt.Println()
+	fmt.Printf("Training complete in %v (%.1f steps/sec)\n\n", elapsed, float64(totalSteps)/elapsed.Seconds())
 
-	// 4. Generation Mode
-	fmt.Println("=== Generation Mode ===")
-	seed := "the"
-	fmt.Printf("Seed: \"%s\"", seed)
+	// 6. Generation test
+	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║  Generation Test - Combining Subword Tokens                       ║")
+	fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
+	fmt.Println()
 
-	// Prime with seed (Sequential Mode to fix inference delay)
-	for _, r := range seed {
-		id, _ := tok.TokenToID(string(r))
-		for i := range inputVec {
-			inputVec[i] = 0
+	seeds := []string{"alice", "the", "down"}
+
+	for _, seed := range seeds {
+		// Encode seed
+		seedIDs := tok.Encode(seed)
+		if len(seedIDs) == 0 {
+			continue
 		}
-		inputVec[id] = 1.0
-		state.SetInput(inputVec)
-		// Run sequentially to ensure state is updated before next input
-		for l := 0; l < 3; l++ {
-			net.StepForwardSingle(state, l)
+
+		// Prime with seed
+		for _, id := range seedIDs {
+			for i := range inputVec {
+				inputVec[i] = 0
+			}
+			inputVec[id] = 1.0
+			state.SetInput(inputVec)
+			net.StepForward(state)
 		}
+
+		// Generate
+		fmt.Printf("Seed: '%s' → ", seed)
+		generated := make([]string, 0)
+
+		for i := 0; i < 30; i++ {
+			output := state.GetOutput()
+
+			// Sample with temperature
+			temp := float32(0.6)
+			maxVal := output[0]
+			for _, v := range output {
+				if v > maxVal {
+					maxVal = v
+				}
+			}
+
+			exps := make([]float32, tok.vocabSize)
+			sumExp := float32(0.0)
+			for j, v := range output {
+				exps[j] = float32(math.Exp(float64((v - maxVal) / temp)))
+				sumExp += exps[j]
+			}
+
+			r := rand.Float32() * sumExp
+			cumSum := float32(0.0)
+			nextID := 0
+			for j, exp := range exps {
+				cumSum += exp
+				if cumSum >= r {
+					nextID = j
+					break
+				}
+			}
+
+			token := tok.Decode(nextID)
+			generated = append(generated, token)
+
+			// Feed back
+			for j := range inputVec {
+				inputVec[j] = 0
+			}
+			inputVec[nextID] = 1.0
+			state.SetInput(inputVec)
+			net.StepForward(state)
+		}
+
+		// Combine subword tokens
+		result := strings.Join(generated, "")
+		fmt.Printf("%s\n", result)
 	}
 
-	// Generate
-	lastID := 0
-	for i := 0; i < 100; i++ {
-		output := state.GetOutput()
-
-		// Sample
-		maxVal := output[0]
-		for _, v := range output {
-			if v > maxVal {
-				maxVal = v
-			}
-		}
-
-		exps := make([]float32, len(output))
-		sumExps := float32(0.0)
-		temp := 0.6
-
-		for k, v := range output {
-			exps[k] = float32(math.Exp(float64(v-maxVal) / temp))
-			sumExps += exps[k]
-		}
-
-		r := rand.Float32() * sumExps
-		cum := float32(0.0)
-		for k, v := range exps {
-			cum += v
-			if cum >= r {
-				lastID = k
-				break
-			}
-		}
-
-		char, _ := tok.IDToToken(lastID)
-		fmt.Print(char)
-
-		// Feed back
-		for i := range inputVec {
-			inputVec[i] = 0
-		}
-		inputVec[lastID] = 1.0
-		state.SetInput(inputVec)
-		for l := 0; l < 3; l++ {
-			net.StepForwardSingle(state, l)
-		}
-	}
-	fmt.Println("\n\n=== Done ===")
+	fmt.Println()
+	fmt.Println("✓ Notice how subword tokens combine to form words!")
+	fmt.Println("Done!")
 }
