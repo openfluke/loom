@@ -320,6 +320,27 @@ func LoomApplyGradients(learningRate C.float) {
 	}
 }
 
+//export LoomApplyGradientsAdamW
+func LoomApplyGradientsAdamW(learningRate, beta1, beta2, weightDecay C.float) {
+	if currentNetwork != nil {
+		currentNetwork.ApplyGradientsAdamW(float32(learningRate), float32(beta1), float32(beta2), float32(weightDecay))
+	}
+}
+
+//export LoomApplyGradientsRMSprop
+func LoomApplyGradientsRMSprop(learningRate, alpha, epsilon, momentum C.float) {
+	if currentNetwork != nil {
+		currentNetwork.ApplyGradientsRMSprop(float32(learningRate), float32(alpha), float32(epsilon), float32(momentum))
+	}
+}
+
+//export LoomApplyGradientsSGDMomentum
+func LoomApplyGradientsSGDMomentum(learningRate, momentum, dampening C.float, nesterov C.int) {
+	if currentNetwork != nil {
+		currentNetwork.ApplyGradientsSGDMomentum(float32(learningRate), float32(momentum), float32(dampening), nesterov != 0)
+	}
+}
+
 //export LoomFreeStepState
 func LoomFreeStepState(handle C.longlong) {
 	stepStateMu.Lock()

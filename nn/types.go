@@ -180,6 +180,10 @@ type Network struct {
 
 	// Learning rate for parallel layer branch updates (set during UpdateWeights)
 	learningRate float32
+
+	// Optimizer (optional - if nil, uses manual gradient application)
+	optimizer     Optimizer
+	optimizerType string
 }
 
 // GPUDeviceInfo holds WebGPU resources for GPU execution
