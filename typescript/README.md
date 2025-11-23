@@ -417,7 +417,7 @@ Total Epochs: 800
 
 ## License
 
-MIT
+APACHE2
 
 ## Links
 

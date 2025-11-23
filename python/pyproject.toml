@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "welvet"
-version = "0.0.6"
+version = "0.0.7"
 description = "Wrapper for Embedding Loom Via External (C-ABI) Toolchain — GPU-accelerated neural networks with transformer inference"
 readme = "README.md"
 requires-python = ">=3.8"
