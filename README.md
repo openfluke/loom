@@ -178,6 +178,58 @@ Supported across all layer types and platforms:
 - **Metrics Persistence**: Save/load evaluation results to JSON
 - **Cross-Platform Evaluation**: `EvaluateNetwork()` available in Go, Python, TypeScript, C#, and C
 
+### ⚡ Stepping API - Fine-Grained Execution Control
+
+**NEW:** Execute networks one step at a time with full control over input/output at each layer:
+
+- **Step-by-Step Execution**: Process inputs incrementally instead of all at once
+- **Stateful Processing**: Maintain layer states across multiple steps (perfect for LSTMs/RNNs)
+- **Manual Gradient Control**: Apply gradients when YOU want, not automatically
+- **Real-Time Training**: Update weights after each step for online learning
+- **Cross-Platform**: Available in Go, Python, C#, TypeScript, and WASM
+
+**Example (Python):**
+```python
+from welvet import create_network_from_json, StepState, apply_gradients
+
+# Create network
+config = {"batch_size": 1, "layers": [...]}
+network = create_network_from_json(config)
+
+# Initialize stepping state
+state = StepState(input_size=4)
+
+# Training loop
+for step in range(100000):
+    state.set_input([0.1, 0.2, 0.1, 0.3])
+    state.step_forward()
+    output = state.get_output()
+    
+    # Calculate gradients
+    gradients = [output[i] - target[i] for i in range(len(output))]
+    
+    # Backward pass
+    state.step_backward(gradients)
+    
+    # Update weights
+    apply_gradients(learning_rate=0.01)
+```
+
+**Available in all platforms:**
+- ✅ **Go**: `network.InitStepState()`, `network.StepForward()`, `network.StepBackward()`, `network.ApplyGradients()`
+- ✅ **Python**: `StepState(size)`, `state.step_forward()`, `state.step_backward()`, `apply_gradients()`
+- ✅ **C#**: `new StepState(size)`, `state.StepForward()`, `state.StepBackward()`, `Network.ApplyGradients()`
+- ✅ **TypeScript**: `network.createStepState()`, `state.stepForward()`, `state.stepBackward()`, `network.ApplyGradients()`
+- ✅ **WASM/Browser**: Same as TypeScript, works in browser!
+
+See examples:
+- **Go**: `examples/step_example/step_train_v3.go`
+- **Python**: `python/examples/step_train_v3.py`
+- **C#**: `csharp/examples/StepTrainV3.cs`
+- **TypeScript**: `typescript/example/step_train_v3.ts`
+- **WASM**: `wasm/step_example.html`
+
+
 ### 🌍 Cross-Platform API Consistency
 
 **All platforms now share the same simple API:**

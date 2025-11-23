@@ -158,6 +158,58 @@ Console.WriteLine("✓ Model loaded - predictions match!");
 
 See `examples/GridScatterDemo.cs` for complete working example.
 
+### ⚡ Stepping API - Fine-Grained Execution Control
+
+**NEW:** Execute networks one step at a time for online learning:
+
+```csharp
+using Welvet;
+
+// Create network
+var config = @"{
+    ""batch_size"": 1,
+    ""layers"": [
+        {""type"": ""dense"", ""input_height"": 4, ""output_height"": 8, ""activation"": ""relu""},
+        {""type"": ""lstm"", ""input_size"": 8, ""hidden_size"": 12, ""seq_length"": 1},
+        {""type"": ""dense"", ""input_height"": 12, ""output_height"": 3, ""activation"": ""softmax""}
+    ]
+}";
+Network.CreateFromJson(config);
+
+// Initialize stepping state
+var state = new StepState(inputSize: 4);
+
+// Training loop - update weights after EACH step
+for (int step = 0; step < 100000; step++)
+{
+    state.SetInput(new float[] { 0.1f, 0.2f, 0.1f, 0.3f });
+    state.StepForward();
+    var output = state.GetOutput();
+    
+    // Calculate gradients
+    var gradients = new float[output.Length];
+    for (int i = 0; i < output.Length; i++)
+        gradients[i] = output[i] - target[i];
+    
+    // Backward pass
+    state.StepBackward(gradients);
+    
+    // Update weights immediately
+    Network.ApplyGradients(learningRate: 0.01f);
+}
+```
+
+**Stepping API Classes:**
+- `StepState(int inputSize)` - Initialize stepping state
+- `state.SetInput(float[] data)` - Set input for current step
+- `state.StepForward()` - Execute forward pass
+- `state.GetOutput()` - Get output from last layer
+- `state.StepBackward(float[] gradients)` - Execute backward pass
+- `Network.ApplyGradients(float learningRate)` - Update network weights
+
+See `examples/StepTrainV3.cs` for a complete example achieving 100% accuracy.
+
+
 ## 📚 API Reference
 
 ### Transformer Class (NEW!)
