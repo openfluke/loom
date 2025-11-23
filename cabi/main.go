@@ -2,12 +2,14 @@ package main
 
 /*
 #include <stdlib.h>
+#include <stdint.h>
 */
 import "C"
 
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"unsafe"
 
 	"github.com/openfluke/loom/nn"
@@ -206,6 +208,123 @@ func LoomEvaluateNetwork(inputsJSON *C.char, expectedOutputsJSON *C.char) *C.cha
 //export FreeLoomString
 func FreeLoomString(str *C.char) {
 	C.free(unsafe.Pointer(str))
+}
+
+// Global map to store step states
+var stepStates = make(map[int64]*nn.StepState)
+var stepStateNextID int64 = 1
+var stepStateMu sync.RWMutex
+
+//export LoomInitStepState
+func LoomInitStepState(inputSize C.int) C.longlong {
+	if currentNetwork == nil {
+		return -1
+	}
+
+	state := currentNetwork.InitStepState(int(inputSize))
+
+	stepStateMu.Lock()
+	id := stepStateNextID
+	stepStateNextID++
+	stepStates[id] = state
+	stepStateMu.Unlock()
+
+	return C.longlong(id)
+}
+
+//export LoomSetInput
+func LoomSetInput(handle C.longlong, input *C.float, length C.int) {
+	stepStateMu.RLock()
+	state, ok := stepStates[int64(handle)]
+	stepStateMu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	// Convert C array to Go slice
+	inputSlice := (*[1 << 30]float32)(unsafe.Pointer(input))[:length:length]
+	goInputs := make([]float32, length)
+	copy(goInputs, inputSlice)
+
+	state.SetInput(goInputs)
+}
+
+//export LoomStepForward
+func LoomStepForward(handle C.longlong) C.longlong {
+	stepStateMu.RLock()
+	state, ok := stepStates[int64(handle)]
+	stepStateMu.RUnlock()
+
+	if !ok || currentNetwork == nil {
+		return -1
+	}
+
+	duration := currentNetwork.StepForward(state)
+	return C.longlong(duration.Nanoseconds())
+}
+
+//export LoomGetOutput
+func LoomGetOutput(handle C.longlong) *C.char {
+	stepStateMu.RLock()
+	state, ok := stepStates[int64(handle)]
+	stepStateMu.RUnlock()
+
+	if !ok {
+		return C.CString(`{"error": "invalid handle"}`)
+	}
+
+	output := state.GetOutput()
+	result, err := json.Marshal(output)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	return C.CString(string(result))
+}
+
+//export LoomStepBackward
+func LoomStepBackward(handle C.longlong, gradients *C.float, length C.int) *C.char {
+	stepStateMu.RLock()
+	state, ok := stepStates[int64(handle)]
+	stepStateMu.RUnlock()
+
+	if !ok || currentNetwork == nil {
+		return C.CString(`{"error": "invalid handle or network"}`)
+	}
+
+	// Convert C array to Go slice
+	gradSlice := (*[1 << 30]float32)(unsafe.Pointer(gradients))[:length:length]
+	goGrads := make([]float32, length)
+	copy(goGrads, gradSlice)
+
+	gradInput, duration := currentNetwork.StepBackward(state, goGrads)
+
+	response := map[string]interface{}{
+		"grad_input": gradInput,
+		"duration":   duration.Nanoseconds(),
+	}
+
+	result, err := json.Marshal(response)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	return C.CString(string(result))
+}
+
+//export LoomApplyGradients
+func LoomApplyGradients(learningRate C.float) {
+	if currentNetwork != nil {
+		currentNetwork.ApplyGradients(float32(learningRate))
+	}
+}
+
+//export LoomFreeStepState
+func LoomFreeStepState(handle C.longlong) {
+	stepStateMu.Lock()
+	delete(stepStates, int64(handle))
+	stepStateMu.Unlock()
 }
 
 func main() {}

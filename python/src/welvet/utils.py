@@ -1434,3 +1434,166 @@ def evaluate_network_simple(inputs: List[List[float]], expected_outputs: List[fl
         raise RuntimeError(f"Evaluation failed: {result['error']}")
     
     return result
+
+
+# ---- Stepping API (Fine-grained control) ----
+
+# LoomInitStepState: initialize step state
+_LoomInitStepState = _sym("LoomInitStepState")
+if _LoomInitStepState:
+    _LoomInitStepState.restype = ctypes.c_longlong
+    _LoomInitStepState.argtypes = [ctypes.c_int]
+
+# LoomSetInput: set input for step
+_LoomSetInput = _sym("LoomSetInput")
+if _LoomSetInput:
+    _LoomSetInput.restype = None
+    _LoomSetInput.argtypes = [ctypes.c_longlong, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+
+# LoomStepForward: step forward
+_LoomStepForward = _sym("LoomStepForward")
+if _LoomStepForward:
+    _LoomStepForward.restype = ctypes.c_longlong
+    _LoomStepForward.argtypes = [ctypes.c_longlong]
+
+# LoomGetOutput: get output for step
+_LoomGetOutput = _sym("LoomGetOutput")
+if _LoomGetOutput:
+    _LoomGetOutput.restype = ctypes.c_char_p
+    _LoomGetOutput.argtypes = [ctypes.c_longlong]
+
+# LoomStepBackward: step backward
+_LoomStepBackward = _sym("LoomStepBackward")
+if _LoomStepBackward:
+    _LoomStepBackward.restype = ctypes.c_char_p
+    _LoomStepBackward.argtypes = [ctypes.c_longlong, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+
+# LoomApplyGradients: apply gradients
+_LoomApplyGradients = _sym("LoomApplyGradients")
+if _LoomApplyGradients:
+    _LoomApplyGradients.restype = None
+    _LoomApplyGradients.argtypes = [ctypes.c_float]
+
+# LoomFreeStepState: free step state
+_LoomFreeStepState = _sym("LoomFreeStepState")
+if _LoomFreeStepState:
+    _LoomFreeStepState.restype = None
+    _LoomFreeStepState.argtypes = [ctypes.c_longlong]
+
+
+class StepState:
+    """
+    Manages the state for fine-grained stepping execution of the network.
+    Useful for RNNs, LSTMs, and other stateful architectures where you need
+    control over the execution loop.
+    """
+    
+    def __init__(self, input_size: int):
+        """
+        Initialize a new stepping state.
+        
+        Args:
+            input_size: Size of the input vector
+        """
+        if not _LoomInitStepState:
+            raise RuntimeError("LoomInitStepState not available in library")
+            
+        self.handle = _LoomInitStepState(int(input_size))
+        if self.handle < 0:
+            raise RuntimeError("Failed to initialize step state")
+            
+    def set_input(self, input_data: List[float]) -> None:
+        """
+        Set the input data for the current step.
+        
+        Args:
+            input_data: Input vector as list of floats
+        """
+        if not _LoomSetInput:
+            raise RuntimeError("LoomSetInput not available")
+            
+        # Convert to ctypes array
+        input_array = (ctypes.c_float * len(input_data))(*input_data)
+        _LoomSetInput(self.handle, input_array, len(input_data))
+        
+    def step_forward(self) -> int:
+        """
+        Execute forward pass for one step.
+        
+        Returns:
+            Duration in nanoseconds
+        """
+        if not _LoomStepForward:
+            raise RuntimeError("LoomStepForward not available")
+            
+        return _LoomStepForward(self.handle)
+        
+    def get_output(self) -> List[float]:
+        """
+        Get the output of the network for the current step.
+        
+        Returns:
+            Output vector as list of floats
+        """
+        if not _LoomGetOutput:
+            raise RuntimeError("LoomGetOutput not available")
+            
+        response = _LoomGetOutput(self.handle)
+        if not response:
+            raise RuntimeError("Failed to get output")
+            
+        result = json.loads(response.decode('utf-8'))
+        
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(f"Failed to get output: {result['error']}")
+            
+        # If result is a list, it's the output
+        if isinstance(result, list):
+            return result
+            
+        return []
+        
+    def step_backward(self, gradients: List[float]) -> dict:
+        """
+        Execute backward pass for one step.
+        
+        Args:
+            gradients: Gradient vector from the next layer/step
+            
+        Returns:
+            Dict containing 'grad_input' and 'duration'
+        """
+        if not _LoomStepBackward:
+            raise RuntimeError("LoomStepBackward not available")
+            
+        # Convert to ctypes array
+        grad_array = (ctypes.c_float * len(gradients))(*gradients)
+        
+        response = _LoomStepBackward(self.handle, grad_array, len(gradients))
+        if not response:
+            raise RuntimeError("Failed to step backward")
+            
+        result = json.loads(response.decode('utf-8'))
+        
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(f"Failed to step backward: {result['error']}")
+            
+        return result
+        
+    def __del__(self):
+        """Clean up the native step state."""
+        if _LoomFreeStepState and hasattr(self, 'handle') and self.handle >= 0:
+            _LoomFreeStepState(self.handle)
+
+
+def apply_gradients(learning_rate: float) -> None:
+    """
+    Apply accumulated gradients to update network weights.
+    
+    Args:
+        learning_rate: Learning rate
+    """
+    if not _LoomApplyGradients:
+        raise RuntimeError("LoomApplyGradients not available")
+        
+    _LoomApplyGradients(float(learning_rate))

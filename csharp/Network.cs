@@ -63,6 +63,26 @@ public class Network : IDisposable
     }
 
     /// <summary>
+    /// Creates a network from JSON configuration (Simple API).
+    /// Sets the global network instance.
+    /// </summary>
+    /// <param name="jsonConfig">JSON configuration string</param>
+    public static void CreateFromJson(string jsonConfig)
+    {
+        var responsePtr = NativeMethods.CreateLoomNetwork(jsonConfig);
+        var responseJson = NativeMethods.PtrToStringAndFree(responsePtr);
+
+        if (string.IsNullOrEmpty(responseJson))
+            throw new Exception("Failed to create network");
+
+        using var doc = JsonDocument.Parse(responseJson);
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("error", out var errorProp))
+            throw new Exception($"Failed to create network: {errorProp.GetString()}");
+    }
+
+    /// <summary>
     /// Loads a complete model from JSON string (ONE LINE - structure + weights all at once!).
     /// This is the easy way - no manual layer setup needed!
     /// </summary>
@@ -182,6 +202,15 @@ public class Network : IDisposable
     {
         ThrowIfDisposed();
         JsonCall("UpdateWeights", learningRate);
+    }
+
+    /// <summary>
+    /// Apply accumulated gradients to update network weights (Stepping API).
+    /// </summary>
+    /// <param name="learningRate">Learning rate</param>
+    public static void ApplyGradients(float learningRate)
+    {
+        NativeMethods.LoomApplyGradients(learningRate);
     }
 
     /// <summary>

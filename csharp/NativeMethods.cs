@@ -483,6 +483,31 @@ internal static class NativeMethods
     internal static extern void FreeLoomString(IntPtr str);
 
     // ====================================================================
+    // Stepping API (Fine-grained control)
+    // ====================================================================
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern long LoomInitStepState(int inputSize);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void LoomSetInput(long handle, [MarshalAs(UnmanagedType.LPArray)] float[] input, int length);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern long LoomStepForward(long handle);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr LoomGetOutput(long handle);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr LoomStepBackward(long handle, [MarshalAs(UnmanagedType.LPArray)] float[] gradients, int length);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void LoomApplyGradients(float learningRate);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void LoomFreeStepState(long handle);
+
+    // ====================================================================
     // Transformer Inference API
     // ====================================================================
 
@@ -557,7 +582,7 @@ internal static class NativeMethods
         }
         finally
         {
-            Loom_FreeCString(ptr);
+            FreeLoomString(ptr);
         }
     }
 }
