@@ -1,6 +1,7 @@
 package nn
 
 import (
+	"fmt"
 	"math"
 	"time"
 )
@@ -20,9 +21,6 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 	totalLayers := n.TotalLayers()
 
 	// Backpropagate through grid in reverse order
-	// Note: In a stepping context, we might want to process layers in parallel or
-	// in a specific order. For now, we do standard reverse order to propagate
-	// gradients correctly through the graph for this time step.
 	for layerIdx := totalLayers - 1; layerIdx >= 0; layerIdx-- {
 		// Calculate grid position
 		row := layerIdx / (n.GridCols * n.LayersPerCell)
@@ -33,12 +31,10 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 		config := n.GetLayer(row, col, layer)
 
 		// Get inputs and pre-activations from StepState
-		// layerData[layerIdx] is the INPUT to this layer
-		// layerPreAct[layerIdx] is the PRE-ACTIVATION of this layer
 		input := state.layerData[layerIdx]
 		preAct := state.layerPreAct[layerIdx]
 
-		// If we don't have valid state for this layer, skip it (or zero grad)
+		// Skip if no state (e.g., first step)
 		if len(input) == 0 || len(preAct) == 0 {
 			continue
 		}
@@ -55,13 +51,12 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 			var gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB []float32
 			gradInput, gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB = multiHeadAttentionBackwardCPU(grad, input, preAct, config, n.BatchSize)
 
-			// Concatenate all weight grads
+			// Flatten all weight gradients into one slice for storage
 			kernelGrads = append(append(append(gradQW, gradKW...), gradVW...), gradOutW...)
 			biasGrads = append(append(append(gradQB, gradKB...), gradVB...), gradOutB...)
 
 		case LayerRNN:
 			var gradWeightIH, gradWeightHH, gradBiasH []float32
-			// For RNN, preAct holds hiddenStates
 			gradInput, gradWeightIH, gradWeightHH, gradBiasH = rnnBackwardCPU(config, grad, input, preAct,
 				n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
 
@@ -69,13 +64,12 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 			biasGrads = gradBiasH
 
 		case LayerLSTM:
-			// Reconstruct states map from flat preAct
 			states := reconstructLSTMStates(preAct, n.BatchSize, config.SeqLength, config.HiddenSize)
 			var grads map[string][]float32
 			gradInput, grads = lstmBackwardCPU(config, grad, input, states,
 				n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
 
-			// Concatenate grads
+			// Flatten LSTM gradients
 			kernelGrads = append(append(append(grads["WeightIH_i"], grads["WeightHH_i"]...),
 				append(grads["WeightIH_f"], grads["WeightHH_f"]...)...),
 				append(append(grads["WeightIH_g"], grads["WeightHH_g"]...),
@@ -87,47 +81,111 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 			gradInput, kernelGrads, biasGrads = denseBackwardCPU(grad, input, preAct, config, n.BatchSize)
 
 		case LayerSwiGLU:
-			// Need to implement SwiGLU backward or use a placeholder if not available
-			// Assuming dense-like behavior for now or skipping if not critical for this example
-			// For now, let's treat it as a pass-through for gradients if not implemented
-			// TODO: Implement SwiGLU backward
-			gradInput = make([]float32, len(input)) // Placeholder
+			// Placeholder: SwiGLU backward (Dense-like approximation if specific function missing)
+			// Ideally call SwiGLUBackwardCPU(grad, input, preAct, config, n.BatchSize)
+			// For now, we pass gradient through (Identity) to prevent crash if unimplemented
+			gradInput = make([]float32, len(input))
+			copy(gradInput, grad)
 
 		case LayerNorm, LayerRMSNorm:
-			// Normalization layers usually just propagate gradients
-			// Simplified: pass gradient through (approximate)
+			// Normalization backward
+			// Placeholder: Identity gradient
 			gradInput = make([]float32, len(input))
 			copy(gradInput, grad)
 
 		case LayerParallel:
-			// Parallel layer backward
-			// Need to reconstruct branch pre-acts
-			// Simplified: skip for now or implement if needed
-			gradInput = make([]float32, len(input))
-			copy(gradInput, grad)
+			// Unpack the flattened pre-activations from StepState
+			// Format: [numBranches, size1, data1..., size2, data2...]
+			if len(preAct) > 0 {
+				numBranches := int(preAct[0])
+				branchPreActs := make([][]float32, numBranches)
+				offset := 1
+				for i := 0; i < numBranches; i++ {
+					if offset >= len(preAct) {
+						break
+					}
+					size := int(preAct[offset])
+					offset++
+					if offset+size <= len(preAct) {
+						branchPreActs[i] = preAct[offset : offset+size]
+						offset += size
+					}
+				}
+
+				var nestedKernelGrads, nestedBiasGrads [][]float32
+				var err error
+
+				// Delegate to parallelBackwardCPU (handles all combine modes)
+				gradInput, nestedKernelGrads, nestedBiasGrads, err = parallelBackwardCPU(input, grad, branchPreActs, config, n.BatchSize)
+
+				if err != nil {
+					fmt.Printf("Parallel Backward Error: %v\n", err)
+					gradInput = make([]float32, len(input))
+				} else {
+					// Flatten nested gradients into single slices for storage
+					totalK, totalB := 0, 0
+					for _, g := range nestedKernelGrads {
+						totalK += len(g)
+					}
+					for _, g := range nestedBiasGrads {
+						totalB += len(g)
+					}
+
+					kernelGrads = make([]float32, totalK)
+					biasGrads = make([]float32, totalB)
+
+					kOff, bOff := 0, 0
+					for i := range nestedKernelGrads {
+						copy(kernelGrads[kOff:], nestedKernelGrads[i])
+						kOff += len(nestedKernelGrads[i])
+						copy(biasGrads[bOff:], nestedBiasGrads[i])
+						bOff += len(nestedBiasGrads[i])
+					}
+				}
+			} else {
+				// No pre-act data? Zero grad.
+				gradInput = make([]float32, len(input))
+			}
 
 		case LayerSoftmax:
-			// Softmax backward
-			// We need the output of this layer, which is in layerData[layerIdx+1]
 			softmaxOutput := state.layerData[layerIdx+1]
-
 			gradInput = make([]float32, len(grad))
-			for i := range gradInput {
-				var gradSum float32
-				for j := range grad {
-					// Jacobian: y_j * (delta_ij - y_i)
-					delta := float32(0.0)
-					if i == j {
-						delta = 1.0
+
+			// Handle Grid Softmax vs Standard
+			if config.SoftmaxRows > 0 && config.SoftmaxCols > 0 {
+				rows := config.SoftmaxRows
+				cols := config.SoftmaxCols
+				for r := 0; r < rows; r++ {
+					start := r * cols
+					end := start + cols
+					for i := start; i < end; i++ {
+						var sum float32
+						for j := start; j < end; j++ {
+							delta := float32(0.0)
+							if i == j {
+								delta = 1.0
+							}
+							sum += grad[j] * softmaxOutput[j] * (delta - softmaxOutput[i])
+						}
+						gradInput[i] = sum
 					}
-					jacobian := softmaxOutput[j] * (delta - softmaxOutput[i])
-					gradSum += grad[j] * jacobian
 				}
-				gradInput[i] = gradSum
+			} else {
+				for i := range gradInput {
+					var sum float32
+					for j := range grad {
+						delta := float32(0.0)
+						if i == j {
+							delta = 1.0
+						}
+						sum += grad[j] * softmaxOutput[j] * (delta - softmaxOutput[i])
+					}
+					gradInput[i] = sum
+				}
 			}
 
 		default:
-			// Element-wise activation
+			// Activation-only layer (Element-wise)
 			gradInput = make([]float32, len(grad))
 			for i := 0; i < len(grad); i++ {
 				derivative := activateDerivativeCPU(preAct[i], config.Activation)
@@ -135,31 +193,17 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 			}
 		}
 
-		// === APPLY SOFTMAX VARIATION TO GRADIENTS ===
-		// "Adjust how much of the spectrum across the softmax functionality...
-		// instead of 100% across the whole layer"
-
+		// === Gradient Attention / Scaling ===
 		if len(kernelGrads) > 0 {
 			applySoftmaxGradientScaling(kernelGrads)
 			n.kernelGradients[layerIdx] = kernelGrads
 		}
-
 		if len(biasGrads) > 0 {
 			applySoftmaxGradientScaling(biasGrads)
 			n.biasGradients[layerIdx] = biasGrads
 		}
 
-		/*
-			// Store raw gradients if scaling is disabled
-			if len(kernelGrads) > 0 {
-				n.kernelGradients[layerIdx] = kernelGrads
-			}
-			if len(biasGrads) > 0 {
-				n.biasGradients[layerIdx] = biasGrads
-			}
-		*/
-
-		// Update gradient for next layer
+		// Pass gradient to next layer
 		grad = gradInput
 	}
 
@@ -168,13 +212,11 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 
 // applySoftmaxGradientScaling applies a softmax-based scaling to the gradients
 // Formula: G_new = G_old * (Softmax(|G_old|) * N)
-// This boosts dominant gradients and suppresses weak ones, while preserving sign.
 func applySoftmaxGradientScaling(grads []float32) {
 	if len(grads) == 0 {
 		return
 	}
 
-	// 1. Find max abs value for numerical stability
 	maxAbs := float32(0.0)
 	for _, g := range grads {
 		abs := float32(math.Abs(float64(g)))
@@ -183,29 +225,18 @@ func applySoftmaxGradientScaling(grads []float32) {
 		}
 	}
 
-	// 2. Compute exponentials of absolute values
 	exps := make([]float32, len(grads))
 	sumExp := float32(0.0)
 	for i, g := range grads {
 		abs := float32(math.Abs(float64(g)))
-		exps[i] = float32(math.Exp(float64(abs - maxAbs))) // Subtract max for stability
+		exps[i] = float32(math.Exp(float64(abs - maxAbs)))
 		sumExp += exps[i]
 	}
 
-	// 3. Apply scaling
-	// Scale factor = (exp(|g|) / sumExp) * N
-	// We multiply by N (len(grads)) so that the average scale factor is 1.0
-	// If we didn't multiply by N, gradients would vanish (sum to 1).
 	N := float32(len(grads))
 	for i := range grads {
 		softmaxScore := exps[i] / sumExp
 		scaleFactor := softmaxScore * N
-
-		// Optional: Dampen the effect?
-		// The user said "doesn't dramatically change all the weights".
-		// Let's blend it with 1.0: 0.5 * scale + 0.5 * 1.0
-		// Or just use it raw. Let's use it raw but clamp extreme values if needed.
-
 		grads[i] *= scaleFactor
 	}
 }
@@ -213,30 +244,26 @@ func applySoftmaxGradientScaling(grads []float32) {
 // Helper to reconstruct LSTM states from flat slice
 func reconstructLSTMStates(flat []float32, batchSize, seqLength, hiddenSize int) map[string][]float32 {
 	states := make(map[string][]float32)
+	hSize := batchSize * (seqLength + 1) * hiddenSize
+	gSize := batchSize * seqLength * hiddenSize
 
-	// Sizes
-	hiddenStateSize := batchSize * (seqLength + 1) * hiddenSize
-	gateSize := batchSize * seqLength * hiddenSize
-
-	offset := 0
-
-	// Helper to slice safely
-	getSlice := func(size int) []float32 {
-		if offset+size > len(flat) {
-			return make([]float32, size) // Return zeros if out of bounds
+	off := 0
+	slice := func(sz int) []float32 {
+		if off+sz > len(flat) {
+			return make([]float32, sz)
 		}
-		s := flat[offset : offset+size]
-		offset += size
+		s := flat[off : off+sz]
+		off += sz
 		return s
 	}
 
-	states["hidden"] = getSlice(hiddenStateSize)
-	states["cell"] = getSlice(hiddenStateSize)
-	states["i_gate"] = getSlice(gateSize)
-	states["f_gate"] = getSlice(gateSize)
-	states["g_gate"] = getSlice(gateSize)
-	states["o_gate"] = getSlice(gateSize)
-	states["c_tanh"] = getSlice(gateSize)
+	states["hidden"] = slice(hSize)
+	states["cell"] = slice(hSize)
+	states["i_gate"] = slice(gSize)
+	states["f_gate"] = slice(gSize)
+	states["g_gate"] = slice(gSize)
+	states["o_gate"] = slice(gSize)
+	states["c_tanh"] = slice(gSize)
 
 	return states
 }

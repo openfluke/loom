@@ -24,6 +24,42 @@ type StepState struct {
 	stepCount uint64
 }
 
+// Helper to calculate output size recursively
+func getLayerOutputSize(config *LayerConfig, batchSize int) int {
+	if config.Type == LayerConv2D {
+		return config.Filters * config.OutputHeight * config.OutputWidth * batchSize
+	} else if config.Type == LayerDense {
+		return config.OutputHeight
+	} else if config.Type == LayerRNN || config.Type == LayerLSTM {
+		return batchSize * config.SeqLength * config.HiddenSize
+	} else if config.Type == LayerMultiHeadAttention {
+		return batchSize * config.SeqLength * config.DModel
+	} else if config.Type == LayerSwiGLU {
+		return config.InputHeight // SwiGLU projects back to hidden size (InputHeight)
+	} else if config.Type == LayerNorm || config.Type == LayerRMSNorm {
+		return config.NormSize
+	} else if config.Type == LayerParallel {
+		// Calculate based on combine mode
+		totalSize := 0
+
+		if config.CombineMode == "add" || config.CombineMode == "avg" || config.CombineMode == "average" {
+			// Output size is same as first branch (all branches must match)
+			if len(config.ParallelBranches) > 0 {
+				totalSize = getLayerOutputSize(&config.ParallelBranches[0], batchSize)
+			}
+		} else {
+			// Concat or Grid Scatter: Sum of all branch outputs
+			for i := range config.ParallelBranches {
+				totalSize += getLayerOutputSize(&config.ParallelBranches[i], batchSize)
+			}
+		}
+		return totalSize
+	}
+
+	// Default/Unknown (should be handled by caller using input size)
+	return -1
+}
+
 // InitStepState initializes the stepping state for the network
 func (n *Network) InitStepState(inputSize int) *StepState {
 	totalLayers := n.TotalLayers()
@@ -46,20 +82,14 @@ func (n *Network) InitStepState(inputSize int) *StepState {
 				config := n.GetLayer(row, col, layer)
 
 				// Estimate output size based on layer type
-				// This is a simplified estimation - you may need to adjust
-				outputSize := inputSize
-				if config.Type == LayerConv2D {
-					outputSize = config.Filters * config.OutputHeight * config.OutputWidth * n.BatchSize
-				} else if config.Type == LayerDense {
-					outputSize = config.OutputHeight
-				} else if config.Type == LayerRNN || config.Type == LayerLSTM {
-					outputSize = n.BatchSize * config.SeqLength * config.HiddenSize
-				} else if config.Type == LayerMultiHeadAttention {
-					outputSize = n.BatchSize * config.SeqLength * config.DModel
-				} else if config.Type == LayerSwiGLU {
-					outputSize = config.InputHeight // SwiGLU returns same size as input after gating
-				} else if config.Type == LayerNorm || config.Type == LayerRMSNorm {
-					outputSize = config.NormSize
+				outputSize := getLayerOutputSize(config, n.BatchSize)
+
+				// If unknown (e.g. simple activation layer), assumes size preserves input
+				if outputSize == -1 {
+					outputSize = len(state.layerData[layerIdx]) // Use previous layer's size
+					if outputSize == 0 {
+						outputSize = inputSize
+					} // Fallback
 				}
 
 				state.layerData[layerIdx+1] = make([]float32, outputSize)
