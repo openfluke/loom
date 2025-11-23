@@ -43,7 +43,7 @@ Console.WriteLine("✓ Network created\n");
 static void CallNativeMethod(string methodName, params object[] args)
 {
     var nativeMethodsType = typeof(Network).Assembly.GetType("Welvet.NativeMethods");
-    var method = nativeMethodsType?.GetMethod(methodName, 
+    var method = nativeMethodsType?.GetMethod(methodName,
         System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
     method?.Invoke(null, args);
 }
@@ -124,7 +124,7 @@ using (var state = new StepState(4))
         totalLoss += loss;
 
         state.StepBackward(gradients);
-        CallNativeMethod("LoomApplyGradientsAdamW", 0.001f, 0.9f, 0.999f, 0.01f);
+        Network.ApplyGradientsAdamW(0.001f, 0.9f, 0.999f, 0.01f);
 
         if ((step + 1) % 1000 == 0)
         {
@@ -169,7 +169,7 @@ using (var state = new StepState(4))
         totalLoss += loss;
 
         state.StepBackward(gradients);
-        CallNativeMethod("LoomApplyGradientsRMSprop", 0.001f, 0.99f, 1e-8f, 0.0f);
+        Network.ApplyGradientsRMSprop(0.001f, 0.99f, 1e-8f, 0.0f);
 
         if ((step + 1) % 1000 == 0)
         {
@@ -214,7 +214,7 @@ using (var state = new StepState(4))
         totalLoss += loss;
 
         state.StepBackward(gradients);
-        CallNativeMethod("LoomApplyGradientsSGDMomentum", 0.01f, 0.9f, 0.0f, 0);
+        Network.ApplyGradientsSGDMomentum(0.01f, 0.9f, 0.0f, false);
 
         if ((step + 1) % 1000 == 0)
         {

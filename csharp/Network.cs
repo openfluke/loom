@@ -174,7 +174,7 @@ public class Network : IDisposable
             throw new Exception("No output from forward pass");
 
         // First element is the output array
-        return result[0].Deserialize<float[]>() 
+        return result[0].Deserialize<float[]>()
             ?? throw new Exception("Failed to deserialize output");
     }
 
@@ -211,6 +211,30 @@ public class Network : IDisposable
     public static void ApplyGradients(float learningRate)
     {
         NativeMethods.LoomApplyGradients(learningRate);
+    }
+
+    /// <summary>
+    /// Apply accumulated gradients using AdamW optimizer.
+    /// </summary>
+    public static void ApplyGradientsAdamW(float learningRate, float beta1, float beta2, float weightDecay)
+    {
+        NativeMethods.LoomApplyGradientsAdamW(learningRate, beta1, beta2, weightDecay);
+    }
+
+    /// <summary>
+    /// Apply accumulated gradients using RMSprop optimizer.
+    /// </summary>
+    public static void ApplyGradientsRMSprop(float learningRate, float alpha, float epsilon, float momentum)
+    {
+        NativeMethods.LoomApplyGradientsRMSprop(learningRate, alpha, epsilon, momentum);
+    }
+
+    /// <summary>
+    /// Apply accumulated gradients using SGD with Momentum optimizer.
+    /// </summary>
+    public static void ApplyGradientsSGDMomentum(float learningRate, float momentum, float dampening, bool nesterov)
+    {
+        NativeMethods.LoomApplyGradientsSGDMomentum(learningRate, momentum, dampening, nesterov ? 1 : 0);
     }
 
     /// <summary>

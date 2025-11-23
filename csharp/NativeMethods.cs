@@ -504,13 +504,13 @@ internal static class NativeMethods
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void LoomApplyGradients(float learningRate);
 
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    [DllImport(LibName, EntryPoint = "LoomApplyGradientsAdamW", CallingConvention = CallingConvention.Cdecl)]
     internal static extern void LoomApplyGradientsAdamW(float learningRate, float beta1, float beta2, float weightDecay);
 
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    [DllImport(LibName, EntryPoint = "LoomApplyGradientsRMSprop", CallingConvention = CallingConvention.Cdecl)]
     internal static extern void LoomApplyGradientsRMSprop(float learningRate, float alpha, float epsilon, float momentum);
 
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    [DllImport(LibName, EntryPoint = "LoomApplyGradientsSGDMomentum", CallingConvention = CallingConvention.Cdecl)]
     internal static extern void LoomApplyGradientsSGDMomentum(float learningRate, float momentum, float dampening, int nesterov);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
