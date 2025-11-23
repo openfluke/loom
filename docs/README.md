@@ -41,6 +41,73 @@ LOOM excels in deterministic CPU execution (10⁻⁸ precision parity across pla
 
 All produce identical results and can exchange models via JSON serialization.
 
+## 🎉 NEW: Stepping API - Fine-Grained Execution Control (Nov 2025)
+
+**Execute networks one step at a time** with full control over gradients and weight updates. Perfect for online learning, stateful processing, and real-time training scenarios.
+
+### Key Features
+
+✅ **Step-by-Step Execution**: Process inputs incrementally instead of batch training  
+✅ **Manual Gradient Control**: Apply gradients when YOU want, not automatically  
+✅ **Stateful Processing**: Maintain layer states across steps (essential for LSTMs/RNNs)  
+✅ **Real-Time Training**: Update weights after each step for online learning  
+✅ **Cross-Platform**: Available in Go, Python, C#, TypeScript, and WASM
+
+### Unified Stepping API
+
+| Function         | Go                      | Python                  | TypeScript                  | C#                      |
+| ---------------- | ----------------------- | ----------------------- | --------------------------- | ----------------------- |
+| Init State       | `InitStepState(size)`   | `StepState(size)`       | `createStepState(size)`     | `new StepState(size)`   |
+| Set Input        | `state.SetInput(data)`  | `state.set_input(data)` | `state.setInput(data)`      | `state.SetInput(data)`  |
+| Forward Step     | `StepForward(state)`    | `state.step_forward()`  | `state.stepForward()`       | `state.StepForward()`   |
+| Get Output       | `state.GetOutput()`     | `state.get_output()`    | `state.getOutput()`         | `state.GetOutput()`     |
+| Backward Step    | `StepBackward(state,g)` | `state.step_backward()` | `state.stepBackward(g)`     | `state.StepBackward(g)` |
+| Apply Gradients  | `ApplyGradients(lr)`    | `apply_gradients(lr)`   | `ApplyGradients(JSON)`      | `ApplyGradients(lr)`    |
+
+### Example: Online Learning Loop
+
+```python
+# Python example - identical pattern in all languages
+from welvet import create_network_from_json, StepState, apply_gradients
+
+# Create network
+config = {"batch_size": 1, "layers": [...]}
+create_network_from_json(config)
+
+# Initialize stepping state
+state = StepState(input_size=4)
+
+# Training loop - update weights after EACH step
+for step in range(100000):
+    state.set_input([0.1, 0.2, 0.1, 0.3])
+    state.step_forward()
+    output = state.get_output()
+    
+    # Calculate gradients
+    gradients = [output[i] - target[i] for i in range(len(output))]
+    
+    # Backward pass
+    state.step_backward(gradients)
+    
+    # Update weights immediately
+    apply_gradients(learning_rate=0.01)
+```
+
+### Verified Results
+
+✅ **100% Accuracy**: All platform examples achieve 6/6 accuracy on 3-class classification  
+✅ **Identical Convergence**: Same loss curves across Go, Python, C#, TypeScript, WASM  
+✅ **Stateful LSTMs**: Proper state management across 100k+ steps  
+✅ **Gradient Clipping**: Built-in support for stable LSTM training
+
+**Examples:**
+- Go: `examples/step_example/step_train_v3.go`
+- Python: `python/examples/step_train_v3.py`
+- C#: `csharp/examples/StepTrainV3.cs`
+- TypeScript: `typescript/example/step_train_v3.ts`
+- WASM: `wasm/step_example.html`
+
+
 ## The 1-10 Difficulty Scale: A Quick Explainer
 
 The scale rates task complexity in each domain from 1 (trivial, e.g., XOR logic with basic Dense) to 10 (cutting-edge, e.g., real-time multi-agent robotics with causal reasoning). It's domain-specific:

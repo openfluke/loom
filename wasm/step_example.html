@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>LOOM Stepping Example (WASM)</title>
+    <script src="wasm_exec.js"></script>
+    <style>
+        body { font-family: "Menlo", "Monaco", "Courier New", monospace; max-width: 900px; margin: 0 auto; padding: 20px; background: #1e1e1e; color: #d4d4d4; }
+        .container { background: #252526; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        h1 { margin-top: 0; color: #fff; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        .status { margin-bottom: 20px; padding: 10px; background: #333; border-radius: 4px; color: #4caf50; font-weight: bold; }
+        .error { background: #5a1d1d; color: #ff8080; }
+        
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
+        .stat-box { background: #333; padding: 15px; border-radius: 4px; text-align: center; }
+        .stat-value { font-size: 24px; font-weight: bold; color: #569cd6; }
+        .stat-label { font-size: 12px; color: #888; text-transform: uppercase; margin-top: 5px; }
+        
+        canvas { width: 100%; height: 200px; background: #1e1e1e; border: 1px solid #333; border-radius: 4px; margin-top: 20px; }
+        
+        .controls { margin: 20px 0; display: flex; gap: 10px; }
+        button { background: #0e639c; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; font-family: inherit; }
+        button:hover { background: #1177bb; }
+        button:disabled { background: #444; cursor: not-allowed; color: #888; }
+        
+        .logs-container { margin-top: 20px; border-top: 1px solid #333; padding-top: 20px; }
+        textarea { width: 100%; height: 300px; background: #1e1e1e; color: #d4d4d4; border: 1px solid #333; border-radius: 4px; padding: 10px; font-family: inherit; font-size: 12px; resize: vertical; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>LOOM Stepping Example (WASM)</h1>
+        <div id="status" class="status">Loading WASM...</div>
+        
+        <div class="stats">
+            <div class="stat-box">
+                <div id="step-count" class="stat-value">0</div>
+                <div class="stat-label">Steps</div>
+            </div>
+            <div class="stat-box">
+                <div id="loss" class="stat-value">0.000</div>
+                <div class="stat-label">Loss</div>
+            </div>
+            <div class="stat-box">
+                <div id="accuracy" class="stat-value">0%</div>
+                <div class="stat-label">Accuracy (Last 100)</div>
+            </div>
+            <div class="stat-box">
+                <div id="lr" class="stat-value">0.015</div>
+                <div class="stat-label">Learning Rate</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="toggle-btn" disabled>Start Training</button>
+            <button id="copy-btn" onclick="copyLogs()">Copy Logs</button>
+            <button id="clear-btn" onclick="clearLogs()">Clear Logs</button>
+        </div>
+        
+        <canvas id="loss-chart"></canvas>
+
+        <div class="logs-container">
+            <h3>Execution Logs</h3>
+            <textarea id="logs" readonly></textarea>
+        </div>
+    </div>
+
+    <script>
+        const go = new Go();
+        let network = null;
+        let state = null;
+        let isTraining = false;
+        let animationId = null;
+
+        // Logging helper
+        const logsEl = document.getElementById("logs");
+        function log(msg) {
+            logsEl.value += msg + "\n";
+            logsEl.scrollTop = logsEl.scrollHeight;
+            console.log(msg);
+        }
+
+        function copyLogs() {
+            logsEl.select();
+            document.execCommand('copy');
+            alert("Logs copied to clipboard!");
+        }
+
+        function clearLogs() {
+            logsEl.value = "";
+        }
+
+        // Training configuration
+        const config = {
+            batch_size: 1,
+            grid_rows: 1,
+            grid_cols: 3,
+            layers_per_cell: 1,
+            layers: [
+                { type: "dense", input_height: 4, output_height: 8, activation: "relu" },
+                { type: "lstm", input_size: 8, hidden_size: 12, seq_length: 1, activation: "tanh" },
+                { type: "dense", input_height: 12, output_height: 3, activation: "softmax" }
+            ]
+        };
+
+        // Data
+        const trainingData = [
+            { input: [0.1, 0.2, 0.1, 0.3], target: [1.0, 0.0, 0.0], label: "Low" },
+            { input: [0.2, 0.1, 0.3, 0.2], target: [1.0, 0.0, 0.0], label: "Low" },
+            { input: [0.8, 0.9, 0.8, 0.7], target: [0.0, 1.0, 0.0], label: "High" },
+            { input: [0.9, 0.8, 0.7, 0.9], target: [0.0, 1.0, 0.0], label: "High" },
+            { input: [0.1, 0.9, 0.1, 0.9], target: [0.0, 0.0, 1.0], label: "Mix" },
+            { input: [0.9, 0.1, 0.9, 0.1], target: [0.0, 0.0, 1.0], label: "Mix" }
+        ];
+
+        // Training state
+        let stepCount = 0;
+        let learningRate = 0.015;
+        const minLearningRate = 0.001;
+        const decayRate = 0.99995;
+        const targetDelay = 3;
+        const targetQueue = [];
+        const lossHistory = [];
+        const accuracyHistory = []; 
+
+        // Initialize WASM
+        WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject).then(async (result) => {
+            go.run(result.instance);
+            document.getElementById("status").textContent = "WASM Loaded. Creating Network...";
+            
+            // Create Network
+            try {
+                network = createLoomNetwork(JSON.stringify(config));
+                state = network.createStepState(4); // Input size 4
+                
+                document.getElementById("status").textContent = "Ready to Train";
+                document.getElementById("toggle-btn").disabled = false;
+                document.getElementById("toggle-btn").onclick = toggleTraining;
+
+                log("=== LOOM Stepping Neural Network (WASM) ===");
+                log("3-Layer Network: Dense -> LSTM -> Dense");
+                log(`Step   Input      Output                    Loss`);
+                log("────────────────────────────────────────────────────────────");
+
+            } catch (e) {
+                document.getElementById("status").textContent = "Error: " + e;
+                document.getElementById("status").className = "status error";
+                log("Error: " + e);
+            }
+        });
+
+        function toggleTraining() {
+            isTraining = !isTraining;
+            const btn = document.getElementById("toggle-btn");
+            if (isTraining) {
+                btn.textContent = "Stop Training";
+                trainLoop();
+            } else {
+                btn.textContent = "Resume Training";
+                cancelAnimationFrame(animationId);
+            }
+        }
+
+        let currentSampleIdx = 0;
+        const totalSteps = 100000;
+
+        function trainLoop() {
+            if (!isTraining) return;
+
+            // Run multiple steps per frame for speed
+            const stepsPerFrame = 50;
+            
+            for (let i = 0; i < stepsPerFrame; i++) {
+                if (stepCount >= totalSteps) {
+                    isTraining = false;
+                    document.getElementById("toggle-btn").textContent = "Training Complete";
+                    document.getElementById("toggle-btn").disabled = true;
+                    log("\n=== Training Complete ===");
+                    runFinalEvaluation();
+                    return;
+                }
+
+                // 1. Select sample (Match Go logic: rotate every 20 steps)
+                if (stepCount % 20 === 0) {
+                    currentSampleIdx = Math.floor(Math.random() * trainingData.length);
+                }
+                const sample = trainingData[currentSampleIdx];
+
+                // 2. Set Input
+                state.setInput(new Float32Array(sample.input));
+
+                // 3. Step Forward
+                state.stepForward();
+
+                // 4. Manage Target Queue
+                targetQueue.push(sample.target);
+
+                if (targetQueue.length >= targetDelay) {
+                    const delayedTarget = targetQueue.shift();
+                    const output = state.getOutput();
+
+                    // 5. Calculate Loss & Gradient
+                    let loss = 0.0;
+                    const gradOutput = new Float32Array(3);
+                    
+                    let maxOut = -Infinity, maxOutIdx = -1;
+                    let maxTgt = -Infinity, maxTgtIdx = -1;
+
+                    for (let j = 0; j < 3; j++) {
+                        let p = output[j];
+                        if (p < 1e-7) p = 1e-7;
+                        if (p > 1.0 - 1e-7) p = 1.0 - 1e-7;
+
+                        if (delayedTarget[j] > 0.5) {
+                            loss -= Math.log(p);
+                            maxTgtIdx = j;
+                        }
+                        
+                        if (output[j] > maxOut) {
+                            maxOut = output[j];
+                            maxOutIdx = j;
+                        }
+
+                        gradOutput[j] = output[j] - delayedTarget[j];
+                    }
+
+                    // Track accuracy
+                    const isCorrect = maxOutIdx === maxTgtIdx;
+                    accuracyHistory.push(isCorrect ? 1 : 0);
+                    if (accuracyHistory.length > 100) accuracyHistory.shift();
+
+                    // Gradient Clipping
+                    let gradNorm = 0.0;
+                    for (let j = 0; j < 3; j++) gradNorm += gradOutput[j] * gradOutput[j];
+                    gradNorm = Math.sqrt(gradNorm);
+
+                    if (gradNorm > 1.0) {
+                        const scale = 1.0 / gradNorm;
+                        for (let j = 0; j < 3; j++) gradOutput[j] *= scale;
+                    }
+
+                    // 6. Backward Pass
+                    state.stepBackward(gradOutput);
+
+                    // 7. Update Weights
+                    const result = network.ApplyGradients(JSON.stringify([learningRate]));
+                    if (result && typeof result === 'string' && result.startsWith("Error")) {
+                        log("ApplyGradients Error: " + result);
+                        isTraining = false;
+                        return;
+                    }
+
+                    // 8. Decay LR
+                    learningRate *= decayRate;
+                    if (learningRate < minLearningRate) learningRate = minLearningRate;
+
+                    // Logging
+                    if (stepCount % 500 === 0) {
+                        const mark = isCorrect ? "✓" : "✗";
+                        const stepStr = stepCount.toString().padEnd(6);
+                        const inputStr = sample.label.padEnd(10);
+                        const outStr = `Class ${maxOutIdx} (${maxOut.toFixed(2)}) [${mark}] Exp: ${maxTgtIdx}`.padEnd(28);
+                        const lossStr = `Loss: ${loss.toFixed(4)}`;
+                        const lrStr = `LR: ${learningRate.toFixed(5)}`;
+                        
+                        log(`${stepStr} ${inputStr} ${outStr} ${lossStr}  ${lrStr}`);
+                        
+                        lossHistory.push(loss);
+                        if (lossHistory.length > 200) lossHistory.shift();
+                    }
+                }
+
+                stepCount++;
+            }
+
+            updateUI();
+            animationId = requestAnimationFrame(trainLoop);
+        }
+
+        function runFinalEvaluation() {
+            log("\nEvaluating on all samples (with settling time)...");
+            let correct = 0;
+            const settlingSteps = 10;
+
+            for (const sample of trainingData) {
+                state.setInput(new Float32Array(sample.input));
+                // Settle
+                for (let i = 0; i < settlingSteps; i++) {
+                    state.stepForward();
+                }
+                const output = state.getOutput();
+
+                let maxOut = -Infinity, maxOutIdx = -1;
+                for (let j = 0; j < 3; j++) {
+                    if (output[j] > maxOut) {
+                        maxOut = output[j];
+                        maxOutIdx = j;
+                    }
+                }
+
+                let maxTgtIdx = -1;
+                for (let j = 0; j < 3; j++) {
+                    if (sample.target[j] > 0.5) maxTgtIdx = j;
+                }
+
+                let mark = "✗";
+                if (maxOutIdx === maxTgtIdx) {
+                    correct++;
+                    mark = "✓";
+                }
+
+                log(`${mark} ${sample.label}: Pred ${maxOutIdx} (${maxOut.toFixed(2)}) Exp ${maxTgtIdx}`);
+            }
+
+            log(`Final Accuracy: ${correct}/${trainingData.length}`);
+        }
+
+        function updateUI() {
+            document.getElementById("step-count").textContent = stepCount;
+            document.getElementById("lr").textContent = learningRate.toFixed(5);
+            
+            if (lossHistory.length > 0) {
+                document.getElementById("loss").textContent = lossHistory[lossHistory.length - 1].toFixed(3);
+            }
+
+            if (accuracyHistory.length > 0) {
+                const acc = accuracyHistory.reduce((a, b) => a + b, 0) / accuracyHistory.length * 100;
+                document.getElementById("accuracy").textContent = acc.toFixed(1) + "%";
+            }
+
+            drawChart();
+        }
+
+        function drawChart() {
+            const canvas = document.getElementById("loss-chart");
+            const ctx = canvas.getContext("2d");
+            const w = canvas.width = canvas.offsetWidth;
+            const h = canvas.height = canvas.offsetHeight;
+
+            ctx.clearRect(0, 0, w, h);
+            
+            if (lossHistory.length < 2) return;
+
+            ctx.beginPath();
+            ctx.strokeStyle = "#569cd6";
+            ctx.lineWidth = 2;
+
+            const maxLoss = Math.max(...lossHistory, 1.0);
+            const stepX = w / (lossHistory.length - 1);
+
+            for (let i = 0; i < lossHistory.length; i++) {
+                const x = i * stepX;
+                const y = h - (lossHistory[i] / maxLoss * h * 0.9) - 10;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+    </script>
+</body>
+</html>

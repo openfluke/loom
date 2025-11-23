@@ -43,6 +43,12 @@ from .utils import (
     load_model_simple,
     get_network_info_simple,
     evaluate_network_simple,
+    # Stepping API
+    StepState,
+    apply_gradients,
+    apply_gradients_adamw,
+    apply_gradients_rmsprop,
+    apply_gradients_sgd_momentum,
 )
 
 __version__ = "0.0.1"
@@ -88,4 +94,10 @@ __all__ = [
     "load_model_simple",
     "get_network_info_simple",
     "evaluate_network_simple",
+    # Stepping API
+    "StepState",
+    "apply_gradients",
+    "apply_gradients_adamw",
+    "apply_gradients_rmsprop",
+    "apply_gradients_sgd_momentum",
 ]

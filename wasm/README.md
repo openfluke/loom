@@ -130,6 +130,52 @@ The simple API matches Python, TypeScript, C#, and C - identical behavior and re
 
 See `grid_scatter_demo.html` and `grid_scatter_demo.js` for complete working examples.
 
+### ⚡ Stepping API - Fine-Grained Execution Control
+
+**NEW:** Execute networks one step at a time for online learning in the browser:
+
+```javascript
+// Create network
+const config = { batch_size: 1, layers: [
+  { type: "dense", input_height: 4, output_height: 8, activation: "relu" },
+  { type: "lstm", input_size: 8, hidden_size: 12, seq_length: 1 },
+  { type: "dense", input_height: 12, output_height: 3, activation: "softmax" }
+]};
+const network = createLoomNetwork(JSON.stringify(config));
+
+// Initialize stepping state
+const state = network.createStepState(4);
+
+// Training loop - update weights after EACH step
+for (let step = 0; step < 100000; step++) {
+  state.setInput(new Float32Array([0.1, 0.2, 0.1, 0.3]));
+  state.stepForward();
+  const output = state.getOutput();
+  
+  // Calculate gradients
+  const gradients = new Float32Array(output.length);
+  for (let i = 0; i < output.length; i++)
+    gradients[i] = output[i] - target[i];
+  
+  // Backward pass
+  state.stepBackward(gradients);
+  
+  // Update weights immediately
+  network.ApplyGradients(JSON.stringify([learningRate]));
+}
+```
+
+**Stepping API:**
+- `network.createStepState(inputSize)` - Initialize stepping state
+- `state.setInput(data)` - Set input for current step
+- `state.stepForward()` - Execute forward pass
+- `state.getOutput()` - Get output from last layer
+- `state.stepBackward(gradients)` - Execute backward pass
+- `network.ApplyGradients(paramsJSON)` - Update network weights
+
+See `step_example.html` for a complete interactive example achieving 100% accuracy.
+
+
 ## 🚀 What's New: Dynamic Method Exposure
 
 **Every Network method automatically available in JavaScript!**

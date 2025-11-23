@@ -243,6 +243,112 @@ func createNetworkFromJSON(this js.Value, args []js.Value) interface{} {
 		}
 	}
 
+	// Add optimizer-specific gradient application methods
+	obj.Set("ApplyGradientsAdamW", methodWrapper(network, "ApplyGradientsAdamW"))
+	obj.Set("ApplyGradientsRMSprop", methodWrapper(network, "ApplyGradientsRMSprop"))
+	obj.Set("ApplyGradientsSGDMomentum", methodWrapper(network, "ApplyGradientsSGDMomentum"))
+
+	// Add createStepState method
+	obj.Set("createStepState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return "Expected 1 argument: inputSize"
+		}
+		inputSize := args[0].Int()
+		state := network.InitStepState(inputSize)
+		return createStepStateWrapper(state, network)
+	}))
+
+	return obj
+}
+
+// createStepStateWrapper creates a JS object for a StepState
+func createStepStateWrapper(state *nn.StepState, network *nn.Network) js.Value {
+	obj := js.Global().Get("Object").New()
+
+	// setInput(data)
+	obj.Set("setInput", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return "Expected input data"
+		}
+
+		// Handle JS Float32Array or Array
+		var input []float32
+		jsData := args[0]
+
+		if jsData.Type() == js.TypeObject && jsData.Get("length").Type() == js.TypeNumber {
+			length := jsData.Get("length").Int()
+			input = make([]float32, length)
+
+			// Check if it's a typed array (has buffer property)
+			if !jsData.Get("buffer").IsUndefined() {
+				// Copy directly from typed array memory if possible
+				// For now, simple loop is safer across browsers/environments
+				for i := 0; i < length; i++ {
+					input[i] = float32(jsData.Index(i).Float())
+				}
+			} else {
+				// Standard array
+				for i := 0; i < length; i++ {
+					input[i] = float32(jsData.Index(i).Float())
+				}
+			}
+		} else {
+			return "Invalid input data type"
+		}
+
+		state.SetInput(input)
+		return nil
+	}))
+
+	// stepForward() -> duration (ms)
+	obj.Set("stepForward", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		duration := network.StepForward(state)
+		return float64(duration.Nanoseconds()) / 1000000.0 // Return ms
+	}))
+
+	// getOutput() -> Float32Array
+	obj.Set("getOutput", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		output := state.GetOutput()
+
+		// Create JS Float32Array
+		arrayConstructor := js.Global().Get("Float32Array")
+		jsArray := arrayConstructor.New(len(output))
+
+		// Copy data
+		for i, v := range output {
+			jsArray.SetIndex(i, v)
+		}
+
+		return jsArray
+	}))
+
+	// stepBackward(gradients) -> gradInput
+	obj.Set("stepBackward", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return "Expected gradients"
+		}
+
+		var grads []float32
+		jsData := args[0]
+		length := jsData.Get("length").Int()
+		grads = make([]float32, length)
+
+		for i := 0; i < length; i++ {
+			grads[i] = float32(jsData.Index(i).Float())
+		}
+
+		gradInput, _ := network.StepBackward(state, grads)
+
+		// Return gradInput as Float32Array
+		arrayConstructor := js.Global().Get("Float32Array")
+		jsArray := arrayConstructor.New(len(gradInput))
+		for i, v := range gradInput {
+			jsArray.SetIndex(i, v)
+		}
+
+		return jsArray
+	}))
+
 	return obj
 }
 

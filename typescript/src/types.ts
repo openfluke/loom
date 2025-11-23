@@ -121,6 +121,24 @@ export interface Network {
   ListMethods(paramsJSON: string): string; // []
   HasMethod(paramsJSON: string): string; // [methodName]
   GetMethodSignature(paramsJSON: string): string; // [methodName]
+
+  // Stepping API
+  ApplyGradients(paramsJSON: string): string; // [learningRate]
+  ApplyGradientsAdamW(paramsJSON: string): string; // [learningRate, beta1, beta2, weightDecay]
+  ApplyGradientsRMSprop(paramsJSON: string): string; // [learningRate, alpha, epsilon, momentum]
+  ApplyGradientsSGDMomentum(paramsJSON: string): string; // [learningRate, momentum, dampening, nesterov]
+  
+  createStepState(inputSize: number): StepState;
+}
+
+/**
+ * StepState interface for stepping execution
+ */
+export interface StepState {
+  setInput(data: Float32Array | number[]): void;
+  stepForward(): number; // Returns duration in ms
+  getOutput(): Float32Array;
+  stepBackward(gradients: Float32Array | number[]): Float32Array;
 }
 
 /**
@@ -130,3 +148,4 @@ export interface Network {
 declare global {
   function createLoomNetwork(jsonConfig: string): Network;
 }
+

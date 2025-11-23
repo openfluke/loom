@@ -63,6 +63,26 @@ public class Network : IDisposable
     }
 
     /// <summary>
+    /// Creates a network from JSON configuration (Simple API).
+    /// Sets the global network instance.
+    /// </summary>
+    /// <param name="jsonConfig">JSON configuration string</param>
+    public static void CreateFromJson(string jsonConfig)
+    {
+        var responsePtr = NativeMethods.CreateLoomNetwork(jsonConfig);
+        var responseJson = NativeMethods.PtrToStringAndFree(responsePtr);
+
+        if (string.IsNullOrEmpty(responseJson))
+            throw new Exception("Failed to create network");
+
+        using var doc = JsonDocument.Parse(responseJson);
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("error", out var errorProp))
+            throw new Exception($"Failed to create network: {errorProp.GetString()}");
+    }
+
+    /// <summary>
     /// Loads a complete model from JSON string (ONE LINE - structure + weights all at once!).
     /// This is the easy way - no manual layer setup needed!
     /// </summary>
@@ -154,7 +174,7 @@ public class Network : IDisposable
             throw new Exception("No output from forward pass");
 
         // First element is the output array
-        return result[0].Deserialize<float[]>() 
+        return result[0].Deserialize<float[]>()
             ?? throw new Exception("Failed to deserialize output");
     }
 
@@ -182,6 +202,39 @@ public class Network : IDisposable
     {
         ThrowIfDisposed();
         JsonCall("UpdateWeights", learningRate);
+    }
+
+    /// <summary>
+    /// Apply accumulated gradients to update network weights (Stepping API).
+    /// </summary>
+    /// <param name="learningRate">Learning rate</param>
+    public static void ApplyGradients(float learningRate)
+    {
+        NativeMethods.LoomApplyGradients(learningRate);
+    }
+
+    /// <summary>
+    /// Apply accumulated gradients using AdamW optimizer.
+    /// </summary>
+    public static void ApplyGradientsAdamW(float learningRate, float beta1, float beta2, float weightDecay)
+    {
+        NativeMethods.LoomApplyGradientsAdamW(learningRate, beta1, beta2, weightDecay);
+    }
+
+    /// <summary>
+    /// Apply accumulated gradients using RMSprop optimizer.
+    /// </summary>
+    public static void ApplyGradientsRMSprop(float learningRate, float alpha, float epsilon, float momentum)
+    {
+        NativeMethods.LoomApplyGradientsRMSprop(learningRate, alpha, epsilon, momentum);
+    }
+
+    /// <summary>
+    /// Apply accumulated gradients using SGD with Momentum optimizer.
+    /// </summary>
+    public static void ApplyGradientsSGDMomentum(float learningRate, float momentum, float dampening, bool nesterov)
+    {
+        NativeMethods.LoomApplyGradientsSGDMomentum(learningRate, momentum, dampening, nesterov ? 1 : 0);
     }
 
     /// <summary>

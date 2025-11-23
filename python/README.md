@@ -113,6 +113,51 @@ The simple API matches the API in TypeScript, C#, C, and WASM - identical functi
 
 See `examples/grid_scatter_demo.py` for a complete working example.
 
+### ⚡ Stepping API - Fine-Grained Execution Control
+
+**NEW:** Execute networks one step at a time for online learning and stateful processing:
+
+```python
+from welvet import create_network_from_json, StepState, apply_gradients
+
+# Create network
+config = {"batch_size": 1, "layers": [
+    {"type": "dense", "input_height": 4, "output_height": 8, "activation": "relu"},
+    {"type": "lstm", "input_size": 8, "hidden_size": 12, "seq_length": 1},
+    {"type": "dense", "input_height": 12, "output_height": 3, "activation": "softmax"}
+]}
+create_network_from_json(config)
+
+# Initialize stepping state
+state = StepState(input_size=4)
+
+# Training loop - update weights after EACH step
+for step in range(100000):
+    state.set_input([0.1, 0.2, 0.1, 0.3])
+    state.step_forward()
+    output = state.get_output()
+    
+    # Calculate gradients
+    gradients = [output[i] - target[i] for i in range(len(output))]
+    
+    # Backward pass
+    state.step_backward(gradients)
+    
+    # Update weights immediately
+    apply_gradients(learning_rate=0.01)
+```
+
+**Stepping API Functions:**
+- `StepState(input_size)` - Initialize stepping state
+- `state.set_input(data)` - Set input for current step
+- `state.step_forward()` - Execute forward pass
+- `state.get_output()` - Get output from last layer
+- `state.step_backward(gradients)` - Execute backward pass
+- `apply_gradients(learning_rate)` - Update network weights
+
+See `examples/step_train_v3.py` for a complete example achieving 100% accuracy.
+
+
 ### 🚀 Transformer Inference (LLMs)
 
 Run LLaMA, SmolLM, GPT-2, and other transformers with **streaming support**!

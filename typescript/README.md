@@ -151,6 +151,57 @@ const [output2] = loadedNetwork.ForwardCPU(
 - ✅ Same behavior as Python, C#, C, and WASM
 
 See `example/grid-scatter.ts` for a complete working example.
+
+### ⚡ Stepping API - Fine-Grained Execution Control
+
+**NEW:** Execute networks one step at a time for online learning:
+
+```typescript
+import { init, createNetwork, StepState } from "@openfluke/welvet";
+
+await init();
+
+// Create network
+const config = { batch_size: 1, layers: [
+  { type: "dense", input_height: 4, output_height: 8, activation: "relu" },
+  { type: "lstm", input_size: 8, hidden_size: 12, seq_length: 1 },
+  { type: "dense", input_height: 12, output_height: 3, activation: "softmax" }
+]};
+const network = createNetwork(config);
+
+// Initialize stepping state
+const state: StepState = network.createStepState(4);
+
+// Training loop - update weights after EACH step
+for (let step = 0; step < 100000; step++) {
+  state.setInput(new Float32Array([0.1, 0.2, 0.1, 0.3]));
+  state.stepForward();
+  const output = state.getOutput();
+  
+  // Calculate gradients
+  const gradients = new Float32Array(output.length);
+  for (let i = 0; i < output.length; i++)
+    gradients[i] = output[i] - target[i];
+  
+  // Backward pass
+  state.stepBackward(gradients);
+  
+  // Update weights immediately
+  network.ApplyGradients(JSON.stringify([learningRate]));
+}
+```
+
+**Stepping API:**
+- `network.createStepState(inputSize)` - Initialize stepping state
+- `state.setInput(data)` - Set input for current step
+- `state.stepForward()` - Execute forward pass
+- `state.getOutput()` - Get output from last layer
+- `state.stepBackward(gradients)` - Execute backward pass
+- `network.ApplyGradients(paramsJSON)` - Update network weights
+
+See `example/step_train_v3.ts` for a complete example achieving 100% accuracy.
+
+
 {
 type: "parallel",
 combine_mode: "add",

@@ -5,7 +5,7 @@
  * Provides the same API in both Node.js and browser environments.
  */
 
-import { Network } from "./types.js";
+import { Network, StepState } from "./types.js";
 import { loadLoomWASM } from "./loader.js";
 import { loadLoomWASMBrowser } from "./loader.browser.js";
 
@@ -31,9 +31,14 @@ export async function initBrowser(): Promise<void> {
  * Wrapper around the global createLoomNetwork function exposed by WASM
  */
 export function createNetwork(config: object | string): Network {
-  const jsonConfig = typeof config === 'string' ? config : JSON.stringify(config);
-  return createLoomNetwork(jsonConfig);
+  const jsonConfig = typeof config === "string"
+    ? config
+    : JSON.stringify(config);
+
+  return createLoomNetwork(jsonConfig) as unknown as Network;
 }
+
+
 
 /**
  * Default export with all functions
@@ -43,3 +48,4 @@ export default {
   initBrowser,
   createNetwork
 };
+

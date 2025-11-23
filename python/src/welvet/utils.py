@@ -1434,3 +1434,263 @@ def evaluate_network_simple(inputs: List[List[float]], expected_outputs: List[fl
         raise RuntimeError(f"Evaluation failed: {result['error']}")
     
     return result
+
+
+# ---- Stepping API (Fine-grained control) ----
+
+# LoomInitStepState: initialize step state
+_LoomInitStepState = _sym("LoomInitStepState")
+if _LoomInitStepState:
+    _LoomInitStepState.restype = ctypes.c_longlong
+    _LoomInitStepState.argtypes = [ctypes.c_int]
+
+# LoomSetInput: set input for step
+_LoomSetInput = _sym("LoomSetInput")
+if _LoomSetInput:
+    _LoomSetInput.restype = None
+    _LoomSetInput.argtypes = [ctypes.c_longlong, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+
+# LoomStepForward: step forward
+_LoomStepForward = _sym("LoomStepForward")
+if _LoomStepForward:
+    _LoomStepForward.restype = ctypes.c_longlong
+    _LoomStepForward.argtypes = [ctypes.c_longlong]
+
+# LoomGetOutput: get output for step
+_LoomGetOutput = _sym("LoomGetOutput")
+if _LoomGetOutput:
+    _LoomGetOutput.restype = ctypes.c_char_p
+    _LoomGetOutput.argtypes = [ctypes.c_longlong]
+
+# LoomStepBackward: step backward
+_LoomStepBackward = _sym("LoomStepBackward")
+if _LoomStepBackward:
+    _LoomStepBackward.restype = ctypes.c_char_p
+    _LoomStepBackward.argtypes = [ctypes.c_longlong, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+
+# LoomApplyGradients: apply gradients
+_LoomApplyGradients = _sym("LoomApplyGradients")
+_LoomApplyGradientsAdamW = _sym("LoomApplyGradientsAdamW")
+_LoomApplyGradientsRMSprop = _sym("LoomApplyGradientsRMSprop")
+_LoomApplyGradientsSGDMomentum = _sym("LoomApplyGradientsSGDMomentum")
+if _LoomApplyGradients:
+    _LoomApplyGradients.restype = None
+    _LoomApplyGradients.argtypes = [ctypes.c_float]
+if _LoomApplyGradientsAdamW:
+    _LoomApplyGradientsAdamW.restype = None
+    _LoomApplyGradientsAdamW.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]
+if _LoomApplyGradientsRMSprop:
+    _LoomApplyGradientsRMSprop.restype = None
+    _LoomApplyGradientsRMSprop.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]
+if _LoomApplyGradientsSGDMomentum:
+    _LoomApplyGradientsSGDMomentum.restype = None
+    _LoomApplyGradientsSGDMomentum.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_int]
+
+# LoomFreeStepState: free step state
+_LoomFreeStepState = _sym("LoomFreeStepState")
+if _LoomFreeStepState:
+    _LoomFreeStepState.restype = None
+    _LoomFreeStepState.argtypes = [ctypes.c_longlong]
+
+
+class StepState:
+    """
+    Manages the state for fine-grained stepping execution of the network.
+    Useful for RNNs, LSTMs, and other stateful architectures where you need
+    control over the execution loop.
+    """
+    
+    def __init__(self, input_size: int):
+        """
+        Initialize a new stepping state.
+        
+        Args:
+            input_size: Size of the input vector
+        """
+        if not _LoomInitStepState:
+            raise RuntimeError("LoomInitStepState not available in library")
+            
+        self.handle = _LoomInitStepState(int(input_size))
+        if self.handle < 0:
+            raise RuntimeError("Failed to initialize step state")
+            
+    def set_input(self, input_data: List[float]) -> None:
+        """
+        Set the input data for the current step.
+        
+        Args:
+            input_data: Input vector as list of floats
+        """
+        if not _LoomSetInput:
+            raise RuntimeError("LoomSetInput not available")
+            
+        # Convert to ctypes array
+        input_array = (ctypes.c_float * len(input_data))(*input_data)
+        _LoomSetInput(self.handle, input_array, len(input_data))
+        
+    def step_forward(self) -> int:
+        """
+        Execute forward pass for one step.
+        
+        Returns:
+            Duration in nanoseconds
+        """
+        if not _LoomStepForward:
+            raise RuntimeError("LoomStepForward not available")
+            
+        return _LoomStepForward(self.handle)
+        
+    def get_output(self) -> List[float]:
+        """
+        Get the output of the network for the current step.
+        
+        Returns:
+            Output vector as list of floats
+        """
+        if not _LoomGetOutput:
+            raise RuntimeError("LoomGetOutput not available")
+            
+        response = _LoomGetOutput(self.handle)
+        if not response:
+            raise RuntimeError("Failed to get output")
+            
+        result = json.loads(response.decode('utf-8'))
+        
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(f"Failed to get output: {result['error']}")
+            
+        # If result is a list, it's the output
+        if isinstance(result, list):
+            return result
+            
+        return []
+        
+    def step_backward(self, gradients: List[float]) -> dict:
+        """
+        Execute backward pass for one step.
+        
+        Args:
+            gradients: Gradient vector from the next layer/step
+            
+        Returns:
+            Dict containing 'grad_input' and 'duration'
+        """
+        if not _LoomStepBackward:
+            raise RuntimeError("LoomStepBackward not available")
+            
+        # Convert to ctypes array
+        grad_array = (ctypes.c_float * len(gradients))(*gradients)
+        
+        response = _LoomStepBackward(self.handle, grad_array, len(gradients))
+        if not response:
+            raise RuntimeError("Failed to step backward")
+            
+        result = json.loads(response.decode('utf-8'))
+        
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(f"Failed to step backward: {result['error']}")
+            
+        return result
+        
+    def __del__(self):
+        """Clean up the native step state."""
+        if _LoomFreeStepState and hasattr(self, 'handle') and self.handle >= 0:
+            _LoomFreeStepState(self.handle)
+
+
+def apply_gradients(learning_rate: float) -> None:
+    """
+    Apply accumulated gradients to update network weights.
+    
+    Args:
+        learning_rate: Learning rate
+    """
+    if not _LoomApplyGradients:
+        raise RuntimeError("LoomApplyGradients not available")
+        
+    _LoomApplyGradients(float(learning_rate))
+
+
+def apply_gradients_adamw(
+    learning_rate: float,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    weight_decay: float = 0.01
+) -> None:
+    """
+    Apply accumulated gradients using AdamW optimizer.
+    
+    AdamW is Adam with decoupled weight decay - state-of-the-art optimizer
+    for many deep learning tasks.
+    
+    Args:
+        learning_rate: Learning rate
+        beta1: Exponential decay rate for first moment estimates (default: 0.9)
+        beta2: Exponential decay rate for second moment estimates (default: 0.999)
+        weight_decay: Weight decay coefficient (default: 0.01)
+    """
+    if not _LoomApplyGradientsAdamW:
+        raise RuntimeError("LoomApplyGradientsAdamW not available")
+        
+    _LoomApplyGradientsAdamW(
+        float(learning_rate),
+        float(beta1),
+        float(beta2),
+        float(weight_decay)
+    )
+
+
+def apply_gradients_rmsprop(
+    learning_rate: float,
+    alpha: float = 0.99,
+    epsilon: float = 1e-8,
+    momentum: float = 0.0
+) -> None:
+    """
+    Apply accumulated gradients using RMSprop optimizer.
+    
+    RMSprop adapts the learning rate for each parameter based on recent gradients.
+    
+    Args:
+        learning_rate: Learning rate
+        alpha: Smoothing constant (default: 0.99)
+        epsilon: Small constant for numerical stability (default: 1e-8)
+        momentum: Momentum factor (default: 0.0, no momentum)
+    """
+    if not _LoomApplyGradientsRMSprop:
+        raise RuntimeError("LoomApplyGradientsRMSprop not available")
+        
+    _LoomApplyGradientsRMSprop(
+        float(learning_rate),
+        float(alpha),
+        float(epsilon),
+        float(momentum)
+    )
+
+
+def apply_gradients_sgd_momentum(
+    learning_rate: float,
+    momentum: float = 0.9,
+    dampening: float = 0.0,
+    nesterov: bool = False
+) -> None:
+    """
+    Apply accumulated gradients using SGD with momentum.
+    
+    Momentum helps accelerate SGD in the relevant direction and dampens oscillations.
+    
+    Args:
+        learning_rate: Learning rate
+        momentum: Momentum factor (default: 0.9)
+        dampening: Dampening for momentum (default: 0.0)
+        nesterov: Whether to use Nesterov momentum (default: False)
+    """
+    if not _LoomApplyGradientsSGDMomentum:
+        raise RuntimeError("LoomApplyGradientsSGDMomentum not available")
+        
+    _LoomApplyGradientsSGDMomentum(
+        float(learning_rate),
+        float(momentum),
+        float(dampening),
+        int(nesterov)
+    )
