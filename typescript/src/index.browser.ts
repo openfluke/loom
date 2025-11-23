@@ -30,9 +30,13 @@ export async function init(): Promise<void> {
  * Wrapper around the global createLoomNetwork function exposed by WASM
  */
 export function createNetwork(config: object | string): Network {
-  const jsonConfig = typeof config === 'string' ? config : JSON.stringify(config);
-  return createLoomNetwork(jsonConfig);
+  const jsonConfig = typeof config === "string"
+    ? config
+    : JSON.stringify(config);
+
+  return createLoomNetwork(jsonConfig) as unknown as Network;
 }
+
 
 /**
  * Default export with all functions

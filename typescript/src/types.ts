@@ -124,6 +124,10 @@ export interface Network {
 
   // Stepping API
   ApplyGradients(paramsJSON: string): string; // [learningRate]
+  ApplyGradientsAdamW(paramsJSON: string): string; // [learningRate, beta1, beta2, weightDecay]
+  ApplyGradientsRMSprop(paramsJSON: string): string; // [learningRate, alpha, epsilon, momentum]
+  ApplyGradientsSGDMomentum(paramsJSON: string): string; // [learningRate, momentum, dampening, nesterov]
+  
   createStepState(inputSize: number): StepState;
 }
 
