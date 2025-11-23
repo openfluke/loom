@@ -243,6 +243,11 @@ func createNetworkFromJSON(this js.Value, args []js.Value) interface{} {
 		}
 	}
 
+	// Add optimizer-specific gradient application methods
+	obj.Set("ApplyGradientsAdamW", methodWrapper(network, "ApplyGradientsAdamW"))
+	obj.Set("ApplyGradientsRMSprop", methodWrapper(network, "ApplyGradientsRMSprop"))
+	obj.Set("ApplyGradientsSGDMomentum", methodWrapper(network, "ApplyGradientsSGDMomentum"))
+
 	// Add createStepState method
 	obj.Set("createStepState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		if len(args) < 1 {
