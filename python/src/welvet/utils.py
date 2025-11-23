@@ -1470,9 +1470,21 @@ if _LoomStepBackward:
 
 # LoomApplyGradients: apply gradients
 _LoomApplyGradients = _sym("LoomApplyGradients")
+_LoomApplyGradientsAdamW = _sym("LoomApplyGradientsAdamW")
+_LoomApplyGradientsRMSprop = _sym("LoomApplyGradientsRMSprop")
+_LoomApplyGradientsSGDMomentum = _sym("LoomApplyGradientsSGDMomentum")
 if _LoomApplyGradients:
     _LoomApplyGradients.restype = None
     _LoomApplyGradients.argtypes = [ctypes.c_float]
+if _LoomApplyGradientsAdamW:
+    _LoomApplyGradientsAdamW.restype = None
+    _LoomApplyGradientsAdamW.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]
+if _LoomApplyGradientsRMSprop:
+    _LoomApplyGradientsRMSprop.restype = None
+    _LoomApplyGradientsRMSprop.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]
+if _LoomApplyGradientsSGDMomentum:
+    _LoomApplyGradientsSGDMomentum.restype = None
+    _LoomApplyGradientsSGDMomentum.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_int]
 
 # LoomFreeStepState: free step state
 _LoomFreeStepState = _sym("LoomFreeStepState")
@@ -1597,3 +1609,88 @@ def apply_gradients(learning_rate: float) -> None:
         raise RuntimeError("LoomApplyGradients not available")
         
     _LoomApplyGradients(float(learning_rate))
+
+
+def apply_gradients_adamw(
+    learning_rate: float,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    weight_decay: float = 0.01
+) -> None:
+    """
+    Apply accumulated gradients using AdamW optimizer.
+    
+    AdamW is Adam with decoupled weight decay - state-of-the-art optimizer
+    for many deep learning tasks.
+    
+    Args:
+        learning_rate: Learning rate
+        beta1: Exponential decay rate for first moment estimates (default: 0.9)
+        beta2: Exponential decay rate for second moment estimates (default: 0.999)
+        weight_decay: Weight decay coefficient (default: 0.01)
+    """
+    if not _LoomApplyGradientsAdamW:
+        raise RuntimeError("LoomApplyGradientsAdamW not available")
+        
+    _LoomApplyGradientsAdamW(
+        float(learning_rate),
+        float(beta1),
+        float(beta2),
+        float(weight_decay)
+    )
+
+
+def apply_gradients_rmsprop(
+    learning_rate: float,
+    alpha: float = 0.99,
+    epsilon: float = 1e-8,
+    momentum: float = 0.0
+) -> None:
+    """
+    Apply accumulated gradients using RMSprop optimizer.
+    
+    RMSprop adapts the learning rate for each parameter based on recent gradients.
+    
+    Args:
+        learning_rate: Learning rate
+        alpha: Smoothing constant (default: 0.99)
+        epsilon: Small constant for numerical stability (default: 1e-8)
+        momentum: Momentum factor (default: 0.0, no momentum)
+    """
+    if not _LoomApplyGradientsRMSprop:
+        raise RuntimeError("LoomApplyGradientsRMSprop not available")
+        
+    _LoomApplyGradientsRMSprop(
+        float(learning_rate),
+        float(alpha),
+        float(epsilon),
+        float(momentum)
+    )
+
+
+def apply_gradients_sgd_momentum(
+    learning_rate: float,
+    momentum: float = 0.9,
+    dampening: float = 0.0,
+    nesterov: bool = False
+) -> None:
+    """
+    Apply accumulated gradients using SGD with momentum.
+    
+    Momentum helps accelerate SGD in the relevant direction and dampens oscillations.
+    
+    Args:
+        learning_rate: Learning rate
+        momentum: Momentum factor (default: 0.9)
+        dampening: Dampening for momentum (default: 0.0)
+        nesterov: Whether to use Nesterov momentum (default: False)
+    """
+    if not _LoomApplyGradientsSGDMomentum:
+        raise RuntimeError("LoomApplyGradientsSGDMomentum not available")
+        
+    _LoomApplyGradientsSGDMomentum(
+        float(learning_rate),
+        float(momentum),
+        float(dampening),
+        int(nesterov)
+    )

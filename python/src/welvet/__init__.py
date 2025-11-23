@@ -46,6 +46,9 @@ from .utils import (
     # Stepping API
     StepState,
     apply_gradients,
+    apply_gradients_adamw,
+    apply_gradients_rmsprop,
+    apply_gradients_sgd_momentum,
 )
 
 __version__ = "0.0.1"
@@ -94,4 +97,7 @@ __all__ = [
     # Stepping API
     "StepState",
     "apply_gradients",
+    "apply_gradients_adamw",
+    "apply_gradients_rmsprop",
+    "apply_gradients_sgd_momentum",
 ]
