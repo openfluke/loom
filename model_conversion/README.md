@@ -114,6 +114,36 @@ go run serve_model_bytes.go -model facebook/opt-1.3b -port 8080
 go run web_interface.go -model facebook/opt-1.3b -backend http://localhost:8080 -port 5000
 ```
 
+## Model Conversion (Fixing Legacy Models)
+
+Some models (like older T5 or PyTorch-only checkpoints) may cause errors due to missing `config.json`, missing `tokenizer.json`, or shared tensors.
+
+We provide a conversion script to fix these models automatically:
+
+1.  **Install dependencies:**
+    ```bash
+    pip install transformers huggingface-hub safetensors
+    ```
+
+2.  **Run conversion script:**
+    ```bash
+    # Example: Converting the ARC-AGI model SofiTesfay2010/HRM-LLM
+    python3 convert_hf_model.py SofiTesfay2010/HRM-LLM
+    ```
+
+    This will:
+    - Download the model if needed
+    - Generate correct `config.json`
+    - Convert weights to `model.safetensors`
+    - Handle shared tensors (e.g. for T5)
+    - Save files directly to your HuggingFace cache
+
+3.  **Run the model:**
+    ```bash
+    go run quick_talk.go
+    # Select the model from the list
+    ```
+
 ### Performance Expectations (CPU)
 
 | Model Size | Tokens/sec (CPU) | Tokens/sec (WebGPU - Coming Soon) |
