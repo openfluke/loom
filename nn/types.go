@@ -143,6 +143,9 @@ type LayerConfig struct {
 	GridOutputRows   int            // For grid_scatter: output grid dimensions
 	GridOutputCols   int
 	GridOutputLayers int
+
+	// Observer for debugging/recording (nil = no observation)
+	Observer LayerObserver
 }
 
 // GridPosition specifies where a parallel branch output should be placed in the grid
@@ -151,6 +154,36 @@ type GridPosition struct {
 	TargetRow   int // Grid row to place output
 	TargetCol   int // Grid column to place output
 	TargetLayer int // Layer index within that cell
+}
+
+// LayerStats contains summary statistics for layer activity
+type LayerStats struct {
+	AvgActivation float32 // Mean activation value
+	MaxActivation float32 // Maximum activation value
+	MinActivation float32 // Minimum activation value
+	ActiveNeurons int     // Count of neurons with activation > threshold
+	TotalNeurons  int     // Total neuron count
+	LayerType     string  // "dense", "conv2d", "attention", etc.
+}
+
+// LayerEvent represents an event during forward/backward pass
+type LayerEvent struct {
+	Type      string     // "forward", "backward"
+	LayerIdx  int        // Which layer in the network
+	LayerType LayerType  // Type of layer
+	Stats     LayerStats // Summary statistics
+	Input     []float32  // Input data (optional, can be nil to save memory)
+	Output    []float32  // Output data (optional, can be nil to save memory)
+	StepCount uint64     // For step-based execution
+}
+
+// LayerObserver receives events during network execution
+// Implement this interface for console logging, HTTP streaming, visualization, etc.
+type LayerObserver interface {
+	// OnForward is called after a layer's forward pass completes
+	OnForward(event LayerEvent)
+	// OnBackward is called after a layer's backward pass completes
+	OnBackward(event LayerEvent)
 }
 
 // Network represents a grid neural network

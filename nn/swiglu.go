@@ -70,6 +70,11 @@ func SwiGLUForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]fl
 		}
 	}
 
+	// Notify observer if present
+	if config.Observer != nil {
+		notifyObserver(config, "forward", -1, input, output, 0)
+	}
+
 	// Return output as both pre and post activation (no activation at output)
 	return output, output
 }
