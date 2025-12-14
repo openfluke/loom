@@ -31,7 +31,8 @@ type LayerTelemetry struct {
 	OutputShape []int `json:"output_shape,omitempty"`
 
 	// For nested/parallel layers
-	Branches []LayerTelemetry `json:"branches,omitempty"`
+	Branches    []LayerTelemetry `json:"branches,omitempty"`
+	CombineMode string           `json:"combine_mode,omitempty"` // "concat", "add", "avg", "grid_scatter"
 }
 
 // ExtractNetworkBlueprint extracts telemetry data from a loaded network.
@@ -166,6 +167,12 @@ func extractLayerTelemetry(config LayerConfig) LayerTelemetry {
 			branchTel := extractLayerTelemetry(branch)
 			tel.Branches = append(tel.Branches, branchTel)
 			params += branchTel.Parameters
+		}
+		// Set combine mode (default to concat if empty)
+		if config.CombineMode != "" {
+			tel.CombineMode = config.CombineMode
+		} else {
+			tel.CombineMode = "concat"
 		}
 	}
 
