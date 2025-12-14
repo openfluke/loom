@@ -134,6 +134,8 @@ func runNetwork1AllTypes() {
 
 	// Save telemetry
 	saveTelemetry(net, "model1_telemetry.json", "network1_all_types")
+	// Save model
+	saveModel(net, "model1.json", "network1_all_types")
 
 	fmt.Println("Architecture:")
 	fmt.Println("  Dense(32→32) → Parallel[Dense(8), RNN(8), LSTM(8), LayerNorm(32), RMSNorm(32), SwiGLU(8)]")
@@ -239,6 +241,8 @@ func runNetwork2GridScatter() {
 
 	// Save telemetry
 	saveTelemetry(net, "model2_telemetry.json", "network2_grid_scatter")
+	// Save model
+	saveModel(net, "model2.json", "network2_grid_scatter")
 
 	fmt.Println("Architecture:")
 	fmt.Println("  Dense(16→24) → Grid Scatter 2x2:")
@@ -338,6 +342,8 @@ func runNetwork3NormalVsStepping() {
 
 	// Save telemetry (structure is same for normal and stepping)
 	saveTelemetry(netNormal, "model3_telemetry.json", "network3_normal_mode")
+	// Save model
+	saveModel(netNormal, "model3.json", "network3_normal_mode")
 
 	// Send network to viz server
 	sendNetworkToServer("network3_normal_mode", networkJSON)
@@ -543,4 +549,22 @@ func saveTelemetry(net *nn.Network, filename string, modelID string) {
 	}
 
 	fmt.Printf("  ✓ Saved telemetry to %s\n", filename)
+}
+
+// saveModel saves the full model configuration and weights to a JSON file
+func saveModel(net *nn.Network, filename string, modelID string) {
+	fmt.Printf("  → Saving model %s...\n", modelID)
+
+	jsonString, err := net.SaveModelToString(modelID)
+	if err != nil {
+		fmt.Printf("  ⚠ Failed to serialize model: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(filename, []byte(jsonString), 0644); err != nil {
+		fmt.Printf("  ⚠ Failed to write model file: %v\n", err)
+		return
+	}
+
+	fmt.Printf("  ✓ Saved model to %s\n", filename)
 }
