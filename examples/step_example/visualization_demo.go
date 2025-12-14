@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -131,6 +132,9 @@ func runNetwork1AllTypes() {
 	}
 	net.InitializeWeights()
 
+	// Save telemetry
+	saveTelemetry(net, "model1_telemetry.json", "network1_all_types")
+
 	fmt.Println("Architecture:")
 	fmt.Println("  Dense(32→32) → Parallel[Dense(8), RNN(8), LSTM(8), LayerNorm(32), RMSNorm(32), SwiGLU(8)]")
 	fmt.Println("               → Dense(96→4)")
@@ -233,6 +237,9 @@ func runNetwork2GridScatter() {
 	}
 	net.InitializeWeights()
 
+	// Save telemetry
+	saveTelemetry(net, "model2_telemetry.json", "network2_grid_scatter")
+
 	fmt.Println("Architecture:")
 	fmt.Println("  Dense(16→24) → Grid Scatter 2x2:")
 	fmt.Println("    ┌─────────────────┬─────────────────┐")
@@ -328,6 +335,9 @@ func runNetwork3NormalVsStepping() {
 		return
 	}
 	netNormal.InitializeWeights()
+
+	// Save telemetry (structure is same for normal and stepping)
+	saveTelemetry(netNormal, "model3_telemetry.json", "network3_normal_mode")
 
 	// Send network to viz server
 	sendNetworkToServer("network3_normal_mode", networkJSON)
@@ -514,4 +524,23 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// saveTelemetry extracts and saves network telemetry to a JSON file
+func saveTelemetry(net *nn.Network, filename string, modelID string) {
+	fmt.Printf("  → Extracting telemetry for %s...\n", modelID)
+	telemetry := nn.ExtractNetworkBlueprint(net, modelID)
+
+	data, err := json.MarshalIndent(telemetry, "", "  ")
+	if err != nil {
+		fmt.Printf("  ⚠ Failed to marshal telemetry: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(filename, data, 0644); err != nil {
+		fmt.Printf("  ⚠ Failed to write telemetry file: %v\n", err)
+		return
+	}
+
+	fmt.Printf("  ✓ Saved telemetry to %s\n", filename)
 }
