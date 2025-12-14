@@ -146,6 +146,12 @@ type LayerConfig struct {
 
 	// Observer for debugging/recording (nil = no observation)
 	Observer LayerObserver
+
+	// Grid position (set by Network when layer is accessed)
+	GridRow   int    // Row in the grid
+	GridCol   int    // Column in the grid
+	CellLayer int    // Layer index within the cell
+	ModelID   string // Identifier for the model (for multi-model visualization)
 }
 
 // GridPosition specifies where a parallel branch output should be placed in the grid
@@ -169,12 +175,18 @@ type LayerStats struct {
 // LayerEvent represents an event during forward/backward pass
 type LayerEvent struct {
 	Type      string     // "forward", "backward"
-	LayerIdx  int        // Which layer in the network
+	LayerIdx  int        // Which layer in the network (flattened index)
 	LayerType LayerType  // Type of layer
 	Stats     LayerStats // Summary statistics
 	Input     []float32  // Input data (optional, can be nil to save memory)
 	Output    []float32  // Output data (optional, can be nil to save memory)
 	StepCount uint64     // For step-based execution
+
+	// Grid position info for visualization
+	GridRow   int    `json:"grid_row"`   // Row in the grid
+	GridCol   int    `json:"grid_col"`   // Column in the grid
+	CellLayer int    `json:"cell_layer"` // Layer index within the cell
+	ModelID   string `json:"model_id"`   // Identifier for the model
 }
 
 // LayerObserver receives events during network execution

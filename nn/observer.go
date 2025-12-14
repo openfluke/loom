@@ -59,6 +59,11 @@ func notifyObserver(config *LayerConfig, eventType string, layerIdx int, input, 
 		Input:     input,
 		Output:    output,
 		StepCount: stepCount,
+		// Grid position and model ID from the config
+		GridRow:   config.GridRow,
+		GridCol:   config.GridCol,
+		CellLayer: config.CellLayer,
+		ModelID:   config.ModelID,
 	}
 
 	if eventType == "forward" {
@@ -108,8 +113,14 @@ type ConsoleObserver struct {
 }
 
 func (o *ConsoleObserver) OnForward(event LayerEvent) {
-	fmt.Printf("[FWD] Layer %d (%s): avg=%.4f max=%.4f active=%d/%d\n",
-		event.LayerIdx, event.Stats.LayerType,
+	modelPart := ""
+	if event.ModelID != "" {
+		modelPart = fmt.Sprintf("[%s] ", event.ModelID)
+	}
+	fmt.Printf("%s[FWD] Grid[%d,%d,%d] (%s): avg=%.4f max=%.4f active=%d/%d\n",
+		modelPart,
+		event.GridRow, event.GridCol, event.CellLayer,
+		event.Stats.LayerType,
 		event.Stats.AvgActivation, event.Stats.MaxActivation,
 		event.Stats.ActiveNeurons, event.Stats.TotalNeurons)
 
@@ -119,8 +130,14 @@ func (o *ConsoleObserver) OnForward(event LayerEvent) {
 }
 
 func (o *ConsoleObserver) OnBackward(event LayerEvent) {
-	fmt.Printf("[BWD] Layer %d (%s): grad_avg=%.4f grad_max=%.4f\n",
-		event.LayerIdx, event.Stats.LayerType,
+	modelPart := ""
+	if event.ModelID != "" {
+		modelPart = fmt.Sprintf("[%s] ", event.ModelID)
+	}
+	fmt.Printf("%s[BWD] Grid[%d,%d,%d] (%s): grad_avg=%.4f grad_max=%.4f\n",
+		modelPart,
+		event.GridRow, event.GridCol, event.CellLayer,
+		event.Stats.LayerType,
 		event.Stats.AvgActivation, event.Stats.MaxActivation)
 }
 

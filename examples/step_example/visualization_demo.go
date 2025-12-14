@@ -141,7 +141,7 @@ func runNetwork1AllTypes() {
 
 	// Attach observer to all layers
 	httpObserver := nn.NewHTTPObserver(vizServerURL + eventsEndpoint)
-	attachObserverToAllLayers(net, httpObserver)
+	attachObserverToAllLayers(net, httpObserver, "network1_all_types")
 
 	// Training
 	fmt.Println("Training with observers attached (events sent to visualization server)...")
@@ -247,7 +247,7 @@ func runNetwork2GridScatter() {
 
 	// Attach observer
 	httpObserver := nn.NewHTTPObserver(vizServerURL + eventsEndpoint)
-	attachObserverToAllLayers(net, httpObserver)
+	attachObserverToAllLayers(net, httpObserver, "network2_grid_scatter")
 
 	// Training
 	fmt.Println("Training with observers attached...")
@@ -334,7 +334,7 @@ func runNetwork3NormalVsStepping() {
 
 	// Attach observer
 	httpObserver := nn.NewHTTPObserver(vizServerURL + eventsEndpoint)
-	attachObserverToAllLayers(netNormal, httpObserver)
+	attachObserverToAllLayers(netNormal, httpObserver, "network3_normal_mode")
 
 	config := &nn.TrainingConfig{
 		Epochs:       100,
@@ -372,7 +372,7 @@ func runNetwork3NormalVsStepping() {
 	sendNetworkToServer("network3_step_mode", networkJSON)
 
 	// Attach observer
-	attachObserverToAllLayers(netStep, httpObserver)
+	attachObserverToAllLayers(netStep, httpObserver, "network3_step_mode")
 
 	// Initialize stepping state
 	state := netStep.InitStepState(8)
@@ -487,7 +487,8 @@ func sendNetworkToServer(modelID, networkJSON string) {
 }
 
 // attachObserverToAllLayers attaches the same observer to all layers in the network
-func attachObserverToAllLayers(net *nn.Network, observer nn.LayerObserver) {
+// and sets grid position and model ID for each layer
+func attachObserverToAllLayers(net *nn.Network, observer nn.LayerObserver, modelID string) {
 	totalLayers := net.TotalLayers()
 	for i := 0; i < totalLayers; i++ {
 		row := i / (net.GridCols * net.LayersPerCell)
@@ -498,9 +499,14 @@ func attachObserverToAllLayers(net *nn.Network, observer nn.LayerObserver) {
 		cfg := net.GetLayer(row, col, layer)
 		if cfg != nil {
 			cfg.Observer = observer
+			// Set grid position and model ID for observer events
+			cfg.GridRow = row
+			cfg.GridCol = col
+			cfg.CellLayer = layer
+			cfg.ModelID = modelID
 		}
 	}
-	fmt.Printf("  → Observer attached to %d layers\n", totalLayers)
+	fmt.Printf("  → Observer attached to %d layers (Model: %s)\n", totalLayers, modelID)
 }
 
 func min(a, b int) int {
