@@ -152,6 +152,9 @@ type LayerConfig struct {
 	GridCol   int    // Column in the grid
 	CellLayer int    // Layer index within the cell
 	ModelID   string // Identifier for the model (for multi-model visualization)
+
+	// Pruning support
+	IsDisabled bool // If true, this layer acts as an identity function (pass-through)
 }
 
 // GridPosition specifies where a parallel branch output should be placed in the grid

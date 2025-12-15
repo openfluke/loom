@@ -32,7 +32,13 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 				config := n.GetLayer(row, col, layer)
 
 				// Route to appropriate layer type
-				if config.Type == LayerConv2D {
+				if config.IsDisabled {
+					// BYPASS: Pass input directly to output (Identity)
+					n.preActivations[layerIdx] = make([]float32, len(data))
+					copy(n.preActivations[layerIdx], data)
+					// Data remains unchanged for next layer
+
+				} else if config.Type == LayerConv2D {
 					// Conv2D layer
 					preAct, postAct := conv2DForwardCPU(data, config, n.BatchSize)
 

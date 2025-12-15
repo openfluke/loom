@@ -46,15 +46,22 @@ type TweenState struct {
 	TweenSteps  int
 	LossHistory []float32
 
-	// === TUNABLE LEARNING RATE MULTIPLIERS ===
-	// These can be adjusted to improve performance for different layer types
-	DenseRate     float32 // Default: 1.0, multiplier for Dense layers
-	RNNRate       float32 // Default: 0.5, multiplier for RNN layers
-	LSTMRate      float32 // Default: 0.5, multiplier for LSTM layers
-	AttentionRate float32 // Default: 0.2, multiplier for Attention layers
-	NormRate      float32 // Default: 0.1, multiplier for LayerNorm/RMSNorm
-	SwiGLURate    float32 // Default: 0.2, multiplier for SwiGLU layers
-	Conv2DRate    float32 // Default: 0.1, multiplier for Conv2D layers
+	// === TUNABLE LEARNING	// === FRONTIER OSCILLATION ===
+	// Instead of cycling through ALL layers, only oscillate within the "frontier" region
+	// where layers are healthy (above threshold). Expands frontier as more layers improve.
+	FrontierEnabled   bool    // Default: true, use adaptive frontier
+	FrontierMin       int     // Minimum layer index to oscillate to (updated dynamically)
+	FrontierThreshold float32 // Default: 0.55, layers above this are "healthy"
+	FrontierNoise     float32 // Default: 0.0, amount of random noise to inject at frontier edge
+
+	IgnoreThreshold float32 // Default: 0.2, if LinkBudget < Threshold, SKIP updating layer (it's dead)
+	DenseRate       float32 // Default: 1.0, multiplier for Dense layers
+	RNNRate         float32 // Default: 0.5, multiplier for RNN layers
+	LSTMRate        float32 // Default: 0.5, multiplier for LSTM layers
+	AttentionRate   float32 // Default: 0.2, multiplier for Attention layers
+	NormRate        float32 // Default: 0.1, multiplier for LayerNorm/RMSNorm
+	SwiGLURate      float32 // Default: 0.2, multiplier for SwiGLU layers
+	Conv2DRate      float32 // Default: 0.1, multiplier for Conv2D layers
 
 	// === MOMENTUM & UPDATE SCALING ===
 	Momentum             float32 // Default: 0.9, momentum for weight updates
@@ -73,6 +80,13 @@ type TweenState struct {
 	EarlyStopThreshold float64 // Default: 95.0, stop training when score exceeds this
 	EvalFrequency      int     // Default: 5, evaluate every N epochs
 	LinkBudgetScale    float32 // Default: 0.5, how much link budget affects learning rate
+
+	// === DYNAMIC LAYER PRUNING (NETWORK SURGERY) ===
+	// Automatically removes layers that block signal (Budget < Threshold) for too long
+	PruneEnabled   bool    // Default: false, enable dynamic layer removal
+	PruneThreshold float32 // Default: 0.1, treat layer as dead if budget below this
+	PrunePatience  int     // Default: 10, how many epochs to wait before amputating
+	DeadEpochs     []int   // Tracks consecutive epochs a layer has been dead
 
 	// === VISUALIZATION & DEBUGGING ===
 	Verbose bool // If true, print training progress to console
@@ -122,13 +136,18 @@ func NewTweenState(n *Network) *TweenState {
 		BestBiases:      make([][][]float32, total),
 		TotalLayers:     total,
 		// Layer-specific learning rate multipliers
-		DenseRate:     1.0,
-		RNNRate:       0.5,
-		LSTMRate:      0.5,
-		AttentionRate: 0.2,
-		NormRate:      0.1,
-		SwiGLURate:    0.2,
-		Conv2DRate:    0.1,
+		DenseRate:         1.0,
+		RNNRate:           0.5,
+		LSTMRate:          0.5,
+		AttentionRate:     0.2,
+		NormRate:          0.1,
+		SwiGLURate:        0.2,
+		Conv2DRate:        0.1,
+		FrontierEnabled:   true,
+		FrontierMin:       total - 1, // Start at output, will expand toward input
+		FrontierThreshold: 0.55,      // Layers above this are considered healthy
+		FrontierNoise:     0.0,       // No noise by default
+		IgnoreThreshold:   0.2,       // Ignore layers with < 20% link budget
 		// Momentum & update scaling
 		Momentum:             0.9,
 		BiasRateMultiplier:   0.1,
@@ -143,6 +162,12 @@ func NewTweenState(n *Network) *TweenState {
 		EarlyStopThreshold: 95.0,
 		EvalFrequency:      5,
 		LinkBudgetScale:    0.5,
+		// Pruning (Surgery)
+		PruneEnabled:   false,
+		PruneThreshold: 0.1,
+		PrunePatience:  10,
+		DeadEpochs:     make([]int, total),
+
 		// Visualization defaults
 		Verbose:             false,
 		LinkBudgetHistory:   make([][]float32, 0),
@@ -301,7 +326,16 @@ func (ts *TweenState) CalculateLinkBudgets() {
 func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 	mom := ts.Momentum
 
+	// Tweening logic
 	for i := 0; i < ts.TotalLayers; i++ {
+		budget := ts.LinkBudgets[i]
+
+		// DEAD LAYER IGNORING: If budget is too low, don't update!
+		// A low budget means the signal is garbage, so updating just adds noise.
+		if budget < ts.IgnoreThreshold {
+			continue
+		}
+
 		cfg := ts.getLayerCfg(n, i)
 		if cfg == nil {
 			continue
@@ -316,7 +350,6 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 		}
 
 		// Scale rate by link budget using configurable scale
-		budget := ts.LinkBudgets[i]
 		layerRate := rate * (ts.LinkBudgetScale + budget*ts.LinkBudgetScale)
 
 		// Calculate output gap
@@ -713,6 +746,9 @@ func (ts *TweenState) Train(n *Network, inputs [][]float32, expected []float64, 
 		avgLoss := epochLoss / float32(len(inputs))
 		ts.LossHistory = append(ts.LossHistory, avgLoss)
 
+		// PRUNING: Check for dead layers and amputate if necessary
+		ts.checkAndPruneLayers(n)
+
 		// Record history for visualization (every epoch)
 		ts.recordEpochHistory(epoch)
 
@@ -833,7 +869,9 @@ func (ts *TweenState) printVerboseProgress(epoch, totalEpochs int, avgLoss float
 	// Visual heatmap bar for link budgets
 	fmt.Print(" [")
 	for _, b := range ts.LinkBudgets {
-		if b > 0.8 {
+		if b < ts.IgnoreThreshold {
+			fmt.Print("X") // Ignored (Dead)
+		} else if b > 0.8 {
 			fmt.Print("█") // High budget
 		} else if b > 0.6 {
 			fmt.Print("▓")
@@ -922,4 +960,110 @@ func clamp(v, min, max float32) float32 {
 		return max
 	}
 	return v
+}
+
+// checkAndPruneLayers detects, toggles off, and eventually deletes dead layers
+func (ts *TweenState) checkAndPruneLayers(n *Network) {
+	if !ts.PruneEnabled {
+		return
+	}
+
+	// SAFETY: Physical pruning breaks Grid (Row/Col) mapping by changing LayersPerCell stride
+	// Only allow for 1x1 stacks
+	if n.GridRows > 1 || n.GridCols > 1 {
+		return
+	}
+
+	// 1. Identify candidate layers (Update DeadEpochs for all layers)
+	for i := 1; i < ts.TotalLayers-1; i++ {
+		// If disabled, track how long it's been disabled (using DeadEpochs)
+		if n.Layers[i].IsDisabled {
+			ts.DeadEpochs[i]++
+
+			// CHECK FOR PHYSICAL REMOVAL (The "Decide to delete" phase)
+			// If it's been disabled for another patience cycle, chop it out
+			if ts.DeadEpochs[i] >= ts.PrunePatience {
+				ts.physicallyRemoveLayer(n, i)
+				return // Indices shifted, abort this pass
+			}
+			continue
+		}
+
+		// If active but bad budget, increment dead count
+		if ts.LinkBudgets[i] < ts.PruneThreshold {
+			ts.DeadEpochs[i]++
+		} else {
+			ts.DeadEpochs[i] = 0 // Reset if it recovers
+		}
+	}
+
+	// 2. Find candidate to toggle off - FORWARD SCAN (Input -> Output)
+	// User requested to focus on "Left side" (Low Index) and disable lots of layers
+	pruneStartIdx := -1
+	batchSize := 3 // How many layers to disable at once
+
+	for i := 1; i < ts.TotalLayers-1; i++ {
+		if n.Layers[i].IsDisabled {
+			continue
+		}
+		if ts.DeadEpochs[i] >= ts.PrunePatience {
+			pruneStartIdx = i
+			break // Found the first candidate
+		}
+	}
+
+	if pruneStartIdx == -1 {
+		return // No toggle needed
+	}
+
+	// 3. ALERT & BATCH DISABLE
+	if ts.Verbose {
+		fmt.Printf("\n✂️  PRUNING ALERT: Batch Disabling Layers %d-%d (Budget %.3f) ✂️\n",
+			pruneStartIdx, pruneStartIdx+batchSize-1, ts.LinkBudgets[pruneStartIdx])
+	}
+
+	// Batch disable!
+	count := 0
+	for i := pruneStartIdx; i < ts.TotalLayers-1 && count < batchSize; i++ {
+		if !n.Layers[i].IsDisabled {
+			n.Layers[i].IsDisabled = true
+			ts.DeadEpochs[i] = 0 // Reset timer (now tracks disable duration)
+			count++
+		}
+	}
+}
+
+// physicallyRemoveLayer permanently deletes a layer from the Network and TweenState
+func (ts *TweenState) physicallyRemoveLayer(n *Network, pruneIdx int) {
+	if ts.Verbose {
+		fmt.Printf("\n🗑️  DELETE ALERT: Physically Removing Layer %d (Disabled for %d epochs) 🗑️\n",
+			pruneIdx, ts.DeadEpochs[pruneIdx])
+	}
+
+	// Remove from Network struct
+	// This assumes simple sequential structure (1 cell, many layers)
+	n.Layers = append(n.Layers[:pruneIdx], n.Layers[pruneIdx+1:]...)
+	n.LayersPerCell-- // Shrink the cell depth
+
+	// Resize Network internal storage to avoid index out of bounds
+	n.activations = append(n.activations[:pruneIdx+1], n.activations[pruneIdx+2:]...) // +1 offset for input
+	n.preActivations = append(n.preActivations[:pruneIdx], n.preActivations[pruneIdx+1:]...)
+	// Gradients might not have been allocated yet if training hasn't started, but usually they are
+	if len(n.kernelGradients) > pruneIdx {
+		n.kernelGradients = append(n.kernelGradients[:pruneIdx], n.kernelGradients[pruneIdx+1:]...)
+	}
+	if len(n.biasGradients) > pruneIdx {
+		n.biasGradients = append(n.biasGradients[:pruneIdx], n.biasGradients[pruneIdx+1:]...)
+	}
+
+	// Resize TweenState tracking arrays
+	ts.TotalLayers--
+
+	ts.LinkBudgets = append(ts.LinkBudgets[:pruneIdx], ts.LinkBudgets[pruneIdx+1:]...)
+	ts.ForwardActs = append(ts.ForwardActs[:pruneIdx], ts.ForwardActs[pruneIdx+1:]...)
+	ts.BackwardTargets = append(ts.BackwardTargets[:pruneIdx], ts.BackwardTargets[pruneIdx+1:]...)
+	ts.WeightVel = append(ts.WeightVel[:pruneIdx], ts.WeightVel[pruneIdx+1:]...)
+	ts.DeadEpochs = append(ts.DeadEpochs[:pruneIdx], ts.DeadEpochs[pruneIdx+1:]...)
+
+	// No need to reset adjacent epochs, as they might be next in line for deletion
 }

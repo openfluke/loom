@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand"
@@ -52,6 +53,12 @@ func main() {
 		test7_deep_layers()
 	case "8":
 		test8_spiral()
+	case "9":
+		test9_two_moons()
+	case "10":
+		test10_depth_charge()
+	case "11":
+		test11_layer_safari()
 	case "all":
 		test1_tween()
 		test2_backprop()
@@ -61,16 +68,20 @@ func main() {
 		test6_layer_types()
 		test7_deep_layers()
 		test8_spiral()
+		test9_two_moons()
+		test10_depth_charge()
 	default:
-		fmt.Println("Usage: go run main.go [1|2|3|4|5|6|7|8|all]")
-		fmt.Println("  1 - Neural Tweening (simple)")
-		fmt.Println("  2 - Standard Backpropagation")
-		fmt.Println("  3 - Deep Network Tweening")
-		fmt.Println("  4 - Iris Dataset (real data)")
-		fmt.Println("  5 - MEGA TEST (50K samples)")
-		fmt.Println("  6 - ALL LAYER TYPES (1 layer each)")
-		fmt.Println("  7 - DEEP LAYER TYPES (5 layers each)")
-		fmt.Println("  8 - SPIRAL TEST (nonlinear classification)")
+		fmt.Println("Usage: go run main.go [1|2|3|4|5|6|7|8|9|10|all]")
+		fmt.Println("  1  - Neural Tweening (simple)")
+		fmt.Println("  2  - Standard Backpropagation")
+		fmt.Println("  3  - Deep Network Tweening")
+		fmt.Println("  4  - Iris Dataset (real data)")
+		fmt.Println("  5  - MEGA TEST (50K samples)")
+		fmt.Println("  6  - ALL LAYER TYPES (1 layer each)")
+		fmt.Println("  7  - DEEP LAYER TYPES (5 layers each)")
+		fmt.Println("  8  - SPIRAL TEST (nonlinear classification)")
+		fmt.Println("  9  - TWO-MOONS (generalization + reproducibility)")
+		fmt.Println("  10 - DEPTH CHARGE (20 layers, vanishing gradient test)")
 		fmt.Println("  all - Run all tests")
 	}
 }
@@ -1294,4 +1305,718 @@ func loadIrisData() ([][]float32, []float64) {
 	}
 
 	return rawData, labels
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 9: GENERALIZATION + REPRODUCIBILITY (Two-Moons)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TrialResult holds metrics for a single trial
+type TrialResult struct {
+	Seed            int64
+	TweenTrainAcc   float64
+	TweenValAcc     float64
+	TweenTestAcc    float64
+	TweenBestValAcc float64
+	TweenBestEpoch  int
+	TweenTime       time.Duration
+	TweenLinkBudget float32
+	TweenMinBudget  float32
+	TweenBottleneck int
+	TweenDepthBar   float32
+	BPTrainAcc      float64
+	BPValAcc        float64
+	BPTestAcc       float64
+	BPBestValAcc    float64
+	BPBestEpoch     int
+	BPTime          time.Duration
+}
+
+// EpochMetric for JSON export
+type EpochMetric struct {
+	Epoch         int     `json:"epoch"`
+	Method        string  `json:"method"`
+	TrainLoss     float32 `json:"train_loss"`
+	ValAcc        float64 `json:"val_acc"`
+	AvgLinkBudget float32 `json:"avg_link_budget,omitempty"`
+	MinLinkBudget float32 `json:"min_link_budget,omitempty"`
+	DepthBarrier  float32 `json:"depth_barrier,omitempty"`
+}
+
+func test9_two_moons() {
+	fmt.Println("\n═══════════════════════════════════════════════════════════════")
+	fmt.Println(" TEST 9: GENERALIZATION + REPRODUCIBILITY (Two-Moons)")
+	fmt.Println(" Measuring true generalization with train/val/test splits")
+	fmt.Println(" Fixed seeds ensure reproducible results")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+
+	numTrials := 5
+	epochs := 200
+	evalFreq := 5
+	tweenRate := float32(0.4)
+	bpRate := float32(0.05)
+	samples := 2000
+	noise := 0.15
+
+	results := make([]TrialResult, numTrials)
+	allMetrics := make([]EpochMetric, 0)
+
+	for trial := 0; trial < numTrials; trial++ {
+		seed := int64(trial + 1)
+		fmt.Printf("\n┌─ Trial %d (seed=%d) ────────────────────────────────────────\n", trial+1, seed)
+
+		// Generate data with fixed seed
+		trainX, trainY, valX, valY, testX, testY := generateTwoMoonsSplit(samples, noise, seed)
+		fmt.Printf("│ Data: train=%d, val=%d, test=%d\n", len(trainX), len(valX), len(testX))
+
+		// Create and save base network for identical initialization
+		baseNet := createTwoMoonsNetwork(seed)
+		tempFile := fmt.Sprintf("/tmp/test9_base_%d.json", seed)
+		baseNet.SaveModel(tempFile, "base")
+
+		// Load identical copies
+		netTween, _ := nn.LoadModel(tempFile, "base")
+		netBP, _ := nn.LoadModel(tempFile, "base")
+
+		// === TWEEN ===
+		fmt.Println("│ ▶ TWEEN:")
+		ts := nn.NewTweenState(netTween)
+		ts.Verbose = false
+		ts.EvalFrequency = evalFreq
+		ts.EarlyStopThreshold = 99.0
+
+		tweenBestVal := 0.0
+		tweenBestEpoch := 0
+		tweenStart := time.Now()
+
+		for epoch := 0; epoch < epochs; epoch++ {
+			// Train one epoch
+			epochLoss := float32(0)
+			rng := rand.New(rand.NewSource(seed + int64(epoch)))
+			perm := rng.Perm(len(trainX))
+			for _, idx := range perm {
+				epochLoss += ts.TweenStep(netTween, trainX[idx], int(trainY[idx]), 2, tweenRate)
+			}
+			avgLoss := epochLoss / float32(len(trainX))
+
+			if epoch%evalFreq == 0 || epoch == epochs-1 {
+				valMetrics, _ := netTween.EvaluateNetwork(valX, valY)
+				if valMetrics.Score > tweenBestVal {
+					tweenBestVal = valMetrics.Score
+					tweenBestEpoch = epoch + 1
+					ts.SaveBest(netTween)
+				}
+
+				// Record metrics
+				avgBudget, minBudget, _ := ts.GetBudgetSummary()
+				depthBar := float32(1.0)
+				for _, b := range ts.LinkBudgets {
+					depthBar *= b
+				}
+				allMetrics = append(allMetrics, EpochMetric{
+					Epoch:         epoch + 1,
+					Method:        "tween",
+					TrainLoss:     avgLoss,
+					ValAcc:        valMetrics.Score,
+					AvgLinkBudget: avgBudget,
+					MinLinkBudget: minBudget,
+					DepthBarrier:  depthBar,
+				})
+
+				if epoch%50 == 0 {
+					fmt.Printf("│   Epoch %3d: Val=%.1f%% Budget=%.3f DepthBar=%.4f\n",
+						epoch+1, valMetrics.Score, avgBudget, depthBar)
+				}
+			}
+		}
+		ts.RestoreBest(netTween)
+		tweenTime := time.Since(tweenStart)
+
+		// Final Tween evaluation
+		tweenTrain, _ := netTween.EvaluateNetwork(trainX, trainY)
+		tweenVal, _ := netTween.EvaluateNetwork(valX, valY)
+		tweenTest, _ := netTween.EvaluateNetwork(testX, testY)
+		avgBudget, minBudget, _ := ts.GetBudgetSummary()
+		bottleneck := 0
+		minB := float32(1.0)
+		for i, b := range ts.LinkBudgets {
+			if b < minB {
+				minB = b
+				bottleneck = i
+			}
+		}
+		depthBar := float32(1.0)
+		for _, b := range ts.LinkBudgets {
+			depthBar *= b
+		}
+
+		fmt.Printf("│   Final: Train=%.1f%% Val=%.1f%% Test=%.1f%% (best val %.1f%% @ep%d)\n",
+			tweenTrain.Score, tweenVal.Score, tweenTest.Score, tweenBestVal, tweenBestEpoch)
+		fmt.Printf("│   LinkBudget=%.3f (min=%.3f @L%d) DepthBar=%.4f | %v\n",
+			avgBudget, minBudget, bottleneck, depthBar, tweenTime)
+
+		// === BACKPROP ===
+		fmt.Println("│ ▶ BACKPROP:")
+		bpBestVal := 0.0
+		bpBestEpoch := 0
+		bpStart := time.Now()
+
+		for epoch := 0; epoch < epochs; epoch++ {
+			epochLoss := float32(0)
+			rng := rand.New(rand.NewSource(seed + int64(epoch)))
+			perm := rng.Perm(len(trainX))
+			for _, idx := range perm {
+				output, _ := netBP.ForwardCPU(trainX[idx])
+				errorGrad := make([]float32, len(output))
+				for j := range output {
+					target := float32(0)
+					if j == int(trainY[idx]) {
+						target = 1.0
+					}
+					errorGrad[j] = output[j] - target
+					epochLoss += errorGrad[j] * errorGrad[j]
+				}
+				netBP.BackwardCPU(errorGrad)
+				updateWeights(netBP, bpRate)
+			}
+			avgLoss := epochLoss / float32(len(trainX))
+
+			if epoch%evalFreq == 0 || epoch == epochs-1 {
+				valMetrics, _ := netBP.EvaluateNetwork(valX, valY)
+				if valMetrics.Score > bpBestVal {
+					bpBestVal = valMetrics.Score
+					bpBestEpoch = epoch + 1
+				}
+
+				allMetrics = append(allMetrics, EpochMetric{
+					Epoch:     epoch + 1,
+					Method:    "backprop",
+					TrainLoss: avgLoss,
+					ValAcc:    valMetrics.Score,
+				})
+
+				if epoch%50 == 0 {
+					fmt.Printf("│   Epoch %3d: Val=%.1f%%\n", epoch+1, valMetrics.Score)
+				}
+			}
+		}
+		bpTime := time.Since(bpStart)
+
+		// Final BP evaluation
+		bpTrain, _ := netBP.EvaluateNetwork(trainX, trainY)
+		bpVal, _ := netBP.EvaluateNetwork(valX, valY)
+		bpTest, _ := netBP.EvaluateNetwork(testX, testY)
+
+		fmt.Printf("│   Final: Train=%.1f%% Val=%.1f%% Test=%.1f%% (best val %.1f%% @ep%d) | %v\n",
+			bpTrain.Score, bpVal.Score, bpTest.Score, bpBestVal, bpBestEpoch, bpTime)
+
+		// Record trial result
+		results[trial] = TrialResult{
+			Seed:            seed,
+			TweenTrainAcc:   tweenTrain.Score,
+			TweenValAcc:     tweenVal.Score,
+			TweenTestAcc:    tweenTest.Score,
+			TweenBestValAcc: tweenBestVal,
+			TweenBestEpoch:  tweenBestEpoch,
+			TweenTime:       tweenTime,
+			TweenLinkBudget: avgBudget,
+			TweenMinBudget:  minBudget,
+			TweenBottleneck: bottleneck,
+			TweenDepthBar:   depthBar,
+			BPTrainAcc:      bpTrain.Score,
+			BPValAcc:        bpVal.Score,
+			BPTestAcc:       bpTest.Score,
+			BPBestValAcc:    bpBestVal,
+			BPBestEpoch:     bpBestEpoch,
+			BPTime:          bpTime,
+		}
+
+		// Winner for this trial
+		winner := "TIE"
+		if tweenTest.Score > bpTest.Score+2 {
+			winner = "TWEEN"
+		} else if bpTest.Score > tweenTest.Score+2 {
+			winner = "BACKPROP"
+		}
+		fmt.Printf("└─ Trial Winner: %s\n", winner)
+	}
+
+	// === SUMMARY ===
+	fmt.Println("\n═══════════════════════════════════════════════════════════════")
+	fmt.Println(" SUMMARY: Two-Moons Generalization Test")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+
+	// Calculate averages and stddev
+	var tweenValSum, tweenTestSum, bpValSum, bpTestSum float64
+	var tweenTimeSum, bpTimeSum time.Duration
+	for _, r := range results {
+		tweenValSum += r.TweenValAcc
+		tweenTestSum += r.TweenTestAcc
+		bpValSum += r.BPValAcc
+		bpTestSum += r.BPTestAcc
+		tweenTimeSum += r.TweenTime
+		bpTimeSum += r.BPTime
+	}
+	n := float64(numTrials)
+	tweenValAvg := tweenValSum / n
+	tweenTestAvg := tweenTestSum / n
+	bpValAvg := bpValSum / n
+	bpTestAvg := bpTestSum / n
+	tweenTimeAvg := tweenTimeSum / time.Duration(numTrials)
+	bpTimeAvg := bpTimeSum / time.Duration(numTrials)
+
+	// Stddev
+	var tweenTestVar, bpTestVar float64
+	for _, r := range results {
+		tweenTestVar += (r.TweenTestAcc - tweenTestAvg) * (r.TweenTestAcc - tweenTestAvg)
+		bpTestVar += (r.BPTestAcc - bpTestAvg) * (r.BPTestAcc - bpTestAvg)
+	}
+	tweenTestStd := math.Sqrt(tweenTestVar / n)
+	bpTestStd := math.Sqrt(bpTestVar / n)
+
+	fmt.Printf("┌─────────────┬──────────────────────┬──────────────────────┐\n")
+	fmt.Printf("│ Method      │ Val Acc (avg)        │ Test Acc (avg±std)   │\n")
+	fmt.Printf("├─────────────┼──────────────────────┼──────────────────────┤\n")
+	fmt.Printf("│ Tween       │ %6.2f%%              │ %6.2f%% ± %.2f%%      │\n", tweenValAvg, tweenTestAvg, tweenTestStd)
+	fmt.Printf("│ Backprop    │ %6.2f%%              │ %6.2f%% ± %.2f%%      │\n", bpValAvg, bpTestAvg, bpTestStd)
+	fmt.Printf("└─────────────┴──────────────────────┴──────────────────────┘\n")
+	fmt.Printf("\n⏱️  Avg Time: Tween=%v | Backprop=%v\n", tweenTimeAvg, bpTimeAvg)
+
+	speedup := float64(bpTimeAvg) / float64(tweenTimeAvg)
+	accDiff := tweenTestAvg - bpTestAvg
+
+	fmt.Println("\n📊 VERDICT:")
+	if accDiff > 2 && speedup >= 1 {
+		fmt.Println("🏆 TWEEN WINS! Better accuracy AND faster.")
+	} else if accDiff > 2 {
+		fmt.Printf("🎯 TWEEN wins on accuracy (+%.1f%%), but %.1fx slower.\n", accDiff, 1/speedup)
+	} else if accDiff < -2 && speedup < 1 {
+		fmt.Println("📈 BACKPROP wins on accuracy and speed.")
+	} else if speedup >= 1.5 {
+		fmt.Printf("⚡ TWEEN wins on speed (%.1fx faster), accuracy comparable.\n", speedup)
+	} else {
+		fmt.Println("🤝 TIE - Methods are comparable on this dataset.")
+	}
+
+	// Write JSON metrics
+	jsonPath := "/tmp/test9_metrics.json"
+	if data, err := json.MarshalIndent(allMetrics, "", "  "); err == nil {
+		os.WriteFile(jsonPath, data, 0644)
+		fmt.Printf("\n📁 Metrics saved to %s\n", jsonPath)
+	}
+}
+
+// generateTwoMoons creates classic two-moons dataset with Gaussian noise
+func generateTwoMoons(count int, noise float64, seed int64) ([][]float32, []float64) {
+	rng := rand.New(rand.NewSource(seed))
+	inputs := make([][]float32, count)
+	labels := make([]float64, count)
+
+	halfCount := count / 2
+
+	for i := 0; i < count; i++ {
+		var x, y float64
+
+		if i < halfCount {
+			// Top moon: semi-circle
+			theta := math.Pi * float64(i) / float64(halfCount)
+			x = math.Cos(theta)
+			y = math.Sin(theta)
+			labels[i] = 0
+		} else {
+			// Bottom moon: semi-circle shifted and flipped
+			theta := math.Pi * float64(i-halfCount) / float64(halfCount)
+			x = 1 - math.Cos(theta)
+			y = 0.5 - math.Sin(theta)
+			labels[i] = 1
+		}
+
+		// Add Gaussian noise
+		x += rng.NormFloat64() * noise
+		y += rng.NormFloat64() * noise
+
+		// Normalize to roughly [-1, 1]
+		inputs[i] = []float32{float32(x), float32(y)}
+	}
+
+	// Shuffle deterministically
+	rng = rand.New(rand.NewSource(seed + 999))
+	for i := range inputs {
+		j := rng.Intn(len(inputs))
+		inputs[i], inputs[j] = inputs[j], inputs[i]
+		labels[i], labels[j] = labels[j], labels[i]
+	}
+
+	return inputs, labels
+}
+
+// generateTwoMoonsSplit creates train/val/test splits (70/15/15)
+func generateTwoMoonsSplit(count int, noise float64, seed int64) (
+	trainX [][]float32, trainY []float64,
+	valX [][]float32, valY []float64,
+	testX [][]float32, testY []float64,
+) {
+	inputs, labels := generateTwoMoons(count, noise, seed)
+
+	trainEnd := int(float64(count) * 0.70)
+	valEnd := int(float64(count) * 0.85)
+
+	trainX = inputs[:trainEnd]
+	trainY = labels[:trainEnd]
+	valX = inputs[trainEnd:valEnd]
+	valY = labels[trainEnd:valEnd]
+	testX = inputs[valEnd:]
+	testY = labels[valEnd:]
+
+	return
+}
+
+// createTwoMoonsNetwork creates 2→64→64→2 network with fixed seed
+func createTwoMoonsNetwork(seed int64) *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":3,"layers":[
+		{"type":"dense","activation":"tanh","input_height":2,"output_height":64},
+		{"type":"dense","activation":"tanh","input_height":64,"output_height":64},
+		{"type":"dense","activation":"sigmoid","input_height":64,"output_height":2}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	// Seed the global rand for reproducible initialization
+	rand.Seed(seed)
+	n.InitializeWeights()
+	return n
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 10: THE DEPTH CHARGE (20 Layers - Vanishing Gradient Test)
+// ═══════════════════════════════════════════════════════════════════════════
+
+func test10_depth_charge() {
+	fmt.Println("\n═══════════════════════════════════════════════════════════════")
+	fmt.Println(" TEST 10: THE DEPTH CHARGE 💣")
+	fmt.Println(" 20 Dense Layers - No Residual Connections")
+	fmt.Println(" Hypothesis: Backprop vanishes, Tween maintains Link Budget")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+
+	numLayers := 20
+	hiddenSize := 32
+	epochs := 300
+	samples := 1000
+	seed := int64(42)
+
+	fmt.Printf("\nArchitecture: 8 → [%d × %d hidden] → 4\n", numLayers-2, hiddenSize)
+	fmt.Printf("Total layers: %d (no skip connections!)\n\n", numLayers)
+
+	// Generate simple classification data
+	inputs, expected := generateSimple8to4(samples)
+
+	// Create the 20-layer network
+	baseNet := createDepthChargeNetwork(numLayers, hiddenSize, seed)
+	tempFile := "/tmp/test10_depth_charge.json"
+	baseNet.SaveModel(tempFile, "depth")
+
+	// Load identical copies
+	netTween, _ := nn.LoadModel(tempFile, "depth")
+	netBP, _ := nn.LoadModel(tempFile, "depth")
+
+	// Initial evaluation
+	initScore, _ := netTween.EvaluateNetwork(inputs, expected)
+	fmt.Printf("Initial Score: %.1f%% (random weights)\n\n", initScore.Score)
+
+	// ═══════════════════════════════════════════════════════════════
+	// TWEEN - Watch the Link Budget drill through 20 layers
+	// ═══════════════════════════════════════════════════════════════
+	fmt.Println("▶ NEURAL TWEEN (watching Link Budget penetrate depth):")
+	fmt.Println("  Legend: █=0.8+ ▓=0.6-0.8 ▒=0.4-0.6 ░=0.2-0.4 ·=<0.2")
+	fmt.Println()
+
+	ts := nn.NewTweenState(netTween)
+	ts.Verbose = true // Show the ASCII heatmap!
+	ts.EvalFrequency = 5
+	ts.IgnoreThreshold = 0.15 // Still ignore updates for bad layers while waiting to prune
+	ts.PruneEnabled = true    // Enable surgery!
+	ts.PruneThreshold = 0.6   // Aggressive! Even "healthy" (0.5) layers are candidates to reduce depth
+	ts.PrunePatience = 5      // Quick trigger to chop layers
+
+	// Boost hyperparameters for deep networks
+	ts.DenseRate = 2.0             // Stronger dense updates
+	ts.WeightRateMultiplier = 0.05 // 5x larger weight updates
+	ts.NormRate = 0.3              // More aggressive norm tweening
+
+	tweenStart := time.Now()
+	ts.Train(netTween, inputs, expected, epochs, 0.5, nil) // Higher rate
+	tweenTime := time.Since(tweenStart)
+
+	tweenScore, _ := netTween.EvaluateNetwork(inputs, expected)
+	avgBudget, minBudget, maxBudget := ts.GetBudgetSummary()
+
+	// Calculate final depth barrier
+	depthBarrier := float32(1.0)
+	bottleneck := 0
+	minB := float32(1.0)
+	for i, b := range ts.LinkBudgets {
+		depthBarrier *= b
+		if b < minB {
+			minB = b
+			bottleneck = i
+		}
+	}
+
+	fmt.Printf("\n  Final Score: %.1f%%\n", tweenScore.Score)
+	fmt.Printf("  Link Budget: avg=%.3f min=%.3f max=%.3f\n", avgBudget, minBudget, maxBudget)
+	fmt.Printf("  Depth Barrier: %.6f (signal surviving all %d layers)\n", depthBarrier, numLayers)
+	fmt.Printf("  Bottleneck: Layer %d (budget=%.3f)\n", bottleneck, minBudget)
+	fmt.Printf("  Time: %v\n\n", tweenTime)
+
+	// ═══════════════════════════════════════════════════════════════
+	// BACKPROP - Expected to suffer from vanishing gradients
+	// ═══════════════════════════════════════════════════════════════
+	fmt.Println("▶ STANDARD BACKPROP (expected vanishing gradients):")
+
+	bpStart := time.Now()
+	lr := float32(0.01) // Low LR to prevent explosion
+
+	for epoch := 0; epoch < epochs; epoch++ {
+		epochLoss := float32(0)
+		for i := range inputs {
+			output, _ := netBP.ForwardCPU(inputs[i])
+			errorGrad := make([]float32, len(output))
+			for j := range output {
+				target := float32(0)
+				if j == int(expected[i]) {
+					target = 1.0
+				}
+				errorGrad[j] = output[j] - target
+				epochLoss += errorGrad[j] * errorGrad[j]
+			}
+			netBP.BackwardCPU(errorGrad)
+			updateWeights(netBP, lr)
+		}
+
+		if epoch%10 == 0 || epoch == epochs-1 {
+			bpEval, _ := netBP.EvaluateNetwork(inputs, expected)
+			avgLoss := epochLoss / float32(len(inputs))
+			fmt.Printf("  Epoch %3d: Score=%.1f%% Loss=%.4f\n", epoch+1, bpEval.Score, avgLoss)
+		}
+	}
+	bpTime := time.Since(bpStart)
+
+	bpScore, _ := netBP.EvaluateNetwork(inputs, expected)
+	fmt.Printf("\n  Final Score: %.1f%%\n", bpScore.Score)
+	fmt.Printf("  Time: %v\n\n", bpTime)
+
+	// ═══════════════════════════════════════════════════════════════
+	// VERDICT
+	// ═══════════════════════════════════════════════════════════════
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+	fmt.Println(" DEPTH CHARGE RESULTS")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+	fmt.Printf("┌─────────────┬─────────────┬─────────────┐\n")
+	fmt.Printf("│ Method      │ Final Score │ Time        │\n")
+	fmt.Printf("├─────────────┼─────────────┼─────────────┤\n")
+	fmt.Printf("│ Tween       │ %6.1f%%     │ %v\n", tweenScore.Score, tweenTime)
+	fmt.Printf("│ Backprop    │ %6.1f%%     │ %v\n", bpScore.Score, bpTime)
+	fmt.Printf("└─────────────┴─────────────┴─────────────┘\n")
+
+	fmt.Printf("\n🔬 ANALYSIS:\n")
+	fmt.Printf("   Depth Barrier (Tween): %.6f\n", depthBarrier)
+	fmt.Printf("   This means %.4f%% of the input signal survives to output\n", depthBarrier*100)
+
+	if depthBarrier > 0.01 {
+		fmt.Println("   ✅ Link Budget maintained reasonable signal flow!")
+	} else if depthBarrier > 0.0001 {
+		fmt.Println("   ⚠️  Link Budget struggled but maintained some flow")
+	} else {
+		fmt.Println("   ❌ Link Budget collapsed (vanishing)")
+	}
+
+	scoreDiff := tweenScore.Score - bpScore.Score
+	if scoreDiff > 10 {
+		fmt.Printf("\n🏆 TWEEN WINS by %.1f%% - Vanishing gradient defeated!\n", scoreDiff)
+	} else if scoreDiff > 0 {
+		fmt.Printf("\n🎯 TWEEN leads by %.1f%% - showing resilience to depth\n", scoreDiff)
+	} else if scoreDiff > -5 {
+		fmt.Println("\n🤝 TIE - Both methods struggled equally with depth")
+	} else {
+		fmt.Println("\n📉 BACKPROP wins - unexpected for this depth!")
+	}
+}
+
+// generateSimple8to4 creates simple 8-input, 4-class data
+func generateSimple8to4(count int) ([][]float32, []float64) {
+	inputs := make([][]float32, count)
+	expected := make([]float64, count)
+	for i := range inputs {
+		inputs[i] = make([]float32, 8)
+		sum := float32(0)
+		for j := range inputs[i] {
+			inputs[i][j] = rand.Float32()*2 - 1 // [-1, 1]
+			sum += inputs[i][j]
+		}
+		// Class based on sum quadrant
+		if sum > 1 {
+			expected[i] = 0
+		} else if sum > 0 {
+			expected[i] = 1
+		} else if sum > -1 {
+			expected[i] = 2
+		} else {
+			expected[i] = 3
+		}
+	}
+	return inputs, expected
+}
+
+// createDepthChargeNetwork creates an N-layer deep network WITH LAYERNORM
+// This tests if Tween can leverage normalization to maintain the Link Budget
+func createDepthChargeNetwork(numLayers, hiddenSize int, seed int64) *nn.Network {
+	// We need 2 layers per "block" (Dense + Norm), plus input/output handling
+	// Total conceptual depth = numLayers.
+	// Actual layers = (numLayers-2)*2 + 2 (first/last)
+
+	layers := make([]string, 0)
+
+	// First layer: 8 -> hidden
+	layers = append(layers, fmt.Sprintf(`{"type":"dense","activation":"tanh","input_height":8,"output_height":%d}`, hiddenSize))
+	layers = append(layers, fmt.Sprintf(`{"type":"layernorm","norm_size":%d}`, hiddenSize))
+
+	// Middle layers: hidden -> hidden (Dense + LayerNorm)
+	// We loop numLayers-2 times to get the desired depth
+	for i := 0; i < numLayers-2; i++ {
+		layers = append(layers, fmt.Sprintf(`{"type":"dense","activation":"tanh","input_height":%d,"output_height":%d}`, hiddenSize, hiddenSize))
+		layers = append(layers, fmt.Sprintf(`{"type":"layernorm","norm_size":%d}`, hiddenSize))
+	}
+
+	// Last layer: hidden -> 4 (No norm on output usually, but let's keep it pure dense for the head)
+	layers = append(layers, fmt.Sprintf(`{"type":"dense","activation":"sigmoid","input_height":%d,"output_height":4}`, hiddenSize))
+
+	// Calculate actual total layers in the config
+	totalLayers := len(layers)
+
+	cfg := fmt.Sprintf(`{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":%d,"layers":[%s]}`,
+		totalLayers, joinStrings(layers, ","))
+
+	n, err := nn.BuildNetworkFromJSON(cfg)
+	if err != nil {
+		fmt.Printf("Error building network: %v\n", err)
+		return nil
+	}
+
+	rand.Seed(seed)
+	n.InitializeWeights()
+	return n
+}
+
+// joinStrings helper (avoid strings package import)
+func joinStrings(strs []string, sep string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	result := strs[0]
+	for i := 1; i < len(strs); i++ {
+		result += sep + strs[i]
+	}
+	return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 11: LAYER TYPE SAFARI 🦁
+// Verify Pruning across all major layer types (Attention, CNN, RNN, etc.)
+// ═══════════════════════════════════════════════════════════════════════════
+
+func test11_layer_safari() {
+	fmt.Println("\n═══════════════════════════════════════════════════════════════")
+	fmt.Println(" TEST 11: LAYER TYPE SAFARI 🦁")
+	fmt.Println(" Goal: Verify Auto-Pruning functions on ALL layer types")
+	fmt.Println(" Method: Construct deep stacks of specific types and watch them prune")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+
+	types := []string{
+		"Dense",
+		"SwiGLU",
+		"MultiHeadAttention",
+		"RNN",
+		"LSTM",
+		"Conv2D",
+	}
+
+	samples := 500
+	inputs, expected := generateSimple8to4(samples)
+
+	for _, t := range types {
+		fmt.Printf("\n\n>>> TESTING LAYER TYPE: %s <<<\n", t)
+		fmt.Printf("---------------------------------------------------\n")
+
+		// Build a deep network of this type
+		// Architecture: Input(8) -> Adapter(32) -> [Type(32)]x18 -> Adapter(4)
+		// TOTAL: 20 layers (indices 0..19)
+		// Prunable: 1..18
+
+		layers := make([]string, 0)
+		hidden := 32
+
+		// 0. Adapter (Dense)
+		layers = append(layers, fmt.Sprintf(`{"type":"dense","activation":"tanh","input_height":8,"output_height":%d}`, hidden))
+
+		// 1..18. Deep Stack of Target Type
+		for i := 0; i < 18; i++ {
+			switch t {
+			case "Dense":
+				layers = append(layers, fmt.Sprintf(`{"type":"dense","activation":"tanh","input_height":%d,"output_height":%d}`, hidden, hidden))
+			case "SwiGLU":
+				layers = append(layers, fmt.Sprintf(`{"type":"swiglu","input_height":%d,"output_height":%d}`, hidden, hidden))
+			case "MultiHeadAttention":
+				// 4 heads * 8 dim = 32 hidden
+				layers = append(layers, fmt.Sprintf(`{"type":"attention","num_heads":4,"d_model":%d}`, hidden))
+			case "RNN":
+				layers = append(layers, fmt.Sprintf(`{"type":"rnn","hidden_size":%d,"rnn_input_size":%d}`, hidden, hidden))
+			case "LSTM":
+				layers = append(layers, fmt.Sprintf(`{"type":"lstm","hidden_size":%d,"rnn_input_size":%d}`, hidden, hidden))
+			case "Conv2D":
+				// Treat 32 vector as 1x32 image? Or 8x4?
+				// Let's use 1x32. Kernel 3. Padding 1 (same). Stride 1.
+				// Input: 32 channels? No, input is flat 32 float vector.
+				// In Loom, Conv2D interprets input as [Channels, Height, Width] or flat?
+				// Flattened. If InputHeight/Width not set, it might guess.
+				// Let's set explicit shape: 1 channel, 1 height, 32 width
+				layers = append(layers, fmt.Sprintf(`{"type":"conv2d","filters":1,"kernel_size":3,"stride":1,"padding":1,"input_height":1,"input_width":%d,"input_channels":1,"activation":"tanh"}`, hidden))
+			}
+		}
+
+		// 19. Output Head (Dense)
+		// Note: Conv2D output `1*1*32` is flat 32, so Dense can consume it if sizes align.
+		layers = append(layers, fmt.Sprintf(`{"type":"dense","activation":"sigmoid","input_height":%d,"output_height":4}`, hidden))
+
+		cfg := fmt.Sprintf(`{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":%d,"layers":[%s]}`,
+			len(layers), joinStrings(layers, ","))
+
+		n, err := nn.BuildNetworkFromJSON(cfg)
+		if err != nil {
+			fmt.Printf("❌ Failed to build %s network: %v\n", t, err)
+			continue
+		}
+
+		// Setup Tween
+		rand.Seed(42)
+		n.InitializeWeights()
+
+		ts := nn.NewTweenState(n)
+		ts.Verbose = true
+		ts.EvalFrequency = 10
+		ts.PruneEnabled = true
+		ts.PruneThreshold = 0.6 // Aggressive to force pruning
+		ts.PrunePatience = 3    // Fast trigger
+
+		// Train
+		ts.Train(n, inputs, expected, 30, 0.01, func(epoch int, loss float32, metrics *nn.DeviationMetrics) {
+			// Callback
+		})
+
+		// Check if pruning happened
+		finalLayers := n.TotalLayers()
+		fmt.Printf("\nRESULT %s: Started with 20 layers, Ended with %d layers.\n", t, finalLayers)
+		if finalLayers < 20 {
+			fmt.Println("✅ Pruning SUCCESS")
+		} else {
+			fmt.Println("⚠️  Pruning FAILED (Signal too strong or config issue)")
+		}
+	}
 }
