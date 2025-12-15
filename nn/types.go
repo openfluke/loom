@@ -181,7 +181,7 @@ type LayerEvent struct {
 	Stats     LayerStats // Summary statistics
 	Input     []float32  // Input data (optional, can be nil to save memory)
 	Output    []float32  // Output data (optional, can be nil to save memory)
-	StepCount uint64     // For step-based execution
+	StepCount uint64     `json:"step_count"` // For step-based execution
 
 	// Grid position info for visualization
 	GridRow   int    `json:"grid_row"`   // Row in the grid

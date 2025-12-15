@@ -403,14 +403,16 @@ func runNetwork3NormalVsStepping() {
 	// Initialize stepping state
 	state := netStep.InitStepState(8)
 
-	microConfig := &nn.TrainingConfig{
-		Epochs:       1,
-		LearningRate: 0.05,
-		UseGPU:       false,
-		GradientClip: 1.0,
-		LossType:     "mse",
-		Verbose:      false,
-	}
+	/*
+		microConfig := &nn.TrainingConfig{
+			Epochs:       1,
+			LearningRate: 0.05,
+			UseGPU:       false,
+			GradientClip: 1.0,
+			LossType:     "mse",
+			Verbose:      false,
+		}
+	*/
 
 	fmt.Println("Training with StepForward() + micro-training...")
 	startStep := time.Now()
@@ -436,9 +438,41 @@ func runNetwork3NormalVsStepping() {
 		loss /= float32(len(output))
 		stepLossHistory = append(stepLossHistory, loss)
 
-		// Micro-train
-		microBatch := []nn.TrainingBatch{sample}
-		netStep.Train(microBatch, microConfig)
+		// 4. Backward Pass (Step Mode)
+		//    We need to calculate the gradient of the loss with respect to the output first.
+		//    Loss = MSE = (output - target)^2
+		//    dLoss/dOutput = 2 * (output - target)
+		grad := make([]float32, len(output))
+		for i := range output {
+			grad[i] = 2.0 * (output[i] - sample.Target[i])
+		}
+
+		netStep.StepBackward(state, grad)
+
+		// 5. Manual SGD Update (Simple)
+		//    Since we aren't using the Train() function which handles this,
+		//    we manually update weights using the gradients calculated by StepBackward.
+		learningRate := float32(0.05)
+
+		kernelGrads := netStep.KernelGradients()
+		biasGrads := netStep.BiasGradients()
+
+		for layerIdx, layer := range netStep.Layers {
+			// Update Kernel
+			if len(layer.Kernel) > 0 && layerIdx < len(kernelGrads) && len(kernelGrads[layerIdx]) > 0 {
+				for k := range layer.Kernel {
+					layer.Kernel[k] -= learningRate * kernelGrads[layerIdx][k]
+					kernelGrads[layerIdx][k] = 0 // Reset gradient
+				}
+			}
+			// Update Bias
+			if len(layer.Bias) > 0 && layerIdx < len(biasGrads) && len(biasGrads[layerIdx]) > 0 {
+				for k := range layer.Bias {
+					layer.Bias[k] -= learningRate * biasGrads[layerIdx][k]
+					biasGrads[layerIdx][k] = 0 // Reset gradient
+				}
+			}
+		}
 
 		sampleIdx = (sampleIdx + 1) % len(batches)
 	}
