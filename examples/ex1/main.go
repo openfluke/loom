@@ -419,6 +419,7 @@ func test7_deep_layers() {
 
 	tests := []LayerTest{
 		{"5x Dense", createDeep5xDenseNet, generateSimple16to4},
+		{"5x Conv2D", createDeep5xConv2DNet, generateConv2DData},
 		{"5x LayerNorm", createDeep5xLayerNormNet, generateSimple16to4},
 		{"5x RMSNorm", createDeep5xRMSNormNet, generateSimple16to4},
 		{"5x RNN", createDeep5xRNNNet, generateSimple16to4},
@@ -601,6 +602,38 @@ func createDeep5xAttentionNet() *nn.Network {
 	n, _ := nn.BuildNetworkFromJSON(cfg)
 	n.InitializeWeights()
 	return n
+}
+
+func createDeep5xConv2DNet() *nn.Network {
+	// 3x Conv2D layers + 2 Dense (simpler to avoid sizing issues)
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":5,"layers":[
+		{"type":"conv2d","input_channels":1,"filters":2,"kernel_size":3,"padding":1,"stride":1,"input_height":4,"input_width":4,"output_height":4,"output_width":4,"activation":"relu"},
+		{"type":"conv2d","input_channels":2,"filters":2,"kernel_size":3,"padding":1,"stride":1,"input_height":4,"input_width":4,"output_height":4,"output_width":4,"activation":"relu"},
+		{"type":"conv2d","input_channels":2,"filters":1,"kernel_size":3,"padding":1,"stride":1,"input_height":4,"input_width":4,"output_height":4,"output_width":4,"activation":"relu"},
+		{"type":"dense","activation":"tanh","input_height":16,"output_height":8},
+		{"type":"dense","activation":"sigmoid","input_height":8,"output_height":4}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	if n != nil {
+		n.InitializeWeights()
+	}
+	return n
+}
+
+// Generate 4x4 image data for Conv2D (16 pixels, classify into 4 classes)
+func generateConv2DData(count int) ([][]float32, []float64) {
+	inputs := make([][]float32, count)
+	expected := make([]float64, count)
+	for i := range inputs {
+		inputs[i] = make([]float32, 16) // 4x4 = 16 pixels
+		sum := float32(0)
+		for j := range inputs[i] {
+			inputs[i][j] = rand.Float32()
+			sum += inputs[i][j]
+		}
+		expected[i] = float64(int(sum) % 4)
+	}
+	return inputs, expected
 }
 
 // Test network creators

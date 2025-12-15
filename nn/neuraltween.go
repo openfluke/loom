@@ -73,7 +73,7 @@ func NewTweenState(n *Network) *TweenState {
 		DenseRate:     1.0, // Dense works well with base rate
 		RNNRate:       0.5, // RNN needs higher rate (was 0.001!)
 		LSTMRate:      0.5, // LSTM needs higher rate (was 0.001!)
-		AttentionRate: 0.3, // Attention needs higher rate (was 0.001!)
+		AttentionRate: 0.2, // Attention needs same rate as Dense
 		NormRate:      0.1, // Norm layers work well with lower rate
 		SwiGLURate:    0.2, // SwiGLU gated activation
 		Conv2DRate:    0.1, // Conv2D
@@ -346,30 +346,147 @@ func (ts *TweenState) tweenConv2D(cfg *LayerConfig, input, gaps []float32, rate,
 	}
 }
 
-// tweenAttention handles Multi-Head Attention layers
+// tweenAttention handles Multi-Head Attention as a sub-network
+// MHA flow: input → Q,K,V projections → attention → output projection → output
+// We propagate gaps BACKWARD through this sub-network
 func (ts *TweenState) tweenAttention(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
-	// Average gap to get overall direction
-	avgGap := float32(0)
-	for _, g := range gaps {
-		avgGap += g
+	numHeads := cfg.NumHeads
+	dModel := cfg.DModel
+	numKVHeads := cfg.NumKVHeads
+	headDim := cfg.HeadDim
+
+	if numHeads == 0 {
+		numHeads = 2 // Default for test networks
 	}
-	if len(gaps) > 0 {
-		avgGap /= float32(len(gaps))
+	if dModel == 0 {
+		dModel = len(gaps)
+	}
+	if numKVHeads == 0 {
+		numKVHeads = numHeads
+	}
+	if headDim == 0 {
+		headDim = dModel / numHeads
+		if headDim == 0 {
+			headDim = 1
+		}
 	}
 
-	scaledRate := rate * avgGap * 0.001
+	kvDim := numKVHeads * headDim
+	_ = kvDim // May be needed for future GQA support
 
-	// Tween Q, K, V, Output weights
-	tweenWeightSlice(cfg.QWeights, input, scaledRate)
-	tweenWeightSlice(cfg.KWeights, input, scaledRate)
-	tweenWeightSlice(cfg.VWeights, input, scaledRate)
-	tweenWeightSlice(cfg.OutputWeight, gaps, scaledRate)
+	// === STEP 1: Backward through OUTPUT PROJECTION ===
+	// Output projection: output = concatenated @ OutputWeight + OutputBias
+	// Gap at output tells us what the concatenated should have been
+	// gradOutput = gaps, gradConcatenated = gaps @ OutputWeight.T
 
-	// Tween biases
-	tweenBiasSlice(cfg.QBias, avgGap, rate*0.1)
-	tweenBiasSlice(cfg.KBias, avgGap, rate*0.1)
-	tweenBiasSlice(cfg.VBias, avgGap, rate*0.1)
-	tweenBiasSlice(cfg.OutputBias, avgGap, rate*0.1)
+	// Compute gradient w.r.t concatenated (what attention output should be)
+	gradConcatenated := make([]float32, dModel)
+	for outDim := 0; outDim < len(gaps) && outDim < dModel; outDim++ {
+		for inDim := 0; inDim < dModel; inDim++ {
+			wIdx := inDim*dModel + outDim
+			if wIdx < len(cfg.OutputWeight) {
+				gradConcatenated[inDim] += gaps[outDim] * cfg.OutputWeight[wIdx]
+			}
+		}
+	}
+
+	// Tween Output weights: W += rate * gap @ input.T (outer product)
+	avgGap := avgSlice(gaps)
+	for i := range cfg.OutputWeight {
+		inIdx := i / dModel
+		outIdx := i % dModel
+		if inIdx < dModel && outIdx < len(gaps) {
+			// Use actual input to output projection (would be concatenated attention output)
+			// Approximate with input
+			if inIdx < len(input) {
+				cfg.OutputWeight[i] += rate * gaps[outIdx] * input[inIdx] * 0.1
+			}
+		}
+	}
+	tweenBiasSlice(cfg.OutputBias, avgGap, rate*0.3)
+
+	// === STEP 2: Backward through each HEAD ===
+	// Each head produces headDim output values
+	// gradConcatenated[h*headDim : (h+1)*headDim] is the gradient for head h
+
+	for h := 0; h < numHeads; h++ {
+		// Get gradient for this head
+		headStart := h * headDim
+		headEnd := headStart + headDim
+		if headEnd > len(gradConcatenated) {
+			headEnd = len(gradConcatenated)
+		}
+
+		// Average magnitude of gradient for this head
+		headGapMag := float32(0)
+		for i := headStart; i < headEnd; i++ {
+			headGapMag += gradConcatenated[i] * gradConcatenated[i]
+		}
+		headGapMag = float32(math.Sqrt(float64(headGapMag)))
+
+		headRate := rate * headGapMag * 0.1
+
+		// === Backward through attention: attn_output = softmax(Q@K.T/sqrt(d)) @ V ===
+		// The V values carry the information, Q and K determine attention pattern
+
+		// Tween V weights for this head's KV slot
+		kvHead := h % numKVHeads // Which KV head this query head uses
+		vHeadStart := kvHead * headDim * dModel
+		vHeadEnd := vHeadStart + headDim*dModel
+		if vHeadEnd > len(cfg.VWeights) {
+			vHeadEnd = len(cfg.VWeights)
+		}
+		for i := vHeadStart; i < vHeadEnd; i++ {
+			// V carries the actual values - use head gradient directly
+			gapIdx := (i - vHeadStart) / dModel
+			if gapIdx < headEnd-headStart && headStart+gapIdx < len(gradConcatenated) {
+				inputIdx := (i - vHeadStart) % dModel
+				if inputIdx < len(input) {
+					cfg.VWeights[i] += headRate * gradConcatenated[headStart+gapIdx] * input[inputIdx]
+				}
+			}
+		}
+
+		// === Backward through Q and K ===
+		// Q and K form the attention pattern via Q @ K.T
+		// Gradient flows back differently - Q affects which positions to attend
+		// K affects what positions are "found"
+
+		// Tween Q weights for this head
+		qHeadStart := h * headDim * dModel
+		qHeadEnd := qHeadStart + headDim*dModel
+		if qHeadEnd > len(cfg.QWeights) {
+			qHeadEnd = len(cfg.QWeights)
+		}
+		for i := qHeadStart; i < qHeadEnd; i++ {
+			// Q queries - align with input that had high activation
+			inputIdx := (i - qHeadStart) % dModel
+			if inputIdx < len(input) {
+				cfg.QWeights[i] += headRate * input[inputIdx] * 0.5
+			}
+		}
+
+		// Tween K weights for this head's KV slot
+		kHeadStart := kvHead * headDim * dModel
+		kHeadEnd := kHeadStart + headDim*dModel
+		if kHeadEnd > len(cfg.KWeights) {
+			kHeadEnd = len(cfg.KWeights)
+		}
+		for i := kHeadStart; i < kHeadEnd; i++ {
+			// K keys - align with input that should be "found"
+			inputIdx := (i - kHeadStart) % dModel
+			if inputIdx < len(input) {
+				cfg.KWeights[i] += headRate * input[inputIdx] * 0.5
+			}
+		}
+	}
+
+	// === STEP 3: Tween biases ===
+	// Q, K, V biases receive gradients from their respective heads
+	avgHeadGap := avgSlice(gradConcatenated)
+	tweenBiasSlice(cfg.QBias, avgHeadGap, rate*0.2)
+	tweenBiasSlice(cfg.KBias, avgHeadGap, rate*0.2)
+	tweenBiasSlice(cfg.VBias, avgGap, rate*0.3) // V bias more important - carries values
 }
 
 // tweenRNN handles Recurrent Neural Network layers
