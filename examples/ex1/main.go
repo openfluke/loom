@@ -9,116 +9,166 @@ import (
 )
 
 // Neural Tween Experiment - True Bidirectional Approach
-// NOT backpropagation! Instead:
-// 1. Forward: capture what each layer actually produces
-// 2. Backward estimate: from expected output, estimate what each layer SHOULD produce
-// 3. Link budget: measure information flow quality at each layer
-// 4. Tween: directly morph weights to close the gap (no gradients!)
+// Compares speed vs standard backpropagation
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
-	fmt.Println("║   Neural Tween - Bidirectional Weight Morphing Experiment    ║")
-	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Println("║ NOT backpropagation! Uses:                                   ║")
-	fmt.Println("║ • Forward analysis + Backward target estimation              ║")
-	fmt.Println("║ • Link budgeting (like WiFi signal loss)                     ║")
-	fmt.Println("║ • Direct weight tweening (like Flash morphing)               ║")
+	fmt.Println("║   Neural Tween - Speed Comparison vs Backpropagation         ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// Test 1: Simple binary classification
-	test1()
+	// Test 1: Neural Tweening
+	test1_tween()
 
-	// Test 2: Larger network
-	test2()
+	// Test 2: Standard Backpropagation (for comparison)
+	test2_backprop()
+
+	// Test 3: Deep network with tweening
+	test3_deep_tween()
 }
 
-func test1() {
+func test1_tween() {
 	fmt.Println("═══════════════════════════════════════════════════════════════")
-	fmt.Println(" TEST 1: Simple Network (8→32→16→2)")
+	fmt.Println(" TEST 1: Neural Tweening (8→32→16→2)")
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 
-	network := createSimpleNetwork()
+	network := createNetwork()
 	inputs, expected := generateData(500)
 
-	// Initial evaluation
 	initial, _ := network.EvaluateNetwork(inputs, expected)
 	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
 
-	// Initialize tween state
 	ts := nn.NewTweenState(network)
-	ts.CalculateLinkBudgetsFromSample(network, inputs[0])
-	avgB, minB, maxB := ts.GetBudgetSummary()
-	fmt.Printf("Initial Link Budgets: avg=%.2f, min=%.2f, max=%.2f\n\n", avgB, minB, maxB)
 
-	// Run neural tweening (NOT backprop!)
+	start := time.Now()
 	epochs := 50
-	tweenRate := float32(0.5)
+	var finalScore float64
 
-	fmt.Println("Training with bidirectional tweening...")
-	ts.Train(network, inputs, expected, epochs, tweenRate,
+	ts.Train(network, inputs, expected, epochs, 0.5,
 		func(epoch int, avgLoss float32, metrics *nn.DeviationMetrics) {
-			avgB, _, _ := ts.GetBudgetSummary()
-			avgGap, _ := ts.GetGapSummary()
-			fmt.Printf("Epoch %3d: Score=%5.1f | Loss=%.3f | Budget=%.2f | Gap=%.4f\n",
-				epoch, metrics.Score, avgLoss, avgB, avgGap)
+			finalScore = metrics.Score
 		})
 
-	// Final evaluation
-	final, _ := network.EvaluateNetwork(inputs, expected)
-	fmt.Printf("\nAfter: Score=%.1f/100 (improvement: +%.1f%%)\n", final.Score, final.Score-initial.Score)
+	elapsed := time.Since(start)
 
-	if final.Score >= 90 {
-		fmt.Println("✅ TEST 1: Neural tweening works!\n")
-	} else {
-		fmt.Println("⚠️  TEST 1: Needs more tuning\n")
-	}
+	fmt.Printf("After: Score=%.1f/100\n", finalScore)
+	fmt.Printf("⏱️  Time: %v | Epochs: %d | ms/epoch: %.1f\n\n",
+		elapsed, epochs, float64(elapsed.Milliseconds())/float64(epochs))
 }
 
-func test2() {
+func test2_backprop() {
 	fmt.Println("═══════════════════════════════════════════════════════════════")
-	fmt.Println(" TEST 2: Deeper Network (8→64→128→64→2) - LAYERWISE TRAINING")
+	fmt.Println(" TEST 2: Standard Backpropagation (8→32→16→2)")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+
+	network := createNetwork()
+	inputs, expected := generateData(500)
+
+	initial, _ := network.EvaluateNetwork(inputs, expected)
+	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
+
+	// Use standard training with BackwardCPU
+	start := time.Now()
+	epochs := 50
+	learningRate := float32(0.1)
+
+	for epoch := 0; epoch < epochs; epoch++ {
+		for i := range inputs {
+			output, _ := network.ForwardCPU(inputs[i])
+
+			// Compute error gradient
+			errorGrad := make([]float32, len(output))
+			for j := range output {
+				target := float32(0)
+				if j == int(expected[i]) {
+					target = 1.0
+				}
+				errorGrad[j] = output[j] - target
+			}
+
+			// Backward pass
+			network.BackwardCPU(errorGrad)
+
+			// Update weights manually
+			updateWeights(network, learningRate)
+		}
+	}
+
+	elapsed := time.Since(start)
+
+	final, _ := network.EvaluateNetwork(inputs, expected)
+	fmt.Printf("After: Score=%.1f/100\n", final.Score)
+	fmt.Printf("⏱️  Time: %v | Epochs: %d | ms/epoch: %.1f\n\n",
+		elapsed, epochs, float64(elapsed.Milliseconds())/float64(epochs))
+}
+
+func test3_deep_tween() {
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+	fmt.Println(" TEST 3: Deep Network Tweening (8→64→128→64→2)")
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 
 	network := createDeepNetwork()
 	inputs, expected := generateData(1000)
 
-	// Initial evaluation
 	initial, _ := network.EvaluateNetwork(inputs, expected)
 	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
 
-	// Initialize tween state
 	ts := nn.NewTweenState(network)
-	ts.CalculateLinkBudgetsFromSample(network, inputs[0])
-	fmt.Printf("Network has %d layers\n\n", ts.TotalLayers)
 
-	// Use LAYERWISE training for deep networks
-	// Train each layer from output to input
-	fmt.Println("Training layer-by-layer (output → input)...")
-	epochsPerLayer := 15
-	tweenRate := float32(0.5)
+	start := time.Now()
+	epochs := 100
+	var finalScore float64
 
-	ts.TrainLayerwise(network, inputs, expected, epochsPerLayer, tweenRate,
-		func(layer int, epochs int, score float64) {
-			fmt.Printf("  Layer %d trained (%d epochs): Score=%.1f\n", layer, epochs, score)
+	ts.Train(network, inputs, expected, epochs, 0.3,
+		func(epoch int, avgLoss float32, metrics *nn.DeviationMetrics) {
+			finalScore = metrics.Score
+			if epoch%20 == 0 {
+				fmt.Printf("  Epoch %d: Score=%.1f\n", epoch, metrics.Score)
+			}
 		})
 
-	// Final evaluation
-	final, _ := network.EvaluateNetwork(inputs, expected)
-	fmt.Printf("\nAfter: Score=%.1f/100 (improvement: +%.1f%%)\n", final.Score, final.Score-initial.Score)
+	elapsed := time.Since(start)
 
-	if final.Score >= 90 {
-		fmt.Println("✅ TEST 2: Deep network layerwise tweening works!")
-	} else if final.Score > initial.Score+10 {
-		fmt.Println("⚠️  TEST 2: Improved but needs more epochs")
-	} else {
-		fmt.Println("❌ TEST 2: Needs algorithm tuning")
+	fmt.Printf("After: Score=%.1f/100 (best found during training)\n", finalScore)
+	fmt.Printf("⏱️  Time: %v | Epochs: %d | ms/epoch: %.1f\n",
+		elapsed, epochs, float64(elapsed.Milliseconds())/float64(epochs))
+}
+
+func updateWeights(n *nn.Network, lr float32) {
+	kernelGrads := n.KernelGradients()
+	biasGrads := n.BiasGradients()
+
+	for i := 0; i < n.TotalLayers(); i++ {
+		row := i / (n.GridCols * n.LayersPerCell)
+		col := (i / n.LayersPerCell) % n.GridCols
+		layer := i % n.LayersPerCell
+
+		cfg := n.GetLayer(row, col, layer)
+		if cfg == nil || len(cfg.Kernel) == 0 {
+			continue
+		}
+
+		// Update kernel
+		if i < len(kernelGrads) && len(kernelGrads[i]) == len(cfg.Kernel) {
+			for j := range cfg.Kernel {
+				cfg.Kernel[j] -= lr * kernelGrads[i][j]
+			}
+		}
+
+		// Update bias
+		if i < len(biasGrads) && len(biasGrads[i]) == len(cfg.Bias) {
+			for j := range cfg.Bias {
+				cfg.Bias[j] -= lr * biasGrads[i][j]
+			}
+		}
+
+		n.SetLayer(row, col, layer, *cfg)
 	}
 }
 
-func createSimpleNetwork() *nn.Network {
+func createNetwork() *nn.Network {
 	jsonConfig := `{
 		"batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 3,
 		"layers": [
