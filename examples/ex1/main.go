@@ -8,159 +8,150 @@ import (
 	"github.com/openfluke/loom/nn"
 )
 
-// Neural Tween Experiment Demo
-// Demonstrates the neural tweening system inspired by:
-// - Flash ActionScript tweening (gradual morphing)
-// - Network engineering link budgeting (signal loss estimation)
-// - Optimal transport / Neural ODEs (continuous transformation)
+// Neural Tween Experiment - True Bidirectional Approach
+// NOT backpropagation! Instead:
+// 1. Forward: capture what each layer actually produces
+// 2. Backward estimate: from expected output, estimate what each layer SHOULD produce
+// 3. Link budget: measure information flow quality at each layer
+// 4. Tween: directly morph weights to close the gap (no gradients!)
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
-	fmt.Println("║       Neural Tween Experiment - Weight Morphing Demo          ║")
+	fmt.Println("║   Neural Tween - Bidirectional Weight Morphing Experiment    ║")
 	fmt.Println("╠══════════════════════════════════════════════════════════════╣")
-	fmt.Println("║ Concept: Like Flash tweening, gradually morph network weights ║")
-	fmt.Println("║ from random initialization towards optimal configuration.     ║")
+	fmt.Println("║ NOT backpropagation! Uses:                                   ║")
+	fmt.Println("║ • Forward analysis + Backward target estimation              ║")
+	fmt.Println("║ • Link budgeting (like WiFi signal loss)                     ║")
+	fmt.Println("║ • Direct weight tweening (like Flash morphing)               ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// Create neural network
-	fmt.Println("1. Creating neural network...")
-	network := createNetwork()
-	fmt.Printf("   ✓ Network: %d layers, input→hidden→output\n", network.TotalLayers())
+	// Test 1: Simple binary classification
+	test1()
 
-	// Generate training data
-	fmt.Println("\n2. Generating sample data...")
-	inputs, expected := generateData(1000)
-	fmt.Printf("   ✓ Generated %d samples (binary classification)\n", len(inputs))
-
-	// Evaluate untrained network
-	fmt.Println("\n3. Evaluating untrained network...")
-	initialMetrics, err := network.EvaluateNetwork(inputs, expected)
-	if err != nil {
-		fmt.Printf("   ✗ Error: %v\n", err)
-		return
-	}
-	fmt.Printf("   Initial Score: %.1f/100\n", initialMetrics.Score)
-	fmt.Printf("   Average Deviation: %.1f%%\n", initialMetrics.AverageDeviation)
-	printBucketBar(initialMetrics)
-
-	// Initialize tween state
-	fmt.Println("\n4. Initializing Neural Tween...")
-	tweenState := nn.NewTweenState(network)
-	fmt.Printf("   ✓ TweenState created, tracking %d layers\n", tweenState.TotalLayers)
-
-	// Calculate initial link budgets
-	tweenState.CalculateLinkBudgets(network, inputs[0])
-	avgBudget, minBudget, maxBudget := tweenState.GetBudgetSummary()
-	fmt.Printf("   Initial Link Budgets: avg=%.2f, min=%.2f, max=%.2f\n", avgBudget, minBudget, maxBudget)
-
-	// Run neural tween training
-	fmt.Println("\n5. Running Neural Tween Training...")
-	fmt.Println("   ─────────────────────────────────────────────────────────────────────")
-
-	epochs := 100
-	learningRate := float32(0.5)
-	momentum := float32(0.9)
-	var finalMetrics *nn.DeviationMetrics
-
-	tweenState.TweenTrain(network, inputs, expected, epochs, learningRate, momentum,
-		func(epoch int, loss float32, metrics *nn.DeviationMetrics) {
-			finalMetrics = metrics
-			avgB, minB, maxB := tweenState.GetBudgetSummary()
-
-			progress := float32(epoch) / float32(epochs)
-			bar := progressBar(progress, 25)
-
-			fmt.Printf("   Epoch %3d/%d [%s] | Score: %5.1f/100 | Loss: %6.3f | Budget: %.2f\n",
-				epoch, epochs, bar, metrics.Score, loss, avgB)
-
-			// Show bucket summary every 20 epochs
-			if epoch%20 == 0 {
-				fmt.Print("              Buckets: ")
-				printBucketBarInline(metrics)
-			}
-
-			_ = minB
-			_ = maxB
-		})
-
-	fmt.Println("   ─────────────────────────────────────────────────────────────────────")
-
-	// Final evaluation
-	fmt.Println("\n6. Final Results:")
-	fmt.Printf("   Score Improvement: %.1f → %.1f (+%.1f%%)\n",
-		initialMetrics.Score, finalMetrics.Score,
-		finalMetrics.Score-initialMetrics.Score)
-	fmt.Printf("   Deviation Change: %.1f%% → %.1f%%\n",
-		initialMetrics.AverageDeviation, finalMetrics.AverageDeviation)
-
-	// Print final bucket distribution
-	fmt.Println("\n7. Final Deviation Bucket Distribution:")
-	printBucketDetails(finalMetrics)
-
-	// Check if we hit target
-	if finalMetrics.Score >= 95 {
-		fmt.Println("\n   🎉 SUCCESS! Achieved 95%+ accuracy!")
-	} else if finalMetrics.Score >= 80 {
-		fmt.Println("\n   ✓ Good progress! Consider more epochs for 95%+")
-	} else {
-		fmt.Println("\n   Still training... may need architecture changes")
-	}
-
-	// Print loss history
-	fmt.Println("\n8. Loss History (lower is better):")
-	printLossHistory(tweenState.LossHistory)
-
-	fmt.Println("\n═══════════════════════════════════════════════════════════════")
-	fmt.Println(" Neural Tweening Complete!")
-	fmt.Println("═══════════════════════════════════════════════════════════════")
+	// Test 2: Larger network
+	test2()
 }
 
-func createNetwork() *nn.Network {
+func test1() {
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+	fmt.Println(" TEST 1: Simple Network (8→32→16→2)")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+
+	network := createSimpleNetwork()
+	inputs, expected := generateData(500)
+
+	// Initial evaluation
+	initial, _ := network.EvaluateNetwork(inputs, expected)
+	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
+
+	// Initialize tween state
+	ts := nn.NewTweenState(network)
+	ts.CalculateLinkBudgetsFromSample(network, inputs[0])
+	avgB, minB, maxB := ts.GetBudgetSummary()
+	fmt.Printf("Initial Link Budgets: avg=%.2f, min=%.2f, max=%.2f\n\n", avgB, minB, maxB)
+
+	// Run neural tweening (NOT backprop!)
+	epochs := 50
+	tweenRate := float32(0.5)
+
+	fmt.Println("Training with bidirectional tweening...")
+	ts.Train(network, inputs, expected, epochs, tweenRate,
+		func(epoch int, avgLoss float32, metrics *nn.DeviationMetrics) {
+			avgB, _, _ := ts.GetBudgetSummary()
+			avgGap, _ := ts.GetGapSummary()
+			fmt.Printf("Epoch %3d: Score=%5.1f | Loss=%.3f | Budget=%.2f | Gap=%.4f\n",
+				epoch, metrics.Score, avgLoss, avgB, avgGap)
+		})
+
+	// Final evaluation
+	final, _ := network.EvaluateNetwork(inputs, expected)
+	fmt.Printf("\nAfter: Score=%.1f/100 (improvement: +%.1f%%)\n", final.Score, final.Score-initial.Score)
+
+	if final.Score >= 90 {
+		fmt.Println("✅ TEST 1: Neural tweening works!\n")
+	} else {
+		fmt.Println("⚠️  TEST 1: Needs more tuning\n")
+	}
+}
+
+func test2() {
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+	fmt.Println(" TEST 2: Deeper Network (8→64→128→64→2) - LAYERWISE TRAINING")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+
+	network := createDeepNetwork()
+	inputs, expected := generateData(1000)
+
+	// Initial evaluation
+	initial, _ := network.EvaluateNetwork(inputs, expected)
+	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
+
+	// Initialize tween state
+	ts := nn.NewTweenState(network)
+	ts.CalculateLinkBudgetsFromSample(network, inputs[0])
+	fmt.Printf("Network has %d layers\n\n", ts.TotalLayers)
+
+	// Use LAYERWISE training for deep networks
+	// Train each layer from output to input
+	fmt.Println("Training layer-by-layer (output → input)...")
+	epochsPerLayer := 15
+	tweenRate := float32(0.5)
+
+	ts.TrainLayerwise(network, inputs, expected, epochsPerLayer, tweenRate,
+		func(layer int, epochs int, score float64) {
+			fmt.Printf("  Layer %d trained (%d epochs): Score=%.1f\n", layer, epochs, score)
+		})
+
+	// Final evaluation
+	final, _ := network.EvaluateNetwork(inputs, expected)
+	fmt.Printf("\nAfter: Score=%.1f/100 (improvement: +%.1f%%)\n", final.Score, final.Score-initial.Score)
+
+	if final.Score >= 90 {
+		fmt.Println("✅ TEST 2: Deep network layerwise tweening works!")
+	} else if final.Score > initial.Score+10 {
+		fmt.Println("⚠️  TEST 2: Improved but needs more epochs")
+	} else {
+		fmt.Println("❌ TEST 2: Needs algorithm tuning")
+	}
+}
+
+func createSimpleNetwork() *nn.Network {
 	jsonConfig := `{
-		"id": "tween_experiment",
-		"batch_size": 1,
-		"grid_rows": 1,
-		"grid_cols": 1,
-		"layers_per_cell": 3,
+		"batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 3,
 		"layers": [
-			{
-				"type": "dense",
-				"activation": "tanh",
-				"input_height": 8,
-				"output_height": 32
-			},
-			{
-				"type": "dense",
-				"activation": "tanh",
-				"input_height": 32,
-				"output_height": 16
-			},
-			{
-				"type": "dense",
-				"activation": "sigmoid",
-				"input_height": 16,
-				"output_height": 2
-			}
+			{"type": "dense", "activation": "tanh", "input_height": 8, "output_height": 32},
+			{"type": "dense", "activation": "tanh", "input_height": 32, "output_height": 16},
+			{"type": "dense", "activation": "sigmoid", "input_height": 16, "output_height": 2}
 		]
 	}`
-
-	network, err := nn.BuildNetworkFromJSON(jsonConfig)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to create network: %v", err))
-	}
-
+	network, _ := nn.BuildNetworkFromJSON(jsonConfig)
 	network.InitializeWeights()
 	return network
 }
 
-func generateData(numSamples int) ([][]float32, []float64) {
-	inputs := make([][]float32, numSamples)
-	expected := make([]float64, numSamples)
+func createDeepNetwork() *nn.Network {
+	jsonConfig := `{
+		"batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 4,
+		"layers": [
+			{"type": "dense", "activation": "tanh", "input_height": 8, "output_height": 64},
+			{"type": "dense", "activation": "tanh", "input_height": 64, "output_height": 128},
+			{"type": "dense", "activation": "tanh", "input_height": 128, "output_height": 64},
+			{"type": "dense", "activation": "sigmoid", "input_height": 64, "output_height": 2}
+		]
+	}`
+	network, _ := nn.BuildNetworkFromJSON(jsonConfig)
+	network.InitializeWeights()
+	return network
+}
 
-	for i := 0; i < numSamples; i++ {
+func generateData(n int) ([][]float32, []float64) {
+	inputs := make([][]float32, n)
+	expected := make([]float64, n)
+
+	for i := 0; i < n; i++ {
 		input := make([]float32, 8)
 		sum := float32(0)
 		for j := 0; j < 8; j++ {
@@ -168,111 +159,11 @@ func generateData(numSamples int) ([][]float32, []float64) {
 			sum += input[j]
 		}
 		inputs[i] = input
-
-		// Binary classification: class based on sum threshold
 		if sum < 4.0 {
 			expected[i] = 0
 		} else {
 			expected[i] = 1
 		}
 	}
-
 	return inputs, expected
-}
-
-func progressBar(progress float32, width int) string {
-	filled := int(progress * float32(width))
-	bar := ""
-	for i := 0; i < width; i++ {
-		if i < filled {
-			bar += "█"
-		} else {
-			bar += "░"
-		}
-	}
-	return bar
-}
-
-func printBucketBar(metrics *nn.DeviationMetrics) {
-	fmt.Print("   Buckets: ")
-	printBucketBarInline(metrics)
-}
-
-func printBucketBarInline(metrics *nn.DeviationMetrics) {
-	bucketOrder := []string{"0-10%", "10-20%", "20-30%", "30-40%", "40-50%", "50-100%", "100%+"}
-	for _, name := range bucketOrder {
-		bucket := metrics.Buckets[name]
-		pct := float64(bucket.Count) / float64(metrics.TotalSamples) * 100
-		if pct > 0 {
-			fmt.Printf("[%s:%.0f%%] ", name, pct)
-		}
-	}
-	fmt.Println()
-}
-
-func printBucketDetails(metrics *nn.DeviationMetrics) {
-	bucketOrder := []string{"0-10%", "10-20%", "20-30%", "30-40%", "40-50%", "50-100%", "100%+"}
-	colors := []string{"🟢", "🟢", "🟡", "🟡", "🟠", "🔴", "⚫"}
-
-	for i, name := range bucketOrder {
-		bucket := metrics.Buckets[name]
-		pct := float64(bucket.Count) / float64(metrics.TotalSamples) * 100
-		bar := ""
-		for j := 0; j < int(pct/5); j++ {
-			bar += "█"
-		}
-		if bucket.Count > 0 {
-			fmt.Printf("   %s %8s: %4d samples (%5.1f%%) %s\n",
-				colors[i], name, bucket.Count, pct, bar)
-		}
-	}
-}
-
-func printLossHistory(history []float32) {
-	if len(history) == 0 {
-		fmt.Println("   (no history)")
-		return
-	}
-
-	// Find min/max for scaling
-	minLoss, maxLoss := history[0], history[0]
-	for _, l := range history {
-		if l < minLoss {
-			minLoss = l
-		}
-		if l > maxLoss {
-			maxLoss = l
-		}
-	}
-
-	// Print ASCII chart
-	height := 5
-	width := len(history)
-	if width > 40 {
-		width = 40
-	}
-
-	for h := height - 1; h >= 0; h-- {
-		threshold := minLoss + (maxLoss-minLoss)*float32(h)/float32(height-1)
-		fmt.Print("   ")
-		for i := 0; i < width; i++ {
-			idx := i * len(history) / width
-			if history[idx] >= threshold {
-				fmt.Print("█")
-			} else {
-				fmt.Print(" ")
-			}
-		}
-		fmt.Println()
-	}
-	fmt.Printf("   └%s┘\n", repeatStr("─", width-2))
-	fmt.Printf("    Start → End (%.2f → %.2f)\n", history[0], history[len(history)-1])
-}
-
-func repeatStr(s string, n int) string {
-	result := ""
-	for i := 0; i < n; i++ {
-		result += s
-	}
-	return result
 }

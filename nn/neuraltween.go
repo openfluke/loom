@@ -1,517 +1,604 @@
 package nn
 
 import (
-	"fmt"
 	"math"
+	"math/rand"
 )
 
-// TweenState tracks the interpolation progress for neural tweening
-// Inspired by Flash ActionScript tweening, network link budgeting, and optimal transport
+// NeuralTween implements a novel training approach inspired by:
+// - Flash ActionScript tweening (gradual shape morphing)
+// - Bidirectional BFS (search from both input and output sides)
+// - Network link budgeting (signal loss estimation)
+// - Optimal transport theory (finding efficient transformation paths)
+//
+// Instead of backpropagation, this approach:
+// 1. FORWARD: Push input through, capture activations at each layer
+// 2. BACKWARD ESTIMATE: From expected output, estimate what each layer SHOULD output
+// 3. MEET IN MIDDLE: Like bidirectional BFS, find the "gap" at each layer
+// 4. LINK BUDGET: Measure information preservation quality
+// 5. TWEEN: Directly adjust weights to close the gap (no gradients needed)
+
+// TweenState holds state for the neural tweening process
 type TweenState struct {
-	// Weight snapshots per layer
-	SourceWeights [][]float32 // Starting weights (current state)
-	TargetWeights [][]float32 // Estimated optimal weights (target state)
+	// Forward activations (what each layer actually outputs)
+	ForwardActivations [][]float32
 
-	// Bias snapshots
-	SourceBiases [][]float32
-	TargetBiases [][]float32
+	// Backward targets (what each layer SHOULD output, estimated from output)
+	BackwardTargets [][]float32
 
-	// Progress and budgets
-	Progress     float32   // 0.0-1.0 interpolation progress
-	LayerBudgets []float32 // Information "budget" per layer (signal strength estimate)
+	// Link budgets - measure of information flow quality at each layer
+	// 1.0 = perfect signal, 0.0 = complete loss
+	LinkBudgets []float32
 
-	// Stats for analysis
-	TotalLayers   int
-	TweenSteps    int
-	LastLoss      float32
-	LossHistory   []float32
-	BudgetHistory [][]float32 // Track budget evolution
+	// Gap magnitude at each layer (difference between forward and backward)
+	LayerGaps []float32
 
-	// Accumulated gradients for momentum
-	MomentumWeights [][]float32
-	MomentumBiases  [][]float32
+	// Momentum for weight updates (dampens oscillation)
+	WeightMomentum [][]float32
+	BiasMomentum   [][]float32
+
+	// Best weights found (for early stopping)
+	BestScore   float64
+	BestWeights [][][]float32 // [layer][weights]
+	BestBiases  [][][]float32
+
+	TotalLayers int
+	TweenSteps  int
+	LossHistory []float32
 }
 
-// NewTweenState creates a new tween state from a network
+// NewTweenState creates a new tween state for a network
 func NewTweenState(n *Network) *TweenState {
 	totalLayers := n.TotalLayers()
-
 	ts := &TweenState{
-		SourceWeights:   make([][]float32, totalLayers),
-		TargetWeights:   make([][]float32, totalLayers),
-		SourceBiases:    make([][]float32, totalLayers),
-		TargetBiases:    make([][]float32, totalLayers),
-		MomentumWeights: make([][]float32, totalLayers),
-		MomentumBiases:  make([][]float32, totalLayers),
-		LayerBudgets:    make([]float32, totalLayers),
-		Progress:        0.0,
-		TotalLayers:     totalLayers,
-		TweenSteps:      0,
-		LossHistory:     []float32{},
-		BudgetHistory:   [][]float32{},
+		ForwardActivations: make([][]float32, totalLayers+1),
+		BackwardTargets:    make([][]float32, totalLayers+1),
+		LinkBudgets:        make([]float32, totalLayers),
+		LayerGaps:          make([]float32, totalLayers),
+		WeightMomentum:     make([][]float32, totalLayers),
+		BiasMomentum:       make([][]float32, totalLayers),
+		BestWeights:        make([][][]float32, totalLayers),
+		BestBiases:         make([][][]float32, totalLayers),
+		BestScore:          0,
+		TotalLayers:        totalLayers,
+		TweenSteps:         0,
+		LossHistory:        []float32{},
 	}
 
-	// Snapshot current weights as source and initialize momentum
-	for i := 0; i < totalLayers; i++ {
-		row := i / (n.GridCols * n.LayersPerCell)
-		col := (i / n.LayersPerCell) % n.GridCols
-		layer := i % n.LayersPerCell
-
-		cfg := n.GetLayer(row, col, layer)
-		if cfg == nil {
-			continue
-		}
-
-		// Copy current weights as source
-		if len(cfg.Kernel) > 0 {
-			ts.SourceWeights[i] = make([]float32, len(cfg.Kernel))
-			ts.MomentumWeights[i] = make([]float32, len(cfg.Kernel))
-			copy(ts.SourceWeights[i], cfg.Kernel)
-		}
-		if len(cfg.Bias) > 0 {
-			ts.SourceBiases[i] = make([]float32, len(cfg.Bias))
-			ts.MomentumBiases[i] = make([]float32, len(cfg.Bias))
-			copy(ts.SourceBiases[i], cfg.Bias)
-		}
-
-		// Initialize budget to 1.0 (full signal strength)
-		ts.LayerBudgets[i] = 1.0
-	}
-
-	return ts
-}
-
-// TweenTrain performs training using the tween approach
-// This is a hybrid: gradient-based updates with momentum + interpolation smoothing
-func (ts *TweenState) TweenTrain(n *Network, inputs [][]float32, expected []float64,
-	epochs int, learningRate float32, momentum float32, callback func(epoch int, loss float32, metrics *DeviationMetrics)) {
-
-	batchSize := 32
-	if len(inputs) < batchSize {
-		batchSize = len(inputs)
-	}
-
-	for epoch := 0; epoch < epochs; epoch++ {
-		epochLoss := float32(0)
-		numBatches := 0
-
-		// Mini-batch training
-		for batchStart := 0; batchStart < len(inputs); batchStart += batchSize {
-			batchEnd := batchStart + batchSize
-			if batchEnd > len(inputs) {
-				batchEnd = len(inputs)
-			}
-
-			batchLoss := ts.trainBatch(n, inputs[batchStart:batchEnd],
-				expected[batchStart:batchEnd], learningRate, momentum)
-			epochLoss += batchLoss
-			numBatches++
-		}
-
-		epochLoss /= float32(numBatches)
-		ts.LossHistory = append(ts.LossHistory, epochLoss)
-		ts.LastLoss = epochLoss
-		ts.TweenSteps++
-
-		// Evaluate periodically
-		if callback != nil && (epoch%5 == 0 || epoch == epochs-1) {
-			metrics, _ := n.EvaluateNetwork(inputs, expected)
-			callback(epoch+1, epochLoss, metrics)
-		}
-	}
-}
-
-// trainBatch performs one batch of training with momentum
-func (ts *TweenState) trainBatch(n *Network, inputs [][]float32, expected []float64,
-	lr float32, momentum float32) float32 {
-
-	totalLayers := n.TotalLayers()
-	totalLoss := float32(0)
-
-	// Accumulate gradients over batch
-	batchKernelGrads := make([][]float32, totalLayers)
-	batchBiasGrads := make([][]float32, totalLayers)
-
+	// Initialize momentum arrays based on layer sizes
 	for i := 0; i < totalLayers; i++ {
 		row := i / (n.GridCols * n.LayersPerCell)
 		col := (i / n.LayersPerCell) % n.GridCols
 		layer := i % n.LayersPerCell
 		cfg := n.GetLayer(row, col, layer)
 		if cfg != nil && len(cfg.Kernel) > 0 {
-			batchKernelGrads[i] = make([]float32, len(cfg.Kernel))
-			batchBiasGrads[i] = make([]float32, len(cfg.Bias))
+			ts.WeightMomentum[i] = make([]float32, len(cfg.Kernel))
+			ts.BiasMomentum[i] = make([]float32, len(cfg.Bias))
 		}
 	}
 
-	// Process each sample
-	for s := range inputs {
-		output, _ := n.ForwardCPU(inputs[s])
+	return ts
+}
 
-		// Compute loss and gradient
-		errorGrad := make([]float32, len(output))
-		for j := range output {
-			target := float32(0)
-			if j == int(expected[s]) {
-				target = 1.0
-			}
-			// Softmax cross-entropy gradient
-			prob := output[j]
-			if prob > 0.999 {
-				prob = 0.999
-			}
-			if prob < 0.001 {
-				prob = 0.001
-			}
-			errorGrad[j] = prob - target
+// AnalyzeForward captures activations at each layer during forward pass
+func (ts *TweenState) AnalyzeForward(n *Network, input []float32) []float32 {
+	output, _ := n.ForwardCPU(input)
 
-			// Cross-entropy loss
-			if target > 0.5 {
-				totalLoss -= float32(math.Log(float64(prob)))
-			}
-		}
-
-		// Backward pass
-		n.BackwardCPU(errorGrad)
-
-		// Accumulate gradients
-		kernelGrads := n.KernelGradients()
-		biasGrads := n.BiasGradients()
-
-		for i := 0; i < totalLayers; i++ {
-			if i < len(kernelGrads) && len(kernelGrads[i]) > 0 && len(batchKernelGrads[i]) > 0 {
-				for j := range batchKernelGrads[i] {
-					if j < len(kernelGrads[i]) {
-						batchKernelGrads[i][j] += kernelGrads[i][j]
-					}
-				}
-			}
-			if i < len(biasGrads) && len(biasGrads[i]) > 0 && len(batchBiasGrads[i]) > 0 {
-				for j := range batchBiasGrads[i] {
-					if j < len(biasGrads[i]) {
-						batchBiasGrads[i][j] += biasGrads[i][j]
-					}
-				}
-			}
+	// Capture all activations from the network
+	activations := n.Activations()
+	for i := range activations {
+		if i < len(ts.ForwardActivations) && len(activations[i]) > 0 {
+			ts.ForwardActivations[i] = make([]float32, len(activations[i]))
+			copy(ts.ForwardActivations[i], activations[i])
 		}
 	}
 
-	// Average gradients and apply with momentum (SGD with momentum)
-	batchLen := float32(len(inputs))
-	for i := 0; i < totalLayers; i++ {
-		row := i / (n.GridCols * n.LayersPerCell)
-		col := (i / n.LayersPerCell) % n.GridCols
-		layer := i % n.LayersPerCell
+	return output
+}
+
+// EstimateBackwardTargets propagates expected output backward through layers
+// This is NOT gradient computation - it's estimating what each layer SHOULD produce
+// For deeper networks, we blend backward estimate with forward activations
+func (ts *TweenState) EstimateBackwardTargets(n *Network, expectedClass int, outputSize int) {
+	// Start with target output (one-hot for classification)
+	targetOutput := make([]float32, outputSize)
+	targetOutput[expectedClass] = 1.0
+	ts.BackwardTargets[ts.TotalLayers] = targetOutput
+
+	// Work backward through layers, estimating what each layer should produce
+	// This uses the inverse weight relationship (like optimal transport)
+	currentTarget := targetOutput
+
+	for layerIdx := ts.TotalLayers - 1; layerIdx >= 0; layerIdx-- {
+		row := layerIdx / (n.GridCols * n.LayersPerCell)
+		col := (layerIdx / n.LayersPerCell) % n.GridCols
+		layer := layerIdx % n.LayersPerCell
+
 		cfg := n.GetLayer(row, col, layer)
-		if cfg == nil {
+		if cfg == nil || cfg.Type != LayerDense {
+			ts.BackwardTargets[layerIdx] = currentTarget
 			continue
 		}
 
-		// Apply link budget scaling - layers with higher information flow get larger updates
-		budget := ts.LayerBudgets[i]
-		if budget < 0.1 {
-			budget = 0.1
+		// For dense layer: estimate input that would produce target output
+		// Using pseudo-inverse concept: if output = W*input + b
+		// Then estimated_input ≈ W_transpose * (output - b) scaled appropriately
+		inputSize := cfg.InputHeight
+		if inputSize <= 0 {
+			inputSize = len(ts.ForwardActivations[layerIdx])
+		}
+		if inputSize <= 0 {
+			ts.BackwardTargets[layerIdx] = currentTarget
+			continue
 		}
 
-		// Update kernel weights with momentum
-		if len(cfg.Kernel) > 0 && len(batchKernelGrads[i]) > 0 && len(ts.MomentumWeights[i]) > 0 {
-			for j := range cfg.Kernel {
-				if j < len(batchKernelGrads[i]) && j < len(ts.MomentumWeights[i]) {
-					grad := batchKernelGrads[i][j] / batchLen
+		estimatedInput := make([]float32, inputSize)
 
-					// Clip gradients
-					if grad > 1.0 {
-						grad = 1.0
-					} else if grad < -1.0 {
-						grad = -1.0
+		// Transpose multiplication: for each input neuron, sum weighted contributions
+		for i := 0; i < inputSize; i++ {
+			sum := float32(0)
+			weightSum := float32(0)
+
+			for j := 0; j < len(currentTarget); j++ {
+				if j < len(cfg.Bias) {
+					// Remove bias influence
+					adjusted := currentTarget[j] - cfg.Bias[j]*0.5
+					// Weight index: input i -> output j
+					wIdx := i*cfg.OutputHeight + j
+					if wIdx < len(cfg.Kernel) {
+						w := cfg.Kernel[wIdx]
+						sum += adjusted * w
+						weightSum += w * w
 					}
-
-					// Momentum update
-					ts.MomentumWeights[i][j] = momentum*ts.MomentumWeights[i][j] + lr*grad*budget
-					cfg.Kernel[j] -= ts.MomentumWeights[i][j]
 				}
+			}
+
+			// Normalize by weight magnitude
+			if weightSum > 0.001 {
+				estimatedInput[i] = sum / float32(math.Sqrt(float64(weightSum)))
+			} else {
+				// Fall back to forward activation if weights are tiny
+				if layerIdx < len(ts.ForwardActivations) && i < len(ts.ForwardActivations[layerIdx]) {
+					estimatedInput[i] = ts.ForwardActivations[layerIdx][i]
+				}
+			}
+
+			// Apply inverse activation (rough estimate)
+			if cfg.Activation == ActivationTanh {
+				estimatedInput[i] = clamp(estimatedInput[i], -0.99, 0.99)
+			} else if cfg.Activation == ActivationSigmoid {
+				estimatedInput[i] = clamp(estimatedInput[i], 0.01, 0.99)
 			}
 		}
 
-		// Update biases with momentum
-		if len(cfg.Bias) > 0 && len(batchBiasGrads[i]) > 0 && len(ts.MomentumBiases[i]) > 0 {
-			for j := range cfg.Bias {
-				if j < len(batchBiasGrads[i]) && j < len(ts.MomentumBiases[i]) {
-					grad := batchBiasGrads[i][j] / batchLen
+		// DEPTH-AWARE BLENDING: blend backward estimate with forward activation
+		// Deeper layers (closer to output) trust backward estimate more
+		// Shallower layers blend more with actual forward activations
+		// This prevents accumulated error from corrupting early layers
+		depthRatio := float32(layerIdx+1) / float32(ts.TotalLayers) // 0 at input, 1 at output
+		backwardWeight := 0.3 + depthRatio*0.7                      // 30-100% backward, rest forward
 
-					// Clip gradients
-					if grad > 1.0 {
-						grad = 1.0
-					} else if grad < -1.0 {
-						grad = -1.0
+		if layerIdx < len(ts.ForwardActivations) && len(ts.ForwardActivations[layerIdx]) > 0 {
+			for i := 0; i < len(estimatedInput) && i < len(ts.ForwardActivations[layerIdx]); i++ {
+				forwardVal := ts.ForwardActivations[layerIdx][i]
+				backwardVal := estimatedInput[i]
+				// Blend: tween between forward (what is) and backward (what should be)
+				estimatedInput[i] = forwardVal*(1-backwardWeight) + backwardVal*backwardWeight
+			}
+		}
+
+		ts.BackwardTargets[layerIdx] = estimatedInput
+		currentTarget = estimatedInput
+	}
+}
+
+// CalculateLinkBudgets measures information flow quality at each layer
+// Like WiFi link budget: how much signal is preserved vs lost
+func (ts *TweenState) CalculateLinkBudgets(n *Network) {
+	for i := 0; i < ts.TotalLayers; i++ {
+		forward := ts.ForwardActivations[i+1] // Output of layer i
+		backward := ts.BackwardTargets[i+1]   // What layer i should output
+
+		if len(forward) == 0 || len(backward) == 0 {
+			ts.LinkBudgets[i] = 1.0
+			ts.LayerGaps[i] = 0
+			continue
+		}
+
+		// Calculate alignment between forward and backward estimates
+		// High alignment = good link, low alignment = signal loss
+		dotProduct := float32(0)
+		forwardMag := float32(0)
+		backwardMag := float32(0)
+		gapSum := float32(0)
+
+		minLen := len(forward)
+		if len(backward) < minLen {
+			minLen = len(backward)
+		}
+
+		for j := 0; j < minLen; j++ {
+			dotProduct += forward[j] * backward[j]
+			forwardMag += forward[j] * forward[j]
+			backwardMag += backward[j] * backward[j]
+			gap := forward[j] - backward[j]
+			gapSum += gap * gap
+		}
+
+		// Cosine similarity as link quality
+		if forwardMag > 0.001 && backwardMag > 0.001 {
+			cosine := dotProduct / (float32(math.Sqrt(float64(forwardMag))) * float32(math.Sqrt(float64(backwardMag))))
+			ts.LinkBudgets[i] = (cosine + 1) / 2 // Map [-1,1] to [0,1]
+		} else {
+			ts.LinkBudgets[i] = 0.5
+		}
+
+		// Gap magnitude (MSE)
+		ts.LayerGaps[i] = gapSum / float32(minLen)
+	}
+}
+
+// TweenWeights directly adjusts weights to close the gap at each layer
+// This is the core "tweening" - morphing weights toward better configuration
+// Uses momentum to dampen oscillations
+func (ts *TweenState) TweenWeights(n *Network, tweenRate float32) {
+	momentum := float32(0.8) // Dampening factor
+
+	for layerIdx := 0; layerIdx < ts.TotalLayers; layerIdx++ {
+		row := layerIdx / (n.GridCols * n.LayersPerCell)
+		col := (layerIdx / n.LayersPerCell) % n.GridCols
+		layer := layerIdx % n.LayersPerCell
+
+		cfg := n.GetLayer(row, col, layer)
+		if cfg == nil || cfg.Type != LayerDense || len(cfg.Kernel) == 0 {
+			continue
+		}
+
+		input := ts.ForwardActivations[layerIdx]
+		targetOutput := ts.BackwardTargets[layerIdx+1]
+		actualOutput := ts.ForwardActivations[layerIdx+1]
+
+		if len(input) == 0 || len(targetOutput) == 0 || len(actualOutput) == 0 {
+			continue
+		}
+
+		// Link budget influences how aggressively we tween
+		budget := ts.LinkBudgets[layerIdx]
+		adjustRate := tweenRate * (1.1 - budget) * 0.5 // Reduced rate with momentum
+
+		// For each weight, estimate how to change it to move output toward target
+		for j := 0; j < cfg.OutputHeight && j < len(targetOutput) && j < len(actualOutput); j++ {
+			outputGap := targetOutput[j] - actualOutput[j]
+
+			// Adjust bias with momentum
+			if j < len(cfg.Bias) && layerIdx < len(ts.BiasMomentum) && j < len(ts.BiasMomentum[layerIdx]) {
+				delta := adjustRate * outputGap * 0.1
+				ts.BiasMomentum[layerIdx][j] = momentum*ts.BiasMomentum[layerIdx][j] + (1-momentum)*delta
+				cfg.Bias[j] += ts.BiasMomentum[layerIdx][j]
+			}
+
+			// Adjust weights with momentum
+			for i := 0; i < cfg.InputHeight && i < len(input); i++ {
+				wIdx := i*cfg.OutputHeight + j
+				if wIdx >= len(cfg.Kernel) {
+					continue
+				}
+
+				inputAct := input[i]
+				if math.Abs(float64(inputAct)) > 0.01 {
+					delta := adjustRate * inputAct * outputGap * 0.01
+
+					// Apply momentum
+					if layerIdx < len(ts.WeightMomentum) && wIdx < len(ts.WeightMomentum[layerIdx]) {
+						ts.WeightMomentum[layerIdx][wIdx] = momentum*ts.WeightMomentum[layerIdx][wIdx] + (1-momentum)*delta
+						cfg.Kernel[wIdx] += ts.WeightMomentum[layerIdx][wIdx]
+					} else {
+						cfg.Kernel[wIdx] += delta
 					}
-
-					ts.MomentumBiases[i][j] = momentum*ts.MomentumBiases[i][j] + lr*grad
-					cfg.Bias[j] -= ts.MomentumBiases[i][j]
 				}
 			}
 		}
 
 		n.SetLayer(row, col, layer, *cfg)
 	}
-
-	// Update link budgets periodically
-	if ts.TweenSteps%10 == 0 && len(inputs) > 0 {
-		ts.CalculateLinkBudgets(n, inputs[0])
-	}
-
-	return totalLoss / batchLen
 }
 
-// CalculateLinkBudgets computes information "budget" for each layer
-// Similar to WiFi link budget: estimates signal strength/loss through each layer
-func (ts *TweenState) CalculateLinkBudgets(n *Network, sampleInput []float32) {
-	// Run forward pass and analyze activation statistics
-	n.ForwardCPU(sampleInput)
-	activations := n.Activations()
+// TweenStep performs one complete tween iteration
+func (ts *TweenState) TweenStep(n *Network, input []float32, expectedClass int, outputSize int, tweenRate float32) float32 {
+	// 1. Forward pass - capture what network actually does
+	output := ts.AnalyzeForward(n, input)
 
-	totalLayers := n.TotalLayers()
-	if len(ts.LayerBudgets) != totalLayers {
-		ts.LayerBudgets = make([]float32, totalLayers)
+	// 2. Backward estimation - figure out what each layer SHOULD do
+	ts.EstimateBackwardTargets(n, expectedClass, outputSize)
+
+	// 3. Calculate link budgets - measure information flow quality
+	ts.CalculateLinkBudgets(n)
+
+	// 4. Tween weights - morph toward better configuration
+	ts.TweenWeights(n, tweenRate)
+
+	ts.TweenSteps++
+
+	// Calculate loss for tracking
+	loss := float32(0)
+	if expectedClass < len(output) {
+		for i, v := range output {
+			target := float32(0)
+			if i == expectedClass {
+				target = 1.0
+			}
+			diff := v - target
+			loss += diff * diff
+		}
 	}
 
-	// Calculate variance decay across layers (like signal attenuation)
-	prevVariance := float32(1.0)
+	return loss
+}
 
-	for i := 0; i < totalLayers; i++ {
-		if i+1 >= len(activations) || len(activations[i+1]) == 0 {
-			ts.LayerBudgets[i] = 1.0 // Default budget
+// Train runs the tweening process over multiple epochs with early stopping
+func (ts *TweenState) Train(n *Network, inputs [][]float32, expected []float64, epochs int, tweenRate float32,
+	callback func(epoch int, avgLoss float32, metrics *DeviationMetrics)) {
+
+	outputSize := 2 // Binary classification default
+	// Detect output size from network
+	lastLayer := n.GetLayer(
+		(ts.TotalLayers-1)/(n.GridCols*n.LayersPerCell),
+		((ts.TotalLayers-1)/n.LayersPerCell)%n.GridCols,
+		(ts.TotalLayers-1)%n.LayersPerCell,
+	)
+	if lastLayer != nil && lastLayer.OutputHeight > 0 {
+		outputSize = lastLayer.OutputHeight
+	}
+
+	for epoch := 0; epoch < epochs; epoch++ {
+		epochLoss := float32(0)
+
+		// Shuffle samples each epoch
+		indices := rand.Perm(len(inputs))
+
+		for _, idx := range indices {
+			loss := ts.TweenStep(n, inputs[idx], int(expected[idx]), outputSize, tweenRate)
+			epochLoss += loss
+		}
+
+		avgLoss := epochLoss / float32(len(inputs))
+		ts.LossHistory = append(ts.LossHistory, avgLoss)
+
+		// Evaluate and check for best score
+		if epoch%5 == 0 || epoch == epochs-1 {
+			metrics, _ := n.EvaluateNetwork(inputs, expected)
+
+			// Save best weights
+			if metrics.Score > ts.BestScore {
+				ts.BestScore = metrics.Score
+				ts.SaveBest(n)
+			}
+
+			if callback != nil {
+				callback(epoch+1, avgLoss, metrics)
+			}
+
+			// Early stopping if score is high enough
+			if metrics.Score >= 95 {
+				ts.RestoreBest(n) // Ensure we have best weights
+				return
+			}
+		}
+	}
+
+	// Restore best weights at end
+	if ts.BestScore > 0 {
+		ts.RestoreBest(n)
+	}
+}
+
+// SaveBest saves current weights as the best found so far
+func (ts *TweenState) SaveBest(n *Network) {
+	for i := 0; i < ts.TotalLayers; i++ {
+		row := i / (n.GridCols * n.LayersPerCell)
+		col := (i / n.LayersPerCell) % n.GridCols
+		layer := i % n.LayersPerCell
+		cfg := n.GetLayer(row, col, layer)
+		if cfg != nil && len(cfg.Kernel) > 0 {
+			ts.BestWeights[i] = make([][]float32, 1)
+			ts.BestWeights[i][0] = make([]float32, len(cfg.Kernel))
+			copy(ts.BestWeights[i][0], cfg.Kernel)
+
+			ts.BestBiases[i] = make([][]float32, 1)
+			ts.BestBiases[i][0] = make([]float32, len(cfg.Bias))
+			copy(ts.BestBiases[i][0], cfg.Bias)
+		}
+	}
+}
+
+// RestoreBest restores the best weights found during training
+func (ts *TweenState) RestoreBest(n *Network) {
+	for i := 0; i < ts.TotalLayers; i++ {
+		if len(ts.BestWeights[i]) == 0 || len(ts.BestWeights[i][0]) == 0 {
 			continue
 		}
-
-		act := activations[i+1]
-
-		// Calculate activation statistics
-		mean := float32(0)
-		for _, v := range act {
-			mean += v
-		}
-		mean /= float32(len(act))
-
-		variance := float32(0)
-		for _, v := range act {
-			diff := v - mean
-			variance += diff * diff
-		}
-		variance /= float32(len(act))
-
-		// Variance ratio indicates information flow
-		// High variance = high information, low variance = information loss
-		if variance > 0 && prevVariance > 0 {
-			ratio := variance / prevVariance
-			// Clamp to reasonable range
-			if ratio > 2.0 {
-				ratio = 2.0
+		row := i / (n.GridCols * n.LayersPerCell)
+		col := (i / n.LayersPerCell) % n.GridCols
+		layer := i % n.LayersPerCell
+		cfg := n.GetLayer(row, col, layer)
+		if cfg != nil && len(cfg.Kernel) > 0 {
+			copy(cfg.Kernel, ts.BestWeights[i][0])
+			if len(ts.BestBiases[i]) > 0 && len(ts.BestBiases[i][0]) > 0 {
+				copy(cfg.Bias, ts.BestBiases[i][0])
 			}
-			if ratio < 0.1 {
-				ratio = 0.1
-			}
-			ts.LayerBudgets[i] = ratio
-		} else {
-			ts.LayerBudgets[i] = 1.0
-		}
-
-		prevVariance = variance
-		if prevVariance < 0.01 {
-			prevVariance = 0.01 // Prevent division by zero
+			n.SetLayer(row, col, layer, *cfg)
 		}
 	}
-
-	// Store budget history
-	budgetCopy := make([]float32, len(ts.LayerBudgets))
-	copy(budgetCopy, ts.LayerBudgets)
-	ts.BudgetHistory = append(ts.BudgetHistory, budgetCopy)
 }
 
-// GetBudgetSummary returns a summary of link budgets
-func (ts *TweenState) GetBudgetSummary() (avgBudget, minBudget, maxBudget float32) {
-	if len(ts.LayerBudgets) == 0 {
-		return 1.0, 1.0, 1.0
+// TrainLayerwise trains layers greedily from output to input
+// This is like greedy layer-wise pretraining but using tweening
+// Each layer is trained to close its gap before moving to the next
+func (ts *TweenState) TrainLayerwise(n *Network, inputs [][]float32, expected []float64,
+	epochsPerLayer int, tweenRate float32,
+	callback func(layer int, epoch int, score float64)) {
+
+	outputSize := 2
+	lastLayer := n.GetLayer(
+		(ts.TotalLayers-1)/(n.GridCols*n.LayersPerCell),
+		((ts.TotalLayers-1)/n.LayersPerCell)%n.GridCols,
+		(ts.TotalLayers-1)%n.LayersPerCell,
+	)
+	if lastLayer != nil && lastLayer.OutputHeight > 0 {
+		outputSize = lastLayer.OutputHeight
 	}
 
-	minBudget = ts.LayerBudgets[0]
-	maxBudget = ts.LayerBudgets[0]
+	// Train from output layer backward to input
+	for targetLayer := ts.TotalLayers - 1; targetLayer >= 0; targetLayer-- {
+		for epoch := 0; epoch < epochsPerLayer; epoch++ {
+			indices := rand.Perm(len(inputs))
+
+			for _, idx := range indices {
+				// Forward pass
+				ts.AnalyzeForward(n, inputs[idx])
+
+				// Backward estimation
+				ts.EstimateBackwardTargets(n, int(expected[idx]), outputSize)
+
+				// Calculate link budgets
+				ts.CalculateLinkBudgets(n)
+
+				// Only tween the target layer (and those after it that are already trained)
+				ts.TweenSingleLayer(n, targetLayer, tweenRate)
+			}
+
+			ts.TweenSteps++
+		}
+
+		// Report progress after each layer
+		if callback != nil {
+			metrics, _ := n.EvaluateNetwork(inputs, expected)
+			callback(targetLayer, epochsPerLayer, metrics.Score)
+		}
+	}
+}
+
+// TweenSingleLayer tweens only one specific layer
+func (ts *TweenState) TweenSingleLayer(n *Network, layerIdx int, tweenRate float32) {
+	row := layerIdx / (n.GridCols * n.LayersPerCell)
+	col := (layerIdx / n.LayersPerCell) % n.GridCols
+	layer := layerIdx % n.LayersPerCell
+
+	cfg := n.GetLayer(row, col, layer)
+	if cfg == nil || cfg.Type != LayerDense || len(cfg.Kernel) == 0 {
+		return
+	}
+
+	input := ts.ForwardActivations[layerIdx]
+	targetOutput := ts.BackwardTargets[layerIdx+1]
+	actualOutput := ts.ForwardActivations[layerIdx+1]
+
+	if len(input) == 0 || len(targetOutput) == 0 || len(actualOutput) == 0 {
+		return
+	}
+
+	budget := ts.LinkBudgets[layerIdx]
+	adjustRate := tweenRate * (1.5 - budget) // Stronger adjustment for single layer
+
+	for j := 0; j < cfg.OutputHeight && j < len(targetOutput) && j < len(actualOutput); j++ {
+		outputGap := targetOutput[j] - actualOutput[j]
+
+		if j < len(cfg.Bias) {
+			cfg.Bias[j] += adjustRate * outputGap * 0.2
+		}
+
+		for i := 0; i < cfg.InputHeight && i < len(input); i++ {
+			wIdx := i*cfg.OutputHeight + j
+			if wIdx >= len(cfg.Kernel) {
+				continue
+			}
+
+			inputAct := input[i]
+			if math.Abs(float64(inputAct)) > 0.01 {
+				delta := adjustRate * inputAct * outputGap * 0.02
+				cfg.Kernel[wIdx] += delta
+			}
+		}
+	}
+
+	n.SetLayer(row, col, layer, *cfg)
+}
+
+// GetBudgetSummary returns summary statistics for link budgets
+func (ts *TweenState) GetBudgetSummary() (avg, min, max float32) {
+	if len(ts.LinkBudgets) == 0 {
+		return 0.5, 0.5, 0.5
+	}
+
+	min, max = ts.LinkBudgets[0], ts.LinkBudgets[0]
 	sum := float32(0)
 
-	for _, b := range ts.LayerBudgets {
+	for _, b := range ts.LinkBudgets {
 		sum += b
-		if b < minBudget {
-			minBudget = b
+		if b < min {
+			min = b
 		}
-		if b > maxBudget {
-			maxBudget = b
+		if b > max {
+			max = b
 		}
 	}
 
-	avgBudget = sum / float32(len(ts.LayerBudgets))
+	avg = sum / float32(len(ts.LinkBudgets))
 	return
 }
 
-// Tween performs neural tween training and returns final metrics
-func Tween(n *Network, inputs [][]float32, expected []float64, epochs int) (*DeviationMetrics, *TweenState) {
-	ts := NewTweenState(n)
-
-	// Initialize link budgets
-	if len(inputs) > 0 {
-		ts.CalculateLinkBudgets(n, inputs[0])
+// GetGapSummary returns summary of layer gaps
+func (ts *TweenState) GetGapSummary() (avg, max float32) {
+	if len(ts.LayerGaps) == 0 {
+		return 0, 0
 	}
 
-	var finalMetrics *DeviationMetrics
-
-	// Training parameters
-	learningRate := float32(0.5)
-	momentum := float32(0.9)
-
-	ts.TweenTrain(n, inputs, expected, epochs, learningRate, momentum,
-		func(epoch int, loss float32, metrics *DeviationMetrics) {
-			finalMetrics = metrics
-		})
-
-	return finalMetrics, ts
+	sum := float32(0)
+	for _, g := range ts.LayerGaps {
+		sum += g
+		if g > max {
+			max = g
+		}
+	}
+	avg = sum / float32(len(ts.LayerGaps))
+	return
 }
 
-// TweenWithVerbose performs neural tweening with detailed progress output
-func TweenWithVerbose(n *Network, inputs [][]float32, expected []float64, epochs int,
-	printFn func(string)) (*DeviationMetrics, *TweenState) {
-
-	ts := NewTweenState(n)
-
-	// Initialize link budgets
-	if len(inputs) > 0 {
-		ts.CalculateLinkBudgets(n, inputs[0])
-	}
-
-	var finalMetrics *DeviationMetrics
-
-	// Training parameters - higher learning rate for faster convergence
-	learningRate := float32(0.5)
-	momentum := float32(0.9)
-
-	ts.TweenTrain(n, inputs, expected, epochs, learningRate, momentum,
-		func(epoch int, loss float32, metrics *DeviationMetrics) {
-			finalMetrics = metrics
-			avgBudget, minBudget, maxBudget := ts.GetBudgetSummary()
-
-			progress := float32(epoch) / float32(epochs)
-			bar := progressBarStr(progress, 20)
-
-			msg := fmt.Sprintf(
-				"Epoch %3d/%d [%s] | Score: %5.1f/100 | Loss: %6.3f | Budget: %.2f (%.2f-%.2f)",
-				epoch, epochs, bar, metrics.Score, loss, avgBudget, minBudget, maxBudget)
-
-			if printFn != nil {
-				printFn(msg)
+// CalculateLinkBudgets as method for external access
+func (ts *TweenState) CalculateLinkBudgetsFromSample(n *Network, input []float32) {
+	ts.AnalyzeForward(n, input)
+	// For initial budget calculation without targets, just analyze variance
+	for i := 0; i < ts.TotalLayers; i++ {
+		if i+1 < len(ts.ForwardActivations) && len(ts.ForwardActivations[i+1]) > 0 {
+			act := ts.ForwardActivations[i+1]
+			mean := float32(0)
+			for _, v := range act {
+				mean += v
 			}
-		})
+			mean /= float32(len(act))
 
-	return finalMetrics, ts
-}
+			variance := float32(0)
+			for _, v := range act {
+				diff := v - mean
+				variance += diff * diff
+			}
+			variance /= float32(len(act))
 
-func progressBarStr(progress float32, width int) string {
-	filled := int(progress * float32(width))
-	bar := ""
-	for i := 0; i < width; i++ {
-		if i < filled {
-			bar += "█"
+			// Higher variance = more information preserved
+			ts.LinkBudgets[i] = float32(math.Min(1.0, float64(variance)*2+0.3))
 		} else {
-			bar += "░"
+			ts.LinkBudgets[i] = 0.5
 		}
 	}
-	return bar
 }
 
-// min helper for older Go versions
-func min(a, b int) int {
-	if a < b {
-		return a
+// Helper functions
+func clamp(v, min, max float32) float32 {
+	if v < min {
+		return min
 	}
-	return b
-}
-
-func formatTweenOutput(epoch, totalEpochs int, bar string, score float64, loss float32, avgBudget, minBudget, maxBudget float32) string {
-	return "Epoch " + intToString(epoch) + "/" + intToString(totalEpochs) +
-		" [" + bar + "] | Score: " + floatToString(score, 1) + "/100" +
-		" | Loss: " + floatToString(float64(loss), 3) +
-		" | Budget: " + floatToString(float64(avgBudget), 2)
-}
-
-func padLeft(s string, width int) string {
-	for len(s) < width {
-		s = " " + s
+	if v > max {
+		return max
 	}
-	return s
-}
-
-func replaceFirst(s, old, new string) string {
-	for i := 0; i <= len(s)-len(old); i++ {
-		if s[i:i+len(old)] == old {
-			return s[:i] + new + s[i+len(old):]
-		}
-	}
-	return s
-}
-
-func intToString(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	negative := n < 0
-	if negative {
-		n = -n
-	}
-	result := ""
-	for n > 0 {
-		result = string(rune('0'+n%10)) + result
-		n /= 10
-	}
-	if negative {
-		result = "-" + result
-	}
-	return result
-}
-
-func floatToString(f float64, precision int) string {
-	if math.IsNaN(f) {
-		return "NaN"
-	}
-	if math.IsInf(f, 1) {
-		return "Inf"
-	}
-	if math.IsInf(f, -1) {
-		return "-Inf"
-	}
-
-	negative := f < 0
-	if negative {
-		f = -f
-	}
-
-	// Round to precision
-	mult := math.Pow(10, float64(precision))
-	f = math.Round(f*mult) / mult
-
-	intPart := int(f)
-	fracPart := f - float64(intPart)
-
-	result := intToString(intPart)
-
-	if precision > 0 {
-		result += "."
-		fracPart *= mult
-		fracStr := intToString(int(math.Round(fracPart)))
-		// Pad with zeros if needed
-		for len(fracStr) < precision {
-			fracStr = "0" + fracStr
-		}
-		result += fracStr
-	}
-
-	if negative {
-		result = "-" + result
-	}
-	return result
+	return v
 }
