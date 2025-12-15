@@ -171,7 +171,7 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					data = normalized
 				} else if config.Type == LayerParallel {
 					// Parallel layer - run multiple sub-layers and combine outputs
-					output, branchPreActs, err := parallelForwardCPU(data, config, n.BatchSize)
+					output, branchPreActs, err := parallelForwardCPU(data, config, n.BatchSize, "normal")
 					if err != nil {
 						fmt.Printf("Parallel layer error: %v\n", err)
 						// On error, pass through unchanged
@@ -201,6 +201,11 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 					// Use parallel output for next layer
 					data = output
+
+					// Observer for the parallel layer itself (conceptual)
+					if config.Observer != nil {
+						notifyObserver(config, "normal", "forward", layerIdx, data, n.activations[layerIdx+1], 0)
+					}
 				} else {
 					// Default: element-wise activation only
 					// Store pre-activation values
@@ -211,9 +216,18 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					for i := 0; i < len(data); i++ {
 						data[i] = activateCPU(data[i], config.Activation)
 					}
-				} // Store post-activation values
+				}
+
+				// Store post-activation values
 				n.activations[layerIdx+1] = make([]float32, len(data))
 				copy(n.activations[layerIdx+1], data)
+
+				// For non-parallel layers, we need to notify the observer here
+				// (Internal notifications were removed from dense.go etc.)
+				if config.Type != LayerParallel && config.Observer != nil {
+					notifyObserver(config, "normal", "forward", layerIdx, data, n.activations[layerIdx+1], 0)
+				}
+
 				layerIdx++
 			}
 		}

@@ -79,11 +79,6 @@ func rmsNormForwardCPU(input []float32, residual []float32, config *LayerConfig,
 		}
 	}
 
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "forward", -1, input, output, 0)
-	}
-
 	return output
 }
 
@@ -146,11 +141,6 @@ func rmsNormBackwardCPU(input []float32, residual []float32, gradOutput []float3
 
 			gradInput[i] = (gradOutput[i]*g/rms - gradScale*inputWithResidual[i])
 		}
-	}
-
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "backward", -1, nil, gradInput, 0)
 	}
 
 	return gradInput

@@ -4,7 +4,7 @@ import "fmt"
 
 // parallelForwardCPU executes multiple sub-layers in parallel and combines their outputs
 // Returns: combined output, pre-activations for all branches (for backward pass), error
-func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int) ([]float32, [][]float32, error) {
+func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode string) ([]float32, [][]float32, error) {
 	if len(cfg.ParallelBranches) == 0 {
 		return nil, nil, fmt.Errorf("parallel layer has no branches defined")
 	}
@@ -68,7 +68,7 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int) ([]flo
 			// Nested parallel layers
 			var nestedPreActs [][]float32
 			var err error
-			postAct, nestedPreActs, err = parallelForwardCPU(input, branchCfg, batchSize)
+			postAct, nestedPreActs, err = parallelForwardCPU(input, branchCfg, batchSize, mode)
 			if err != nil {
 				return nil, nil, fmt.Errorf("nested parallel layer %d failed: %w", i, err)
 			}
@@ -95,7 +95,7 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int) ([]flo
 
 		// Notify observer for this specific branch
 		if cfg.Observer != nil {
-			notifyBranchObserver(cfg, branchCfg, i, "forward", input, postAct, 0)
+			notifyBranchObserver(cfg, branchCfg, i, mode, "forward", input, postAct, 0)
 		}
 
 		if cfg.CombineMode == "concat" || cfg.CombineMode == "" {
@@ -224,7 +224,7 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int) ([]flo
 
 // parallelBackwardCPU computes gradients for parallel layer
 // Takes pre-activations from forward pass to compute gradients properly
-func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivations [][]float32, cfg *LayerConfig, batchSize int) ([]float32, [][]float32, [][]float32, error) {
+func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivations [][]float32, cfg *LayerConfig, batchSize int, mode string) ([]float32, [][]float32, [][]float32, error) {
 	if len(cfg.ParallelBranches) == 0 {
 		return nil, nil, nil, fmt.Errorf("parallel layer has no branches defined")
 	}
@@ -265,7 +265,7 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			case LayerParallel:
 				// For nested parallel, need to compute from config
 				// This is complex, so run a dummy forward to get size
-				dummyOut, _, err := parallelForwardCPU(input, branchCfg, batchSize)
+				dummyOut, _, err := parallelForwardCPU(input, branchCfg, batchSize, mode)
 				if err != nil {
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
@@ -327,7 +327,7 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			case LayerSoftmax:
 				branchOutputSize = len(input)
 			case LayerParallel:
-				dummyOut, _, err := parallelForwardCPU(input, branchCfg, batchSize)
+				dummyOut, _, err := parallelForwardCPU(input, branchCfg, batchSize, mode)
 				if err != nil {
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
@@ -376,7 +376,7 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			case LayerSoftmax:
 				branchOutputSize = len(input)
 			case LayerParallel:
-				dummyOut, _, err := parallelForwardCPU(input, branchCfg, batchSize)
+				dummyOut, _, err := parallelForwardCPU(input, branchCfg, batchSize, mode)
 				if err != nil {
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
@@ -545,7 +545,7 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 
 			var nestedKernelGrads, nestedBiasGrads [][]float32
 			var err error
-			branchInputGrad, nestedKernelGrads, nestedBiasGrads, err = parallelBackwardCPU(input, gradOut, nestedPreActs, branchCfg, batchSize)
+			branchInputGrad, nestedKernelGrads, nestedBiasGrads, err = parallelBackwardCPU(input, gradOut, nestedPreActs, branchCfg, batchSize, mode)
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("nested parallel backward failed: %w", err)
 			}
@@ -580,6 +580,11 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 		// Store gradients for this branch
 		allKernelGrads[i] = kernelGrad
 		allBiasGrads[i] = biasGrad
+
+		// Notify observer for this specific branch (restoring functionality removed from leaf layers)
+		if cfg.Observer != nil {
+			notifyBranchObserver(cfg, branchCfg, i, mode, "backward", nil, branchInputGrad, 0)
+		}
 	}
 
 	return inputGrad, allKernelGrads, allBiasGrads, nil

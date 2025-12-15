@@ -102,11 +102,6 @@ func conv2DForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]fl
 		}
 	}
 
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "forward", -1, input, postActivation, 0)
-	}
-
 	return preActivation, postActivation
 }
 
@@ -176,11 +171,6 @@ func conv2DBackwardCPU(
 				}
 			}
 		}
-	}
-
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "backward", -1, nil, gradInput, 0)
 	}
 
 	return gradInput, gradKernel, gradBias

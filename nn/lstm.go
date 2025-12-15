@@ -180,11 +180,6 @@ func lstmForwardCPU(config *LayerConfig, input []float32, batchSize, seqLength, 
 		}
 	}
 
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "forward", -1, input, output, 0)
-	}
-
 	return output, states
 }
 
@@ -308,11 +303,6 @@ func lstmBackwardCPU(config *LayerConfig, gradOutput, input []float32, states ma
 				}
 			}
 		}
-	}
-
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "backward", -1, nil, gradInput, 0)
 	}
 
 	return gradInput, grads

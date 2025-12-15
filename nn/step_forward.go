@@ -260,7 +260,7 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 					copy(state.residuals[layerIdx], input)
 
 				case LayerParallel:
-					output, branchPreActs, err := parallelForwardCPU(input, config, n.BatchSize)
+					output, branchPreActs, err := parallelForwardCPU(input, config, n.BatchSize, "step")
 					if err != nil {
 						fmt.Printf("Parallel layer error: %v\n", err)
 						output = input
@@ -294,6 +294,11 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 					for i := 0; i < len(input); i++ {
 						postAct[i] = activateCPU(input[i], config.Activation)
 					}
+				}
+
+				// Notify observer if present (step mode)
+				if config.Observer != nil {
+					notifyObserver(config, "step", "forward", layerIdx, input, postAct, state.stepCount)
 				}
 
 				// Store results
@@ -363,6 +368,11 @@ func (n *Network) StepForwardSingle(state *StepState, layerIdx int) time.Duratio
 		for i := 0; i < len(input); i++ {
 			postAct[i] = activateCPU(input[i], config.Activation)
 		}
+	}
+
+	// Notify observer if present (step mode)
+	if config.Observer != nil {
+		notifyObserver(config, "step", "forward", layerIdx, input, postAct, state.stepCount)
 	}
 
 	// Update this layer's state

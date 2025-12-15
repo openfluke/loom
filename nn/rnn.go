@@ -95,11 +95,6 @@ func rnnForwardCPU(config *LayerConfig, input []float32, batchSize, seqLength, i
 		}
 	}
 
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "forward", -1, input, output, 0)
-	}
-
 	return output, hiddenStates
 }
 
@@ -165,11 +160,6 @@ func rnnBackwardCPU(config *LayerConfig, gradOutput, input, hiddenStates []float
 			// Reset gradHidden for this batch (it was propagated to previous timestep)
 			// Actually, we need to keep accumulating for the batch, so we clear after processing all timesteps
 		}
-	}
-
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "backward", -1, nil, gradInput, 0)
 	}
 
 	return gradInput, gradWeightIH, gradWeightHH, gradBiasH

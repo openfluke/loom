@@ -268,11 +268,6 @@ func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 		}
 	}
 
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "forward", -1, input, output, 0)
-	}
-
 	// Return output twice (preActivation, postActivation are same - no activation)
 	return output, output
 }
@@ -437,11 +432,6 @@ func multiHeadAttentionBackwardCPU(grad, input, preAct []float32, config *LayerC
 				gradInput[inputIdx] += gApprox * (config.KWeights[weightIdx] + config.VWeights[weightIdx])
 			}
 		}
-	}
-
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "backward", -1, nil, gradInput, 0)
 	}
 
 	return

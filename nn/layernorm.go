@@ -73,10 +73,5 @@ func layerNormForwardCPU(input []float32, residual []float32, config *LayerConfi
 		}
 	}
 
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "forward", -1, input, output, 0)
-	}
-
 	return output
 }

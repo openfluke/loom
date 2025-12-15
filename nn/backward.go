@@ -138,7 +138,7 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 				offset += size
 			}
 
-			gradInput, kernelGrads, biasGrads, err := parallelBackwardCPU(input, grad, branchPreActs, config, n.BatchSize)
+			gradInput, kernelGrads, biasGrads, err := parallelBackwardCPU(input, grad, branchPreActs, config, n.BatchSize, "normal")
 			if err != nil {
 				// Log error but continue backprop
 				fmt.Printf("Warning: parallel backward error at layer %d: %v\n", layerIdx, err)
@@ -208,13 +208,11 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 				grad = gradInput
 			}
 		} else {
-			// Default: element-wise activation backward
-			// Compute gradient with respect to pre-activation
-			// grad_pre = grad_post * activation_derivative(pre_activation)
-			for i := 0; i < len(grad); i++ {
-				derivative := activateDerivativeCPU(preAct[i], config.Activation)
-				grad[i] = grad[i] * derivative
-			}
+		}
+
+		// Notify observer for this layer (normal mode)
+		if config.Observer != nil {
+			notifyObserver(config, "normal", "backward", layerIdx, nil, grad, 0)
 		}
 	}
 

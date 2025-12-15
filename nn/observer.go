@@ -44,7 +44,7 @@ func computeLayerStats(data []float32, layerType string, threshold float32) Laye
 
 // notifyObserver sends an event to the layer's observer if one exists
 // This is a helper to reduce boilerplate in layer implementations
-func notifyObserver(config *LayerConfig, eventType string, layerIdx int, input, output []float32, stepCount uint64) {
+func notifyObserver(config *LayerConfig, mode string, eventType string, layerIdx int, input, output []float32, stepCount uint64) {
 	if config.Observer == nil {
 		return
 	}
@@ -52,6 +52,7 @@ func notifyObserver(config *LayerConfig, eventType string, layerIdx int, input, 
 	stats := computeLayerStats(output, layerTypeString(config.Type), 0.0)
 
 	event := LayerEvent{
+		Mode:      mode,
 		Type:      eventType,
 		LayerIdx:  layerIdx,
 		LayerType: config.Type,
@@ -77,7 +78,7 @@ func notifyObserver(config *LayerConfig, eventType string, layerIdx int, input, 
 
 // notifyBranchObserver sends an event for a specific branch within a parallel layer
 // parentConfig is the parallel layer, branchConfig is the individual branch
-func notifyBranchObserver(parentConfig *LayerConfig, branchConfig *LayerConfig, branchIdx int, eventType string, input, output []float32, stepCount uint64) {
+func notifyBranchObserver(parentConfig *LayerConfig, branchConfig *LayerConfig, branchIdx int, mode string, eventType string, input, output []float32, stepCount uint64) {
 	if parentConfig.Observer == nil {
 		return
 	}
@@ -85,6 +86,7 @@ func notifyBranchObserver(parentConfig *LayerConfig, branchConfig *LayerConfig, 
 	stats := computeLayerStats(output, layerTypeString(branchConfig.Type), 0.0)
 
 	event := LayerEvent{
+		Mode:      mode,
 		Type:      eventType,
 		LayerIdx:  0, // Parent's position is determined by grid coords
 		LayerType: branchConfig.Type,

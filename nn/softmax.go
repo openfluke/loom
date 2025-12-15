@@ -130,17 +130,10 @@ func ForwardSoftmaxCPU(input []float32, config *LayerConfig) ([]float32, error) 
 
 	case SoftmaxEntmax:
 		result := softmaxEntmax(input, config.EntmaxAlpha)
-		if config.Observer != nil {
-			notifyObserver(config, "forward", -1, input, result, 0)
-		}
 		return result, nil
 
 	default:
-		result := softmaxStandard(input, 1.0)
-		if config.Observer != nil {
-			notifyObserver(config, "forward", -1, input, result, 0)
-		}
-		return result, nil
+		return softmaxStandard(input, 1.0), nil
 	}
 }
 

@@ -174,6 +174,7 @@ type LayerStats struct {
 
 // LayerEvent represents an event during forward/backward pass
 type LayerEvent struct {
+	Mode      string     `json:"mode"` // "normal" or "step"
 	Type      string     // "forward", "backward"
 	LayerIdx  int        // Which layer in the network (flattened index)
 	LayerType LayerType  // Type of layer

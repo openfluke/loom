@@ -60,11 +60,6 @@ func denseForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]flo
 		}
 	}
 
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "forward", -1, input, postAct, 0)
-	}
-
 	return preAct, postAct
 }
 
@@ -131,11 +126,6 @@ func denseBackwardCPU(gradOutput, input, preAct []float32, config *LayerConfig, 
 				gradInput[inputIdx] += weights[weightIdx] * grad
 			}
 		}
-	}
-
-	// Notify observer if present
-	if config.Observer != nil {
-		notifyObserver(config, "backward", -1, nil, gradInput, 0)
 	}
 
 	return gradInput, gradWeights, gradBias
