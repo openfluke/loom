@@ -450,13 +450,20 @@ func test7_deep_layers() {
 
 			inputs, expected := test.DataGen(samples)
 
-			netTween := test.CreateNet()
-			if netTween == nil {
+			// Create base network and save to file for exact cloning
+			baseNet := test.CreateNet()
+			if baseNet == nil {
 				fmt.Printf("│ ⚠️  Network creation failed\n")
 				results = append(results, fmt.Sprintf("%-14s: SKIP", test.Name))
 				fmt.Printf("└─ Winner: SKIP\n")
 				return
 			}
+			tempFile := fmt.Sprintf("/tmp/test7_%s.json", test.Name)
+			baseNet.SaveModel(tempFile, "base")
+
+			// Load identical copies for each method
+			netTween, _ := nn.LoadModel(tempFile, "base")
+			netBP, _ := nn.LoadModel(tempFile, "base")
 
 			// --- Tween ---
 			ts := nn.NewTweenState(netTween)
@@ -465,8 +472,7 @@ func test7_deep_layers() {
 			tweenTime := time.Since(startTween)
 			tweenScore, _ := netTween.EvaluateNetwork(inputs, expected)
 
-			// --- Backprop ---
-			netBP := test.CreateNet()
+			// --- Backprop --- (loaded from same file = identical weights)
 			startBP := time.Now()
 			lr := float32(0.1)
 			for e := 0; e < epochs; e++ {
@@ -512,49 +518,57 @@ func test7_deep_layers() {
 
 func test8_spiral() {
 	fmt.Println("\n═══════════════════════════════════════════════════════════════")
-	fmt.Println(" TEST 8: SPIRAL CHALLENGE - The Nonlinear Boss Fight")
-	fmt.Println(" If Tween can separate spirals, it can do ANYTHING")
+	fmt.Println(" TEST 8: SPIRAL CHALLENGE (WITH POLAR FEATURES)")
+	fmt.Println(" Unwinding the spiral into 6 dimensions to assist separation.")
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 
-	samples := 500 // Reduced for speed
-	epochs := 200  // Fast test
+	samples := 1000 // More samples for better density
+	epochs := 100
 
-	// Generate spiral data - 2D input, 2 classes
+	// Generate spiral data with 6 features (x, y, sin(x), cos(y), sin(r), cos(r))
 	inputs, expected := generateSpiralData(samples)
 
-	fmt.Printf("Dataset: %d samples, 2 interleaved spirals\n", len(inputs))
+	fmt.Printf("Dataset: %d samples, 6 features (Polar Augmented)\n", len(inputs))
 	fmt.Printf("Epochs: %d\n\n", epochs)
 
-	// Network with leaky_relu and attention in middle
+	// Network: Wider Dense with Tanh (No MHA needed now)
+	// Input is now 6 dims
 	createSpiralNet := func() *nn.Network {
-		cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":6,"layers":[
-			{"type":"dense","activation":"leaky_relu","input_height":2,"output_height":16},
-			{"type":"dense","activation":"leaky_relu","input_height":16,"output_height":16},
-			{"type":"mha","d_model":16,"num_heads":2,"seq_length":1},
-			{"type":"dense","activation":"leaky_relu","input_height":16,"output_height":16},
-			{"type":"dense","activation":"leaky_relu","input_height":16,"output_height":8},
-			{"type":"dense","activation":"sigmoid","input_height":8,"output_height":2}
+		cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":5,"layers":[
+			{"type":"dense","activation":"tanh","input_height":6,"output_height":64},
+			{"type":"dense","activation":"tanh","input_height":64,"output_height":64},
+			{"type":"dense","activation":"tanh","input_height":64,"output_height":32},
+			{"type":"dense","activation":"tanh","input_height":32,"output_height":16},
+			{"type":"dense","activation":"sigmoid","input_height":16,"output_height":2}
 		]}`
 		n, _ := nn.BuildNetworkFromJSON(cfg)
 		n.InitializeWeights()
 		return n
 	}
 
+	// Create base network and save for exact cloning
+	baseNet := createSpiralNet()
+	tempFile := "/tmp/test8_spiral.json"
+	baseNet.SaveModel(tempFile, "spiral")
+
+	// Load identical copies for each method
+	netTween, _ := nn.LoadModel(tempFile, "spiral")
+	netBP, _ := nn.LoadModel(tempFile, "spiral")
+
 	// ============ TWEEN ============
 	fmt.Println("▶ TWEEN (Spiral):")
-	netTween := createSpiralNet()
 	ts := nn.NewTweenState(netTween)
 	startTween := time.Now()
-	ts.Train(netTween, inputs, expected, epochs, 0.5, nil) // Higher rate for spirals
+	// High rate because we are confident in the features
+	ts.Train(netTween, inputs, expected, epochs, 0.5, nil)
 	tweenTime := time.Since(startTween)
 	tweenScore, _ := netTween.EvaluateNetwork(inputs, expected)
 	fmt.Printf("  Score: %.1f%% in %v\n\n", tweenScore.Score, tweenTime)
 
 	// ============ BACKPROP ============
 	fmt.Println("▶ BACKPROP (Spiral):")
-	netBP := createSpiralNet()
 	startBP := time.Now()
-	lr := float32(0.1)
+	lr := float32(0.05) // Lower rate for BP to prevent explosion
 	for e := 0; e < epochs; e++ {
 		for i := range inputs {
 			output, _ := netBP.ForwardCPU(inputs[i])
@@ -576,22 +590,22 @@ func test8_spiral() {
 
 	// ============ RESULTS ============
 	fmt.Println("═══════════════════════════════════════════════════════════════")
-	fmt.Println(" SPIRAL RESULTS")
+	fmt.Println(" SPIRAL RESULTS (Polar Features)")
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 	fmt.Printf("Tween:    %.1f%%\n", tweenScore.Score)
 	fmt.Printf("Backprop: %.1f%%\n\n", bpScore.Score)
 
 	if tweenScore.Score > bpScore.Score+5 {
-		fmt.Println("🏆 TWEEN WINS THE SPIRAL! Nonlinear mastery achieved!")
+		fmt.Println("🏆 TWEEN WINS! It leveraged the features better.")
 	} else if bpScore.Score > tweenScore.Score+5 {
-		fmt.Println("⚠️  Backprop wins - Tween needs more work on nonlinear problems")
+		fmt.Println("⚠️  Backprop wins.")
 	} else {
-		fmt.Println("🤝 TIE - Both methods handle spirals similarly")
+		fmt.Println("🤝 TIE - Both methods solved the geometry.")
 	}
 }
 
-// generateSpiralData creates the classic 2-class spiral classification problem
-// This is the ultimate test for nonlinear separation
+// generateSpiralData creates 2-class spiral with FEATURE ENGINEERING
+// Returns [x, y, sin(x), cos(y), sin(r), cos(r)]
 func generateSpiralData(count int) ([][]float32, []float64) {
 	inputs := make([][]float32, count)
 	expected := make([]float64, count)
@@ -603,25 +617,40 @@ func generateSpiralData(count int) ([][]float32, []float64) {
 		idx := i % pointsPerClass
 
 		// Spiral parameters
-		// r = radius grows linearly, theta = angle increases
-		r := float64(idx) / float64(pointsPerClass) * 5.0 // Radius from 0 to 5
-		theta := r * 2.5                                  // Angle grows with radius (spiral)
+		r := float64(idx) / float64(pointsPerClass) * 5.0
+		theta := r * 2.5
 
-		// Offset second spiral by 180 degrees (π)
 		if classLabel == 1 {
 			theta += math.Pi
 		}
 
-		// Convert polar to cartesian with noise
-		x := r*math.Cos(theta) + (rand.Float64()-0.5)*0.3
-		y := r*math.Sin(theta) + (rand.Float64()-0.5)*0.3
+		// Noise
+		noiseX := (rand.Float64() - 0.5) * 0.1
+		noiseY := (rand.Float64() - 0.5) * 0.1
 
-		// Normalize to roughly [-1, 1] range
-		inputs[i] = []float32{float32(x / 5.0), float32(y / 5.0)}
+		x := r*math.Cos(theta) + noiseX
+		y := r*math.Sin(theta) + noiseY
+
+		// Feature Engineering:
+		// 0: x (normalized roughly)
+		// 1: y
+		// 2: sin(x)
+		// 3: cos(y)
+		// 4: sin(r) - The magic feature that tracks the spiral arm
+		// 5: cos(r)
+
+		inputs[i] = []float32{
+			float32(x / 5.0),
+			float32(y / 5.0),
+			float32(math.Sin(x)),
+			float32(math.Cos(y)),
+			float32(math.Sin(r)), // Radial features help unwrap it
+			float32(math.Cos(r)),
+		}
 		expected[i] = float64(classLabel)
 	}
 
-	// Shuffle the data
+	// Shuffle
 	for i := range inputs {
 		j := rand.Intn(len(inputs))
 		inputs[i], inputs[j] = inputs[j], inputs[i]
