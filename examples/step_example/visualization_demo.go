@@ -145,12 +145,12 @@ func runNetwork1AllTypes() {
 	// Send network structure to visualization server
 	sendNetworkToServer("network1_all_types", networkJSON)
 
-	// Attach observer to all layers
-	httpObserver := nn.NewHTTPObserver(vizServerURL + eventsEndpoint)
-	attachObserverToAllLayers(net, httpObserver, "network1_all_types")
+	// Attach recording observer to all layers
+	recordingObserver := nn.NewRecordingObserver("network1_all_types")
+	attachObserverToAllLayers(net, recordingObserver, "network1_all_types")
 
 	// Training
-	fmt.Println("Training with observers attached (events sent to visualization server)...")
+	fmt.Println("Training with recording observer attached...")
 	input := make([]float32, 32)
 	for i := range input {
 		input[i] = float32(math.Sin(float64(i) * 0.2))
@@ -164,6 +164,9 @@ func runNetwork1AllTypes() {
 				epoch, output[0], output[1], output[2], output[3])
 		}
 	}
+
+	// Save recorded activity
+	saveActivity(recordingObserver, "model1_activity.json")
 
 	fmt.Println("✓ Network 1 complete")
 }
@@ -256,12 +259,12 @@ func runNetwork2GridScatter() {
 	// Send network structure to visualization server
 	sendNetworkToServer("network2_grid_scatter", networkJSON)
 
-	// Attach observer
-	httpObserver := nn.NewHTTPObserver(vizServerURL + eventsEndpoint)
-	attachObserverToAllLayers(net, httpObserver, "network2_grid_scatter")
+	// Attach recording observer
+	recordingObserver := nn.NewRecordingObserver("network2_grid_scatter")
+	attachObserverToAllLayers(net, recordingObserver, "network2_grid_scatter")
 
 	// Training
-	fmt.Println("Training with observers attached...")
+	fmt.Println("Training with recording observer attached...")
 	input := make([]float32, 16)
 	for i := range input {
 		input[i] = float32(i) * 0.1
@@ -275,6 +278,9 @@ func runNetwork2GridScatter() {
 				epoch, len(output), output[:min(6, len(output))])
 		}
 	}
+
+	// Save recorded activity
+	saveActivity(recordingObserver, "model2_activity.json")
 
 	fmt.Println("✓ Network 2 complete")
 }
@@ -348,9 +354,9 @@ func runNetwork3NormalVsStepping() {
 	// Send network to viz server
 	sendNetworkToServer("network3_normal_mode", networkJSON)
 
-	// Attach observer
-	httpObserver := nn.NewHTTPObserver(vizServerURL + eventsEndpoint)
-	attachObserverToAllLayers(netNormal, httpObserver, "network3_normal_mode")
+	// Attach recording observer
+	recordingObserver := nn.NewRecordingObserver("network3_normal_mode")
+	attachObserverToAllLayers(netNormal, recordingObserver, "network3_normal_mode")
 
 	config := &nn.TrainingConfig{
 		Epochs:       100,
@@ -365,6 +371,9 @@ func runNetwork3NormalVsStepping() {
 	startNormal := time.Now()
 	result, _ := netNormal.Train(batches, config)
 	normalDuration := time.Since(startNormal)
+
+	// Save recorded activity
+	saveActivity(recordingObserver, "model3_activity.json")
 
 	fmt.Printf("  Initial Loss: %.6f\n", result.LossHistory[0])
 	fmt.Printf("  Final Loss:   %.6f\n", result.FinalLoss)
@@ -387,8 +396,9 @@ func runNetwork3NormalVsStepping() {
 	// Send network to viz server (different model ID)
 	sendNetworkToServer("network3_step_mode", networkJSON)
 
-	// Attach observer
-	attachObserverToAllLayers(netStep, httpObserver, "network3_step_mode")
+	// Attach recording observer for stepping mode
+	stepRecordingObserver := nn.NewRecordingObserver("network3_step_mode")
+	attachObserverToAllLayers(netStep, stepRecordingObserver, "network3_step_mode")
 
 	// Initialize stepping state
 	state := netStep.InitStepState(8)
@@ -434,6 +444,13 @@ func runNetwork3NormalVsStepping() {
 	}
 
 	stepDuration := time.Since(startStep)
+
+	// Save stepping mode telemetry and model (as separate model from normal)
+	saveTelemetry(netStep, "model3_stepping_telemetry.json", "network3_step_mode")
+	saveModel(netStep, "model3_stepping.json", "network3_step_mode")
+
+	// Save recorded activity for stepping mode
+	saveActivity(stepRecordingObserver, "model3_stepping_activity.json")
 
 	fmt.Printf("  Initial Loss: %.6f\n", stepLossHistory[0])
 	fmt.Printf("  Final Loss:   %.6f\n", stepLossHistory[len(stepLossHistory)-1])
@@ -567,4 +584,24 @@ func saveModel(net *nn.Network, filename string, modelID string) {
 	}
 
 	fmt.Printf("  ✓ Saved model to %s\n", filename)
+}
+
+// saveActivity saves recorded neural activity to a JSON file
+func saveActivity(observer *nn.RecordingObserver, filename string) {
+	fmt.Printf("  → Saving neural activity (%d events)...\n", len(observer.Events))
+
+	recording := observer.GetRecording()
+	data, err := json.MarshalIndent(recording, "", "  ")
+	if err != nil {
+		fmt.Printf("  ⚠ Failed to marshal activity: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(filename, data, 0644); err != nil {
+		fmt.Printf("  ⚠ Failed to write activity file: %v\n", err)
+		return
+	}
+
+	fmt.Printf("  ✓ Saved activity to %s (%.2fs, %d events)\n",
+		filename, recording.Duration, recording.TotalEvents)
 }

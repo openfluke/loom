@@ -212,3 +212,68 @@ func (o *ChannelObserver) OnBackward(event LayerEvent) {
 		// Channel full, drop event to avoid blocking
 	}
 }
+
+// RecordingObserver collects all layer events for saving to a file
+type RecordingObserver struct {
+	Events    []LayerEvent
+	ModelID   string
+	StartTime time.Time
+}
+
+// RecordedActivity represents the full recording of neural activity
+type RecordedActivity struct {
+	ModelID     string       `json:"model_id"`
+	RecordedAt  string       `json:"recorded_at"`
+	Duration    float64      `json:"duration_seconds"`
+	TotalEvents int          `json:"total_events"`
+	Events      []LayerEvent `json:"events"`
+}
+
+func NewRecordingObserver(modelID string) *RecordingObserver {
+	return &RecordingObserver{
+		Events:    make([]LayerEvent, 0, 1000),
+		ModelID:   modelID,
+		StartTime: time.Now(),
+	}
+}
+
+func (o *RecordingObserver) OnForward(event LayerEvent) {
+	// Clone event without full data arrays to save space
+	eventCopy := event
+	// Keep only summary stats, not full input/output
+	if len(eventCopy.Input) > 20 {
+		eventCopy.Input = eventCopy.Input[:20] // Sample
+	}
+	if len(eventCopy.Output) > 20 {
+		eventCopy.Output = eventCopy.Output[:20] // Sample
+	}
+	o.Events = append(o.Events, eventCopy)
+}
+
+func (o *RecordingObserver) OnBackward(event LayerEvent) {
+	eventCopy := event
+	if len(eventCopy.Input) > 20 {
+		eventCopy.Input = eventCopy.Input[:20]
+	}
+	if len(eventCopy.Output) > 20 {
+		eventCopy.Output = eventCopy.Output[:20]
+	}
+	o.Events = append(o.Events, eventCopy)
+}
+
+// GetRecording returns the full recorded activity
+func (o *RecordingObserver) GetRecording() RecordedActivity {
+	return RecordedActivity{
+		ModelID:     o.ModelID,
+		RecordedAt:  o.StartTime.Format(time.RFC3339),
+		Duration:    time.Since(o.StartTime).Seconds(),
+		TotalEvents: len(o.Events),
+		Events:      o.Events,
+	}
+}
+
+// Reset clears the recorded events
+func (o *RecordingObserver) Reset() {
+	o.Events = o.Events[:0]
+	o.StartTime = time.Now()
+}
