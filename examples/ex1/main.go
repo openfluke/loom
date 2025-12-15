@@ -45,19 +45,23 @@ func main() {
 		test4_iris()
 	case "5":
 		test5_mega()
+	case "6":
+		test6_layer_types()
 	case "all":
 		test1_tween()
 		test2_backprop()
 		test3_deep_tween()
 		test4_iris()
 		test5_mega()
+		test6_layer_types()
 	default:
-		fmt.Println("Usage: go run main.go [1|2|3|4|5|all]")
+		fmt.Println("Usage: go run main.go [1|2|3|4|5|6|all]")
 		fmt.Println("  1 - Neural Tweening (simple)")
 		fmt.Println("  2 - Standard Backpropagation")
 		fmt.Println("  3 - Deep Network Tweening")
 		fmt.Println("  4 - Iris Dataset (real data)")
-		fmt.Println("  5 - MEGA TEST (10K samples, 6 layers)")
+		fmt.Println("  5 - MEGA TEST (50K samples)")
+		fmt.Println("  6 - ALL LAYER TYPES (Conv2D, LSTM, Attention, etc.)")
 		fmt.Println("  all - Run all tests")
 	}
 }
@@ -291,6 +295,278 @@ func test5_mega() {
 	} else {
 		fmt.Println("📈 Backprop wins this round")
 	}
+}
+
+func test6_layer_types() {
+	fmt.Println("\n═══════════════════════════════════════════════════════════════")
+	fmt.Println(" TEST 6: ALL LAYER TYPES (Tween vs Backprop)")
+	fmt.Println(" Testing: Dense, Conv2D, LSTM, Attention, LayerNorm, SwiGLU")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+
+	type LayerTest struct {
+		Name       string
+		CreateNet  func() *nn.Network
+		InputSize  int
+		OutputSize int
+		DataGen    func(int) ([][]float32, []float64)
+	}
+
+	tests := []LayerTest{
+		{"Dense", createDenseTestNet, 16, 4, generateSimple16to4},
+		{"Deep 5L", createDeepDenseTestNet, 16, 4, generateSimple16to4},
+		{"RNN", createRNNTestNet, 16, 4, generateSimple16to4},
+		{"LSTM", createLSTMTestNet, 16, 4, generateSimple16to4},
+		{"LayerNorm", createLayerNormTestNet, 16, 4, generateSimple16to4},
+		{"RMSNorm", createRMSNormTestNet, 16, 4, generateSimple16to4},
+		{"SwiGLU", createSwiGLUTestNet, 16, 4, generateSimple16to4},
+		{"Attention", createAttentionTestNet, 16, 4, generateSimple16to4},
+	}
+
+	epochs := 100
+	samples := 500
+	results := make([]string, 0)
+
+	for _, test := range tests {
+		func(test LayerTest) {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("│ ⚠️  CRASHED: %v\n", r)
+					results = append(results, fmt.Sprintf("%-12s: CRASHED", test.Name))
+					fmt.Printf("└─ Winner: ERROR\n")
+				}
+			}()
+
+			fmt.Printf("\n┌─ %s ─────────────────────────────────────────────\n", test.Name)
+
+			inputs, expected := test.DataGen(samples)
+
+			// --- Tween ---
+			netTween := test.CreateNet()
+			if netTween == nil {
+				fmt.Printf("│ ⚠️  Network creation failed\n")
+				results = append(results, fmt.Sprintf("%-12s: SKIP", test.Name))
+				fmt.Printf("└─ Winner: SKIP\n")
+				return
+			}
+			ts := nn.NewTweenState(netTween)
+			startTween := time.Now()
+			ts.Train(netTween, inputs, expected, epochs, 0.3, nil)
+			tweenTime := time.Since(startTween)
+			tweenScore, _ := netTween.EvaluateNetwork(inputs, expected)
+
+			// --- Backprop ---
+			netBP := test.CreateNet()
+			startBP := time.Now()
+			lr := float32(0.1)
+			for e := 0; e < epochs; e++ {
+				for i := range inputs {
+					output, _ := netBP.ForwardCPU(inputs[i])
+					errorGrad := make([]float32, len(output))
+					for j := range output {
+						target := float32(0)
+						if j == int(expected[i]) {
+							target = 1.0
+						}
+						errorGrad[j] = output[j] - target
+					}
+					netBP.BackwardCPU(errorGrad)
+					updateWeights(netBP, lr)
+				}
+			}
+			bpTime := time.Since(startBP)
+			bpScore, _ := netBP.EvaluateNetwork(inputs, expected)
+
+			// Results
+			fmt.Printf("│ Tween:   %.1f%% in %v\n", tweenScore.Score, tweenTime)
+			fmt.Printf("│ Backprop: %.1f%% in %v\n", bpScore.Score, bpTime)
+
+			winner := "TIE"
+			if tweenScore.Score > bpScore.Score+5 {
+				winner = "TWEEN"
+			} else if bpScore.Score > tweenScore.Score+5 {
+				winner = "BACKPROP"
+			}
+			results = append(results, fmt.Sprintf("%-12s: Tween=%.0f%% BP=%.0f%% → %s",
+				test.Name, tweenScore.Score, bpScore.Score, winner))
+			fmt.Printf("└─ Winner: %s\n", winner)
+		}(test)
+	}
+
+	// Summary
+	fmt.Println("\n═══════════════════════════════════════════════════════════════")
+	fmt.Println(" SUMMARY - All Layer Types")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+	for _, r := range results {
+		fmt.Println(r)
+	}
+}
+
+// Test network creators
+func createDenseTestNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":3,"layers":[
+		{"type":"dense","activation":"tanh","input_height":16,"output_height":32},
+		{"type":"dense","activation":"tanh","input_height":32,"output_height":16},
+		{"type":"dense","activation":"sigmoid","input_height":16,"output_height":4}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	n.InitializeWeights()
+	return n
+}
+
+func createDeepDenseTestNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":5,"layers":[
+		{"type":"dense","activation":"tanh","input_height":16,"output_height":64},
+		{"type":"dense","activation":"tanh","input_height":64,"output_height":128},
+		{"type":"dense","activation":"tanh","input_height":128,"output_height":64},
+		{"type":"dense","activation":"tanh","input_height":64,"output_height":32},
+		{"type":"dense","activation":"sigmoid","input_height":32,"output_height":4}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	n.InitializeWeights()
+	return n
+}
+
+func createConv2DTestNet() *nn.Network {
+	// Input: 8x8x1 = 64, middle Conv2D, output Dense
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":3,"layers":[
+		{"type":"dense","activation":"tanh","input_height":64,"output_height":64},
+		{"type":"conv2d","activation":"tanh","input_height":8,"input_width":8,"input_channels":1,"kernel_size":3,"filters":4,"stride":1,"padding":1},
+		{"type":"dense","activation":"sigmoid","input_height":256,"output_height":4}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	n.InitializeWeights()
+	return n
+}
+
+func createLSTMTestNet() *nn.Network {
+	// LSTM with seq_length=1 so it processes single timestep
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":3,"layers":[
+		{"type":"dense","activation":"tanh","input_height":16,"output_height":16},
+		{"type":"lstm","hidden_size":16,"input_size":16,"seq_length":1},
+		{"type":"dense","activation":"sigmoid","input_height":16,"output_height":4}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	n.InitializeWeights()
+	return n
+}
+
+func createLayerNormTestNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":3,"layers":[
+		{"type":"dense","activation":"tanh","input_height":16,"output_height":32},
+		{"type":"layernorm","norm_size":32},
+		{"type":"dense","activation":"sigmoid","input_height":32,"output_height":4}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	n.InitializeWeights()
+	return n
+}
+
+func createSwiGLUTestNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":3,"layers":[
+		{"type":"dense","activation":"tanh","input_height":16,"output_height":32},
+		{"type":"swiglu","input_height":32,"output_height":32},
+		{"type":"dense","activation":"sigmoid","input_height":32,"output_height":4}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	n.InitializeWeights()
+	return n
+}
+
+func createRNNTestNet() *nn.Network {
+	// RNN with seq_length=1 so it processes single timestep
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":3,"layers":[
+		{"type":"dense","activation":"tanh","input_height":16,"output_height":16},
+		{"type":"rnn","hidden_size":16,"input_size":16,"seq_length":1},
+		{"type":"dense","activation":"sigmoid","input_height":16,"output_height":4}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	n.InitializeWeights()
+	return n
+}
+
+func createRMSNormTestNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":3,"layers":[
+		{"type":"dense","activation":"tanh","input_height":16,"output_height":32},
+		{"type":"rmsnorm","norm_size":32},
+		{"type":"dense","activation":"sigmoid","input_height":32,"output_height":4}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	n.InitializeWeights()
+	return n
+}
+
+func createAttentionTestNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":3,"layers":[
+		{"type":"dense","activation":"tanh","input_height":16,"output_height":16},
+		{"type":"mha","d_model":16,"num_heads":2,"seq_length":1},
+		{"type":"dense","activation":"sigmoid","input_height":16,"output_height":4}
+	]}`
+	n, _ := nn.BuildNetworkFromJSON(cfg)
+	n.InitializeWeights()
+	return n
+}
+
+// Data generators for different input types
+func generateSimple16to4(n int) ([][]float32, []float64) {
+	inputs := make([][]float32, n)
+	expected := make([]float64, n)
+	for i := 0; i < n; i++ {
+		input := make([]float32, 16)
+		sum := float32(0)
+		for j := 0; j < 16; j++ {
+			input[j] = rand.Float32()
+			sum += input[j]
+		}
+		inputs[i] = input
+		expected[i] = float64(int(sum) % 4)
+	}
+	return inputs, expected
+}
+
+func generateSpatial8x8to4(n int) ([][]float32, []float64) {
+	// Generate 8x8 "images" with patterns
+	inputs := make([][]float32, n)
+	expected := make([]float64, n)
+	for i := 0; i < n; i++ {
+		input := make([]float32, 64)
+		quadrantSums := [4]float32{}
+		for y := 0; y < 8; y++ {
+			for x := 0; x < 8; x++ {
+				val := rand.Float32()
+				input[y*8+x] = val
+				quad := (y/4)*2 + (x / 4)
+				quadrantSums[quad] += val
+			}
+		}
+		inputs[i] = input
+		// Class = brightest quadrant
+		maxQ, maxV := 0, quadrantSums[0]
+		for q := 1; q < 4; q++ {
+			if quadrantSums[q] > maxV {
+				maxQ, maxV = q, quadrantSums[q]
+			}
+		}
+		expected[i] = float64(maxQ)
+	}
+	return inputs, expected
+}
+
+func generateSequence32to4(n int) ([][]float32, []float64) {
+	// Sequence-like data for LSTM
+	inputs := make([][]float32, n)
+	expected := make([]float64, n)
+	for i := 0; i < n; i++ {
+		input := make([]float32, 32)
+		trend := float32(0)
+		for j := 0; j < 32; j++ {
+			input[j] = rand.Float32()*0.5 + float32(j)*0.02
+			trend += input[j]
+		}
+		inputs[i] = input
+		// Class based on overall trend
+		expected[i] = float64(int(trend/4) % 4)
+	}
+	return inputs, expected
 }
 
 func createMegaNetwork() *nn.Network {

@@ -194,13 +194,13 @@ func (ts *TweenState) CalculateLinkBudgets() {
 }
 
 // TweenWeights: Adjust weights to close the gap at each layer
-// Layers with LOW budget need MORE careful adjustment
+// Supports ALL layer types: Dense, Conv2D, Attention, LSTM, LayerNorm, SwiGLU
 func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 	mom := float32(0.9)
 
 	for i := 0; i < ts.TotalLayers; i++ {
 		cfg := ts.getLayerCfg(n, i)
-		if cfg == nil || cfg.Type != LayerDense {
+		if cfg == nil {
 			continue
 		}
 
@@ -212,41 +212,37 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 			continue
 		}
 
-		// Scale rate by link budget: low budget = smaller steps (more careful)
+		// Scale rate by link budget
 		budget := ts.LinkBudgets[i]
-		layerRate := rate * (0.5 + budget*0.5) // 50-100% of rate based on budget
+		layerRate := rate * (0.5 + budget*0.5)
 
+		// Calculate output gap
 		minOut := len(actual)
 		if len(target) < minOut {
 			minOut = len(target)
 		}
+		outputGaps := make([]float32, minOut)
+		for j := 0; j < minOut; j++ {
+			outputGaps[j] = target[j] - actual[j]
+		}
 
-		for out := 0; out < minOut && out < cfg.OutputHeight; out++ {
-			// Gap at this output neuron
-			gap := target[out] - actual[out]
-
-			// Update bias
-			if out < len(cfg.Bias) && i < len(ts.BiasVel) && out < len(ts.BiasVel[i]) {
-				delta := layerRate * gap * 0.1
-				ts.BiasVel[i][out] = mom*ts.BiasVel[i][out] + (1-mom)*delta
-				cfg.Bias[out] += ts.BiasVel[i][out]
-			}
-
-			// Update weights: Hebbian with target gap
-			for in := 0; in < len(input) && in < cfg.InputHeight; in++ {
-				wIdx := in*cfg.OutputHeight + out
-				if wIdx >= len(cfg.Kernel) {
-					continue
-				}
-
-				// Weight update: input * gap (move toward target)
-				delta := layerRate * input[in] * gap * 0.01
-
-				if i < len(ts.WeightVel) && wIdx < len(ts.WeightVel[i]) {
-					ts.WeightVel[i][wIdx] = mom*ts.WeightVel[i][wIdx] + (1-mom)*delta
-					cfg.Kernel[wIdx] += ts.WeightVel[i][wIdx]
-				}
-			}
+		// Tween based on layer type
+		switch cfg.Type {
+		case LayerDense:
+			ts.tweenDense(cfg, input, outputGaps, layerRate, mom, i)
+		case LayerConv2D:
+			ts.tweenConv2D(cfg, input, outputGaps, layerRate, mom)
+		case LayerMultiHeadAttention:
+			ts.tweenAttention(cfg, input, outputGaps, layerRate, mom)
+		case LayerRNN:
+			ts.tweenRNN(cfg, input, outputGaps, layerRate, mom)
+		case LayerLSTM:
+			ts.tweenLSTM(cfg, input, outputGaps, layerRate, mom)
+		case LayerNorm, LayerRMSNorm:
+			ts.tweenNorm(cfg, outputGaps, layerRate)
+		case LayerSwiGLU:
+			ts.tweenSwiGLU(cfg, input, outputGaps, layerRate, mom)
+			// LayerSoftmax, LayerResidual, LayerParallel - no trainable weights
 		}
 
 		row := i / (n.GridCols * n.LayersPerCell)
@@ -254,6 +250,205 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 		layer := i % n.LayersPerCell
 		n.SetLayer(row, col, layer, *cfg)
 	}
+}
+
+// tweenDense handles Dense/Fully-connected layers
+func (ts *TweenState) tweenDense(cfg *LayerConfig, input, gaps []float32, rate, mom float32, layerIdx int) {
+	for out := 0; out < len(gaps) && out < cfg.OutputHeight; out++ {
+		gap := gaps[out]
+
+		// Update bias
+		if out < len(cfg.Bias) {
+			cfg.Bias[out] += rate * gap * 0.1
+		}
+
+		// Update weights: Hebbian with gap
+		for in := 0; in < len(input) && in < cfg.InputHeight; in++ {
+			wIdx := in*cfg.OutputHeight + out
+			if wIdx >= len(cfg.Kernel) {
+				continue
+			}
+			delta := rate * input[in] * gap * 0.01
+			if layerIdx < len(ts.WeightVel) && wIdx < len(ts.WeightVel[layerIdx]) {
+				ts.WeightVel[layerIdx][wIdx] = mom*ts.WeightVel[layerIdx][wIdx] + (1-mom)*delta
+				cfg.Kernel[wIdx] += ts.WeightVel[layerIdx][wIdx]
+			} else {
+				cfg.Kernel[wIdx] += delta
+			}
+		}
+	}
+}
+
+// tweenConv2D handles 2D Convolutional layers
+func (ts *TweenState) tweenConv2D(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
+	if len(cfg.Kernel) == 0 {
+		return
+	}
+
+	// Average gap across spatial dimensions to get per-filter signal
+	numFilters := cfg.Filters
+	if numFilters == 0 {
+		numFilters = len(cfg.Bias)
+	}
+	if numFilters == 0 {
+		return
+	}
+
+	perFilterGap := make([]float32, numFilters)
+	gapsPerFilter := len(gaps) / numFilters
+	if gapsPerFilter == 0 {
+		gapsPerFilter = 1
+	}
+
+	for f := 0; f < numFilters; f++ {
+		sum := float32(0)
+		count := 0
+		for j := f * gapsPerFilter; j < (f+1)*gapsPerFilter && j < len(gaps); j++ {
+			sum += gaps[j]
+			count++
+		}
+		if count > 0 {
+			perFilterGap[f] = sum / float32(count)
+		}
+	}
+
+	// Update filter weights based on gap
+	kernelPerFilter := len(cfg.Kernel) / numFilters
+	for f := 0; f < numFilters; f++ {
+		gap := perFilterGap[f] * rate * 0.01
+		for k := 0; k < kernelPerFilter; k++ {
+			idx := f*kernelPerFilter + k
+			if idx < len(cfg.Kernel) {
+				cfg.Kernel[idx] += gap
+			}
+		}
+		if f < len(cfg.Bias) {
+			cfg.Bias[f] += perFilterGap[f] * rate * 0.1
+		}
+	}
+}
+
+// tweenAttention handles Multi-Head Attention layers
+func (ts *TweenState) tweenAttention(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
+	// Average gap to get overall direction
+	avgGap := float32(0)
+	for _, g := range gaps {
+		avgGap += g
+	}
+	if len(gaps) > 0 {
+		avgGap /= float32(len(gaps))
+	}
+
+	scaledRate := rate * avgGap * 0.001
+
+	// Tween Q, K, V, Output weights
+	tweenWeightSlice(cfg.QWeights, input, scaledRate)
+	tweenWeightSlice(cfg.KWeights, input, scaledRate)
+	tweenWeightSlice(cfg.VWeights, input, scaledRate)
+	tweenWeightSlice(cfg.OutputWeight, gaps, scaledRate)
+
+	// Tween biases
+	tweenBiasSlice(cfg.QBias, avgGap, rate*0.1)
+	tweenBiasSlice(cfg.KBias, avgGap, rate*0.1)
+	tweenBiasSlice(cfg.VBias, avgGap, rate*0.1)
+	tweenBiasSlice(cfg.OutputBias, avgGap, rate*0.1)
+}
+
+// tweenRNN handles Recurrent Neural Network layers
+func (ts *TweenState) tweenRNN(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
+	avgGap := avgSlice(gaps)
+	scaledRate := rate * avgGap * 0.001
+
+	tweenWeightSlice(cfg.WeightIH, input, scaledRate)
+	tweenWeightSlice(cfg.WeightHH, input, scaledRate)
+	tweenBiasSlice(cfg.BiasH, avgGap, rate*0.1)
+}
+
+// tweenLSTM handles Long Short-Term Memory layers
+func (ts *TweenState) tweenLSTM(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
+	avgGap := avgSlice(gaps)
+	scaledRate := rate * avgGap * 0.001
+
+	// Input gate
+	tweenWeightSlice(cfg.WeightIH_i, input, scaledRate)
+	tweenWeightSlice(cfg.WeightHH_i, input, scaledRate)
+	tweenBiasSlice(cfg.BiasH_i, avgGap, rate*0.1)
+
+	// Forget gate
+	tweenWeightSlice(cfg.WeightIH_f, input, scaledRate)
+	tweenWeightSlice(cfg.WeightHH_f, input, scaledRate)
+	tweenBiasSlice(cfg.BiasH_f, avgGap, rate*0.1)
+
+	// Cell gate
+	tweenWeightSlice(cfg.WeightIH_g, input, scaledRate)
+	tweenWeightSlice(cfg.WeightHH_g, input, scaledRate)
+	tweenBiasSlice(cfg.BiasH_g, avgGap, rate*0.1)
+
+	// Output gate
+	tweenWeightSlice(cfg.WeightIH_o, input, scaledRate)
+	tweenWeightSlice(cfg.WeightHH_o, input, scaledRate)
+	tweenBiasSlice(cfg.BiasH_o, avgGap, rate*0.1)
+}
+
+// tweenNorm handles LayerNorm and RMSNorm
+func (ts *TweenState) tweenNorm(cfg *LayerConfig, gaps []float32, rate float32) {
+	avgGap := avgSlice(gaps)
+
+	// Tween gamma (scale)
+	for i := range cfg.Gamma {
+		cfg.Gamma[i] += avgGap * rate * 0.01
+	}
+
+	// Tween beta (shift) - only for LayerNorm, not RMSNorm
+	if cfg.Type == LayerNorm {
+		for i := range cfg.Beta {
+			cfg.Beta[i] += avgGap * rate * 0.1
+		}
+	}
+}
+
+// tweenSwiGLU handles SwiGLU gated activation layers
+func (ts *TweenState) tweenSwiGLU(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
+	avgGap := avgSlice(gaps)
+	scaledRate := rate * avgGap * 0.001
+
+	tweenWeightSlice(cfg.GateWeights, input, scaledRate)
+	tweenWeightSlice(cfg.UpWeights, input, scaledRate)
+	tweenWeightSlice(cfg.DownWeights, gaps, scaledRate)
+
+	tweenBiasSlice(cfg.GateBias, avgGap, rate*0.1)
+	tweenBiasSlice(cfg.UpBias, avgGap, rate*0.1)
+	tweenBiasSlice(cfg.DownBias, avgGap, rate*0.1)
+}
+
+// Helper: tween a weight slice using input correlation
+func tweenWeightSlice(weights, signal []float32, rate float32) {
+	if len(weights) == 0 || len(signal) == 0 {
+		return
+	}
+	for i := range weights {
+		sigIdx := i % len(signal)
+		weights[i] += rate * signal[sigIdx]
+	}
+}
+
+// Helper: tween a bias slice
+func tweenBiasSlice(bias []float32, gap, rate float32) {
+	for i := range bias {
+		bias[i] += gap * rate
+	}
+}
+
+// Helper: average of slice
+func avgSlice(s []float32) float32 {
+	if len(s) == 0 {
+		return 0
+	}
+	sum := float32(0)
+	for _, v := range s {
+		sum += v
+	}
+	return sum / float32(len(s))
 }
 
 // TweenStep: One complete bidirectional iteration
