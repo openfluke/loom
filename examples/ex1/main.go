@@ -47,8 +47,6 @@ func main() {
 		test5_mega()
 	case "6":
 		test6_layer_types()
-	case "7":
-		test7_hybrid()
 	case "all":
 		test1_tween()
 		test2_backprop()
@@ -56,16 +54,14 @@ func main() {
 		test4_iris()
 		test5_mega()
 		test6_layer_types()
-		test7_hybrid()
 	default:
-		fmt.Println("Usage: go run main.go [1|2|3|4|5|6|7|all]")
+		fmt.Println("Usage: go run main.go [1|2|3|4|5|6|all]")
 		fmt.Println("  1 - Neural Tweening (simple)")
 		fmt.Println("  2 - Standard Backpropagation")
 		fmt.Println("  3 - Deep Network Tweening")
 		fmt.Println("  4 - Iris Dataset (real data)")
 		fmt.Println("  5 - MEGA TEST (50K samples)")
 		fmt.Println("  6 - ALL LAYER TYPES (Conv2D, LSTM, Attention, etc.)")
-		fmt.Println("  7 - HYBRID: Tween→Backprop (vanishing gradient killer)")
 		fmt.Println("  all - Run all tests")
 	}
 }
@@ -402,110 +398,6 @@ func test6_layer_types() {
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 	for _, r := range results {
 		fmt.Println(r)
-	}
-}
-
-func test7_hybrid() {
-	fmt.Println("\n═══════════════════════════════════════════════════════════════")
-	fmt.Println(" TEST 7: HYBRID TRAINING (Tween → Backprop)")
-	fmt.Println(" The Vanishing Gradient Killer")
-	fmt.Println(" 5 layers deep, 1000 samples")
-	fmt.Println("═══════════════════════════════════════════════════════════════")
-
-	// Create a challenging 5-layer deep network
-	network := createDeepDenseTestNet()
-	inputs, expected := generateSimple16to4(1000)
-
-	fmt.Printf("Network: 16→64→128→64→32→4 (5 layers)\n")
-	fmt.Printf("Dataset: %d samples\n\n", len(inputs))
-
-	initial, _ := network.EvaluateNetwork(inputs, expected)
-	fmt.Printf("Before: Score=%.1f%%\n\n", initial.Score)
-
-	// ============ PURE TWEEN ============
-	fmt.Println("▶ PURE TWEEN (100 epochs):")
-	netTween := createDeepDenseTestNet()
-	ts := nn.NewTweenState(netTween)
-	startTween := time.Now()
-	ts.Train(netTween, inputs, expected, 100, 0.3, nil)
-	tweenTime := time.Since(startTween)
-	tweenScore, _ := netTween.EvaluateNetwork(inputs, expected)
-	fmt.Printf("  Score: %.1f%% in %v\n\n", tweenScore.Score, tweenTime)
-
-	// ============ PURE BACKPROP ============
-	fmt.Println("▶ PURE BACKPROP (100 epochs):")
-	netBP := createDeepDenseTestNet()
-	startBP := time.Now()
-	lr := float32(0.1)
-	for e := 0; e < 100; e++ {
-		for i := range inputs {
-			output, _ := netBP.ForwardCPU(inputs[i])
-			errorGrad := make([]float32, len(output))
-			for j := range output {
-				target := float32(0)
-				if j == int(expected[i]) {
-					target = 1.0
-				}
-				errorGrad[j] = output[j] - target
-			}
-			netBP.BackwardCPU(errorGrad)
-			updateWeights(netBP, lr)
-		}
-	}
-	bpTime := time.Since(startBP)
-	bpScore, _ := netBP.EvaluateNetwork(inputs, expected)
-	fmt.Printf("  Score: %.1f%% in %v\n\n", bpScore.Score, bpTime)
-
-	// ============ HYBRID: TWEEN → BACKPROP ============
-	fmt.Println("▶ HYBRID: Tween(30) → Backprop(70):")
-	netHybrid := createDeepDenseTestNet()
-
-	// Phase 1: Tween for 30 epochs (cold start / initialization)
-	tsHybrid := nn.NewTweenState(netHybrid)
-	startHybrid := time.Now()
-	tsHybrid.Train(netHybrid, inputs, expected, 30, 0.3, nil)
-	afterTween, _ := netHybrid.EvaluateNetwork(inputs, expected)
-	fmt.Printf("  After Tween(30): %.1f%%\n", afterTween.Score)
-
-	// Phase 2: Backprop for 70 epochs (fine-tuning) with smaller LR
-	lrHybrid := float32(0.01) // Lower LR to preserve tween gains
-	for e := 0; e < 70; e++ {
-		for i := range inputs {
-			output, _ := netHybrid.ForwardCPU(inputs[i])
-			errorGrad := make([]float32, len(output))
-			for j := range output {
-				target := float32(0)
-				if j == int(expected[i]) {
-					target = 1.0
-				}
-				errorGrad[j] = output[j] - target
-			}
-			netHybrid.BackwardCPU(errorGrad)
-			updateWeights(netHybrid, lrHybrid)
-		}
-	}
-	hybridTime := time.Since(startHybrid)
-	hybridScore, _ := netHybrid.EvaluateNetwork(inputs, expected)
-	fmt.Printf("  Final Score: %.1f%% in %v\n\n", hybridScore.Score, hybridTime)
-
-	// ============ RESULTS ============
-	fmt.Println("═══════════════════════════════════════════════════════════════")
-	fmt.Println(" RESULTS")
-	fmt.Println("═══════════════════════════════════════════════════════════════")
-	fmt.Printf("Pure Tween:   %.1f%%\n", tweenScore.Score)
-	fmt.Printf("Pure Backprop: %.1f%%\n", bpScore.Score)
-	fmt.Printf("HYBRID:        %.1f%% ← Tween initialized, Backprop refined\n\n", hybridScore.Score)
-
-	if hybridScore.Score > tweenScore.Score && hybridScore.Score > bpScore.Score {
-		fmt.Println("🏆 HYBRID WINS! Best of both worlds!")
-		fmt.Println("   Tween solved cold-start/vanishing gradient")
-		fmt.Println("   Backprop did precise fine-tuning")
-	} else if hybridScore.Score > bpScore.Score {
-		fmt.Println("✅ Hybrid beats Pure Backprop!")
-	} else if hybridScore.Score > tweenScore.Score {
-		fmt.Println("✅ Hybrid beats Pure Tween!")
-	} else {
-		fmt.Println("📊 Hybrid didn't outperform - try more tween epochs?")
 	}
 }
 

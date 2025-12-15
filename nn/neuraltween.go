@@ -328,81 +328,29 @@ func (ts *TweenState) tweenConv2D(cfg *LayerConfig, input, gaps []float32, rate,
 	}
 }
 
-// tweenAttention handles Multi-Head Attention layers with head-specific gaps
+// tweenAttention handles Multi-Head Attention layers
 func (ts *TweenState) tweenAttention(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
-	if cfg.DModel == 0 || cfg.NumHeads == 0 {
-		// Fallback to simple averaging if config is incomplete
-		avgGap := avgSlice(gaps)
-		scaledRate := rate * avgGap * 0.001
-		tweenWeightSlice(cfg.QWeights, input, scaledRate)
-		tweenWeightSlice(cfg.KWeights, input, scaledRate)
-		tweenWeightSlice(cfg.VWeights, input, scaledRate)
-		tweenWeightSlice(cfg.OutputWeight, gaps, scaledRate)
-		tweenBiasSlice(cfg.OutputBias, avgGap, rate*0.1)
-		return
+	// Average gap to get overall direction
+	avgGap := float32(0)
+	for _, g := range gaps {
+		avgGap += g
+	}
+	if len(gaps) > 0 {
+		avgGap /= float32(len(gaps))
 	}
 
-	headDim := cfg.DModel / cfg.NumHeads
-	if headDim == 0 {
-		headDim = 1
-	}
+	scaledRate := rate * avgGap * 0.001
 
-	// Project output gap back through output weights to get per-head contributions
-	// headGaps[h] tells us how much Head h contributed to the error
-	headGaps := make([]float32, cfg.NumHeads)
-
-	for h := 0; h < cfg.NumHeads; h++ {
-		sum := float32(0)
-		for i := 0; i < headDim && (h*headDim+i) < len(gaps); i++ {
-			gapIdx := h*headDim + i
-			if gapIdx < len(gaps) {
-				// Weight by position in output weights
-				for j := 0; j < len(gaps) && j < cfg.DModel; j++ {
-					wIdx := gapIdx*cfg.DModel + j
-					if wIdx < len(cfg.OutputWeight) {
-						sum += gaps[j] * cfg.OutputWeight[wIdx]
-					}
-				}
-			}
-		}
-		headGaps[h] = sum / float32(headDim)
-	}
-
-	// Tween Q, K, V weights per head
-	for h := 0; h < cfg.NumHeads; h++ {
-		headRate := rate * headGaps[h] * 0.001
-
-		// Q, K, V weights for this head
-		startIdx := h * headDim * cfg.DModel
-		endIdx := (h + 1) * headDim * cfg.DModel
-
-		// Tween Q weights for this head
-		for i := startIdx; i < endIdx && i < len(cfg.QWeights); i++ {
-			sigIdx := i % len(input)
-			cfg.QWeights[i] += headRate * input[sigIdx]
-		}
-
-		// Tween K weights for this head
-		for i := startIdx; i < endIdx && i < len(cfg.KWeights); i++ {
-			sigIdx := i % len(input)
-			cfg.KWeights[i] += headRate * input[sigIdx]
-		}
-
-		// Tween V weights for this head
-		for i := startIdx; i < endIdx && i < len(cfg.VWeights); i++ {
-			sigIdx := i % len(input)
-			cfg.VWeights[i] += headRate * input[sigIdx]
-		}
-	}
-
-	// Tween output weights using the full gap
-	avgGap := avgSlice(gaps)
-	tweenWeightSlice(cfg.OutputWeight, gaps, rate*avgGap*0.001)
+	// Tween Q, K, V, Output weights
+	tweenWeightSlice(cfg.QWeights, input, scaledRate)
+	tweenWeightSlice(cfg.KWeights, input, scaledRate)
+	tweenWeightSlice(cfg.VWeights, input, scaledRate)
+	tweenWeightSlice(cfg.OutputWeight, gaps, scaledRate)
 
 	// Tween biases
-	tweenBiasSlice(cfg.QBias, avgGap, rate*0.05)
-	tweenBiasSlice(cfg.KBias, avgGap, rate*0.05)
-	tweenBiasSlice(cfg.VBias, avgGap, rate*0.05)
+	tweenBiasSlice(cfg.QBias, avgGap, rate*0.1)
+	tweenBiasSlice(cfg.KBias, avgGap, rate*0.1)
+	tweenBiasSlice(cfg.VBias, avgGap, rate*0.1)
 	tweenBiasSlice(cfg.OutputBias, avgGap, rate*0.1)
 }
 
@@ -416,83 +364,30 @@ func (ts *TweenState) tweenRNN(cfg *LayerConfig, input, gaps []float32, rate, mo
 	tweenBiasSlice(cfg.BiasH, avgGap, rate*0.1)
 }
 
-// tweenLSTM handles Long Short-Term Memory layers with gate-specific adjustments
-// LSTM has 4 gates: Input (i), Forget (f), Cell/Gate (g), Output (o)
-// Each gate has different purpose and needs different gap response:
-// - Input gate: Controls what NEW info to store → move TOWARD gap (add more when error)
-// - Forget gate: Controls what to DELETE → move OPPOSITE (keep more when error high)
-// - Cell gate: New candidate values → move toward gap
-// - Output gate: What to show → move toward gap
+// tweenLSTM handles Long Short-Term Memory layers
 func (ts *TweenState) tweenLSTM(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
 	avgGap := avgSlice(gaps)
+	scaledRate := rate * avgGap * 0.001
 
-	// Heuristic: split gap by position to give each gate its own signal
-	gapLen := len(gaps)
-	gateSize := cfg.HiddenSize
-	if gateSize == 0 {
-		gateSize = gapLen / 4
-		if gateSize == 0 {
-			gateSize = 1
-		}
-	}
+	// Input gate
+	tweenWeightSlice(cfg.WeightIH_i, input, scaledRate)
+	tweenWeightSlice(cfg.WeightHH_i, input, scaledRate)
+	tweenBiasSlice(cfg.BiasH_i, avgGap, rate*0.1)
 
-	// Calculate per-gate gaps (approximate projection)
-	inputGateGap := float32(0)
-	forgetGateGap := float32(0)
-	cellGateGap := float32(0)
-	outputGateGap := float32(0)
+	// Forget gate
+	tweenWeightSlice(cfg.WeightIH_f, input, scaledRate)
+	tweenWeightSlice(cfg.WeightHH_f, input, scaledRate)
+	tweenBiasSlice(cfg.BiasH_f, avgGap, rate*0.1)
 
-	for i := 0; i < gapLen; i++ {
-		section := (i * 4) / gapLen
-		switch section {
-		case 0:
-			inputGateGap += gaps[i]
-		case 1:
-			forgetGateGap += gaps[i]
-		case 2:
-			cellGateGap += gaps[i]
-		case 3:
-			outputGateGap += gaps[i]
-		}
-	}
+	// Cell gate
+	tweenWeightSlice(cfg.WeightIH_g, input, scaledRate)
+	tweenWeightSlice(cfg.WeightHH_g, input, scaledRate)
+	tweenBiasSlice(cfg.BiasH_g, avgGap, rate*0.1)
 
-	// Normalize
-	norm := float32(gapLen / 4)
-	if norm < 1 {
-		norm = 1
-	}
-	inputGateGap /= norm
-	forgetGateGap /= norm
-	cellGateGap /= norm
-	outputGateGap /= norm
-
-	// Input gate: TOWARD gap (store more when error needs it)
-	iRate := rate * inputGateGap * 0.01
-	tweenWeightSlice(cfg.WeightIH_i, input, iRate)
-	tweenWeightSlice(cfg.WeightHH_i, input, iRate)
-	tweenBiasSlice(cfg.BiasH_i, inputGateGap, rate*0.1)
-
-	// Forget gate: OPPOSITE to gap (keep more when error is high)
-	// Negative rate = keep more, don't forget when we have error
-	fRate := -rate * forgetGateGap * 0.005
-	tweenWeightSlice(cfg.WeightIH_f, input, fRate)
-	tweenWeightSlice(cfg.WeightHH_f, input, fRate)
-	// Bias toward 1 (keep) when error is high
-	tweenBiasSlice(cfg.BiasH_f, -forgetGateGap, rate*0.05)
-
-	// Cell gate: TOWARD gap (new content moves toward target)
-	gRate := rate * cellGateGap * 0.01
-	tweenWeightSlice(cfg.WeightIH_g, input, gRate)
-	tweenWeightSlice(cfg.WeightHH_g, input, gRate)
-	tweenBiasSlice(cfg.BiasH_g, cellGateGap, rate*0.1)
-
-	// Output gate: TOWARD gap (show more when error needs it)
-	oRate := rate * outputGateGap * 0.01
-	tweenWeightSlice(cfg.WeightIH_o, input, oRate)
-	tweenWeightSlice(cfg.WeightHH_o, input, oRate)
-	tweenBiasSlice(cfg.BiasH_o, outputGateGap, rate*0.1)
-
-	_ = avgGap // suppress unused warning
+	// Output gate
+	tweenWeightSlice(cfg.WeightIH_o, input, scaledRate)
+	tweenWeightSlice(cfg.WeightHH_o, input, scaledRate)
+	tweenBiasSlice(cfg.BiasH_o, avgGap, rate*0.1)
 }
 
 // tweenNorm handles LayerNorm and RMSNorm
@@ -513,44 +408,17 @@ func (ts *TweenState) tweenNorm(cfg *LayerConfig, gaps []float32, rate float32) 
 }
 
 // tweenSwiGLU handles SwiGLU gated activation layers
-// SwiGLU: output = silu(gate(x)) * up(x), then down projection
-// - Gate: Controls flow (binary decision) - needs strong signal
-// - Up: Carries the actual values - moves toward gap
-// - Down: Projects to output - uses gap as direct signal
 func (ts *TweenState) tweenSwiGLU(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
-	// Calculate gradient of gap (how fast is error changing?)
 	avgGap := avgSlice(gaps)
+	scaledRate := rate * avgGap * 0.001
 
-	// Also calculate variance of gaps - if uniform, maybe everything is equally wrong
-	// If varied, some outputs are more wrong than others
-	gapVar := float32(0)
-	for _, g := range gaps {
-		diff := g - avgGap
-		gapVar += diff * diff
-	}
-	if len(gaps) > 0 {
-		gapVar /= float32(len(gaps))
-	}
+	tweenWeightSlice(cfg.GateWeights, input, scaledRate)
+	tweenWeightSlice(cfg.UpWeights, input, scaledRate)
+	tweenWeightSlice(cfg.DownWeights, gaps, scaledRate)
 
-	// Gate: Controls flow - higher rate when all gaps are similar (uniform error)
-	// If gaps are varied, gate is working (letting some through, blocking others)
-	gateRate := rate * avgGap * 0.02 * (1.0 + gapVar)
-	tweenWeightSlice(cfg.GateWeights, input, gateRate)
 	tweenBiasSlice(cfg.GateBias, avgGap, rate*0.1)
-
-	// Up: Carries actual values - use per-element correlation with input
-	upRate := rate * avgGap * 0.01
-	tweenWeightSlice(cfg.UpWeights, input, upRate)
 	tweenBiasSlice(cfg.UpBias, avgGap, rate*0.1)
-
-	// Down: Projects to output - USE GAPS DIRECTLY as the signal
-	// This is the output projection, so gaps tell us exactly where each output is wrong
-	downRate := rate * 0.01
-	for i := range cfg.DownWeights {
-		gapIdx := i % len(gaps)
-		cfg.DownWeights[i] += gaps[gapIdx] * downRate
-	}
-	tweenBiasSlice(cfg.DownBias, avgGap, rate*0.2)
+	tweenBiasSlice(cfg.DownBias, avgGap, rate*0.1)
 }
 
 // Helper: tween a weight slice using input correlation
