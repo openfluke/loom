@@ -60,16 +60,51 @@ func notifyObserver(config *LayerConfig, eventType string, layerIdx int, input, 
 		Output:    output,
 		StepCount: stepCount,
 		// Grid position and model ID from the config
-		GridRow:   config.GridRow,
-		GridCol:   config.GridCol,
-		CellLayer: config.CellLayer,
-		ModelID:   config.ModelID,
+		GridRow:          config.GridRow,
+		GridCol:          config.GridCol,
+		CellLayer:        config.CellLayer,
+		ModelID:          config.ModelID,
+		BranchIdx:        -1,    // Not a branch
+		IsParallelBranch: false, // Not inside parallel
 	}
 
 	if eventType == "forward" {
 		config.Observer.OnForward(event)
 	} else {
 		config.Observer.OnBackward(event)
+	}
+}
+
+// notifyBranchObserver sends an event for a specific branch within a parallel layer
+// parentConfig is the parallel layer, branchConfig is the individual branch
+func notifyBranchObserver(parentConfig *LayerConfig, branchConfig *LayerConfig, branchIdx int, eventType string, input, output []float32, stepCount uint64) {
+	if parentConfig.Observer == nil {
+		return
+	}
+
+	stats := computeLayerStats(output, layerTypeString(branchConfig.Type), 0.0)
+
+	event := LayerEvent{
+		Type:      eventType,
+		LayerIdx:  0, // Parent's position is determined by grid coords
+		LayerType: branchConfig.Type,
+		Stats:     stats,
+		Input:     input,
+		Output:    output,
+		StepCount: stepCount,
+		// Use parent's grid position (the parallel layer's position)
+		GridRow:          parentConfig.GridRow,
+		GridCol:          parentConfig.GridCol,
+		CellLayer:        parentConfig.CellLayer,
+		ModelID:          parentConfig.ModelID,
+		BranchIdx:        branchIdx, // Which branch within the parallel layer
+		IsParallelBranch: true,      // This IS inside a parallel layer
+	}
+
+	if eventType == "forward" {
+		parentConfig.Observer.OnForward(event)
+	} else {
+		parentConfig.Observer.OnBackward(event)
 	}
 }
 

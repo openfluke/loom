@@ -187,6 +187,10 @@ type LayerEvent struct {
 	GridCol   int    `json:"grid_col"`   // Column in the grid
 	CellLayer int    `json:"cell_layer"` // Layer index within the cell
 	ModelID   string `json:"model_id"`   // Identifier for the model
+
+	// Branch tracking for parallel layers
+	BranchIdx        int  `json:"branch_idx"`         // Which branch within parallel layer (-1 if not a branch)
+	IsParallelBranch bool `json:"is_parallel_branch"` // True if this is a branch inside a parallel layer
 }
 
 // LayerObserver receives events during network execution

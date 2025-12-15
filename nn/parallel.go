@@ -93,6 +93,11 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int) ([]flo
 		branchOutputs[i] = postAct
 		branchPreActivations[i] = preAct
 
+		// Notify observer for this specific branch
+		if cfg.Observer != nil {
+			notifyBranchObserver(cfg, branchCfg, i, "forward", input, postAct, 0)
+		}
+
 		if cfg.CombineMode == "concat" || cfg.CombineMode == "" {
 			totalOutputSize += len(postAct)
 		} else if cfg.CombineMode == "grid_scatter" {
