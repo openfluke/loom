@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"strings"
@@ -50,6 +51,14 @@ func main() {
 	// NETWORK 3: Simple Dense - Normal vs Stepping Training
 	// ═══════════════════════════════════════════════════════════════════════════
 	runNetwork3NormalVsStepping()
+
+	fmt.Println("\n" + strings.Repeat("─", 80) + "\n")
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// NETWORK 4: 3D Grid Showcase (3x3)
+	// ═══════════════════════════════════════════════════════════════════════════
+	// runNetwork4GridDemo()
+	runNetwork5ParallelDemo()
 
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════════════════════════════════════════")
@@ -638,4 +647,162 @@ func saveActivity(observer *nn.RecordingObserver, filename string) {
 
 	fmt.Printf("  ✓ Saved activity to %s (%.2fs, %d events)\n",
 		filename, recording.Duration, recording.TotalEvents)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NETWORK 4: 3D Grid Showcase
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func runNetwork4GridDemo() {
+	fmt.Println("┌──────────────────────────────────────────────────────────────────────────────┐")
+	fmt.Println("│ NETWORK 4: 3D Grid Showcase (3x3 Grid of Dense Layers)                       │")
+	fmt.Println("└──────────────────────────────────────────────────────────────────────────────┘")
+	fmt.Println()
+
+	// 1. Define Network (3x3 Grid)
+	// We will manually populate 9 cells (Rows 0-2, Cols 0-2)
+	net := nn.NewNetwork(1, 3, 3, 1)
+
+	for row := 0; row < 3; row++ {
+		for col := 0; col < 3; col++ {
+			// Vary layer size based on position for visual interest
+			// outputSize := 16 + (row+col)*4
+
+			cfg := nn.LayerConfig{
+				Type: nn.LayerDense,
+				// Set dimensions for visualization metadata
+				InputHeight:  32,
+				OutputHeight: 32,
+				Activation:   nn.ActivationScaledReLU,
+			}
+
+			net.SetLayer(row, col, 0, cfg)
+		}
+	}
+
+	// 2. Initialize Weights
+	net.InitializeWeights()
+
+	// 3. Attach Observer
+	obs := nn.NewRecordingObserver("network4_grid_demo")
+	attachObserverToAllLayers(net, obs, "network4_grid_demo")
+
+	// 4. Save Telemetry
+	saveTelemetry(net, "model4_telemetry.json", "network4_grid_demo")
+
+	// 5. Run Inference (Forward Pass)
+	fmt.Println("Running 3D Grid Activity...")
+	input := make([]float32, 32)
+	for i := range input {
+		input[i] = float32(math.Sin(float64(i))) // Pattern input
+	}
+
+	// Run 10 steps of random activity
+	for i := 0; i < 10; i++ {
+		// Just forward pass
+		_, _ = net.ForwardCPU(input)
+
+		// Perturb input
+		for j := range input {
+			input[j] += float32(rand.Float64()*0.1 - 0.05)
+		}
+	}
+
+	// 6. Save Activity
+	saveActivity(obs, "model4_activity.json")
+
+	fmt.Printf("✓ Network 4 complete\n")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NETWORK 5: Parallel/Link Showcase
+// ═══════════════════════════════════════════════════════════════════════════════
+
+func runNetwork5ParallelDemo() {
+	fmt.Println("┌──────────────────────────────────────────────────────────────────────────────┐")
+	fmt.Println("│ NETWORK 5: Parallel/Link Showcase (Central Hub -> Corners)                   │")
+	fmt.Println("└──────────────────────────────────────────────────────────────────────────────┘")
+	fmt.Println()
+
+	// 1. Define Network (3x3 Grid)
+	net := nn.NewNetwork(1, 3, 3, 1)
+
+	// Configure the grid
+	// Corners (0,0), (0,2), (2,0), (2,2) will receive specific "signals"
+	// Center (1,1) will be the distributor
+
+	// Define branch config for the distributor
+	// We want 4 branches, each targeting a corner
+	branches := []nn.LayerConfig{
+		{Type: nn.LayerDense, InputHeight: 16, OutputHeight: 16, Activation: nn.ActivationTanh}, // TL
+		{Type: nn.LayerDense, InputHeight: 16, OutputHeight: 16, Activation: nn.ActivationTanh}, // TR
+		{Type: nn.LayerDense, InputHeight: 16, OutputHeight: 16, Activation: nn.ActivationTanh}, // BL
+		{Type: nn.LayerDense, InputHeight: 16, OutputHeight: 16, Activation: nn.ActivationTanh}, // BR
+	}
+
+	distributorCfg := nn.LayerConfig{
+		Type:             nn.LayerParallel,
+		ParallelBranches: branches,
+		CombineMode:      "grid_scatter",
+		GridOutputRows:   3,
+		GridOutputCols:   3,
+		GridOutputLayers: 1,
+		GridPositions: []nn.GridPosition{
+			{BranchIndex: 0, TargetRow: 0, TargetCol: 0, TargetLayer: 0}, // Top-Left
+			{BranchIndex: 1, TargetRow: 0, TargetCol: 2, TargetLayer: 0}, // Top-Right
+			{BranchIndex: 2, TargetRow: 2, TargetCol: 0, TargetLayer: 0}, // Bottom-Left
+			{BranchIndex: 3, TargetRow: 2, TargetCol: 2, TargetLayer: 0}, // Bottom-Right
+		},
+		InputHeight: 16, // Input to the parallel block
+		// OutputHeight is implicitly derived from grid scatter (total size of grid) if used elsewhere
+	}
+
+	for row := 0; row < 3; row++ {
+		for col := 0; col < 3; col++ {
+			if row == 1 && col == 1 {
+				// Center is the parallel distributor
+				net.SetLayer(row, col, 0, distributorCfg)
+			} else {
+				// Others are just standard dense layers acting as "receivers" or "processors"
+				cfg := nn.LayerConfig{
+					Type:         nn.LayerDense,
+					InputHeight:  16,
+					OutputHeight: 16,
+					Activation:   nn.ActivationScaledReLU,
+				}
+				net.SetLayer(row, col, 0, cfg)
+			}
+		}
+	}
+
+	// 2. Initialize Weights
+	net.InitializeWeights()
+
+	// 3. Attach Observer
+	obs := nn.NewRecordingObserver("network5_parallel_demo")
+	attachObserverToAllLayers(net, obs, "network5_parallel_demo")
+
+	// 4. Save Telemetry
+	saveTelemetry(net, "model5_telemetry.json", "network5_parallel_demo")
+
+	// 5. Run Inference
+	fmt.Println("Running Distributed Activity...")
+	input := make([]float32, 16) // Matching input size
+	for i := range input {
+		input[i] = float32(math.Sin(float64(i)))
+	}
+
+	// Run 15 steps
+	for i := 0; i < 15; i++ {
+		_, _ = net.ForwardCPU(input)
+		// Perturb
+		for j := range input {
+			input[j] += float32(rand.Float64()*0.2 - 0.1)
+		}
+	}
+
+	// 6. Save Activity
+	saveActivity(obs, "model5_activity.json")
+
+	fmt.Printf("✓ Network 5 complete\n")
 }
