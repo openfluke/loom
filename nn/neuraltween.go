@@ -48,12 +48,30 @@ type TweenState struct {
 	// === TUNABLE LEARNING RATE MULTIPLIERS ===
 	// These can be adjusted to improve performance for different layer types
 	DenseRate     float32 // Default: 1.0, multiplier for Dense layers
-	RNNRate       float32 // Default: 0.1, multiplier for RNN layers
-	LSTMRate      float32 // Default: 0.1, multiplier for LSTM layers
-	AttentionRate float32 // Default: 0.1, multiplier for Attention layers
+	RNNRate       float32 // Default: 0.5, multiplier for RNN layers
+	LSTMRate      float32 // Default: 0.5, multiplier for LSTM layers
+	AttentionRate float32 // Default: 0.2, multiplier for Attention layers
 	NormRate      float32 // Default: 0.1, multiplier for LayerNorm/RMSNorm
-	SwiGLURate    float32 // Default: 0.05, multiplier for SwiGLU layers
+	SwiGLURate    float32 // Default: 0.2, multiplier for SwiGLU layers
 	Conv2DRate    float32 // Default: 0.1, multiplier for Conv2D layers
+
+	// === MOMENTUM & UPDATE SCALING ===
+	Momentum             float32 // Default: 0.9, momentum for weight updates
+	BiasRateMultiplier   float32 // Default: 0.1, scale factor for bias updates
+	WeightRateMultiplier float32 // Default: 0.01, scale factor for weight updates
+
+	// === BACKWARD PASS CLAMPING ===
+	// Clamp ranges for backward target estimation per activation type
+	TanhClampMin    float32 // Default: -0.95
+	TanhClampMax    float32 // Default: 0.95
+	SigmoidClampMin float32 // Default: 0.05
+	SigmoidClampMax float32 // Default: 0.95
+	ReLUClampMax    float32 // Default: 10.0, prevents exploding targets
+
+	// === TRAINING BEHAVIOR ===
+	EarlyStopThreshold float64 // Default: 95.0, stop training when score exceeds this
+	EvalFrequency      int     // Default: 5, evaluate every N epochs
+	LinkBudgetScale    float32 // Default: 0.5, how much link budget affects learning rate
 }
 
 // NewTweenState creates tween state with tunable defaults
@@ -69,14 +87,28 @@ func NewTweenState(n *Network) *TweenState {
 		BestWeights:     make([][][]float32, total),
 		BestBiases:      make([][][]float32, total),
 		TotalLayers:     total,
-		// Default learning rate multipliers - TUNE THESE!
-		DenseRate:     1.0, // Dense works well with base rate
-		RNNRate:       0.5, // RNN needs higher rate (was 0.001!)
-		LSTMRate:      0.5, // LSTM needs higher rate (was 0.001!)
-		AttentionRate: 0.2, // Attention needs same rate as Dense
-		NormRate:      0.1, // Norm layers work well with lower rate
-		SwiGLURate:    0.2, // SwiGLU gated activation
-		Conv2DRate:    0.1, // Conv2D
+		// Layer-specific learning rate multipliers
+		DenseRate:     1.0,
+		RNNRate:       0.5,
+		LSTMRate:      0.5,
+		AttentionRate: 0.2,
+		NormRate:      0.1,
+		SwiGLURate:    0.2,
+		Conv2DRate:    0.1,
+		// Momentum & update scaling
+		Momentum:             0.9,
+		BiasRateMultiplier:   0.1,
+		WeightRateMultiplier: 0.01,
+		// Backward pass clamping
+		TanhClampMin:    -0.95,
+		TanhClampMax:    0.95,
+		SigmoidClampMin: 0.05,
+		SigmoidClampMax: 0.95,
+		ReLUClampMax:    10.0,
+		// Training behavior
+		EarlyStopThreshold: 95.0,
+		EvalFrequency:      5,
+		LinkBudgetScale:    0.5,
 	}
 
 	// Init momentum
@@ -157,11 +189,13 @@ func (ts *TweenState) BackwardPass(n *Network, targetClass int, outputSize int) 
 				estimated[in] = importance / float32(totalWeight)
 			}
 
-			// Clamp to valid activation range
+			// Clamp to valid activation range using configurable bounds
 			if cfg.Activation == ActivationTanh {
-				estimated[in] = clamp(estimated[in], -0.95, 0.95)
+				estimated[in] = clamp(estimated[in], ts.TanhClampMin, ts.TanhClampMax)
 			} else if cfg.Activation == ActivationSigmoid {
-				estimated[in] = clamp(estimated[in], 0.05, 0.95)
+				estimated[in] = clamp(estimated[in], ts.SigmoidClampMin, ts.SigmoidClampMax)
+			} else if cfg.Activation == ActivationScaledReLU || cfg.Activation == ActivationLeakyReLU {
+				estimated[in] = clamp(estimated[in], 0, ts.ReLUClampMax)
 			}
 		}
 
@@ -214,7 +248,7 @@ func (ts *TweenState) CalculateLinkBudgets() {
 // TweenWeights: Adjust weights to close the gap at each layer
 // Supports ALL layer types: Dense, Conv2D, Attention, LSTM, LayerNorm, SwiGLU
 func (ts *TweenState) TweenWeights(n *Network, rate float32) {
-	mom := float32(0.9)
+	mom := ts.Momentum
 
 	for i := 0; i < ts.TotalLayers; i++ {
 		cfg := ts.getLayerCfg(n, i)
@@ -230,9 +264,9 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 			continue
 		}
 
-		// Scale rate by link budget
+		// Scale rate by link budget using configurable scale
 		budget := ts.LinkBudgets[i]
-		layerRate := rate * (0.5 + budget*0.5)
+		layerRate := rate * (ts.LinkBudgetScale + budget*ts.LinkBudgetScale)
 
 		// Calculate output gap
 		minOut := len(actual)
@@ -275,18 +309,18 @@ func (ts *TweenState) tweenDense(cfg *LayerConfig, input, gaps []float32, rate, 
 	for out := 0; out < len(gaps) && out < cfg.OutputHeight; out++ {
 		gap := gaps[out]
 
-		// Update bias
+		// Update bias using configurable multiplier
 		if out < len(cfg.Bias) {
-			cfg.Bias[out] += rate * gap * 0.1
+			cfg.Bias[out] += rate * gap * ts.BiasRateMultiplier
 		}
 
-		// Update weights: Hebbian with gap
+		// Update weights: Hebbian with gap using configurable multiplier
 		for in := 0; in < len(input) && in < cfg.InputHeight; in++ {
 			wIdx := in*cfg.OutputHeight + out
 			if wIdx >= len(cfg.Kernel) {
 				continue
 			}
-			delta := rate * input[in] * gap * 0.01
+			delta := rate * input[in] * gap * ts.WeightRateMultiplier
 			if layerIdx < len(ts.WeightVel) && wIdx < len(ts.WeightVel[layerIdx]) {
 				ts.WeightVel[layerIdx][wIdx] = mom*ts.WeightVel[layerIdx][wIdx] + (1-mom)*delta
 				cfg.Kernel[wIdx] += ts.WeightVel[layerIdx][wIdx]
@@ -333,7 +367,7 @@ func (ts *TweenState) tweenConv2D(cfg *LayerConfig, input, gaps []float32, rate,
 	// Update filter weights based on gap
 	kernelPerFilter := len(cfg.Kernel) / numFilters
 	for f := 0; f < numFilters; f++ {
-		gap := perFilterGap[f] * rate * 0.01
+		gap := perFilterGap[f] * rate * ts.WeightRateMultiplier
 		for k := 0; k < kernelPerFilter; k++ {
 			idx := f*kernelPerFilter + k
 			if idx < len(cfg.Kernel) {
@@ -341,7 +375,7 @@ func (ts *TweenState) tweenConv2D(cfg *LayerConfig, input, gaps []float32, rate,
 			}
 		}
 		if f < len(cfg.Bias) {
-			cfg.Bias[f] += perFilterGap[f] * rate * 0.1
+			cfg.Bias[f] += perFilterGap[f] * rate * ts.BiasRateMultiplier
 		}
 	}
 }
@@ -628,7 +662,7 @@ func (ts *TweenState) Train(n *Network, inputs [][]float32, expected []float64, 
 		avgLoss := epochLoss / float32(len(inputs))
 		ts.LossHistory = append(ts.LossHistory, avgLoss)
 
-		if epoch%5 == 0 || epoch == epochs-1 {
+		if epoch%ts.EvalFrequency == 0 || epoch == epochs-1 {
 			metrics, _ := n.EvaluateNetwork(inputs, expected)
 			if metrics.Score > ts.BestScore {
 				ts.BestScore = metrics.Score
@@ -637,7 +671,7 @@ func (ts *TweenState) Train(n *Network, inputs [][]float32, expected []float64, 
 			if callback != nil {
 				callback(epoch+1, avgLoss, metrics)
 			}
-			if metrics.Score >= 95 {
+			if metrics.Score >= ts.EarlyStopThreshold {
 				ts.RestoreBest(n)
 				return
 			}
