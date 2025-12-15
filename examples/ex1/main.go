@@ -87,6 +87,7 @@ func test1_tween() {
 	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
 
 	ts := nn.NewTweenState(network)
+	ts.Verbose = true // Show link budgets, depth barrier, and training progress
 
 	start := time.Now()
 	epochs := 50
@@ -157,6 +158,7 @@ func test3_deep_tween() {
 	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
 
 	ts := nn.NewTweenState(network)
+	ts.Verbose = true // Show link budgets, depth barrier, and training progress
 
 	start := time.Now()
 	epochs := 100
@@ -193,6 +195,7 @@ func test4_iris() {
 	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
 
 	ts := nn.NewTweenState(network)
+	ts.Verbose = true // Show link budgets, depth barrier, and training progress
 
 	start := time.Now()
 	epochs := 300
@@ -231,7 +234,7 @@ func test5_mega() {
 	inputs, expected := generateMegaData(50000)
 	fmt.Printf("Dataset: %d samples, %d features, 8 classes\n\n", len(inputs), len(inputs[0]))
 
-	epochs := 20 // Each epoch = 50K forward passes
+	epochs := 2 // Each epoch = 50K forward passes
 
 	// --- Neural Tweening ---
 	fmt.Println("▶ NEURAL TWEENING:")
@@ -240,6 +243,7 @@ func test5_mega() {
 	fmt.Printf("  Before: Score=%.1f/100 (sampled)\n", initial.Score)
 
 	ts := nn.NewTweenState(networkTween)
+	ts.Verbose = true // Show link budgets, depth barrier, and training progress
 	startTween := time.Now()
 
 	ts.Train(networkTween, inputs, expected, epochs, 0.3,
@@ -358,6 +362,7 @@ func test6_layer_types() {
 				return
 			}
 			ts := nn.NewTweenState(netTween)
+			ts.Verbose = true // Show link budgets, depth barrier, and training progress
 			startTween := time.Now()
 			ts.Train(netTween, inputs, expected, epochs, 0.3, nil)
 			tweenTime := time.Since(startTween)
@@ -467,6 +472,7 @@ func test7_deep_layers() {
 
 			// --- Tween ---
 			ts := nn.NewTweenState(netTween)
+			ts.Verbose = true // Show link budgets, depth barrier, and training progress
 			startTween := time.Now()
 			ts.Train(netTween, inputs, expected, epochs, 0.3, nil)
 			tweenTime := time.Since(startTween)
@@ -558,6 +564,7 @@ func test8_spiral() {
 	// ============ TWEEN ============
 	fmt.Println("▶ TWEEN (Spiral):")
 	ts := nn.NewTweenState(netTween)
+	ts.Verbose = true // Show link budgets, depth barrier, and training progress
 	startTween := time.Now()
 	// High rate because we are confident in the features
 	ts.Train(netTween, inputs, expected, epochs, 0.5, nil)

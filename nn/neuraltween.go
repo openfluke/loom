@@ -1,6 +1,7 @@
 package nn
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 )
@@ -72,6 +73,39 @@ type TweenState struct {
 	EarlyStopThreshold float64 // Default: 95.0, stop training when score exceeds this
 	EvalFrequency      int     // Default: 5, evaluate every N epochs
 	LinkBudgetScale    float32 // Default: 0.5, how much link budget affects learning rate
+
+	// === VISUALIZATION & DEBUGGING ===
+	Verbose bool // If true, print training progress to console
+
+	// Link budget history: [epoch][layer] = budget value (for heatmap visualization)
+	LinkBudgetHistory [][]float32
+
+	// Gap history: [epoch][layer] = gap value (for tracking convergence per layer)
+	GapHistory [][]float32
+
+	// Depth barrier: cumulative signal preservation from input to each layer
+	// DepthBarrier[i] = product of LinkBudgets[0..i], shows how much original info survives
+	DepthBarrier []float32
+
+	// Depth barrier history: [epoch] = overall depth barrier (product of all budgets)
+	DepthBarrierHistory []float32
+
+	// Per-epoch metrics for plotting
+	EpochMetrics []TweenEpochMetrics
+}
+
+// TweenEpochMetrics captures detailed per-epoch information for visualization
+type TweenEpochMetrics struct {
+	Epoch           int
+	AvgLoss         float32
+	Score           float64
+	AvgLinkBudget   float32
+	MinLinkBudget   float32
+	MaxLinkBudget   float32
+	AvgGap          float32
+	MaxGap          float32
+	DepthBarrier    float32 // Overall info preservation (product of all budgets)
+	BottleneckLayer int     // Layer with lowest link budget
 }
 
 // NewTweenState creates tween state with tunable defaults
@@ -109,6 +143,13 @@ func NewTweenState(n *Network) *TweenState {
 		EarlyStopThreshold: 95.0,
 		EvalFrequency:      5,
 		LinkBudgetScale:    0.5,
+		// Visualization defaults
+		Verbose:             false,
+		LinkBudgetHistory:   make([][]float32, 0),
+		GapHistory:          make([][]float32, 0),
+		DepthBarrier:        make([]float32, total),
+		DepthBarrierHistory: make([]float32, 0),
+		EpochMetrics:        make([]TweenEpochMetrics, 0),
 	}
 
 	// Init momentum
@@ -242,6 +283,16 @@ func (ts *TweenState) CalculateLinkBudgets() {
 		}
 
 		ts.Gaps[i] = gapSum / float32(minLen)
+	}
+
+	// Calculate depth barrier: cumulative signal preservation
+	// DepthBarrier[i] = how much of the original input signal survives to layer i
+	cumulative := float32(1.0)
+	for i := 0; i < ts.TotalLayers; i++ {
+		cumulative *= ts.LinkBudgets[i]
+		if i < len(ts.DepthBarrier) {
+			ts.DepthBarrier[i] = cumulative
+		}
 	}
 }
 
@@ -662,16 +713,31 @@ func (ts *TweenState) Train(n *Network, inputs [][]float32, expected []float64, 
 		avgLoss := epochLoss / float32(len(inputs))
 		ts.LossHistory = append(ts.LossHistory, avgLoss)
 
+		// Record history for visualization (every epoch)
+		ts.recordEpochHistory(epoch)
+
 		if epoch%ts.EvalFrequency == 0 || epoch == epochs-1 {
 			metrics, _ := n.EvaluateNetwork(inputs, expected)
 			if metrics.Score > ts.BestScore {
 				ts.BestScore = metrics.Score
 				ts.SaveBest(n)
 			}
+
+			// Record detailed epoch metrics
+			ts.recordEpochMetrics(epoch+1, avgLoss, metrics)
+
+			// Verbose output
+			if ts.Verbose {
+				ts.printVerboseProgress(epoch+1, epochs, avgLoss, metrics)
+			}
+
 			if callback != nil {
 				callback(epoch+1, avgLoss, metrics)
 			}
 			if metrics.Score >= ts.EarlyStopThreshold {
+				if ts.Verbose {
+					fmt.Printf("\n🎯 Early stop! Score %.2f%% >= threshold %.2f%%\n", metrics.Score, ts.EarlyStopThreshold)
+				}
 				ts.RestoreBest(n)
 				return
 			}
@@ -680,6 +746,106 @@ func (ts *TweenState) Train(n *Network, inputs [][]float32, expected []float64, 
 	if ts.BestScore > 0 {
 		ts.RestoreBest(n)
 	}
+}
+
+// recordEpochHistory captures link budgets and gaps for heatmap visualization
+func (ts *TweenState) recordEpochHistory(epoch int) {
+	// Copy current link budgets
+	budgets := make([]float32, len(ts.LinkBudgets))
+	copy(budgets, ts.LinkBudgets)
+	ts.LinkBudgetHistory = append(ts.LinkBudgetHistory, budgets)
+
+	// Copy current gaps
+	gaps := make([]float32, len(ts.Gaps))
+	copy(gaps, ts.Gaps)
+	ts.GapHistory = append(ts.GapHistory, gaps)
+
+	// Record overall depth barrier (product of all budgets)
+	depthBarrier := float32(1.0)
+	for _, b := range ts.LinkBudgets {
+		depthBarrier *= b
+	}
+	ts.DepthBarrierHistory = append(ts.DepthBarrierHistory, depthBarrier)
+}
+
+// recordEpochMetrics captures detailed metrics for analysis
+func (ts *TweenState) recordEpochMetrics(epoch int, avgLoss float32, metrics *DeviationMetrics) {
+	avgBudget, minBudget, maxBudget := ts.GetBudgetSummary()
+	avgGap, maxGap := ts.GetGapSummary()
+
+	// Find bottleneck layer (lowest link budget)
+	bottleneck := 0
+	minB := float32(1.0)
+	for i, b := range ts.LinkBudgets {
+		if b < minB {
+			minB = b
+			bottleneck = i
+		}
+	}
+
+	// Overall depth barrier
+	depthBarrier := float32(1.0)
+	for _, b := range ts.LinkBudgets {
+		depthBarrier *= b
+	}
+
+	ts.EpochMetrics = append(ts.EpochMetrics, TweenEpochMetrics{
+		Epoch:           epoch,
+		AvgLoss:         avgLoss,
+		Score:           metrics.Score,
+		AvgLinkBudget:   avgBudget,
+		MinLinkBudget:   minBudget,
+		MaxLinkBudget:   maxBudget,
+		AvgGap:          avgGap,
+		MaxGap:          maxGap,
+		DepthBarrier:    depthBarrier,
+		BottleneckLayer: bottleneck,
+	})
+}
+
+// printVerboseProgress prints detailed training progress
+func (ts *TweenState) printVerboseProgress(epoch, totalEpochs int, avgLoss float32, metrics *DeviationMetrics) {
+	avgBudget, minBudget, _ := ts.GetBudgetSummary()
+	avgGap, _ := ts.GetGapSummary()
+
+	// Find bottleneck
+	bottleneck := 0
+	minB := float32(1.0)
+	for i, b := range ts.LinkBudgets {
+		if b < minB {
+			minB = b
+			bottleneck = i
+		}
+	}
+
+	// Overall depth barrier
+	depthBarrier := float32(1.0)
+	for _, b := range ts.LinkBudgets {
+		depthBarrier *= b
+	}
+
+	// Print with visual indicators
+	fmt.Printf("Epoch %4d/%d | Loss: %.4f | Score: %5.1f%% | ",
+		epoch, totalEpochs, avgLoss, metrics.Score)
+	fmt.Printf("LinkBudget: %.3f (min %.3f @L%d) | ", avgBudget, minBudget, bottleneck)
+	fmt.Printf("Gap: %.4f | DepthBarrier: %.4f", avgGap, depthBarrier)
+
+	// Visual heatmap bar for link budgets
+	fmt.Print(" [")
+	for _, b := range ts.LinkBudgets {
+		if b > 0.8 {
+			fmt.Print("█") // High budget
+		} else if b > 0.6 {
+			fmt.Print("▓")
+		} else if b > 0.4 {
+			fmt.Print("▒")
+		} else if b > 0.2 {
+			fmt.Print("░")
+		} else {
+			fmt.Print("·") // Low budget (bottleneck)
+		}
+	}
+	fmt.Println("]")
 }
 
 func (ts *TweenState) SaveBest(n *Network) {
