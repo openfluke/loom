@@ -44,9 +44,19 @@ type TweenState struct {
 	TotalLayers int
 	TweenSteps  int
 	LossHistory []float32
+
+	// === TUNABLE LEARNING RATE MULTIPLIERS ===
+	// These can be adjusted to improve performance for different layer types
+	DenseRate     float32 // Default: 1.0, multiplier for Dense layers
+	RNNRate       float32 // Default: 0.1, multiplier for RNN layers
+	LSTMRate      float32 // Default: 0.1, multiplier for LSTM layers
+	AttentionRate float32 // Default: 0.1, multiplier for Attention layers
+	NormRate      float32 // Default: 0.1, multiplier for LayerNorm/RMSNorm
+	SwiGLURate    float32 // Default: 0.05, multiplier for SwiGLU layers
+	Conv2DRate    float32 // Default: 0.1, multiplier for Conv2D layers
 }
 
-// NewTweenState creates tween state
+// NewTweenState creates tween state with tunable defaults
 func NewTweenState(n *Network) *TweenState {
 	total := n.TotalLayers()
 	ts := &TweenState{
@@ -59,6 +69,14 @@ func NewTweenState(n *Network) *TweenState {
 		BestWeights:     make([][][]float32, total),
 		BestBiases:      make([][][]float32, total),
 		TotalLayers:     total,
+		// Default learning rate multipliers - TUNE THESE!
+		DenseRate:     1.0, // Dense works well with base rate
+		RNNRate:       0.5, // RNN needs higher rate (was 0.001!)
+		LSTMRate:      0.5, // LSTM needs higher rate (was 0.001!)
+		AttentionRate: 0.3, // Attention needs higher rate (was 0.001!)
+		NormRate:      0.1, // Norm layers work well with lower rate
+		SwiGLURate:    0.2, // SwiGLU gated activation
+		Conv2DRate:    0.1, // Conv2D
 	}
 
 	// Init momentum
@@ -226,22 +244,22 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 			outputGaps[j] = target[j] - actual[j]
 		}
 
-		// Tween based on layer type
+		// Tween based on layer type - use configurable rates!
 		switch cfg.Type {
 		case LayerDense:
-			ts.tweenDense(cfg, input, outputGaps, layerRate, mom, i)
+			ts.tweenDense(cfg, input, outputGaps, layerRate*ts.DenseRate, mom, i)
 		case LayerConv2D:
-			ts.tweenConv2D(cfg, input, outputGaps, layerRate, mom)
+			ts.tweenConv2D(cfg, input, outputGaps, layerRate*ts.Conv2DRate, mom)
 		case LayerMultiHeadAttention:
-			ts.tweenAttention(cfg, input, outputGaps, layerRate, mom)
+			ts.tweenAttention(cfg, input, outputGaps, layerRate*ts.AttentionRate, mom)
 		case LayerRNN:
-			ts.tweenRNN(cfg, input, outputGaps, layerRate, mom)
+			ts.tweenRNN(cfg, input, outputGaps, layerRate*ts.RNNRate, mom)
 		case LayerLSTM:
-			ts.tweenLSTM(cfg, input, outputGaps, layerRate, mom)
+			ts.tweenLSTM(cfg, input, outputGaps, layerRate*ts.LSTMRate, mom)
 		case LayerNorm, LayerRMSNorm:
-			ts.tweenNorm(cfg, outputGaps, layerRate)
+			ts.tweenNorm(cfg, outputGaps, layerRate*ts.NormRate)
 		case LayerSwiGLU:
-			ts.tweenSwiGLU(cfg, input, outputGaps, layerRate, mom)
+			ts.tweenSwiGLU(cfg, input, outputGaps, layerRate*ts.SwiGLURate, mom)
 			// LayerSoftmax, LayerResidual, LayerParallel - no trainable weights
 		}
 
@@ -357,7 +375,7 @@ func (ts *TweenState) tweenAttention(cfg *LayerConfig, input, gaps []float32, ra
 // tweenRNN handles Recurrent Neural Network layers
 func (ts *TweenState) tweenRNN(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
 	avgGap := avgSlice(gaps)
-	scaledRate := rate * avgGap * 0.001
+	scaledRate := rate * avgGap * 0.1 // Increased from 0.001!
 
 	tweenWeightSlice(cfg.WeightIH, input, scaledRate)
 	tweenWeightSlice(cfg.WeightHH, input, scaledRate)
@@ -367,7 +385,7 @@ func (ts *TweenState) tweenRNN(cfg *LayerConfig, input, gaps []float32, rate, mo
 // tweenLSTM handles Long Short-Term Memory layers
 func (ts *TweenState) tweenLSTM(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
 	avgGap := avgSlice(gaps)
-	scaledRate := rate * avgGap * 0.001
+	scaledRate := rate * avgGap * 0.1 // Increased from 0.001!
 
 	// Input gate
 	tweenWeightSlice(cfg.WeightIH_i, input, scaledRate)

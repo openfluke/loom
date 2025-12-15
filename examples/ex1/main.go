@@ -407,7 +407,7 @@ func test6_layer_types() {
 
 func test7_deep_layers() {
 	fmt.Println("\n═══════════════════════════════════════════════════════════════")
-	fmt.Println(" TEST 7: DEEP LAYER TYPES (3x each layer)")
+	fmt.Println(" TEST 7: DEEP LAYER TYPES (5x each layer)")
 	fmt.Println(" The Ultimate Vanishing Gradient Test")
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 
@@ -418,12 +418,12 @@ func test7_deep_layers() {
 	}
 
 	tests := []LayerTest{
-		{"3x Dense", createDeep3xDenseNet, generateSimple16to4},
-		{"3x LayerNorm", createDeep3xLayerNormNet, generateSimple16to4},
-		{"3x RMSNorm", createDeep3xRMSNormNet, generateSimple16to4},
-		{"3x RNN", createDeep3xRNNNet, generateSimple16to4},
-		{"3x LSTM", createDeep3xLSTMNet, generateSimple16to4},
-		{"3x Attention", createDeep3xAttentionNet, generateSimple16to4},
+		{"5x Dense", createDeep5xDenseNet, generateSimple16to4},
+		{"5x LayerNorm", createDeep5xLayerNormNet, generateSimple16to4},
+		{"5x RMSNorm", createDeep5xRMSNormNet, generateSimple16to4},
+		{"5x RNN", createDeep5xRNNNet, generateSimple16to4},
+		{"5x LSTM", createDeep5xLSTMNet, generateSimple16to4},
+		{"5x Attention", createDeep5xAttentionNet, generateSimple16to4},
 	}
 
 	epochs := 100
@@ -497,17 +497,19 @@ func test7_deep_layers() {
 	}
 
 	fmt.Println("\n═══════════════════════════════════════════════════════════════")
-	fmt.Println(" SUMMARY - Deep Layer Types (3x each)")
+	fmt.Println(" SUMMARY - Deep Layer Types (5x each)")
 	fmt.Println("═══════════════════════════════════════════════════════════════")
 	for _, r := range results {
 		fmt.Println(r)
 	}
 }
 
-// DEEP Network creators (3 layers of each type)
-func createDeep3xDenseNet() *nn.Network {
-	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":5,"layers":[
+// DEEP Network creators (5 layers of each type)
+func createDeep5xDenseNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":7,"layers":[
 		{"type":"dense","activation":"tanh","input_height":16,"output_height":32},
+		{"type":"dense","activation":"tanh","input_height":32,"output_height":32},
+		{"type":"dense","activation":"tanh","input_height":32,"output_height":32},
 		{"type":"dense","activation":"tanh","input_height":32,"output_height":32},
 		{"type":"dense","activation":"tanh","input_height":32,"output_height":32},
 		{"type":"dense","activation":"tanh","input_height":32,"output_height":16},
@@ -518,9 +520,13 @@ func createDeep3xDenseNet() *nn.Network {
 	return n
 }
 
-func createDeep3xLayerNormNet() *nn.Network {
-	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":7,"layers":[
+func createDeep5xLayerNormNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":11,"layers":[
 		{"type":"dense","activation":"tanh","input_height":16,"output_height":32},
+		{"type":"layernorm","norm_size":32},
+		{"type":"dense","activation":"tanh","input_height":32,"output_height":32},
+		{"type":"layernorm","norm_size":32},
+		{"type":"dense","activation":"tanh","input_height":32,"output_height":32},
 		{"type":"layernorm","norm_size":32},
 		{"type":"dense","activation":"tanh","input_height":32,"output_height":32},
 		{"type":"layernorm","norm_size":32},
@@ -533,9 +539,13 @@ func createDeep3xLayerNormNet() *nn.Network {
 	return n
 }
 
-func createDeep3xRMSNormNet() *nn.Network {
-	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":7,"layers":[
+func createDeep5xRMSNormNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":11,"layers":[
 		{"type":"dense","activation":"tanh","input_height":16,"output_height":32},
+		{"type":"rmsnorm","norm_size":32},
+		{"type":"dense","activation":"tanh","input_height":32,"output_height":32},
+		{"type":"rmsnorm","norm_size":32},
+		{"type":"dense","activation":"tanh","input_height":32,"output_height":32},
 		{"type":"rmsnorm","norm_size":32},
 		{"type":"dense","activation":"tanh","input_height":32,"output_height":32},
 		{"type":"rmsnorm","norm_size":32},
@@ -548,9 +558,11 @@ func createDeep3xRMSNormNet() *nn.Network {
 	return n
 }
 
-func createDeep3xRNNNet() *nn.Network {
-	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":5,"layers":[
+func createDeep5xRNNNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":7,"layers":[
 		{"type":"dense","activation":"tanh","input_height":16,"output_height":16},
+		{"type":"rnn","hidden_size":16,"input_size":16,"seq_length":1},
+		{"type":"rnn","hidden_size":16,"input_size":16,"seq_length":1},
 		{"type":"rnn","hidden_size":16,"input_size":16,"seq_length":1},
 		{"type":"rnn","hidden_size":16,"input_size":16,"seq_length":1},
 		{"type":"rnn","hidden_size":16,"input_size":16,"seq_length":1},
@@ -561,9 +573,11 @@ func createDeep3xRNNNet() *nn.Network {
 	return n
 }
 
-func createDeep3xLSTMNet() *nn.Network {
-	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":5,"layers":[
+func createDeep5xLSTMNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":7,"layers":[
 		{"type":"dense","activation":"tanh","input_height":16,"output_height":16},
+		{"type":"lstm","hidden_size":16,"input_size":16,"seq_length":1},
+		{"type":"lstm","hidden_size":16,"input_size":16,"seq_length":1},
 		{"type":"lstm","hidden_size":16,"input_size":16,"seq_length":1},
 		{"type":"lstm","hidden_size":16,"input_size":16,"seq_length":1},
 		{"type":"lstm","hidden_size":16,"input_size":16,"seq_length":1},
@@ -574,9 +588,11 @@ func createDeep3xLSTMNet() *nn.Network {
 	return n
 }
 
-func createDeep3xAttentionNet() *nn.Network {
-	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":5,"layers":[
+func createDeep5xAttentionNet() *nn.Network {
+	cfg := `{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":7,"layers":[
 		{"type":"dense","activation":"tanh","input_height":16,"output_height":16},
+		{"type":"mha","d_model":16,"num_heads":2,"seq_length":1},
+		{"type":"mha","d_model":16,"num_heads":2,"seq_length":1},
 		{"type":"mha","d_model":16,"num_heads":2,"seq_length":1},
 		{"type":"mha","d_model":16,"num_heads":2,"seq_length":1},
 		{"type":"mha","d_model":16,"num_heads":2,"seq_length":1},
