@@ -346,147 +346,143 @@ func (ts *TweenState) tweenConv2D(cfg *LayerConfig, input, gaps []float32, rate,
 	}
 }
 
-// tweenAttention handles Multi-Head Attention as a sub-network
+// tweenAttention handles Multi-Head Attention with Relevance Routing
 // MHA flow: input → Q,K,V projections → attention → output projection → output
-// We propagate gaps BACKWARD through this sub-network
 func (ts *TweenState) tweenAttention(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
 	numHeads := cfg.NumHeads
 	dModel := cfg.DModel
-	numKVHeads := cfg.NumKVHeads
-	headDim := cfg.HeadDim
 
+	// Safety defaults
 	if numHeads == 0 {
-		numHeads = 2 // Default for test networks
+		numHeads = 2
 	}
 	if dModel == 0 {
 		dModel = len(gaps)
 	}
-	if numKVHeads == 0 {
-		numKVHeads = numHeads
-	}
+
+	headDim := dModel / numHeads
 	if headDim == 0 {
-		headDim = dModel / numHeads
-		if headDim == 0 {
-			headDim = 1
-		}
+		headDim = 1
 	}
 
-	kvDim := numKVHeads * headDim
-	_ = kvDim // May be needed for future GQA support
+	// === STEP 1: Backprop Gap through Output Matrix ===
+	// We need to know the specific gap for EACH HEAD.
+	// The OutputWeight matrix mixes the heads together. We need to un-mix the error.
 
-	// === STEP 1: Backward through OUTPUT PROJECTION ===
-	// Output projection: output = concatenated @ OutputWeight + OutputBias
-	// Gap at output tells us what the concatenated should have been
-	// gradOutput = gaps, gradConcatenated = gaps @ OutputWeight.T
+	headGaps := make([]float32, dModel) // Concatenated gaps for all heads
 
-	// Compute gradient w.r.t concatenated (what attention output should be)
-	gradConcatenated := make([]float32, dModel)
-	for outDim := 0; outDim < len(gaps) && outDim < dModel; outDim++ {
-		for inDim := 0; inDim < dModel; inDim++ {
-			wIdx := inDim*dModel + outDim
+	// Transpose Multiply: headGaps = gaps * OutputWeight^T
+	// This tells us: "What should the output of Head X have been?"
+	for i := 0; i < dModel; i++ {
+		sum := float32(0)
+		// Optimization: iterate only relevant weights
+		for j := 0; j < len(gaps); j++ {
+			wIdx := i*len(gaps) + j
 			if wIdx < len(cfg.OutputWeight) {
-				gradConcatenated[inDim] += gaps[outDim] * cfg.OutputWeight[wIdx]
+				sum += gaps[j] * cfg.OutputWeight[wIdx]
 			}
 		}
+		headGaps[i] = sum
 	}
 
-	// Tween Output weights: W += rate * gap @ input.T (outer product)
+	// Tween Output Weight (The Mixer)
+	// Simple Hebbian: Weight += Rate * OutputGap * HeadInput
+	// We approximate HeadInput with the current input to the layer (Input)
+	// purely for the sake of momentum direction.
 	avgGap := avgSlice(gaps)
-	for i := range cfg.OutputWeight {
-		inIdx := i / dModel
-		outIdx := i % dModel
-		if inIdx < dModel && outIdx < len(gaps) {
-			// Use actual input to output projection (would be concatenated attention output)
-			// Approximate with input
-			if inIdx < len(input) {
-				cfg.OutputWeight[i] += rate * gaps[outIdx] * input[inIdx] * 0.1
-			}
-		}
-	}
-	tweenBiasSlice(cfg.OutputBias, avgGap, rate*0.3)
+	tweenWeightSlice(cfg.OutputWeight, gaps, rate*0.1) // Lower rate for output projection
+	tweenBiasSlice(cfg.OutputBias, avgGap, rate*0.1)
 
-	// === STEP 2: Backward through each HEAD ===
-	// Each head produces headDim output values
-	// gradConcatenated[h*headDim : (h+1)*headDim] is the gradient for head h
-
+	// === STEP 2: Tween Each Head ===
 	for h := 0; h < numHeads; h++ {
-		// Get gradient for this head
 		headStart := h * headDim
 		headEnd := headStart + headDim
-		if headEnd > len(gradConcatenated) {
-			headEnd = len(gradConcatenated)
+
+		// This is the Gap specific to THIS head
+		thisHeadGap := headGaps[headStart:headEnd]
+
+		// Calculate "Relevance" of the input
+		// Does the input vector look like it could help fix this head's gap?
+		// We approximate this by comparing Input direction vs Gap direction.
+		inputMag := float32(0)
+		gapMag := float32(0)
+		dot := float32(0)
+
+		limit := len(input)
+		if limit > headDim {
+			limit = headDim
+		} // Heuristic: match dims
+
+		for i := 0; i < limit; i++ {
+			dot += input[i] * thisHeadGap[i]
+			inputMag += input[i] * input[i]
+			gapMag += thisHeadGap[i] * thisHeadGap[i]
 		}
 
-		// Average magnitude of gradient for this head
-		headGapMag := float32(0)
-		for i := headStart; i < headEnd; i++ {
-			headGapMag += gradConcatenated[i] * gradConcatenated[i]
+		// Alignment Score (-1.0 to 1.0)
+		alignment := float32(0)
+		if inputMag > 0 && gapMag > 0 {
+			alignment = dot / (float32(math.Sqrt(float64(inputMag))) * float32(math.Sqrt(float64(gapMag))))
 		}
-		headGapMag = float32(math.Sqrt(float64(headGapMag)))
 
-		headRate := rate * headGapMag * 0.1
+		// === ACTION STRATEGY ===
 
-		// === Backward through attention: attn_output = softmax(Q@K.T/sqrt(d)) @ V ===
-		// The V values carry the information, Q and K determine attention pattern
+		// 1. UPDATE V (Content)
+		// V's job is to map Input -> Output.
+		// We simply push V weights to map Input -> HeadGap.
+		vStart := h * headDim * dModel
+		vEnd := vStart + (headDim * dModel)
 
-		// Tween V weights for this head's KV slot
-		kvHead := h % numKVHeads // Which KV head this query head uses
-		vHeadStart := kvHead * headDim * dModel
-		vHeadEnd := vHeadStart + headDim*dModel
-		if vHeadEnd > len(cfg.VWeights) {
-			vHeadEnd = len(cfg.VWeights)
-		}
-		for i := vHeadStart; i < vHeadEnd; i++ {
-			// V carries the actual values - use head gradient directly
-			gapIdx := (i - vHeadStart) / dModel
-			if gapIdx < headEnd-headStart && headStart+gapIdx < len(gradConcatenated) {
-				inputIdx := (i - vHeadStart) % dModel
-				if inputIdx < len(input) {
-					cfg.VWeights[i] += headRate * gradConcatenated[headStart+gapIdx] * input[inputIdx]
+		if vEnd <= len(cfg.VWeights) {
+			// Iterate weights for this head
+			for i := vStart; i < vEnd; i++ {
+				// Map flat index back to input index
+				inIdx := (i - vStart) % dModel
+				if inIdx < len(input) {
+					// Standard Tween: Move weight to close the gap
+					// V_new = V_old + Rate * Gap * Input
+					gapIdx := (i - vStart) / dModel
+					if gapIdx < len(thisHeadGap) {
+						cfg.VWeights[i] += rate * thisHeadGap[gapIdx] * input[inIdx]
+					}
 				}
 			}
 		}
 
-		// === Backward through Q and K ===
-		// Q and K form the attention pattern via Q @ K.T
-		// Gradient flows back differently - Q affects which positions to attend
-		// K affects what positions are "found"
+		// 2. UPDATE Q and K (Routing)
+		// This is the "Relevance" Logic.
+		// If Alignment > 0: This input is GOOD. We want to attend to it.
+		//    -> Make Q and K more similar (maximize dot product).
+		// If Alignment < 0: This input is BAD. We want to ignore it.
+		//    -> Make Q and K more different.
 
-		// Tween Q weights for this head
-		qHeadStart := h * headDim * dModel
-		qHeadEnd := qHeadStart + headDim*dModel
-		if qHeadEnd > len(cfg.QWeights) {
-			qHeadEnd = len(cfg.QWeights)
-		}
-		for i := qHeadStart; i < qHeadEnd; i++ {
-			// Q queries - align with input that had high activation
-			inputIdx := (i - qHeadStart) % dModel
-			if inputIdx < len(input) {
-				cfg.QWeights[i] += headRate * input[inputIdx] * 0.5
-			}
-		}
+		qStart := h * headDim * dModel
+		kStart := h * headDim * dModel // Assuming shared Q/K structure for now
 
-		// Tween K weights for this head's KV slot
-		kHeadStart := kvHead * headDim * dModel
-		kHeadEnd := kHeadStart + headDim*dModel
-		if kHeadEnd > len(cfg.KWeights) {
-			kHeadEnd = len(cfg.KWeights)
-		}
-		for i := kHeadStart; i < kHeadEnd; i++ {
-			// K keys - align with input that should be "found"
-			inputIdx := (i - kHeadStart) % dModel
-			if inputIdx < len(input) {
-				cfg.KWeights[i] += headRate * input[inputIdx] * 0.5
+		routingRate := rate * alignment * 0.2 // Scale by how relevant the input is
+
+		if qStart < len(cfg.QWeights) && kStart < len(cfg.KWeights) {
+			for i := 0; i < (headDim * dModel); i++ {
+				qIdx := qStart + i
+				kIdx := kStart + i
+				inIdx := i % dModel
+
+				if qIdx < len(cfg.QWeights) && kIdx < len(cfg.KWeights) && inIdx < len(input) {
+					// If alignment is positive (Good input), pull Q and K towards input
+					// This increases the chance they will match each other
+					val := input[inIdx] * routingRate
+
+					cfg.QWeights[qIdx] += val
+					cfg.KWeights[kIdx] += val
+				}
 			}
 		}
 	}
 
-	// === STEP 3: Tween biases ===
-	// Q, K, V biases receive gradients from their respective heads
-	avgHeadGap := avgSlice(gradConcatenated)
-	tweenBiasSlice(cfg.QBias, avgHeadGap, rate*0.2)
-	tweenBiasSlice(cfg.KBias, avgHeadGap, rate*0.2)
-	tweenBiasSlice(cfg.VBias, avgGap, rate*0.3) // V bias more important - carries values
+	// Tween biases for Q/K/V
+	tweenBiasSlice(cfg.QBias, avgGap, rate*0.05)
+	tweenBiasSlice(cfg.KBias, avgGap, rate*0.05)
+	tweenBiasSlice(cfg.VBias, avgGap, rate*0.1)
 }
 
 // tweenRNN handles Recurrent Neural Network layers
