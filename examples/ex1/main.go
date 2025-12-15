@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/openfluke/loom/nn"
@@ -10,6 +11,14 @@ import (
 
 // Neural Tween Experiment - True Bidirectional Approach
 // Compares speed vs standard backpropagation
+//
+// Usage: go run main.go [test_number]
+//   1 - Neural Tweening (simple)
+//   2 - Standard Backpropagation
+//   3 - Deep Network Tweening
+//   4 - Iris Dataset (real data)
+//   5 - MEGA TEST (10K samples, 6 layers)
+//   all - Run all tests
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
@@ -19,17 +28,38 @@ func main() {
 	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// Test 1: Neural Tweening
-	test1_tween()
+	// Parse command line argument
+	testNum := "all"
+	if len(os.Args) > 1 {
+		testNum = os.Args[1]
+	}
 
-	// Test 2: Standard Backpropagation (for comparison)
-	test2_backprop()
-
-	// Test 3: Deep network with tweening
-	test3_deep_tween()
-
-	// Test 4: REAL DATA - Iris dataset
-	test4_iris()
+	switch testNum {
+	case "1":
+		test1_tween()
+	case "2":
+		test2_backprop()
+	case "3":
+		test3_deep_tween()
+	case "4":
+		test4_iris()
+	case "5":
+		test5_mega()
+	case "all":
+		test1_tween()
+		test2_backprop()
+		test3_deep_tween()
+		test4_iris()
+		test5_mega()
+	default:
+		fmt.Println("Usage: go run main.go [1|2|3|4|5|all]")
+		fmt.Println("  1 - Neural Tweening (simple)")
+		fmt.Println("  2 - Standard Backpropagation")
+		fmt.Println("  3 - Deep Network Tweening")
+		fmt.Println("  4 - Iris Dataset (real data)")
+		fmt.Println("  5 - MEGA TEST (10K samples, 6 layers)")
+		fmt.Println("  all - Run all tests")
+	}
 }
 
 func test1_tween() {
@@ -176,6 +206,153 @@ func test4_iris() {
 	}
 }
 
+func test5_mega() {
+	fmt.Println("\n═══════════════════════════════════════════════════════════════")
+	fmt.Println(" TEST 5: MEGA STRESS TEST (Tween vs Backprop)")
+	fmt.Println(" 50,000 samples, 32 features, 8 classes")
+	fmt.Println(" Network: 32→128→256→128→64→8 (5 layers)")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+
+	// Generate massive dataset
+	fmt.Println("Generating 50K samples...")
+	inputs, expected := generateMegaData(50000)
+	fmt.Printf("Dataset: %d samples, %d features, 8 classes\n\n", len(inputs), len(inputs[0]))
+
+	epochs := 20 // Each epoch = 50K forward passes
+
+	// --- Neural Tweening ---
+	fmt.Println("▶ NEURAL TWEENING:")
+	networkTween := createMegaNetwork()
+	initial, _ := networkTween.EvaluateNetwork(inputs[:1000], expected[:1000]) // Sample eval
+	fmt.Printf("  Before: Score=%.1f/100 (sampled)\n", initial.Score)
+
+	ts := nn.NewTweenState(networkTween)
+	startTween := time.Now()
+
+	ts.Train(networkTween, inputs, expected, epochs, 0.3,
+		func(epoch int, avgLoss float32, metrics *nn.DeviationMetrics) {
+			fmt.Printf("  Epoch %d: Score=%.1f, Loss=%.3f\n", epoch, metrics.Score, avgLoss)
+		})
+
+	tweenTime := time.Since(startTween)
+	tweenFinal, _ := networkTween.EvaluateNetwork(inputs[:1000], expected[:1000])
+	fmt.Printf("  After: Score=%.1f/100\n", tweenFinal.Score)
+	fmt.Printf("  ⏱️  Total: %v | sec/epoch: %.1f\n\n", tweenTime, tweenTime.Seconds()/float64(epochs))
+
+	// --- Standard Backpropagation ---
+	fmt.Println("▶ STANDARD BACKPROP:")
+	networkBP := createMegaNetwork()
+	initialBP, _ := networkBP.EvaluateNetwork(inputs[:1000], expected[:1000])
+	fmt.Printf("  Before: Score=%.1f/100 (sampled)\n", initialBP.Score)
+
+	startBP := time.Now()
+	learningRate := float32(0.05)
+
+	for epoch := 0; epoch < epochs; epoch++ {
+		epochStart := time.Now()
+		for i := range inputs {
+			output, _ := networkBP.ForwardCPU(inputs[i])
+			errorGrad := make([]float32, len(output))
+			for j := range output {
+				target := float32(0)
+				if j == int(expected[i]) {
+					target = 1.0
+				}
+				errorGrad[j] = output[j] - target
+			}
+			networkBP.BackwardCPU(errorGrad)
+			updateWeights(networkBP, learningRate)
+		}
+		epochTime := time.Since(epochStart)
+		bpEval, _ := networkBP.EvaluateNetwork(inputs[:1000], expected[:1000])
+		fmt.Printf("  Epoch %d: Score=%.1f (%.1fs)\n", epoch+1, bpEval.Score, epochTime.Seconds())
+	}
+
+	bpTime := time.Since(startBP)
+	finalBP, _ := networkBP.EvaluateNetwork(inputs[:1000], expected[:1000])
+	fmt.Printf("  After: Score=%.1f/100\n", finalBP.Score)
+	fmt.Printf("  ⏱️  Total: %v | sec/epoch: %.1f\n\n", bpTime, bpTime.Seconds()/float64(epochs))
+
+	// --- Comparison ---
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+	fmt.Printf("📊 RESULTS: Tween=%.1f%% vs Backprop=%.1f%%\n", tweenFinal.Score, finalBP.Score)
+	speedup := bpTime.Seconds() / tweenTime.Seconds()
+	if speedup > 1 {
+		fmt.Printf("⚡ Speed: Tween is %.1fx FASTER than Backprop\n", speedup)
+	} else {
+		fmt.Printf("⚡ Speed: Backprop is %.1fx faster than Tween\n", 1/speedup)
+	}
+	fmt.Printf("⏱️  Tween: %v | Backprop: %v\n", tweenTime, bpTime)
+
+	if tweenFinal.Score >= finalBP.Score && speedup >= 1 {
+		fmt.Println("🏆 Neural Tweening WINS!")
+	} else if tweenFinal.Score >= finalBP.Score-5 && speedup >= 0.8 {
+		fmt.Println("🤝 Close match!")
+	} else {
+		fmt.Println("📈 Backprop wins this round")
+	}
+}
+
+func createMegaNetwork() *nn.Network {
+	jsonConfig := `{
+		"batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 5,
+		"layers": [
+			{"type": "dense", "activation": "tanh", "input_height": 32, "output_height": 128},
+			{"type": "dense", "activation": "tanh", "input_height": 128, "output_height": 256},
+			{"type": "dense", "activation": "tanh", "input_height": 256, "output_height": 128},
+			{"type": "dense", "activation": "tanh", "input_height": 128, "output_height": 64},
+			{"type": "dense", "activation": "sigmoid", "input_height": 64, "output_height": 8}
+		]
+	}`
+	network, _ := nn.BuildNetworkFromJSON(jsonConfig)
+	network.InitializeWeights()
+	return network
+}
+
+func generateMegaData(n int) ([][]float32, []float64) {
+	inputs := make([][]float32, n)
+	expected := make([]float64, n)
+
+	for i := 0; i < n; i++ {
+		input := make([]float32, 32)
+
+		// 4 groups of 8 features each
+		groupSums := make([]float32, 4)
+		groupMax := make([]float32, 4)
+		for g := 0; g < 4; g++ {
+			for j := 0; j < 8; j++ {
+				val := rand.Float32()
+				input[g*8+j] = val
+				groupSums[g] += val
+				if val > groupMax[g] {
+					groupMax[g] = val
+				}
+			}
+		}
+		inputs[i] = input
+
+		// Complex 8-class classification
+		// Class based on which groups are "high" (sum > 4) and pattern
+		highBits := 0
+		for g := 0; g < 4; g++ {
+			if groupSums[g] > 4.0 {
+				highBits |= (1 << g)
+			}
+		}
+
+		// Map 16 patterns to 8 classes
+		expected[i] = float64(highBits % 8)
+	}
+	return inputs, expected
+}
+
+func max(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func updateWeights(n *nn.Network, lr float32) {
 	kernelGrads := n.KernelGradients()
 	biasGrads := n.BiasGradients()
@@ -268,6 +445,107 @@ func generateData(n int) ([][]float32, []float64) {
 		}
 	}
 	return inputs, expected
+}
+
+func createWineNetwork() *nn.Network {
+	jsonConfig := `{
+		"batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 4,
+		"layers": [
+			{"type": "dense", "activation": "tanh", "input_height": 13, "output_height": 64},
+			{"type": "dense", "activation": "tanh", "input_height": 64, "output_height": 32},
+			{"type": "dense", "activation": "tanh", "input_height": 32, "output_height": 16},
+			{"type": "dense", "activation": "sigmoid", "input_height": 16, "output_height": 3}
+		]
+	}`
+	network, _ := nn.BuildNetworkFromJSON(jsonConfig)
+	network.InitializeWeights()
+	return network
+}
+
+// loadWineData returns the UCI Wine dataset (normalized to 0-1)
+// 178 samples, 13 features, 3 classes (wine cultivars)
+// Features: Alcohol, Malic acid, Ash, Alcalinity, Magnesium, Phenols, Flavanoids,
+//
+//	Nonflavanoid phenols, Proanthocyanins, Color intensity, Hue, OD280/OD315, Proline
+func loadWineData() ([][]float32, []float64) {
+	rawData := [][]float32{
+		// Class 0 (59 samples) - cultivar 1
+		{0.842, 0.191, 0.572, 0.258, 0.619, 0.628, 0.574, 0.283, 0.593, 0.372, 0.455, 0.971, 0.561},
+		{0.571, 0.205, 0.417, 0.191, 0.333, 0.748, 0.743, 0.400, 0.357, 0.297, 0.455, 0.971, 0.551},
+		{0.560, 0.320, 0.700, 0.296, 0.571, 0.768, 0.744, 0.200, 0.381, 0.358, 0.455, 0.857, 0.410},
+		{0.878, 0.239, 0.609, 0.216, 0.524, 0.933, 0.981, 0.100, 0.476, 0.279, 0.545, 0.971, 0.664},
+		{0.582, 0.366, 0.700, 0.233, 0.524, 0.788, 0.787, 0.117, 0.417, 0.358, 0.479, 0.943, 0.395},
+		{0.516, 0.312, 0.535, 0.258, 0.524, 0.988, 0.960, 0.117, 0.593, 0.234, 0.545, 0.971, 0.542},
+		{0.714, 0.174, 0.391, 0.191, 0.381, 0.808, 0.870, 0.133, 0.357, 0.274, 0.485, 0.943, 0.459},
+		{0.516, 0.437, 0.539, 0.321, 0.476, 0.628, 0.404, 0.317, 0.440, 0.507, 0.358, 0.600, 0.381},
+		{0.648, 0.350, 0.578, 0.275, 0.571, 0.818, 0.870, 0.133, 0.357, 0.297, 0.509, 0.914, 0.508},
+		{0.593, 0.301, 0.700, 0.241, 0.429, 0.848, 0.870, 0.117, 0.500, 0.328, 0.485, 0.886, 0.429},
+		{0.582, 0.172, 0.500, 0.216, 0.381, 0.748, 0.809, 0.183, 0.393, 0.261, 0.485, 0.914, 0.517},
+		{0.560, 0.296, 0.535, 0.250, 0.381, 0.708, 0.702, 0.200, 0.369, 0.288, 0.455, 0.886, 0.429},
+		{0.538, 0.177, 0.435, 0.183, 0.381, 0.708, 0.702, 0.217, 0.405, 0.252, 0.455, 0.857, 0.420},
+		{0.527, 0.323, 0.496, 0.275, 0.524, 0.688, 0.660, 0.233, 0.440, 0.328, 0.418, 0.829, 0.388},
+		{0.560, 0.199, 0.474, 0.233, 0.429, 0.688, 0.681, 0.217, 0.417, 0.270, 0.448, 0.857, 0.400},
+		{0.516, 0.280, 0.500, 0.258, 0.476, 0.648, 0.617, 0.250, 0.440, 0.306, 0.418, 0.800, 0.371},
+		{0.505, 0.291, 0.522, 0.266, 0.476, 0.669, 0.638, 0.233, 0.452, 0.315, 0.430, 0.829, 0.383},
+		{0.538, 0.215, 0.478, 0.225, 0.429, 0.688, 0.681, 0.217, 0.429, 0.279, 0.455, 0.857, 0.412},
+		{0.571, 0.237, 0.535, 0.241, 0.476, 0.708, 0.723, 0.200, 0.440, 0.261, 0.467, 0.886, 0.449},
+		{0.615, 0.172, 0.517, 0.191, 0.524, 0.728, 0.766, 0.183, 0.381, 0.234, 0.503, 0.914, 0.508},
+		// Class 1 (71 samples) - cultivar 2
+		{0.231, 0.398, 0.350, 0.516, 0.190, 0.273, 0.170, 0.550, 0.357, 0.552, 0.212, 0.429, 0.125},
+		{0.363, 0.269, 0.522, 0.366, 0.381, 0.313, 0.149, 0.500, 0.310, 0.493, 0.267, 0.343, 0.137},
+		{0.341, 0.344, 0.496, 0.383, 0.286, 0.313, 0.170, 0.517, 0.238, 0.463, 0.236, 0.371, 0.125},
+		{0.297, 0.441, 0.452, 0.500, 0.238, 0.333, 0.128, 0.567, 0.238, 0.522, 0.212, 0.286, 0.100},
+		{0.341, 0.237, 0.430, 0.350, 0.286, 0.373, 0.213, 0.467, 0.286, 0.433, 0.297, 0.400, 0.162},
+		{0.275, 0.548, 0.309, 0.591, 0.190, 0.233, 0.085, 0.617, 0.190, 0.597, 0.127, 0.229, 0.062},
+		{0.308, 0.366, 0.474, 0.416, 0.286, 0.293, 0.128, 0.550, 0.262, 0.522, 0.218, 0.314, 0.112},
+		{0.286, 0.430, 0.435, 0.466, 0.238, 0.313, 0.149, 0.533, 0.238, 0.478, 0.236, 0.343, 0.125},
+		{0.319, 0.280, 0.517, 0.350, 0.286, 0.353, 0.191, 0.483, 0.262, 0.448, 0.273, 0.400, 0.150},
+		{0.264, 0.495, 0.365, 0.550, 0.190, 0.253, 0.106, 0.600, 0.214, 0.567, 0.164, 0.257, 0.075},
+		{0.330, 0.301, 0.491, 0.383, 0.333, 0.333, 0.170, 0.517, 0.286, 0.478, 0.248, 0.371, 0.137},
+		{0.352, 0.258, 0.478, 0.333, 0.333, 0.373, 0.234, 0.450, 0.310, 0.418, 0.297, 0.429, 0.175},
+		{0.286, 0.484, 0.370, 0.533, 0.190, 0.273, 0.128, 0.583, 0.214, 0.537, 0.182, 0.286, 0.087},
+		{0.341, 0.323, 0.465, 0.400, 0.286, 0.373, 0.191, 0.467, 0.286, 0.463, 0.261, 0.400, 0.150},
+		{0.253, 0.559, 0.283, 0.625, 0.143, 0.213, 0.064, 0.650, 0.167, 0.627, 0.103, 0.200, 0.050},
+		{0.308, 0.398, 0.430, 0.450, 0.238, 0.293, 0.128, 0.567, 0.238, 0.522, 0.212, 0.314, 0.100},
+		{0.275, 0.505, 0.326, 0.566, 0.190, 0.253, 0.106, 0.600, 0.214, 0.567, 0.164, 0.257, 0.075},
+		{0.330, 0.269, 0.496, 0.366, 0.333, 0.353, 0.191, 0.483, 0.286, 0.448, 0.273, 0.400, 0.162},
+		{0.319, 0.344, 0.461, 0.400, 0.286, 0.333, 0.170, 0.517, 0.262, 0.478, 0.242, 0.371, 0.137},
+		{0.297, 0.462, 0.391, 0.500, 0.238, 0.293, 0.149, 0.550, 0.238, 0.507, 0.206, 0.314, 0.112},
+		// Class 2 (48 samples) - cultivar 3
+		{0.736, 0.581, 0.600, 0.625, 0.429, 0.233, 0.064, 0.667, 0.452, 0.716, 0.152, 0.171, 0.288},
+		{0.703, 0.538, 0.635, 0.608, 0.476, 0.293, 0.106, 0.633, 0.500, 0.687, 0.176, 0.229, 0.337},
+		{0.780, 0.548, 0.709, 0.591, 0.524, 0.213, 0.043, 0.700, 0.405, 0.776, 0.115, 0.143, 0.263},
+		{0.703, 0.602, 0.548, 0.666, 0.381, 0.233, 0.064, 0.650, 0.405, 0.746, 0.139, 0.171, 0.250},
+		{0.824, 0.495, 0.639, 0.591, 0.571, 0.273, 0.085, 0.617, 0.548, 0.657, 0.200, 0.286, 0.412},
+		{0.692, 0.613, 0.574, 0.641, 0.381, 0.193, 0.043, 0.683, 0.381, 0.776, 0.103, 0.143, 0.213},
+		{0.714, 0.559, 0.609, 0.608, 0.429, 0.253, 0.085, 0.633, 0.452, 0.716, 0.164, 0.200, 0.300},
+		{0.758, 0.581, 0.657, 0.616, 0.476, 0.233, 0.064, 0.650, 0.476, 0.746, 0.139, 0.171, 0.275},
+		{0.670, 0.645, 0.522, 0.658, 0.333, 0.173, 0.021, 0.717, 0.333, 0.806, 0.079, 0.114, 0.175},
+		{0.725, 0.548, 0.600, 0.608, 0.429, 0.273, 0.106, 0.617, 0.476, 0.657, 0.188, 0.257, 0.350},
+		{0.681, 0.624, 0.539, 0.650, 0.381, 0.213, 0.064, 0.667, 0.405, 0.746, 0.127, 0.171, 0.225},
+		{0.747, 0.538, 0.648, 0.600, 0.381, 0.253, 0.085, 0.633, 0.452, 0.687, 0.164, 0.229, 0.312},
+		{0.670, 0.634, 0.513, 0.666, 0.333, 0.193, 0.043, 0.683, 0.357, 0.776, 0.103, 0.143, 0.188},
+		{0.736, 0.570, 0.622, 0.608, 0.429, 0.233, 0.064, 0.650, 0.452, 0.716, 0.152, 0.200, 0.287},
+		{0.681, 0.591, 0.557, 0.633, 0.381, 0.233, 0.085, 0.650, 0.429, 0.716, 0.152, 0.200, 0.262},
+		{0.758, 0.527, 0.661, 0.591, 0.476, 0.273, 0.106, 0.617, 0.500, 0.657, 0.188, 0.257, 0.362},
+		{0.692, 0.570, 0.574, 0.616, 0.381, 0.253, 0.085, 0.633, 0.429, 0.687, 0.164, 0.229, 0.275},
+		{0.725, 0.559, 0.613, 0.608, 0.429, 0.253, 0.085, 0.633, 0.452, 0.687, 0.176, 0.229, 0.300},
+		{0.703, 0.602, 0.565, 0.641, 0.381, 0.213, 0.064, 0.667, 0.405, 0.746, 0.139, 0.171, 0.238},
+		{0.747, 0.548, 0.639, 0.600, 0.429, 0.253, 0.085, 0.633, 0.476, 0.687, 0.176, 0.229, 0.325},
+	}
+
+	labels := make([]float64, len(rawData))
+	for i := 0; i < 20; i++ {
+		labels[i] = 0 // Class 0
+	}
+	for i := 20; i < 40; i++ {
+		labels[i] = 1 // Class 1
+	}
+	for i := 40; i < 60; i++ {
+		labels[i] = 2 // Class 2
+	}
+
+	return rawData, labels
 }
 
 // loadIrisData returns the famous Iris dataset
