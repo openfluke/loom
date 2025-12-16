@@ -4,237 +4,336 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/openfluke/loom/nn"
 )
 
-// Test 13: Step Forward with Neural Tweening vs Backpropagation
+// Test 13: Real-time Step Training Comparison
 //
-// This test compares two training approaches:
-// 1. StepForward + NeuralTween: Layer-independent stepping with bidirectional tweening
-// 2. Traditional Backpropagation: Forward pass + backward pass + gradient update
+// Compares two CONTINUOUS training approaches:
+// 1. Step + Backprop: StepForward → StepBackward → ApplyGradients (traditional stepping)
+// 2. Step + Tween: StepForward → TweenStep (gradient-free, bidirectional)
 //
-// Comparison metrics: Accuracy, Training Time, Convergence Speed
+// Both run for ~2 seconds to demonstrate real-time learning while running.
 
 func main() {
-	fmt.Println("╔══════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║  Test 13: Step Forward + Tween vs Backpropagation                    ║")
-	fmt.Println("╚══════════════════════════════════════════════════════════════════════╝")
+	fmt.Println("╔══════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║  Test 13: Real-time Stepping Training Comparison                         ║")
+	fmt.Println("║  Step + Backprop vs Step + Tween — Learning While Running                ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// Run comparative tests for each architecture
+	runDuration := 2 * time.Second
+
+	// Run tests for each architecture
 	results := []ComparisonResult{}
 
-	results = append(results, runComparison("Dense", createDenseNetwork, generateXORData()))
-	results = append(results, runComparison("Conv2D", createConv2DNetwork, generateConv2DData()))
-	results = append(results, runComparison("RNN", createRNNNetwork, generateSequenceData(12)))
-	results = append(results, runComparison("LSTM", createLSTMNetwork, generateSequenceData(12)))
-	results = append(results, runComparison("Attention", createAttentionNetwork, generateSequenceData(16)))
-	results = append(results, runComparison("Norm", createNormNetwork, generateSimpleData(8)))
-	results = append(results, runComparison("SwiGLU", createSwiGLUNetwork, generateSimpleData(8)))
-	results = append(results, runComparison("Parallel", createParallelNetwork, generateXORData()))
-	results = append(results, runComparison("Mixed", createMixedNetwork, generateSimpleData(8)))
+	results = append(results, runRealtimeComparison("Dense", createDenseNetwork, generateTrainingData(4, 3), runDuration))
+	results = append(results, runRealtimeComparison("Conv2D", createConv2DNetwork, generateTrainingData(16, 3), runDuration))
+	results = append(results, runRealtimeComparison("RNN", createRNNNetwork, generateTrainingData(12, 3), runDuration))
+	results = append(results, runRealtimeComparison("LSTM", createLSTMNetwork, generateTrainingData(12, 3), runDuration))
+	results = append(results, runRealtimeComparison("Attention", createAttentionNetwork, generateTrainingData(16, 3), runDuration))
+	results = append(results, runRealtimeComparison("Norm", createNormNetwork, generateTrainingData(8, 3), runDuration))
+	results = append(results, runRealtimeComparison("SwiGLU", createSwiGLUNetwork, generateTrainingData(8, 3), runDuration))
+	results = append(results, runRealtimeComparison("Parallel", createParallelNetwork, generateTrainingData(4, 3), runDuration))
+	results = append(results, runRealtimeComparison("Mixed", createMixedNetwork, generateTrainingData(8, 3), runDuration))
 
-	// Print summary table
+	// Print summary
 	printSummaryTable(results)
 }
 
 // ============================================================================
-// Comparison Result Structure
+// Result Structure
 // ============================================================================
 
 type ComparisonResult struct {
-	Name           string
-	TweenAccuracy  float64
-	TweenTime      time.Duration
-	TweenFinalLoss float32
-	BPAccuracy     float64
-	BPTime         time.Duration
-	BPFinalLoss    float32
-	TweenWins      bool
+	Name string
+
+	// Step + Backprop
+	BPSteps    int
+	BPAccuracy float64
+	BPLoss     float32
+	BPStepsPS  float64 // Steps per second
+
+	// Step + Tween
+	TweenSteps    int
+	TweenAccuracy float64
+	TweenLoss     float32
+	TweenStepsPS  float64 // Steps per second
+
+	Winner string
 }
 
 // ============================================================================
-// Core Comparison Runner
+// Real-time Comparison Runner
 // ============================================================================
 
-func runComparison(name string, networkFactory func() *nn.Network, data testData) ComparisonResult {
-	fmt.Printf("\n┌─────────────────────────────────────────────────────┐\n")
-	fmt.Printf("│ %-51s │\n", name+" Network")
-	fmt.Printf("└─────────────────────────────────────────────────────┘\n")
+func runRealtimeComparison(name string, netFactory func() *nn.Network, data TrainingData, duration time.Duration) ComparisonResult {
+	fmt.Printf("\n┌─────────────────────────────────────────────────────────────────────┐\n")
+	fmt.Printf("│ %-67s │\n", name+" Network — Running for "+duration.String())
+	fmt.Printf("└─────────────────────────────────────────────────────────────────────┘\n")
 
-	inputs := data.inputs
-	expected := data.expected
-	epochs := 100
+	// Run both in parallel to ensure fair comparison
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-	// ===== STEP FORWARD + TWEEN =====
-	fmt.Println("\n  [Step Forward + Tween]")
+	var bpResult, tweenResult struct {
+		steps    int
+		accuracy float64
+		loss     float32
+	}
 
-	netTween := networkFactory()
-	tweenAcc, tweenTime, tweenLoss := trainWithTween(netTween, inputs, expected, epochs)
+	// Step + Backprop
+	go func() {
+		defer wg.Done()
+		net := netFactory()
+		bpResult.steps, bpResult.accuracy, bpResult.loss = runStepBackprop(net, data, duration, name+" BP")
+	}()
 
-	fmt.Printf("    Final: Acc=%.1f%% | Time=%v | Loss=%.4f\n", tweenAcc, tweenTime.Round(time.Millisecond), tweenLoss)
+	// Step + Tween
+	go func() {
+		defer wg.Done()
+		net := netFactory()
+		tweenResult.steps, tweenResult.accuracy, tweenResult.loss = runStepTween(net, data, duration, name+" Tween")
+	}()
 
-	// ===== BACKPROPAGATION =====
-	fmt.Println("\n  [Backpropagation]")
+	wg.Wait()
 
-	netBP := networkFactory()
-	bpAcc, bpTime, bpLoss := trainWithBackprop(netBP, inputs, expected, epochs)
-
-	fmt.Printf("    Final: Acc=%.1f%% | Time=%v | Loss=%.4f\n", bpAcc, bpTime.Round(time.Millisecond), bpLoss)
-
-	// ===== COMPARISON =====
-	tweenWins := tweenAcc >= bpAcc
-
+	// Determine winner based on accuracy (then steps if tied)
 	winner := "Backprop"
-	if tweenWins {
-		winner = "Tween"
+	if tweenResult.accuracy > bpResult.accuracy {
+		winner = "Tween ✓"
+	} else if tweenResult.accuracy == bpResult.accuracy && tweenResult.steps > bpResult.steps {
+		winner = "Tween ✓"
 	}
-
-	speedup := float64(bpTime) / float64(tweenTime)
-	if speedup < 1 {
-		speedup = 1 / speedup
-	}
-
-	fmt.Printf("\n  📊 Winner: %s (Speedup: %.2fx)\n", winner, speedup)
 
 	return ComparisonResult{
-		Name:           name,
-		TweenAccuracy:  tweenAcc,
-		TweenTime:      tweenTime,
-		TweenFinalLoss: tweenLoss,
-		BPAccuracy:     bpAcc,
-		BPTime:         bpTime,
-		BPFinalLoss:    bpLoss,
-		TweenWins:      tweenWins,
+		Name:          name,
+		BPSteps:       bpResult.steps,
+		BPAccuracy:    bpResult.accuracy,
+		BPLoss:        bpResult.loss,
+		BPStepsPS:     float64(bpResult.steps) / duration.Seconds(),
+		TweenSteps:    tweenResult.steps,
+		TweenAccuracy: tweenResult.accuracy,
+		TweenLoss:     tweenResult.loss,
+		TweenStepsPS:  float64(tweenResult.steps) / duration.Seconds(),
+		Winner:        winner,
 	}
 }
 
 // ============================================================================
-// Training with Step Forward + Tween
+// Step + Backprop Training (Continuous Real-time)
 // ============================================================================
 
-func trainWithTween(net *nn.Network, inputs [][]float32, expected []float64, epochs int) (accuracy float64, elapsed time.Duration, finalLoss float32) {
-	// Initialize tween state
+func runStepBackprop(net *nn.Network, data TrainingData, duration time.Duration, label string) (steps int, accuracy float64, finalLoss float32) {
+	inputSize := len(data.Samples[0].Input)
+	state := net.InitStepState(inputSize)
+
+	// Target queue for delayed targets (accounts for network depth)
+	targetDelay := net.TotalLayers()
+	targetQueue := NewTargetQueue(targetDelay)
+
+	learningRate := float32(0.02)
+	decayRate := float32(0.9999)
+	minLR := float32(0.001)
+
+	start := time.Now()
+	sampleIdx := 0
+	logInterval := 50000 // Log every N steps
+
+	fmt.Printf("  [Step+Backprop] Starting continuous training...\n")
+
+	for time.Since(start) < duration {
+		// Rotate samples
+		if steps%20 == 0 {
+			sampleIdx = rand.Intn(len(data.Samples))
+		}
+		sample := data.Samples[sampleIdx]
+
+		// 1. Set Input
+		state.SetInput(sample.Input)
+
+		// 2. Step Forward (produces output while training!)
+		net.StepForward(state)
+
+		// 3. Queue target (accounts for propagation delay)
+		targetQueue.Push(sample.Target)
+
+		// 4. When queue is full, we can compare output to delayed target
+		if targetQueue.IsFull() {
+			delayedTarget := targetQueue.Pop()
+			output := state.GetOutput()
+
+			// Calculate loss and gradient
+			loss := float32(0)
+			gradOutput := make([]float32, len(output))
+			for i := 0; i < len(output); i++ {
+				p := clamp(output[i], 1e-7, 1-1e-7)
+				if delayedTarget[i] > 0.5 {
+					loss -= float32(math.Log(float64(p)))
+				}
+				gradOutput[i] = output[i] - delayedTarget[i]
+			}
+			finalLoss = loss
+
+			// 5. Step Backward
+			net.StepBackward(state, gradOutput)
+
+			// 6. Apply Gradients
+			net.ApplyGradients(learningRate)
+
+			// Decay LR
+			learningRate *= decayRate
+			if learningRate < minLR {
+				learningRate = minLR
+			}
+		}
+
+		steps++
+
+		// Real-time logging
+		if steps%logInterval == 0 {
+			elapsed := time.Since(start)
+			stepsPS := float64(steps) / elapsed.Seconds()
+			fmt.Printf("    Step %6d | %.0f steps/sec | Loss: %.4f\n", steps, stepsPS, finalLoss)
+		}
+	}
+
+	// Final evaluation
+	accuracy = evaluateSteppingNetwork(net, data, state)
+	fmt.Printf("  [Step+Backprop] Done: %d steps | Acc: %.1f%% | Loss: %.4f\n", steps, accuracy, finalLoss)
+
+	return steps, accuracy, finalLoss
+}
+
+// ============================================================================
+// Step + Tween Training (Continuous Real-time)
+// ============================================================================
+
+func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, label string) (steps int, accuracy float64, finalLoss float32) {
+	inputSize := len(data.Samples[0].Input)
+	state := net.InitStepState(inputSize)
+
+	// Initialize Tween state
 	ts := nn.NewTweenState(net)
 	ts.Verbose = false
 
-	// Initialize step state
-	state := net.InitStepState(len(inputs[0]))
-	stepsPerSample := 3 // Number of StepForward calls per sample
-
 	start := time.Now()
+	sampleIdx := 0
+	logInterval := 50000 // Log every N steps
+	tweenEvery := 10     // Tween every N steps (balance speed vs learning)
 
-	// Training loop
-	for epoch := 0; epoch < epochs; epoch++ {
-		epochLoss := float32(0)
+	fmt.Printf("  [Step+Tween] Starting continuous training...\n")
 
-		for i := 0; i < len(inputs); i++ {
-			// Set input and step forward multiple times
-			state.SetInput(inputs[i])
+	for time.Since(start) < duration {
+		// Rotate samples
+		if steps%20 == 0 {
+			sampleIdx = rand.Intn(len(data.Samples))
+		}
+		sample := data.Samples[sampleIdx]
 
-			for step := 0; step < stepsPerSample; step++ {
-				net.StepForward(state)
-			}
+		// 1. Set Input
+		state.SetInput(sample.Input)
 
-			// Tween step: bidirectional analysis and weight update
-			loss := ts.TweenStep(net, inputs[i], int(expected[i]), 2, 0.1)
-			epochLoss += loss
+		// 2. Step Forward (produces output while training!)
+		net.StepForward(state)
+
+		// 3. Tween step (every N steps to avoid overhead)
+		if steps%tweenEvery == 0 {
+			targetClass := argmax(sample.Target)
+			loss := ts.TweenStep(net, sample.Input, targetClass, len(sample.Target), 0.1)
+			finalLoss = loss
 		}
 
-		finalLoss = epochLoss / float32(len(inputs))
+		steps++
 
-		// Progress indicator
-		if epoch == epochs/4 || epoch == epochs/2 || epoch == 3*epochs/4 {
-			metrics, _ := net.EvaluateNetwork(inputs, expected)
-			fmt.Printf("    Epoch %3d: Acc=%.1f%% Loss=%.4f\n", epoch+1, metrics.Score, finalLoss)
+		// Real-time logging
+		if steps%logInterval == 0 {
+			elapsed := time.Since(start)
+			stepsPS := float64(steps) / elapsed.Seconds()
+			avgBudget, _, _ := ts.GetBudgetSummary()
+			fmt.Printf("    Step %6d | %.0f steps/sec | Loss: %.4f | Budget: %.3f\n", steps, stepsPS, finalLoss, avgBudget)
 		}
 	}
 
-	elapsed = time.Since(start)
-
 	// Final evaluation
-	metrics, _ := net.EvaluateNetwork(inputs, expected)
-	accuracy = metrics.Score
+	accuracy = evaluateSteppingNetwork(net, data, state)
+	fmt.Printf("  [Step+Tween] Done: %d steps | Acc: %.1f%% | Loss: %.4f\n", steps, accuracy, finalLoss)
 
-	return accuracy, elapsed, finalLoss
+	return steps, accuracy, finalLoss
 }
 
 // ============================================================================
-// Training with Backpropagation
+// Evaluation (uses stepping to settle network)
 // ============================================================================
 
-func trainWithBackprop(net *nn.Network, inputs [][]float32, expected []float64, epochs int) (accuracy float64, elapsed time.Duration, finalLoss float32) {
-	learningRate := float32(0.1)
+func evaluateSteppingNetwork(net *nn.Network, data TrainingData, state *nn.StepState) float64 {
+	correct := 0
+	settleSteps := 10 // Let network settle
 
-	start := time.Now()
-
-	// Training loop
-	for epoch := 0; epoch < epochs; epoch++ {
-		epochLoss := float32(0)
-
-		for i := 0; i < len(inputs); i++ {
-			// Forward pass
-			output, _ := net.ForwardCPU(inputs[i])
-
-			// Compute loss (MSE)
-			loss := float32(0)
-			for j := 0; j < len(output); j++ {
-				target := float32(0)
-				if j == int(expected[i]) {
-					target = 1.0
-				}
-				diff := output[j] - target
-				loss += diff * diff
-			}
-			epochLoss += loss
-
-			// Compute gradient for cross-entropy/softmax output
-			gradOutput := make([]float32, len(output))
-			for j := 0; j < len(output); j++ {
-				target := float32(0)
-				if j == int(expected[i]) {
-					target = 1.0
-				}
-				gradOutput[j] = 2.0 * (output[j] - target)
-			}
-
-			// Backward pass
-			net.BackwardCPU(gradOutput)
-
-			// Update weights
-			net.UpdateWeights(learningRate)
+	for _, sample := range data.Samples {
+		state.SetInput(sample.Input)
+		for i := 0; i < settleSteps; i++ {
+			net.StepForward(state)
 		}
+		output := state.GetOutput()
 
-		finalLoss = epochLoss / float32(len(inputs))
+		predicted := argmax(output)
+		expected := argmax(sample.Target)
 
-		// Progress indicator
-		if epoch == epochs/4 || epoch == epochs/2 || epoch == 3*epochs/4 {
-			metrics, _ := net.EvaluateNetwork(inputs, expected)
-			fmt.Printf("    Epoch %3d: Acc=%.1f%% Loss=%.4f\n", epoch+1, metrics.Score, finalLoss)
+		if predicted == expected {
+			correct++
 		}
 	}
 
-	elapsed = time.Since(start)
-
-	// Final evaluation
-	metrics, _ := net.EvaluateNetwork(inputs, expected)
-	accuracy = metrics.Score
-
-	return accuracy, elapsed, finalLoss
+	return float64(correct) / float64(len(data.Samples)) * 100.0
 }
 
 // ============================================================================
-// Network Factory Functions
+// Target Queue (for delayed target matching in stepping)
+// ============================================================================
+
+type TargetQueue struct {
+	targets [][]float32
+	maxSize int
+}
+
+func NewTargetQueue(size int) *TargetQueue {
+	return &TargetQueue{
+		targets: make([][]float32, 0, size),
+		maxSize: size,
+	}
+}
+
+func (q *TargetQueue) Push(target []float32) {
+	q.targets = append(q.targets, target)
+}
+
+func (q *TargetQueue) Pop() []float32 {
+	if len(q.targets) == 0 {
+		return nil
+	}
+	t := q.targets[0]
+	q.targets = q.targets[1:]
+	return t
+}
+
+func (q *TargetQueue) IsFull() bool {
+	return len(q.targets) >= q.maxSize
+}
+
+// ============================================================================
+// Network Factories
 // ============================================================================
 
 func createDenseNetwork() *nn.Network {
 	net := nn.NewNetwork(4, 1, 1, 3)
 	net.BatchSize = 1
-	net.SetLayer(0, 0, 0, nn.InitDenseLayer(4, 8, nn.ActivationLeakyReLU))
-	net.SetLayer(0, 0, 1, nn.InitDenseLayer(8, 4, nn.ActivationTanh))
-	net.SetLayer(0, 0, 2, nn.InitDenseLayer(4, 2, nn.ActivationSigmoid))
+	net.SetLayer(0, 0, 0, nn.InitDenseLayer(4, 16, nn.ActivationLeakyReLU))
+	net.SetLayer(0, 0, 1, nn.InitDenseLayer(16, 8, nn.ActivationTanh))
+	net.SetLayer(0, 0, 2, nn.InitDenseLayer(8, 3, nn.ActivationSigmoid))
 	return net
 }
 
@@ -247,7 +346,7 @@ func createConv2DNetwork() *nn.Network {
 		InputHeight:   4,
 		InputWidth:    4,
 		InputChannels: 1,
-		Filters:       2,
+		Filters:       4,
 		KernelSize:    2,
 		Stride:        1,
 		Padding:       0,
@@ -255,12 +354,12 @@ func createConv2DNetwork() *nn.Network {
 		OutputWidth:   3,
 		Activation:    nn.ActivationLeakyReLU,
 	}
-	conv.Kernel = make([]float32, 2*1*2*2)
-	conv.Bias = make([]float32, 2)
+	conv.Kernel = make([]float32, 4*1*2*2)
+	conv.Bias = make([]float32, 4)
 	initRandomSlice(conv.Kernel, 0.2)
 	net.SetLayer(0, 0, 0, conv)
 
-	net.SetLayer(0, 0, 1, nn.InitDenseLayer(18, 2, nn.ActivationSigmoid))
+	net.SetLayer(0, 0, 1, nn.InitDenseLayer(36, 3, nn.ActivationSigmoid))
 	return net
 }
 
@@ -282,7 +381,7 @@ func createRNNNetwork() *nn.Network {
 	initRandomSlice(rnn.WeightHH, 0.1)
 	net.SetLayer(0, 0, 0, rnn)
 
-	net.SetLayer(0, 0, 1, nn.InitDenseLayer(24, 2, nn.ActivationSigmoid))
+	net.SetLayer(0, 0, 1, nn.InitDenseLayer(24, 3, nn.ActivationSigmoid))
 	return net
 }
 
@@ -323,7 +422,7 @@ func createLSTMNetwork() *nn.Network {
 	initRandomSlice(lstm.WeightHH_o, 0.1)
 	net.SetLayer(0, 0, 0, lstm)
 
-	net.SetLayer(0, 0, 1, nn.InitDenseLayer(24, 2, nn.ActivationSigmoid))
+	net.SetLayer(0, 0, 1, nn.InitDenseLayer(24, 3, nn.ActivationSigmoid))
 	return net
 }
 
@@ -354,7 +453,7 @@ func createAttentionNetwork() *nn.Network {
 	initRandomSlice(attn.OutputWeight, 0.1)
 	net.SetLayer(0, 0, 0, attn)
 
-	net.SetLayer(0, 0, 1, nn.InitDenseLayer(16, 2, nn.ActivationSigmoid))
+	net.SetLayer(0, 0, 1, nn.InitDenseLayer(16, 3, nn.ActivationSigmoid))
 	return net
 }
 
@@ -387,7 +486,7 @@ func createNormNetwork() *nn.Network {
 	}
 	net.SetLayer(0, 0, 2, rmsNorm)
 
-	net.SetLayer(0, 0, 3, nn.InitDenseLayer(8, 2, nn.ActivationSigmoid))
+	net.SetLayer(0, 0, 3, nn.InitDenseLayer(8, 3, nn.ActivationSigmoid))
 	return net
 }
 
@@ -413,7 +512,7 @@ func createSwiGLUNetwork() *nn.Network {
 	initRandomSlice(swiglu.DownWeights, 0.1)
 	net.SetLayer(0, 0, 1, swiglu)
 
-	net.SetLayer(0, 0, 2, nn.InitDenseLayer(16, 2, nn.ActivationSigmoid))
+	net.SetLayer(0, 0, 2, nn.InitDenseLayer(16, 3, nn.ActivationSigmoid))
 	return net
 }
 
@@ -433,12 +532,12 @@ func createParallelNetwork() *nn.Network {
 	}
 	net.SetLayer(0, 0, 1, parallel)
 
-	net.SetLayer(0, 0, 2, nn.InitDenseLayer(8, 2, nn.ActivationSigmoid))
+	net.SetLayer(0, 0, 2, nn.InitDenseLayer(8, 3, nn.ActivationSigmoid))
 	return net
 }
 
 func createMixedNetwork() *nn.Network {
-	net := nn.NewNetwork(8, 1, 1, 5)
+	net := nn.NewNetwork(8, 1, 1, 4)
 	net.BatchSize = 1
 
 	net.SetLayer(0, 0, 0, nn.InitDenseLayer(8, 16, nn.ActivationLeakyReLU))
@@ -455,22 +554,6 @@ func createMixedNetwork() *nn.Network {
 	}
 	net.SetLayer(0, 0, 1, layerNorm)
 
-	swiglu := nn.LayerConfig{
-		Type:         nn.LayerSwiGLU,
-		InputHeight:  16,
-		OutputHeight: 32,
-	}
-	swiglu.GateWeights = make([]float32, 16*32)
-	swiglu.UpWeights = make([]float32, 16*32)
-	swiglu.DownWeights = make([]float32, 32*16)
-	swiglu.GateBias = make([]float32, 32)
-	swiglu.UpBias = make([]float32, 32)
-	swiglu.DownBias = make([]float32, 16)
-	initRandomSlice(swiglu.GateWeights, 0.1)
-	initRandomSlice(swiglu.UpWeights, 0.1)
-	initRandomSlice(swiglu.DownWeights, 0.1)
-	net.SetLayer(0, 0, 2, swiglu)
-
 	parallel := nn.LayerConfig{
 		Type:        nn.LayerParallel,
 		CombineMode: "add",
@@ -479,10 +562,52 @@ func createMixedNetwork() *nn.Network {
 			nn.InitDenseLayer(16, 8, nn.ActivationTanh),
 		},
 	}
-	net.SetLayer(0, 0, 3, parallel)
+	net.SetLayer(0, 0, 2, parallel)
 
-	net.SetLayer(0, 0, 4, nn.InitDenseLayer(8, 2, nn.ActivationSigmoid))
+	net.SetLayer(0, 0, 3, nn.InitDenseLayer(8, 3, nn.ActivationSigmoid))
 	return net
+}
+
+// ============================================================================
+// Training Data
+// ============================================================================
+
+type Sample struct {
+	Input  []float32
+	Target []float32
+	Label  string
+}
+
+type TrainingData struct {
+	Samples []Sample
+}
+
+func generateTrainingData(inputSize, numClasses int) TrainingData {
+	samples := []Sample{}
+
+	// Generate samples for each class
+	for class := 0; class < numClasses; class++ {
+		for i := 0; i < 4; i++ { // 4 samples per class
+			input := make([]float32, inputSize)
+			for j := 0; j < inputSize; j++ {
+				// Base pattern per class + noise
+				base := float32(class) / float32(numClasses)
+				input[j] = base + rand.Float32()*0.3 - 0.15
+				input[j] = clamp(input[j], 0, 1)
+			}
+
+			target := make([]float32, numClasses)
+			target[class] = 1.0
+
+			samples = append(samples, Sample{
+				Input:  input,
+				Target: target,
+				Label:  fmt.Sprintf("Class%d", class),
+			})
+		}
+	}
+
+	return TrainingData{Samples: samples}
 }
 
 // ============================================================================
@@ -491,147 +616,58 @@ func createMixedNetwork() *nn.Network {
 
 func printSummaryTable(results []ComparisonResult) {
 	fmt.Println("\n")
-	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                              COMPARISON SUMMARY                                          ║")
-	fmt.Println("╠════════════╦═══════════════════════════════╦═══════════════════════════════╦════════════╣")
-	fmt.Println("║ Network    ║ Step+Tween                    ║ Backpropagation               ║ Winner     ║")
-	fmt.Println("║            ║ Acc%   │ Time     │ Loss      ║ Acc%   │ Time     │ Loss      ║            ║")
-	fmt.Println("╠════════════╬════════╪══════════╪═══════════╬════════╪══════════╪═══════════╬════════════╣")
+	fmt.Println("╔═══════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                          REAL-TIME STEPPING COMPARISON SUMMARY                                        ║")
+	fmt.Println("╠═══════════╦═══════════════════════════════════════╦═══════════════════════════════════════╦═══════════╣")
+	fmt.Println("║ Network   ║ Step + Backprop                       ║ Step + Tween                          ║ Winner    ║")
+	fmt.Println("║           ║ Steps   │ Steps/s │ Acc%   │ Loss    ║ Steps   │ Steps/s │ Acc%   │ Loss    ║           ║")
+	fmt.Println("╠═══════════╬═════════╪═════════╪════════╪═════════╬═════════╪═════════╪════════╪═════════╬═══════════╣")
 
 	tweenWins := 0
 	bpWins := 0
-	totalTweenTime := time.Duration(0)
-	totalBPTime := time.Duration(0)
+	totalBPSteps := 0
+	totalTweenSteps := 0
 
 	for _, r := range results {
-		winner := "BP"
-		if r.TweenWins {
-			winner = "Tween ✓"
+		totalBPSteps += r.BPSteps
+		totalTweenSteps += r.TweenSteps
+
+		if r.Winner == "Tween ✓" {
 			tweenWins++
 		} else {
 			bpWins++
 		}
 
-		totalTweenTime += r.TweenTime
-		totalBPTime += r.BPTime
-
-		fmt.Printf("║ %-10s ║ %5.1f%% │ %8v │ %9.4f ║ %5.1f%% │ %8v │ %9.4f ║ %-10s ║\n",
+		fmt.Printf("║ %-9s ║ %7d │ %7.0f │ %5.1f%% │ %7.4f ║ %7d │ %7.0f │ %5.1f%% │ %7.4f ║ %-9s ║\n",
 			r.Name,
-			r.TweenAccuracy,
-			r.TweenTime.Round(time.Millisecond),
-			r.TweenFinalLoss,
-			r.BPAccuracy,
-			r.BPTime.Round(time.Millisecond),
-			r.BPFinalLoss,
-			winner)
+			r.BPSteps, r.BPStepsPS, r.BPAccuracy, r.BPLoss,
+			r.TweenSteps, r.TweenStepsPS, r.TweenAccuracy, r.TweenLoss,
+			r.Winner)
 	}
 
-	fmt.Println("╠════════════╬════════╧══════════╧═══════════╬════════╧══════════╧═══════════╬════════════╣")
-	fmt.Printf("║ TOTAL      ║ Time: %-22v ║ Time: %-22v ║            ║\n",
-		totalTweenTime.Round(time.Millisecond),
-		totalBPTime.Round(time.Millisecond))
-	fmt.Println("╠════════════╩═════════════════════════════════════════════════════════════╩════════════╣")
+	fmt.Println("╠═══════════╬═════════╧═════════╧════════╧═════════╬═════════╧═════════╧════════╧═════════╬═══════════╣")
+	fmt.Printf("║ TOTAL     ║ Steps: %-28d ║ Steps: %-28d ║           ║\n", totalBPSteps, totalTweenSteps)
+	fmt.Println("╠═══════════╩═══════════════════════════════════════╩═══════════════════════════════════════╩═══════════╣")
 
-	fmt.Printf("║ Tween Wins: %d/%d (%.1f%%)                                                              ║\n",
-		tweenWins, len(results), float64(tweenWins)/float64(len(results))*100)
-	fmt.Printf("║ BP Wins:    %d/%d (%.1f%%)                                                              ║\n",
+	fmt.Printf("║ Tween Wins: %d/%d (%.1f%%)  |  Backprop Wins: %d/%d (%.1f%%)                                            ║\n",
+		tweenWins, len(results), float64(tweenWins)/float64(len(results))*100,
 		bpWins, len(results), float64(bpWins)/float64(len(results))*100)
 
-	speedup := float64(totalBPTime) / float64(totalTweenTime)
-	if speedup >= 1 {
-		fmt.Printf("║ Tween is %.2fx faster overall                                                         ║\n", speedup)
+	speedRatio := float64(totalTweenSteps) / float64(totalBPSteps)
+	if speedRatio >= 1 {
+		fmt.Printf("║ Tween processed %.2fx more steps (gradient-free overhead is lower)                                   ║\n", speedRatio)
 	} else {
-		fmt.Printf("║ BP is %.2fx faster overall                                                            ║\n", 1/speedup)
+		fmt.Printf("║ Backprop processed %.2fx more steps                                                                   ║\n", 1/speedRatio)
 	}
 
-	fmt.Println("╚══════════════════════════════════════════════════════════════════════════════════════════╝")
-}
-
-// ============================================================================
-// Data Generation
-// ============================================================================
-
-type testData struct {
-	inputs   [][]float32
-	expected []float64
-}
-
-func generateXORData() testData {
-	inputs := [][]float32{
-		{0.0, 0.0, 0.0, 0.0},
-		{0.0, 1.0, 0.0, 1.0},
-		{1.0, 0.0, 1.0, 0.0},
-		{1.0, 1.0, 1.0, 1.0},
-	}
-	expected := []float64{0, 1, 1, 0}
-	return testData{inputs, expected}
-}
-
-func generateConv2DData() testData {
-	inputs := make([][]float32, 8)
-	expected := make([]float64, 8)
-
-	for i := 0; i < 8; i++ {
-		inputs[i] = make([]float32, 16)
-		for j := 0; j < 16; j++ {
-			inputs[i][j] = rand.Float32()
-		}
-		if inputs[i][0]+inputs[i][1] > 1.0 {
-			expected[i] = 1
-		} else {
-			expected[i] = 0
-		}
-	}
-	return testData{inputs, expected}
-}
-
-func generateSequenceData(inputSize int) testData {
-	inputs := make([][]float32, 8)
-	expected := make([]float64, 8)
-
-	for i := 0; i < 8; i++ {
-		inputs[i] = make([]float32, inputSize)
-		sum := float32(0)
-		for j := 0; j < inputSize; j++ {
-			inputs[i][j] = rand.Float32()
-			sum += inputs[i][j]
-		}
-		if sum > float32(inputSize)/2 {
-			expected[i] = 1
-		} else {
-			expected[i] = 0
-		}
-	}
-	return testData{inputs, expected}
-}
-
-func generateSimpleData(inputSize int) testData {
-	inputs := make([][]float32, 16)
-	expected := make([]float64, 16)
-
-	for i := 0; i < 16; i++ {
-		inputs[i] = make([]float32, inputSize)
-		sum := float32(0)
-		for j := 0; j < inputSize; j++ {
-			inputs[i][j] = rand.Float32()
-			sum += inputs[i][j]
-		}
-		if sum > float32(inputSize)/2 {
-			expected[i] = 1
-		} else {
-			expected[i] = 0
-		}
-	}
-	return testData{inputs, expected}
+	fmt.Println("╚═══════════════════════════════════════════════════════════════════════════════════════════════════════╝")
+	fmt.Println()
+	fmt.Println("Key Insight: Both methods run CONTINUOUSLY — the network produces outputs while learning!")
 }
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-func randomFloat() float32 {
-	return rand.Float32()
-}
 
 func initRandomSlice(s []float32, scale float32) {
 	for i := range s {
@@ -639,21 +675,24 @@ func initRandomSlice(s []float32, scale float32) {
 	}
 }
 
-func getNetworkWeightSum(net *nn.Network) float32 {
-	sum := float32(0)
-	for i := 0; i < net.TotalLayers(); i++ {
-		row := i / (net.GridCols * net.LayersPerCell)
-		col := (i / net.LayersPerCell) % net.GridCols
-		layer := i % net.LayersPerCell
-		cfg := net.GetLayer(row, col, layer)
-		if cfg != nil {
-			for _, w := range cfg.Kernel {
-				sum += float32(math.Abs(float64(w)))
-			}
-			for _, b := range cfg.Bias {
-				sum += float32(math.Abs(float64(b)))
-			}
+func clamp(v, min, max float32) float32 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+func argmax(s []float32) int {
+	maxIdx := 0
+	maxVal := s[0]
+	for i := 1; i < len(s); i++ {
+		if s[i] > maxVal {
+			maxVal = s[i]
+			maxIdx = i
 		}
 	}
-	return sum
+	return maxIdx
 }
