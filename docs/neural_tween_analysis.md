@@ -382,3 +382,15 @@ This is analogous to being blindfolded and told "you're 10 degrees off target" w
 - Fast initial exploration before switching to backprop
 - Online/streaming settings where speed matters more than optimal accuracy
 - Reinforcement learning where approximate updates are acceptable
+
+---
+
+## ~~Hybrid Tween-Backprop~~ ❌ FAILED
+
+**Concept:** Combine backprop's gradient direction with tween's update style:
+1. Use backprop's chain rule to compute **actual gradients** (the "which way to push" info)
+2. Apply updates using tween-style scaling (link budgets, gap magnitude)
+
+**Result:** No improvement over vanilla Tween. Dense: 48%, Conv2D: 60.4% (same or worse than Normal Tween).
+
+The hybrid approach didn't break the ~50% barrier. The chain rule gradients appear to be undermined by the tween-style update mechanism.
