@@ -384,9 +384,8 @@ func (ts *TweenState) BackwardPassChainRule(n *Network, targetClass int, outputS
 		}
 
 		// Compute depth scale: deeper layers (closer to input) get higher scale
-		// FIXED: For BackwardPass, we MUST NOT scale the gradient recursively, or it explodes (1.2^190).
-		// We only scale the LEARNING RATE in TweenWeights.
-		depthScale := float32(1.0)
+		depthFromOutput := float32(ts.TotalLayers - 1 - i)
+		depthScale := float32(math.Pow(float64(ts.Config.DepthScaleFactor), float64(depthFromOutput)))
 
 		switch cfg.Type {
 		case LayerDense:
