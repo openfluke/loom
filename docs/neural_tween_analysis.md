@@ -601,6 +601,41 @@ Neural Tweening's value is limited to:
 
 ---
 
+## ~~Activation Derivatives + Leaky Gradients (Semi-Success)~~ 
+
+**Status: TESTED - Improvement on Simple Layers, Failure on Complex**
+
+### Core Idea
+
+Previous implementations treated layers as linear during the backward pass (Feedback Alignment style), ignoring the non-linearity of activation functions.
+We implemented:
+1.  **Strict Activation Derivatives**: `ErrorPreAct = ErrorPostAct * Derivative(Input)`
+2.  **Leaky Derivatives**: For ReLU/LeakyReLU, used a small slope (0.1) instead of 0 for negative values to prevent "dead neurons" from killing the backward signal.
+3.  **Boosted Learning Rate**: Increased `WeightRateMultiplier` from 0.01 to 0.1 to match BP dynamics.
+
+### Test Results (2025-12-16)
+
+| Network   | NormalBP | NormalTween | Change vs Baseline | Verdict |
+|-----------|----------|-------------|--------------------|---------|
+| Dense     | 100.0%   | 79.0%       | **+31.4%**         | ✅ Improvement |
+| Conv2D    | 86.6%    | 79.8%       | **+31.8%**         | ✅ Improvement |
+| RNN       | 100.0%   | 51.8%       | +1.2%              | ❌ Low  |
+| LSTM      | 87.0%    | 58.6%       | +11.8%             | ❌ Low  |
+| Attention | 45.0%    | 45.0%       | -3.0%              | ❌ Stuck |
+| Norm      | 52.0%    | 52.0%       | +1.8%              | ❌ Stuck |
+| SwiGLU    | 58.2%    | 56.2%       | +9.2%              | ✅ Comparable |
+
+### Conclusion
+
+Adding derivatives **significantly helped** shallow/simple networks (Dense, Conv2D), bringing them much closer to Backprop performance (79% vs 86-100%).
+
+However, it **failed to solve the deep/recurrent problem**. RNN, LSTM, and Attention layers still severely underperform compared to Backprop.
+
+**Why?**
+The "Telephone Game" is still in effect. While the local derivative provides a better *local* update, the error signal itself (the `ErrorPostAct`) is still an estimation derived from downstream layers. As this estimated error propagates back through time (RNN/LSTM) or depth, it becomes decorrelated from the true loss gradient.
+
+**Key Takeaway:** Correct local physics (derivatives) cannot fix incorrect global signal (inaccurate backward target estimation).
+
 ---
 
 ## Direct Feedback Alignment (DFA) Tweening (Idea #10)
