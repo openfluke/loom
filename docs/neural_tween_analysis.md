@@ -496,7 +496,8 @@ After testing **9 different approaches** to improve Neural Tweening:
 | Approximate Backprop | ❌ Made things worse |
 | Hybrid Tween-Backprop | ❌ No improvement |
 | Sign-Aligned Pseudo-Gradient | ❌ No improvement |
-| **Perturb-Tween** | ❌ No improvement |
+| Perturb-Tween | ❌ No improvement |
+| **Direct Feedback Alignment (DFA)** | ❌ WORSE (Regression) |
 
 **The ~50% barrier appears to be a fundamental limitation of gradient-free weight updates.**
 
@@ -546,6 +547,43 @@ The variation observed between runs (~47-55%) is just random weight initializati
 
 ---
 
+## ~~Direct Feedback Alignment (DFA) Tweening~~ ❌ FAILED
+
+**Status: TESTED - FAILED (Regression)**
+
+### Core Idea
+
+Instead of passing the error signal layer-by-layer (which accumulates noise), use **Direct Feedback Alignment (DFA)**:
+1.  **Global Error**: Calculate error at final output.
+2.  **Broadcast**: Project this global error directly to each hidden layer using fixed random matrices $B_l$.
+3.  **Update**: Use this projected signal as the target gap for tweening.
+
+### Implementation
+
+- Added `DFAEnabled` flag and `FeedbackWeights` matrices.
+- Modified `TweenStep` to skip backward pass and instead inject `Gap_l = B_l * GlobalError`.
+- Used standard `TweenWeights` to move weights toward this projected target.
+
+### Test Results (2025-12-16)
+
+| Network   | NormalBP | NormalTween (Baseline) | BatchTween (DFA) | Change |
+|-----------|----------|------------------------|------------------|--------|
+| Dense     | 99.4%    | 25.8%                  | 38.8%            | ❌ Worse |
+| Conv2D    | 82.0%    | 47.8%                  | 27.6%            | ❌ Worse |
+| RNN       | 98.2%    | 38.8%                  | 38.2%            | ❌ Same/Worse |
+| LSTM      | 91.4%    | 29.8%                  | 31.2%            | ❌ Worse |
+| Attention | 44.6%    | 27.8%                  | 27.6%            | ❌ Low |
+
+**Result: DFA performed WORSE than standard layer-by-layer tweening.**
+
+### Why It Failed
+
+1.  **Dimensional Mismatch**: Identifying the "right" random matrix $B_l$ that aligns with the forward weights $W_l$ is critically hard without gradients. In standard DFA, backprop "learns" to align $W_l$ with $B_l$. Here, we have no mechanism to force that alignment.
+2.  **Tween uses Correlations**: Tweening relies on `Input * Gap`. If the Gap is just a random projection of global error, it has almost zero correlation with the specific input features that caused that error.
+3.  **Optimization vs Steering**: DFA provides a "steering" signal, but Tweening needs a "correction" signal. The random projection steers weights in arbitrary directions, breaking the delicate local feature detectors that standard Tweening (with its imperfect backward pass) was at least partially preserving.
+
+---
+
 ## Absolute Final Conclusion
 
 Neural Tweening's ~50% barrier is a **fundamental limitation** of any approach that doesn't compute how weight changes propagate through the entire network (i.e., the chain rule).
@@ -562,3 +600,45 @@ Neural Tweening's value is limited to:
 - Potential hybrid approaches where Tween does exploration and backprop does refinement
 
 ---
+
+---
+
+## Direct Feedback Alignment (DFA) Tweening (Idea #10)
+
+**Status: PROPOSED**
+
+### Problem: The Telephone Game
+
+All previous approaches failed because they rely on the **Layer-by-Layer Backward Estimation**.
+- Layer N estimates Layer N-1's target.
+- Layer N-1 estimates Layer N-2's target.
+- ...
+- Layer 1 estimates Layer 0's target.
+
+By the time the signal reaches early layers (Dense/Conv2D inputs), it has passed through multiple noisy, non-invertible transformations. The error signal is completely garbled—like a game of telephone. This is why early layers are "optimizing towards noise."
+
+### The Solution: Direct Broadcast (Short-Circuit)
+
+Instead of passing the error signal layer-by-layer, we will use **Direct Feedback Alignment (DFA)** (Nøkland, 2016).
+
+1.  **Global Error**: Calculate the error at the final output layer (Target - Actual).
+2.  **Fixed Feedback Paths**: Initialize a **fixed random matrix** B_l for each hidden layer l.
+3.  **Direct Projection**: During training, project the global output error directly into each hidden layer's space: Gap_l = B_l * GlobalOutputError.
+4.  **Tween**: Use this Gap_l to update weights in layer l.
+
+### Why This Might Work
+
+-   **No Noise Accumulation**: The error signal for the first layer comes directly from the final error, untainted by the current state of intermediate layers.
+-   **Stable Targets**: The feedback matrices B_l are fixed (or slowly evolving). This gives the hidden layers a consistent coordinate system to align themselves to.
+-   **Proven in Backprop**: DFA has been shown to train deep networks (even ImageNet scale) without symmetric weight transport, achieving results comparable to backprop.
+
+### Implementation Plan
+
+1.  Add DFAEnabled flag to TweenState.
+2.  Add FeedbackWeights[][][]float32 to store fixed random matrices for each layer.
+3.  Modify TweenStep:
+    -   Compute global error.
+    -   Broadcast global error to all layers via Gap_l = FeedbackWeights[l] * GlobalError.
+    -   Run standard TweenWeights using these directly injected gaps.
+
+This changes the philosophy from "Bidirectional Consensual" to "Global Error Broadcast".
