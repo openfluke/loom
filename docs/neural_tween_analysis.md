@@ -1,5 +1,37 @@
 # Neural Tween Performance Analysis
 
+## ⚠️ Executive Summary: The 48% Barrier
+
+> **Neural Tweening is NOT backpropagation. It's Hebbian Self-Organization.**
+
+After extensive experimentation (DFA, DTP, Activation Derivatives, WDM, RMT, Perturb, Kill Ego), we have confirmed that **Neural Tweening has a fundamental accuracy ceiling of ~48-65% for classification tasks**.
+
+### Why This Happens
+
+| Backpropagation | Neural Tweening |
+|-----------------|-----------------|
+| Chain rule: Exact error attribution | "Telephone Game": Estimated error |
+| Says: "Weight A caused 3% of error" | Says: "Everyone louder!" |
+| Can fix specific mistakes | Can only create associations |
+| O(n) memory, O(n) compute | O(1) compute, no compute graph |
+
+**The Core Problem:** Tweening calculates `Target - Actual` (the "Gap") and uses it for Hebbian updates. But this Gap degrades as it propagates backward—by the time it reaches early layers, it's essentially noise. This is the **"Telephone Game"** effect.
+
+### What Tweening IS Good For
+
+1. **Pre-training** - Get weights from random → organized before Backprop
+2. **Stabilization** - Smooth updates prevent Attention NaN explosions (Test 12)
+3. **Low-memory training** - No activation cache needed
+4. **Embedded/streaming** - Continuous online learning
+
+### What Tweening IS NOT Good For
+
+1. **High-precision classification** (99%+ accuracy)
+2. **Deep networks** (>3 layers, unless pruned)
+3. **Tasks requiring fine error correction**
+
+---
+
 ## Overview
 
 This document analyzes the performance of Neural Tweening across all tests, particularly focusing on the WDM (Wavelength-Division Multiplexing) multi-signal training approach.
