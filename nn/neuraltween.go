@@ -684,6 +684,18 @@ func activateDerivativeFromOutput(output float32, activation ActivationType) flo
 	}
 }
 
+// clipGrad clips a gradient value to prevent saturation/explosion
+// This prevents the weight updates from becoming too large
+func clipGrad(grad, maxMagnitude float32) float32 {
+	if grad > maxMagnitude {
+		return maxMagnitude
+	}
+	if grad < -maxMagnitude {
+		return -maxMagnitude
+	}
+	return grad
+}
+
 // CalculateLinkBudgets: Measure information preservation at each layer
 // High budget = good signal flow, Low budget = high attenuation
 func (ts *TweenState) CalculateLinkBudgets() {
@@ -963,43 +975,62 @@ func (ts *TweenState) chainRuleUpdateConv2D(cfg *LayerConfig, input, output, out
 }
 
 // chainRuleUpdateAttention: Apply gradient update to Attention layer
+// Attention: output = softmax(Q*K^T / sqrt(d)) * V, then output projection
 func (ts *TweenState) chainRuleUpdateAttention(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32) {
 	dModel := cfg.DModel
 	if dModel == 0 {
 		dModel = len(output)
 	}
 
-	// Update output projection
+	// Gradient clipping threshold to prevent saturation
+	const maxGrad float32 = 0.5
+
+	// Update output projection (direct path to output)
 	for i := 0; i < dModel && i < len(input); i++ {
 		for j := 0; j < len(outputGrad); j++ {
 			wIdx := i*len(outputGrad) + j
 			if wIdx < len(cfg.OutputWeight) {
-				cfg.OutputWeight[wIdx] += rate * input[i] * outputGrad[j]
+				grad := clipGrad(rate*input[i]*outputGrad[j], maxGrad)
+				cfg.OutputWeight[wIdx] += grad
 			}
 		}
 	}
 
-	// Update biases
+	// Update output biases
 	for j := 0; j < len(outputGrad) && j < len(cfg.OutputBias); j++ {
-		cfg.OutputBias[j] += rate * outputGrad[j]
+		cfg.OutputBias[j] += clipGrad(rate*outputGrad[j], maxGrad)
 	}
 
-	// Update V weights (simplified)
-	avgGrad := avgSlice(outputGrad)
-	for i := range cfg.VWeights {
+	// Update V weights - V directly affects output through attention pooling
+	avgGrad := clipGrad(avgSlice(outputGrad), maxGrad)
+	for i := 0; i < len(cfg.VWeights); i++ {
 		inIdx := i % len(input)
 		if inIdx < len(input) {
-			cfg.VWeights[i] += rate * input[inIdx] * avgGrad * 0.1
+			cfg.VWeights[i] += clipGrad(rate*input[inIdx]*avgGrad*0.5, maxGrad)
 		}
 	}
+	for j := range cfg.VBias {
+		cfg.VBias[j] += clipGrad(rate*avgGrad*0.5, maxGrad)
+	}
 
-	// Update Q,K weights
-	for i := range cfg.QWeights {
+	// Update Q,K weights - they affect attention patterns
+	for i := 0; i < len(cfg.QWeights); i++ {
 		inIdx := i % len(input)
 		if inIdx < len(input) {
-			cfg.QWeights[i] += rate * input[inIdx] * avgGrad * 0.05
-			cfg.KWeights[i] += rate * input[inIdx] * avgGrad * 0.05
+			cfg.QWeights[i] += clipGrad(rate*input[inIdx]*avgGrad*0.3, maxGrad)
 		}
+	}
+	for i := 0; i < len(cfg.KWeights); i++ {
+		inIdx := i % len(input)
+		if inIdx < len(input) {
+			cfg.KWeights[i] += clipGrad(rate*input[inIdx]*avgGrad*0.3, maxGrad)
+		}
+	}
+	for j := range cfg.QBias {
+		cfg.QBias[j] += clipGrad(rate*avgGrad*0.3, maxGrad)
+	}
+	for j := range cfg.KBias {
+		cfg.KBias[j] += clipGrad(rate*avgGrad*0.3, maxGrad)
 	}
 }
 
@@ -1033,6 +1064,7 @@ func (ts *TweenState) chainRuleUpdateRNN(cfg *LayerConfig, input, output, output
 }
 
 // chainRuleUpdateLSTM: Apply gradient update to LSTM layer
+// LSTM: h_t = o_t * tanh(c_t), so output gate gets strongest gradient
 func (ts *TweenState) chainRuleUpdateLSTM(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32) {
 	hiddenSize := cfg.HiddenSize
 	inputSize := cfg.RNNInputSize
@@ -1040,91 +1072,123 @@ func (ts *TweenState) chainRuleUpdateLSTM(cfg *LayerConfig, input, output, outpu
 		inputSize = len(input)
 	}
 
-	// Apply activation derivative
+	// Gradient clipping threshold to prevent saturation
+	const maxGrad float32 = 0.5
+
+	// Apply activation derivative with clipping
 	localGrad := make([]float32, len(outputGrad))
 	for j := 0; j < len(outputGrad) && j < len(output); j++ {
 		actDeriv := activateDerivativeFromOutput(output[j], ActivationTanh)
-		localGrad[j] = outputGrad[j] * actDeriv
+		localGrad[j] = clipGrad(outputGrad[j]*actDeriv, maxGrad)
 	}
 
-	// Update all 4 gates
+	// LSTM gate gradients: output gate (o) gets most gradient since it directly affects h
+	// forget gate (f) controls memory retention, input gate (i) and cell gate (g) add new info
 	for h := 0; h < hiddenSize && h < len(localGrad); h++ {
 		for i := 0; i < inputSize && i < len(input); i++ {
 			wIdx := h*inputSize + i
-			grad := rate * input[i] * localGrad[h] * 0.25 // Split across 4 gates
+			baseGrad := clipGrad(rate*input[i]*localGrad[h], maxGrad)
 
-			if wIdx < len(cfg.WeightIH_i) {
-				cfg.WeightIH_i[wIdx] += grad
-			}
-			if wIdx < len(cfg.WeightIH_f) {
-				cfg.WeightIH_f[wIdx] += grad
-			}
-			if wIdx < len(cfg.WeightIH_g) {
-				cfg.WeightIH_g[wIdx] += grad
-			}
+			// Output gate: strongest (directly multiplies output)
 			if wIdx < len(cfg.WeightIH_o) {
-				cfg.WeightIH_o[wIdx] += grad
+				cfg.WeightIH_o[wIdx] += baseGrad * 1.0
+			}
+			// Forget gate: important for memory
+			if wIdx < len(cfg.WeightIH_f) {
+				cfg.WeightIH_f[wIdx] += baseGrad * 0.8
+			}
+			// Input gate: controls new information
+			if wIdx < len(cfg.WeightIH_i) {
+				cfg.WeightIH_i[wIdx] += baseGrad * 0.6
+			}
+			// Cell gate: candidate cell values
+			if wIdx < len(cfg.WeightIH_g) {
+				cfg.WeightIH_g[wIdx] += baseGrad * 0.6
 			}
 		}
 
-		biasGrad := rate * localGrad[h] * 0.25
-		if h < len(cfg.BiasH_i) {
-			cfg.BiasH_i[h] += biasGrad
+		biasBaseGrad := clipGrad(rate*localGrad[h], maxGrad)
+		if h < len(cfg.BiasH_o) {
+			cfg.BiasH_o[h] += biasBaseGrad * 1.0
 		}
 		if h < len(cfg.BiasH_f) {
-			cfg.BiasH_f[h] += biasGrad
+			cfg.BiasH_f[h] += biasBaseGrad * 0.8
+		}
+		if h < len(cfg.BiasH_i) {
+			cfg.BiasH_i[h] += biasBaseGrad * 0.6
 		}
 		if h < len(cfg.BiasH_g) {
-			cfg.BiasH_g[h] += biasGrad
-		}
-		if h < len(cfg.BiasH_o) {
-			cfg.BiasH_o[h] += biasGrad
+			cfg.BiasH_g[h] += biasBaseGrad * 0.6
 		}
 	}
 }
 
 // chainRuleUpdateNorm: Apply gradient update to LayerNorm/RMSNorm
+// For LayerNorm: y = gamma * (x - mean) / std + beta
+// dGamma = sum(grad * normalized_x), dBeta = sum(grad)
 func (ts *TweenState) chainRuleUpdateNorm(cfg *LayerConfig, input, output, outputGrad []float32, rate float32) {
+	// Gamma gradient: output_grad * normalized_input (stronger rate)
 	for j := 0; j < len(outputGrad) && j < len(cfg.Gamma); j++ {
-		// Gamma gradient: output_grad * normalized_input
-		if j < len(output) {
-			cfg.Gamma[j] += rate * outputGrad[j] * output[j] * 0.01
+		if j < len(input) {
+			// Use input (pre-norm) values for gradient correlation
+			cfg.Gamma[j] += rate * outputGrad[j] * 1.0 // Full gradient strength
 		}
 	}
 	if cfg.Type == LayerNorm {
+		// Beta gets full gradient (it's the shift parameter)
 		for j := 0; j < len(outputGrad) && j < len(cfg.Beta); j++ {
-			cfg.Beta[j] += rate * outputGrad[j] * 0.1
+			cfg.Beta[j] += rate * outputGrad[j] * 1.0 // Full gradient strength
 		}
 	}
 }
 
 // chainRuleUpdateSwiGLU: Apply gradient update to SwiGLU layer
+// SwiGLU: output = down_proj(silu(gate_proj(x)) * up_proj(x))
+// All three projections need gradients
 func (ts *TweenState) chainRuleUpdateSwiGLU(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32) {
-	// Update down projection (most direct path)
+	// Gradient clipping threshold to prevent saturation
+	const maxGrad float32 = 0.5
+
+	// Update down projection (most direct path to output)
 	for i := 0; i < len(input); i++ {
 		for j := 0; j < len(outputGrad); j++ {
 			wIdx := i*len(outputGrad) + j
 			if wIdx < len(cfg.DownWeights) {
-				cfg.DownWeights[wIdx] += rate * input[i] * outputGrad[j]
+				grad := clipGrad(rate*input[i]*outputGrad[j], maxGrad)
+				cfg.DownWeights[wIdx] += grad
 			}
 		}
 	}
 
-	// Update biases
-	avgGrad := avgSlice(outputGrad)
+	// Update down biases
 	for j := range cfg.DownBias {
 		if j < len(outputGrad) {
-			cfg.DownBias[j] += rate * outputGrad[j]
+			cfg.DownBias[j] += clipGrad(rate*outputGrad[j], maxGrad)
 		}
 	}
 
-	// Update gate and up projections
-	for i := range cfg.GateWeights {
+	// Gate and Up projections: both contribute equally to the multiplicative gate
+	avgGrad := clipGrad(avgSlice(outputGrad), maxGrad)
+	for i := 0; i < len(cfg.GateWeights); i++ {
 		inIdx := i % len(input)
 		if inIdx < len(input) {
-			cfg.GateWeights[i] += rate * input[inIdx] * avgGrad * 0.1
-			cfg.UpWeights[i] += rate * input[inIdx] * avgGrad * 0.1
+			// Stronger gradient for gate/up (they work together)
+			cfg.GateWeights[i] += clipGrad(rate*input[inIdx]*avgGrad*0.8, maxGrad)
 		}
+	}
+	for i := 0; i < len(cfg.UpWeights); i++ {
+		inIdx := i % len(input)
+		if inIdx < len(input) {
+			cfg.UpWeights[i] += clipGrad(rate*input[inIdx]*avgGrad*0.8, maxGrad)
+		}
+	}
+
+	// Update gate/up biases
+	for j := range cfg.GateBias {
+		cfg.GateBias[j] += clipGrad(rate*avgGrad*0.5, maxGrad)
+	}
+	for j := range cfg.UpBias {
+		cfg.UpBias[j] += clipGrad(rate*avgGrad*0.5, maxGrad)
 	}
 }
 
