@@ -1964,20 +1964,18 @@ func test11_layer_safari() {
 			case "SwiGLU":
 				layers = append(layers, fmt.Sprintf(`{"type":"swiglu","input_height":%d,"output_height":%d}`, hidden, hidden))
 			case "MultiHeadAttention":
-				// 4 heads * 8 dim = 32 hidden
-				layers = append(layers, fmt.Sprintf(`{"type":"attention","num_heads":4,"d_model":%d}`, hidden))
+				// 4 heads * 8 dim = 32 hidden. Needs explicit seq_length=1
+				layers = append(layers, fmt.Sprintf(`{"type":"mha","num_heads":4,"d_model":%d,"seq_length":1}`, hidden))
 			case "RNN":
-				layers = append(layers, fmt.Sprintf(`{"type":"rnn","hidden_size":%d,"rnn_input_size":%d}`, hidden, hidden))
+				// Needs seq_length=1 to actually run. 'input_size' is the JSON key (mapped to RNNInputSize)
+				layers = append(layers, fmt.Sprintf(`{"type":"rnn","hidden_size":%d,"input_size":%d,"seq_length":1}`, hidden, hidden))
 			case "LSTM":
-				layers = append(layers, fmt.Sprintf(`{"type":"lstm","hidden_size":%d,"rnn_input_size":%d}`, hidden, hidden))
+				// Needs seq_length=1. 'input_size' is the JSON key
+				layers = append(layers, fmt.Sprintf(`{"type":"lstm","hidden_size":%d,"input_size":%d,"seq_length":1}`, hidden, hidden))
 			case "Conv2D":
-				// Treat 32 vector as 1x32 image? Or 8x4?
-				// Let's use 1x32. Kernel 3. Padding 1 (same). Stride 1.
-				// Input: 32 channels? No, input is flat 32 float vector.
-				// In Loom, Conv2D interprets input as [Channels, Height, Width] or flat?
-				// Flattened. If InputHeight/Width not set, it might guess.
-				// Let's set explicit shape: 1 channel, 1 height, 32 width
-				layers = append(layers, fmt.Sprintf(`{"type":"conv2d","filters":1,"kernel_size":3,"stride":1,"padding":1,"input_height":1,"input_width":%d,"input_channels":1,"activation":"tanh"}`, hidden))
+				// Treat 32 vector as 1x32 image. Output dimensions must be explicit for JSON builder to know buffer size.
+				// 1x32 input with Kernel 3, Stride 1, Padding 1 => 1x32 output
+				layers = append(layers, fmt.Sprintf(`{"type":"conv2d","filters":1,"kernel_size":3,"stride":1,"padding":1,"input_height":1,"input_width":%d,"output_height":1,"output_width":%d,"input_channels":1,"activation":"tanh"}`, hidden, hidden))
 			}
 		}
 
