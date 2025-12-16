@@ -601,6 +601,36 @@ Neural Tweening's value is limited to:
 
 ---
 
+## ~~AI Therapy: Difference Target Propagation + Kill Ego (Failure)~~
+
+**Status: TESTED - FAILED**
+
+### Core Idea
+
+We attempted a radical "therapy" to fix the "delusional" behavior of the network (optimizing for internal consistency rather than reality):
+1.  **Kill the Ego**: We removed the `IgnoreThreshold`. Layers were forced to update even if their Link Budget (signal alignment) was near zero.
+2.  **Difference Target Propagation (DTP)**: Instead of estimating targets via heuristic weighted averages, we trained an explicit **Inverse Autoencoder** (`InverseKernels`) for each layer.
+    -   `TrainInverse`: Minimize `Input - Inverse(Output)`.
+    -   `BackwardPass`: `TargetIn = Input + Inverse(TargetOut) - Inverse(ActualOut)`.
+
+### Test Results (2025-12-16)
+
+| Network   | NormalBP | NormalTween (DTP) | Change vs Baseline | Verdict |
+|-----------|----------|-------------------|--------------------|---------|
+| Dense     | 100.0%   | 48.0%             | -31% (Regression)  | ❌ Failed |
+| Conv2D    | 89.8%    | 59.6%             | -20% (Regression)  | ❌ Failed |
+| RNN       | 99.0%    | 48.8%             | ~0% (Stagnant)     | ❌ Failed |
+
+### Why It Failed
+
+1.  **Inverse Noise**: The `InverseWeights` started random and were trained online. Early in training, the inverse is garbage. Propagating targets through a garbage inverse just generates garbage targets for the previous layer.
+2.  **Blind Leading the Blind**: Unlike DTP papers which often use pre-training or specific phases, we tried to train Forward and Inverse simultaneously from scratch. The Forward weights move to satisfy the Inverse, and the Inverse moves to satisfy the Forward. Without a strong anchor (like Backprop's exact gradient), they just drifted into a noisy equilibrium (~48% accuracy - basically random guessing for 2 classes).
+3.  **Removal of Filters**: Removing `IgnoreThreshold` ("Kill Ego") meant that we flooded the network with this noisy gradient signal, corrupting even the potentially good layers.
+
+**Key Takeaway**: DTP requires a much more stable Inverse to work than can be learned online from scratch in this architecture. "Heuristic Consensual" (Original Tween) is superior to "Learned Inversion" (DTP) for this unconstrained setting.
+
+---
+
 ## ~~Activation Derivatives + Leaky Gradients (Semi-Success)~~ 
 
 **Status: TESTED - Improvement on Simple Layers, Failure on Complex**
