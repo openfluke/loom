@@ -417,3 +417,91 @@ The hybrid approach didn't break the ~50% barrier. The chain rule gradients appe
 - RNN: 52.2% → 43.2% ❌
 
 The added complexity hurt rather than helped. Even the V1 results weren't consistent enough to be useful.
+
+---
+
+## ~~Sign-Aligned Pseudo-Gradient Tweening (Sign-Tween)~~ ❌ FAILED
+
+**Status: TESTED - Did NOT break the 50% barrier**
+
+### Core Hypothesis
+
+The reason Tween plateaus at ~48-52% is that it only knows the *magnitude* of the gap (how wrong) but has **no reliable sense of direction** for each individual weight update. The backward target estimation is too crude (weighted average based on current weights), so early layers get noisy/conflicting signals.
+
+All previous sharpening ideas (winner-take-more, error-proportional, temperature, momentum on gaps) still operate on the same noisy gap signal. They amplify noise as much as signal.
+
+### The Solution: Inject Directional Signal Using Sign Alignment
+
+Instead of blindly tweening weights toward the backward-estimated input using the current weights, we add a **pseudo-gradient term** based only on the **sign** of (input * output_gap). This is extremely cheap (no chain rule, no derivatives), but it gives each weight a consistent "push this way if input and needed correction are same sign" direction.
+
+**This is NOT backprop.** We're not computing full gradients or using activation derivatives. We're using a Hebbian-like sign alignment: "neurons that fire together (input high when we need output higher) should wire together."
+
+### Implementation Details
+
+New fields added to `TweenState`:
+```go
+SignAlignEnabled  bool    // Default: true, enable sign-aligned updates
+SignAlignStrength float32 // Default: 0.3, blend ratio (0.0 = pure tween, 1.0 = pure sign-aligned)
+```
+
+**Algorithm in `tweenDense`:**
+1. Compute classic tween delta: `rate * input * gap * weightRateMultiplier`
+2. Compute sign-aligned delta:
+   - If `input * gap > 0` (same sign) → strengthen connection (positive delta)
+   - If `input * gap < 0` (opposite signs) → weaken connection (negative delta)
+   - Scale by input magnitude: `|input| * rate * gap * weightRateMultiplier`
+3. Blend: `totalDelta = (1 - strength) * tweenDelta + strength * signAlignedDelta`
+4. Apply with momentum
+
+**Algorithm in `tweenConv2D`:**
+- Similar approach using average input activation across the filter
+
+### Test Results (2025-12-16)
+
+| Network   | NormalBP | NormalTween | BatchTween | Change |
+|-----------|----------|-------------|------------|--------|
+| Dense     | 100.0%   | 47.6%       | 47.4%      | ❌ No improvement |
+| Conv2D    | 90.2%    | 48.0%       | 48.2%      | ❌ No improvement |
+| RNN       | 99.4%    | 50.6%       | 48.6%      | ❌ No improvement |
+| LSTM      | 84.6%    | 46.8%       | 46.8%      | ❌ No improvement |
+| Attention | 48.0%    | 48.0%       | 48.0%      | ❌ Tie (both stuck) |
+| Norm      | 50.2%    | 50.2%       | 50.2%      | ❌ Tie (both stuck) |
+| SwiGLU    | 64.2%    | 47.0%       | 47.0%      | ❌ No improvement |
+
+**Result: Sign-Aligned Pseudo-Gradient did NOT break the 50% barrier.**
+
+### Why It Failed
+
+The Hebbian sign alignment provides *consistent* directional signal, but it's still based on the **same noisy backward target estimation**. The fundamental problem remains:
+
+1. **Backward targets are wrong** - The weighted average estimation doesn't produce accurate targets for early layers
+2. **Wrong direction × consistent = consistent wrong** - Making the noisy signal more consistent doesn't fix the noise
+3. **No error attribution** - We still don't know which specific weights caused the error
+
+The chain rule in backpropagation doesn't just provide direction - it provides **attributable direction** (which weights were responsible for the error). Hebbian learning only knows correlation, not causation.
+
+---
+
+## Final Conclusion
+
+After testing **8 different approaches** to improve Neural Tweening:
+
+| Approach | Result |
+|----------|--------|
+| WDM (Multiple samples) | ❌ Ties |
+| RMT (Same sample + perturbations) | ❌ Ties |
+| HLT (Layer voting) | ❌ Ties |
+| LBL (Progressive unfreezing) | ❌ -15% (hurt RNN) |
+| Curriculum (Boosted early rates) | ❌ -10.7% (killed layers) |
+| Approximate Backprop | ❌ Made things worse |
+| Hybrid Tween-Backprop | ❌ No improvement |
+| **Sign-Aligned Pseudo-Gradient** | ❌ No improvement |
+
+**The ~50% barrier appears to be a fundamental limitation of gradient-free weight updates.**
+
+Neural Tweening's value may be limited to:
+- Fast initial exploration (reaches 40% quickly before plateauing)
+- Stabilizing attention layers (prevents NaN)
+- Extremely resource-constrained environments where backprop is impossible
+
+---
