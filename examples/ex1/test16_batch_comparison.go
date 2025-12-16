@@ -285,7 +285,7 @@ func runNormalBackprop(net *nn.Network, data TrainingData, duration time.Duratio
 // ============================================================================
 
 func runNormalTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) Metrics {
-	ts := nn.NewTweenState(net)
+	ts := nn.NewTweenState(net, nil)
 	ts.Verbose = false
 	outputSize := len(data.Samples[0].Target)
 
@@ -459,7 +459,7 @@ func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, ta
 	inputSize := len(data.Samples[0].Input)
 	state := net.InitStepState(inputSize)
 
-	ts := nn.NewTweenState(net)
+	ts := nn.NewTweenState(net, nil)
 	ts.Verbose = false
 
 	peakMB := getMemoryMB()
@@ -536,9 +536,9 @@ func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, ta
 // ============================================================================
 
 func runBatchTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64, batchSize int) Metrics {
-	ts := nn.NewTweenState(net)
+	ts := nn.NewTweenState(net, nil)
 	ts.Verbose = false
-	ts.BatchSize = batchSize
+	ts.Config.BatchSize = batchSize
 
 	peakMB := getMemoryMB()
 	done := make(chan bool)
@@ -625,9 +625,9 @@ func runStepBatchTween(net *nn.Network, data TrainingData, duration time.Duratio
 	inputSize := len(data.Samples[0].Input)
 	state := net.InitStepState(inputSize)
 
-	ts := nn.NewTweenState(net)
+	ts := nn.NewTweenState(net, nil)
 	ts.Verbose = false
-	ts.BatchSize = batchSize
+	ts.Config.BatchSize = batchSize
 
 	outputSize := len(data.Samples[0].Target)
 

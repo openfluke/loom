@@ -103,7 +103,7 @@ func test1_tween() {
 	initial, _ := network.EvaluateNetwork(inputs, expected)
 	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
 
-	ts := nn.NewTweenState(network)
+	ts := nn.NewTweenState(network, nil)
 	ts.Verbose = true // Show link budgets, depth barrier, and training progress
 
 	start := time.Now()
@@ -174,7 +174,7 @@ func test3_deep_tween() {
 	initial, _ := network.EvaluateNetwork(inputs, expected)
 	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
 
-	ts := nn.NewTweenState(network)
+	ts := nn.NewTweenState(network, nil)
 	ts.Verbose = true // Show link budgets, depth barrier, and training progress
 
 	start := time.Now()
@@ -211,7 +211,7 @@ func test4_iris() {
 	initial, _ := network.EvaluateNetwork(inputs, expected)
 	fmt.Printf("Before: Score=%.1f/100\n", initial.Score)
 
-	ts := nn.NewTweenState(network)
+	ts := nn.NewTweenState(network, nil)
 	ts.Verbose = true // Show link budgets, depth barrier, and training progress
 
 	start := time.Now()
@@ -259,7 +259,7 @@ func test5_mega() {
 	initial, _ := networkTween.EvaluateNetwork(inputs[:1000], expected[:1000]) // Sample eval
 	fmt.Printf("  Before: Score=%.1f/100 (sampled)\n", initial.Score)
 
-	ts := nn.NewTweenState(networkTween)
+	ts := nn.NewTweenState(networkTween, nil)
 	ts.Verbose = true // Show link budgets, depth barrier, and training progress
 	startTween := time.Now()
 
@@ -378,7 +378,7 @@ func test6_layer_types() {
 				fmt.Printf("└─ Winner: SKIP\n")
 				return
 			}
-			ts := nn.NewTweenState(netTween)
+			ts := nn.NewTweenState(netTween, nil)
 			ts.Verbose = true // Show link budgets, depth barrier, and training progress
 			startTween := time.Now()
 			ts.Train(netTween, inputs, expected, epochs, 0.3, nil)
@@ -488,7 +488,7 @@ func test7_deep_layers() {
 			netBP, _ := nn.LoadModel(tempFile, "base")
 
 			// --- Tween ---
-			ts := nn.NewTweenState(netTween)
+			ts := nn.NewTweenState(netTween, nil)
 			ts.Verbose = true // Show link budgets, depth barrier, and training progress
 			startTween := time.Now()
 			ts.Train(netTween, inputs, expected, epochs, 0.3, nil)
@@ -580,7 +580,7 @@ func test8_spiral() {
 
 	// ============ TWEEN ============
 	fmt.Println("▶ TWEEN (Spiral):")
-	ts := nn.NewTweenState(netTween)
+	ts := nn.NewTweenState(netTween, nil)
 	ts.Verbose = true // Show link budgets, depth barrier, and training progress
 	startTween := time.Now()
 	// High rate because we are confident in the features
@@ -1386,10 +1386,10 @@ func test9_two_moons() {
 
 		// === TWEEN ===
 		fmt.Println("│ ▶ TWEEN:")
-		ts := nn.NewTweenState(netTween)
+		ts := nn.NewTweenState(netTween, nil)
 		ts.Verbose = false
-		ts.EvalFrequency = evalFreq
-		ts.EarlyStopThreshold = 99.0
+		ts.Config.EvalFrequency = evalFreq
+		ts.Config.EarlyStopThreshold = 99.0
 
 		tweenBestVal := 0.0
 		tweenBestEpoch := 0
@@ -1734,18 +1734,19 @@ func test10_depth_charge() {
 	fmt.Println("  Legend: █=0.8+ ▓=0.6-0.8 ▒=0.4-0.6 ░=0.2-0.4 ·=<0.2")
 	fmt.Println()
 
-	ts := nn.NewTweenState(netTween)
+	ts := nn.NewTweenState(netTween, nil)
 	ts.Verbose = true // Show the ASCII heatmap!
-	ts.EvalFrequency = 5
-	ts.IgnoreThreshold = 0.15 // Still ignore updates for bad layers while waiting to prune
-	ts.PruneEnabled = true    // Enable surgery!
-	ts.PruneThreshold = 0.6   // Aggressive! Even "healthy" (0.5) layers are candidates to reduce depth
-	ts.PrunePatience = 5      // Quick trigger to chop layers
+	ts.Config.EvalFrequency = 1
+	ts.Config.UseChainRule = true   // Explicitly enable Chain Rule
+	ts.Config.IgnoreThreshold = 0.5 // Aggressive ignoring of dead layers
+	ts.Config.PruneEnabled = true   // ENABLE SURGERY
+	ts.Config.PruneThreshold = 0.1  // Kill if budget < 10%
+	ts.Config.PrunePatience = 5     // Wait 5 epochs before chopping
 
 	// Boost hyperparameters for deep networks
-	ts.DenseRate = 2.0             // Stronger dense updates
-	ts.WeightRateMultiplier = 0.05 // 5x larger weight updates
-	ts.NormRate = 0.3              // More aggressive norm tweening
+	ts.Config.DenseRate = 2.0             // Boost rate to force adaptation
+	ts.Config.WeightRateMultiplier = 0.05 // 5x larger weight updates
+	ts.Config.NormRate = 0.2              // More aggressive norm tweening
 
 	tweenStart := time.Now()
 	ts.Train(netTween, inputs, expected, epochs, 0.5, nil) // Higher rate
@@ -1769,7 +1770,7 @@ func test10_depth_charge() {
 	fmt.Printf("\n  Final Score: %.1f%%\n", tweenScore.Score)
 	fmt.Printf("  Link Budget: avg=%.3f min=%.3f max=%.3f\n", avgBudget, minBudget, maxBudget)
 	fmt.Printf("  Depth Barrier: %.6f (signal surviving all %d layers)\n", depthBarrier, numLayers)
-	fmt.Printf("  Bottleneck: Layer %d (budget=%.3f)\n", bottleneck, minBudget)
+	fmt.Printf("  Bottleneck: Layer %d (budget=%.3f)\n", bottleneck, minB)
 	fmt.Printf("  Time: %v\n\n", tweenTime)
 
 	// ═══════════════════════════════════════════════════════════════
@@ -2002,12 +2003,12 @@ func test11_layer_safari() {
 		rand.Seed(42)
 		n.InitializeWeights()
 
-		ts := nn.NewTweenState(n)
+		ts := nn.NewTweenState(n, nil)
 		ts.Verbose = true
-		ts.EvalFrequency = 10
-		ts.PruneEnabled = true
-		ts.PruneThreshold = 0.6 // Aggressive to force pruning
-		ts.PrunePatience = 3    // Fast trigger
+		ts.Config.EvalFrequency = 10
+		ts.Config.PruneEnabled = true
+		ts.Config.PruneThreshold = 0.6 // Aggressive to force pruning
+		ts.Config.PrunePatience = 3    // Fast trigger
 
 		// Train
 		ts.Train(n, inputs, expected, 30, 0.01, func(epoch int, loss float32, metrics *nn.DeviationMetrics) {

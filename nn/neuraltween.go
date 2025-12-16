@@ -18,6 +18,110 @@ import (
 // Key insight: We DON'T compute gradients. We directly see the GAP at each
 // layer between forward (actual) and backward (target) and tween toward it.
 
+// TweenConfig holds all tunable parameters for NeuralTween
+type TweenConfig struct {
+	// === TUNABLE LEARNING ===
+	FrontierEnabled   bool    // Default: true
+	FrontierMin       int     // Minimum layer index to oscillate to
+	FrontierThreshold float32 // Default: 0.55
+	FrontierNoise     float32 // Default: 0.0
+
+	IgnoreThreshold float32 // Default: 0.2
+	DenseRate       float32 // Default: 1.0
+	RNNRate         float32 // Default: 0.5
+	LSTMRate        float32 // Default: 0.5
+	AttentionRate   float32 // Default: 0.2
+	NormRate        float32 // Default: 0.1
+	SwiGLURate      float32 // Default: 0.2
+	Conv2DRate      float32 // Default: 0.1
+
+	// === MOMENTUM & UPDATE SCALING ===
+	Momentum             float32 // Default: 0.9
+	BiasRateMultiplier   float32 // Default: 0.1
+	WeightRateMultiplier float32 // Default: 0.01
+
+	// === BACKWARD PASS CLAMPING ===
+	TanhClampMin    float32 // Default: -0.95
+	TanhClampMax    float32 // Default: 0.95
+	SigmoidClampMin float32 // Default: 0.05
+	SigmoidClampMax float32 // Default: 0.95
+	ReLUClampMax    float32 // Default: 10.0
+
+	// === TRAINING BEHAVIOR ===
+	EarlyStopThreshold float64 // Default: 95.0
+	EvalFrequency      int     // Default: 5
+	LinkBudgetScale    float32 // Default: 0.5
+
+	// === DYNAMIC LAYER PRUNING ===
+	PruneEnabled   bool    // Default: false
+	PruneThreshold float32 // Default: 0.1
+	PrunePatience  int     // Default: 10
+
+	// === BATCH TRAINING ===
+	BatchSize int // Default: 1
+
+	// === CHAIN RULE SUPPORT ===
+	UseChainRule     bool    // Default: true
+	DepthScaleFactor float32 // Default: 1.2
+
+	// === NEW CONFIGURABLE CONSTANTS ===
+	GradientScale        float32 // Default: 0.1 (Base scale for gradients)
+	TotalWeightThreshold float32 // Default: 0.01 (Threshold for weight importance)
+	ReLUSlope            float32 // Default: 1.1 (Slope for positive activation)
+	LeakyReLUSlope       float32 // Default: 0.1 (Slope for negative activation)
+	DerivativeEpsilon    float32 // Default: 0.01 (Stability epsilon)
+	LSTMGateScale        float32 // Default: 0.25 (Scaling for LSTM gates)
+	AttentionRoutingRate float32 // Default: 0.2 (Scaling for attention routing)
+	AttentionBiasRate    float32 // Default: 0.05 (Scaling for attention bias)
+	NormBetaRate         float32 // Default: 0.1 (Scaling for Norm Beta)
+	NormGammaRate        float32 // Default: 0.01 (Scaling for Norm Gamma)
+}
+
+// DefaultTweenConfig returns the standard configuration
+func DefaultTweenConfig(totalLayers int) *TweenConfig {
+	return &TweenConfig{
+		FrontierEnabled:      true,
+		FrontierMin:          totalLayers - 1,
+		FrontierThreshold:    0.55,
+		FrontierNoise:        0.0,
+		IgnoreThreshold:      0.2,
+		DenseRate:            1.0,
+		RNNRate:              0.5,
+		LSTMRate:             0.5,
+		AttentionRate:        0.2,
+		NormRate:             0.1,
+		SwiGLURate:           0.2,
+		Conv2DRate:           0.1,
+		Momentum:             0.9,
+		BiasRateMultiplier:   0.1,
+		WeightRateMultiplier: 0.01,
+		TanhClampMin:         -0.95,
+		TanhClampMax:         0.95,
+		SigmoidClampMin:      0.05,
+		SigmoidClampMax:      0.95,
+		ReLUClampMax:         10.0,
+		EarlyStopThreshold:   95.0,
+		EvalFrequency:        5,
+		LinkBudgetScale:      0.5,
+		PruneEnabled:         false,
+		PruneThreshold:       0.1,
+		PrunePatience:        10,
+		BatchSize:            1,
+		UseChainRule:         true,
+		DepthScaleFactor:     1.2,
+		GradientScale:        0.1,
+		TotalWeightThreshold: 0.01,
+		ReLUSlope:            1.1,
+		LeakyReLUSlope:       0.1,
+		DerivativeEpsilon:    0.01,
+		LSTMGateScale:        0.25,
+		AttentionRoutingRate: 0.2,
+		AttentionBiasRate:    0.05,
+		NormBetaRate:         0.1,
+		NormGammaRate:        0.01,
+	}
+}
+
 // TweenState holds bidirectional analysis state
 type TweenState struct {
 	// Forward pass: what each layer ACTUALLY produces (top-down)
@@ -42,55 +146,17 @@ type TweenState struct {
 	BestWeights [][][]float32
 	BestBiases  [][][]float32
 
+	// Config holds all tunable parameters
+	Config *TweenConfig
+
 	TotalLayers int
 	TweenSteps  int
 	LossHistory []float32
 
-	// === TUNABLE LEARNING	// === FRONTIER OSCILLATION ===
-	// Instead of cycling through ALL layers, only oscillate within the "frontier" region
-	// where layers are healthy (above threshold). Expands frontier as more layers improve.
-	FrontierEnabled   bool    // Default: true, use adaptive frontier
-	FrontierMin       int     // Minimum layer index to oscillate to (updated dynamically)
-	FrontierThreshold float32 // Default: 0.55, layers above this are "healthy"
-	FrontierNoise     float32 // Default: 0.0, amount of random noise to inject at frontier edge
-
-	IgnoreThreshold float32 // Default: 0.2, if LinkBudget < Threshold, SKIP updating layer (it's dead)
-	DenseRate       float32 // Default: 1.0, multiplier for Dense layers
-	RNNRate         float32 // Default: 0.5, multiplier for RNN layers
-	LSTMRate        float32 // Default: 0.5, multiplier for LSTM layers
-	AttentionRate   float32 // Default: 0.2, multiplier for Attention layers
-	NormRate        float32 // Default: 0.1, multiplier for LayerNorm/RMSNorm
-	SwiGLURate      float32 // Default: 0.2, multiplier for SwiGLU layers
-	Conv2DRate      float32 // Default: 0.1, multiplier for Conv2D layers
-
-	// === MOMENTUM & UPDATE SCALING ===
-	Momentum             float32 // Default: 0.9, momentum for weight updates
-	BiasRateMultiplier   float32 // Default: 0.1, scale factor for bias updates
-	WeightRateMultiplier float32 // Default: 0.01, scale factor for weight updates
-
-	// === BACKWARD PASS CLAMPING ===
-	// Clamp ranges for backward target estimation per activation type
-	TanhClampMin    float32 // Default: -0.95
-	TanhClampMax    float32 // Default: 0.95
-	SigmoidClampMin float32 // Default: 0.05
-	SigmoidClampMax float32 // Default: 0.95
-	ReLUClampMax    float32 // Default: 10.0, prevents exploding targets
-
-	// === TRAINING BEHAVIOR ===
-	EarlyStopThreshold float64 // Default: 95.0, stop training when score exceeds this
-	EvalFrequency      int     // Default: 5, evaluate every N epochs
-	LinkBudgetScale    float32 // Default: 0.5, how much link budget affects learning rate
-
-	// === DYNAMIC LAYER PRUNING (NETWORK SURGERY) ===
-	// Automatically removes layers that block signal (Budget < Threshold) for too long
-	PruneEnabled   bool    // Default: false, enable dynamic layer removal
-	PruneThreshold float32 // Default: 0.1, treat layer as dead if budget below this
-	PrunePatience  int     // Default: 10, how many epochs to wait before amputating
-	DeadEpochs     []int   // Tracks consecutive epochs a layer has been dead
+	// Tracks consecutive epochs a layer has been dead for Pruning
+	DeadEpochs []int
 
 	// === BATCH TRAINING ===
-	// Accumulate gaps across multiple samples before applying weight updates
-	BatchSize  int         // Default: 1 (online), set >1 for batch mode
 	BatchGaps  [][]float32 // Accumulated gaps per layer [layer][output]
 	BatchCount int         // Current samples in batch
 
@@ -114,10 +180,7 @@ type TweenState struct {
 	EpochMetrics []TweenEpochMetrics
 
 	// === CHAIN RULE SUPPORT ===
-	// Enable proper gradient propagation through layers using the chain rule
-	UseChainRule     bool        // Default: true, use chain rule backward pass
-	DepthScaleFactor float32     // Default: 1.2, amplify learning for deeper layers
-	ChainGradients   [][]float32 // Gradient at each layer, computed via chain rule
+	ChainGradients [][]float32 // Gradient at each layer, computed via chain rule
 }
 
 // TweenEpochMetrics captures detailed per-epoch information for visualization
@@ -134,10 +197,21 @@ type TweenEpochMetrics struct {
 	BottleneckLayer int     // Layer with lowest link budget
 }
 
-// NewTweenState creates tween state with tunable defaults
-func NewTweenState(n *Network) *TweenState {
+// NewTweenState creates tween state with tunable defaults.
+// Pass nil for config to use defaults.
+func NewTweenState(n *Network, config *TweenConfig) *TweenState {
 	total := n.TotalLayers()
+	if config == nil {
+		config = DefaultTweenConfig(total)
+	} else {
+		// Ensure FrontierMin is valid if user provides a config
+		if config.FrontierMin < 0 || config.FrontierMin >= total {
+			config.FrontierMin = total - 1
+		}
+	}
+
 	ts := &TweenState{
+		Config:          config,
 		ForwardActs:     make([][]float32, total+1),
 		BackwardTargets: make([][]float32, total+1),
 		LinkBudgets:     make([]float32, total),
@@ -147,55 +221,19 @@ func NewTweenState(n *Network) *TweenState {
 		BestWeights:     make([][][]float32, total),
 		BestBiases:      make([][][]float32, total),
 		TotalLayers:     total,
-		// Layer-specific learning rate multipliers
-		DenseRate:         1.0,
-		RNNRate:           0.5,
-		LSTMRate:          0.5,
-		AttentionRate:     0.2,
-		NormRate:          0.1,
-		SwiGLURate:        0.2,
-		Conv2DRate:        0.1,
-		FrontierEnabled:   true,
-		FrontierMin:       total - 1, // Start at output, will expand toward input
-		FrontierThreshold: 0.55,      // Layers above this are considered healthy
-		FrontierNoise:     0.0,       // No noise by default
-		IgnoreThreshold:   0.2,       // Ignore layers with < 20% link budget
-		// Momentum & update scaling
-		Momentum:             0.9,
-		BiasRateMultiplier:   0.1,
-		WeightRateMultiplier: 0.01,
-		// Backward pass clamping
-		TanhClampMin:    -0.95,
-		TanhClampMax:    0.95,
-		SigmoidClampMin: 0.05,
-		SigmoidClampMax: 0.95,
-		ReLUClampMax:    10.0,
-		// Training behavior
-		EarlyStopThreshold: 95.0,
-		EvalFrequency:      5,
-		LinkBudgetScale:    0.5,
-		// Pruning (Surgery)
-		PruneEnabled:   false,
-		PruneThreshold: 0.1,
-		PrunePatience:  10,
-		DeadEpochs:     make([]int, total),
-		// Batch training
-		BatchSize:  1, // Online by default
+		// State
+		DeadEpochs: make([]int, total),
 		BatchGaps:  make([][]float32, total),
 		BatchCount: 0,
-
-		// Visualization defaults
+		// Visualization
 		Verbose:             false,
 		LinkBudgetHistory:   make([][]float32, 0),
 		GapHistory:          make([][]float32, 0),
 		DepthBarrier:        make([]float32, total),
 		DepthBarrierHistory: make([]float32, 0),
 		EpochMetrics:        make([]TweenEpochMetrics, 0),
-
-		// Chain rule defaults
-		UseChainRule:     true,                       // Enable chain rule by default
-		DepthScaleFactor: 1.2,                        // Amplify learning for deeper layers
-		ChainGradients:   make([][]float32, total+1), // Gradients per layer
+		// Chain rule
+		ChainGradients: make([][]float32, total+1),
 	}
 
 	// Init momentum
@@ -272,17 +310,17 @@ func (ts *TweenState) BackwardPass(n *Network, targetClass int, outputSize int) 
 			}
 
 			// Normalize by total weight magnitude
-			if totalWeight > 0.01 {
+			if totalWeight > ts.Config.TotalWeightThreshold {
 				estimated[in] = importance / float32(totalWeight)
 			}
 
 			// Clamp to valid activation range using configurable bounds
 			if cfg.Activation == ActivationTanh {
-				estimated[in] = clamp(estimated[in], ts.TanhClampMin, ts.TanhClampMax)
+				estimated[in] = clamp(estimated[in], ts.Config.TanhClampMin, ts.Config.TanhClampMax)
 			} else if cfg.Activation == ActivationSigmoid {
-				estimated[in] = clamp(estimated[in], ts.SigmoidClampMin, ts.SigmoidClampMax)
+				estimated[in] = clamp(estimated[in], ts.Config.SigmoidClampMin, ts.Config.SigmoidClampMax)
 			} else if cfg.Activation == ActivationScaledReLU || cfg.Activation == ActivationLeakyReLU {
-				estimated[in] = clamp(estimated[in], 0, ts.ReLUClampMax)
+				estimated[in] = clamp(estimated[in], 0, ts.Config.ReLUClampMax)
 			}
 		}
 
@@ -346,8 +384,9 @@ func (ts *TweenState) BackwardPassChainRule(n *Network, targetClass int, outputS
 		}
 
 		// Compute depth scale: deeper layers (closer to input) get higher scale
-		depthFromOutput := float32(ts.TotalLayers - 1 - i)
-		depthScale := float32(math.Pow(float64(ts.DepthScaleFactor), float64(depthFromOutput)))
+		// FIXED: For BackwardPass, we MUST NOT scale the gradient recursively, or it explodes (1.2^190).
+		// We only scale the LEARNING RATE in TweenWeights.
+		depthScale := float32(1.0)
 
 		switch cfg.Type {
 		case LayerDense:
@@ -389,7 +428,7 @@ func (ts *TweenState) BackwardPassChainRule(n *Network, targetClass int, outputS
 		for j := 0; j < len(layerInput); j++ {
 			if j < len(currentGrad) {
 				// Target = current + gradient direction (scaled for stability)
-				backwardTarget[j] = layerInput[j] + currentGrad[j]*0.1
+				backwardTarget[j] = layerInput[j] + currentGrad[j]*ts.Config.GradientScale
 			} else {
 				backwardTarget[j] = layerInput[j]
 			}
@@ -398,11 +437,11 @@ func (ts *TweenState) BackwardPassChainRule(n *Network, targetClass int, outputS
 		// Clamp to valid activation range
 		for j := 0; j < len(backwardTarget); j++ {
 			if cfg.Activation == ActivationTanh {
-				backwardTarget[j] = clamp(backwardTarget[j], ts.TanhClampMin, ts.TanhClampMax)
+				backwardTarget[j] = clamp(backwardTarget[j], ts.Config.TanhClampMin, ts.Config.TanhClampMax)
 			} else if cfg.Activation == ActivationSigmoid {
-				backwardTarget[j] = clamp(backwardTarget[j], ts.SigmoidClampMin, ts.SigmoidClampMax)
+				backwardTarget[j] = clamp(backwardTarget[j], ts.Config.SigmoidClampMin, ts.Config.SigmoidClampMax)
 			} else if cfg.Activation == ActivationScaledReLU || cfg.Activation == ActivationLeakyReLU {
-				backwardTarget[j] = clamp(backwardTarget[j], -ts.ReLUClampMax, ts.ReLUClampMax)
+				backwardTarget[j] = clamp(backwardTarget[j], -ts.Config.ReLUClampMax, ts.Config.ReLUClampMax)
 			}
 		}
 
@@ -428,7 +467,7 @@ func (ts *TweenState) chainRuleBackwardDense(cfg *LayerConfig, input, output, gr
 	for j := 0; j < len(gradOutput) && j < len(output); j++ {
 		// Compute activation derivative at this output value
 		// We use the output value directly for stable gradient estimation
-		actDeriv := activateDerivativeFromOutput(output[j], cfg.Activation)
+		actDeriv := ts.activateDerivativeFromOutput(output[j], cfg.Activation)
 		localGrad[j] = gradOutput[j] * actDeriv * depthScale
 	}
 
@@ -455,7 +494,7 @@ func (ts *TweenState) chainRuleBackwardConv2D(cfg *LayerConfig, input, output, g
 	// Apply activation derivative
 	localGrad := make([]float32, len(gradOutput))
 	for j := 0; j < len(gradOutput) && j < len(output); j++ {
-		actDeriv := activateDerivativeFromOutput(output[j], cfg.Activation)
+		actDeriv := ts.activateDerivativeFromOutput(output[j], cfg.Activation)
 		localGrad[j] = gradOutput[j] * actDeriv * depthScale
 	}
 
@@ -552,7 +591,7 @@ func (ts *TweenState) chainRuleBackwardAttention(cfg *LayerConfig, input, output
 func (ts *TweenState) chainRuleBackwardRNN(cfg *LayerConfig, input, output, gradOutput []float32, depthScale float32) []float32 {
 	localGrad := make([]float32, len(gradOutput))
 	for j := 0; j < len(gradOutput) && j < len(output); j++ {
-		actDeriv := activateDerivativeFromOutput(output[j], ActivationTanh) // RNN typically uses tanh
+		actDeriv := ts.activateDerivativeFromOutput(output[j], ActivationTanh) // RNN typically uses tanh
 		localGrad[j] = gradOutput[j] * actDeriv * depthScale
 	}
 
@@ -583,7 +622,7 @@ func (ts *TweenState) chainRuleBackwardLSTM(cfg *LayerConfig, input, output, gra
 	localGrad := make([]float32, len(gradOutput))
 	for j := 0; j < len(gradOutput) && j < len(output); j++ {
 		// LSTM output goes through tanh
-		actDeriv := activateDerivativeFromOutput(output[j], ActivationTanh)
+		actDeriv := ts.activateDerivativeFromOutput(output[j], ActivationTanh)
 		localGrad[j] = gradOutput[j] * actDeriv * depthScale
 	}
 
@@ -601,16 +640,16 @@ func (ts *TweenState) chainRuleBackwardLSTM(cfg *LayerConfig, input, output, gra
 			wIdx := h*inputSize + i
 			// Average contribution from all 4 gates
 			if wIdx < len(cfg.WeightIH_i) {
-				sum += cfg.WeightIH_i[wIdx] * localGrad[h] * 0.25
+				sum += cfg.WeightIH_i[wIdx] * localGrad[h] * ts.Config.LSTMGateScale
 			}
 			if wIdx < len(cfg.WeightIH_f) {
-				sum += cfg.WeightIH_f[wIdx] * localGrad[h] * 0.25
+				sum += cfg.WeightIH_f[wIdx] * localGrad[h] * ts.Config.LSTMGateScale
 			}
 			if wIdx < len(cfg.WeightIH_g) {
-				sum += cfg.WeightIH_g[wIdx] * localGrad[h] * 0.25
+				sum += cfg.WeightIH_g[wIdx] * localGrad[h] * ts.Config.LSTMGateScale
 			}
 			if wIdx < len(cfg.WeightIH_o) {
-				sum += cfg.WeightIH_o[wIdx] * localGrad[h] * 0.25
+				sum += cfg.WeightIH_o[wIdx] * localGrad[h] * ts.Config.LSTMGateScale
 			}
 		}
 		gradInput[i] = sum
@@ -628,6 +667,7 @@ func (ts *TweenState) chainRuleBackwardNorm(cfg *LayerConfig, input, output, gra
 		if j < len(cfg.Gamma) {
 			gamma = cfg.Gamma[j]
 		}
+		// Gamma applies to gradient as linear scale
 		gradInput[j] = gradOutput[j] * gamma * depthScale
 	}
 	return gradInput
@@ -658,27 +698,27 @@ func (ts *TweenState) chainRuleBackwardSwiGLU(cfg *LayerConfig, input, output, g
 
 // activateDerivativeFromOutput computes activation derivative from the output value
 // This is more stable than trying to invert the activation
-func activateDerivativeFromOutput(output float32, activation ActivationType) float32 {
+func (ts *TweenState) activateDerivativeFromOutput(output float32, activation ActivationType) float32 {
 	switch activation {
 	case ActivationScaledReLU:
 		if output > 0 {
-			return 1.1
+			return ts.Config.ReLUSlope
 		}
 		return 0.0
 	case ActivationSigmoid:
 		// For sigmoid: output = sigmoid(x), derivative = output * (1 - output)
-		return output*(1.0-output) + 0.01 // +0.01 for stability
+		return output*(1.0-output) + ts.Config.DerivativeEpsilon
 	case ActivationTanh:
 		// For tanh: output = tanh(x), derivative = 1 - output^2
-		return (1.0 - output*output) + 0.01 // +0.01 for stability
+		return (1.0 - output*output) + ts.Config.DerivativeEpsilon
 	case ActivationSoftplus:
 		// Softplus derivative is sigmoid
-		return 1.0/(1.0+float32(math.Exp(-float64(output)))) + 0.01
+		return 1.0/(1.0+float32(math.Exp(-float64(output)))) + ts.Config.DerivativeEpsilon
 	case ActivationLeakyReLU:
 		if output >= 0 {
 			return 1.0
 		}
-		return 0.1
+		return ts.Config.LeakyReLUSlope
 	default:
 		return 1.0
 	}
@@ -750,7 +790,7 @@ func (ts *TweenState) CalculateLinkBudgets() {
 // TweenWeights: Adjust weights to close the gap at each layer
 // Supports ALL layer types: Dense, Conv2D, Attention, LSTM, LayerNorm, SwiGLU
 func (ts *TweenState) TweenWeights(n *Network, rate float32) {
-	mom := ts.Momentum
+	mom := ts.Config.Momentum
 
 	// Tweening logic
 	for i := 0; i < ts.TotalLayers; i++ {
@@ -758,7 +798,7 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 
 		// DEAD LAYER IGNORING: If budget is too low, don't update!
 		// A low budget means the signal is garbage, so updating just adds noise.
-		if budget < ts.IgnoreThreshold {
+		if budget < ts.Config.IgnoreThreshold {
 			continue
 		}
 
@@ -776,7 +816,7 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 		}
 
 		// Scale rate by link budget using configurable scale
-		layerRate := rate * (ts.LinkBudgetScale + budget*ts.LinkBudgetScale)
+		layerRate := rate * (ts.Config.LinkBudgetScale + budget*ts.Config.LinkBudgetScale)
 
 		// Calculate output gap
 		minOut := len(actual)
@@ -791,19 +831,19 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 		// Tween based on layer type - use configurable rates!
 		switch cfg.Type {
 		case LayerDense:
-			ts.tweenDense(cfg, input, outputGaps, layerRate*ts.DenseRate, mom, i)
+			ts.tweenDense(cfg, input, outputGaps, layerRate*ts.Config.DenseRate, mom, i)
 		case LayerConv2D:
-			ts.tweenConv2D(cfg, input, outputGaps, layerRate*ts.Conv2DRate, mom)
+			ts.tweenConv2D(cfg, input, outputGaps, layerRate*ts.Config.Conv2DRate, mom)
 		case LayerMultiHeadAttention:
-			ts.tweenAttention(cfg, input, outputGaps, layerRate*ts.AttentionRate, mom)
+			ts.tweenAttention(cfg, input, outputGaps, layerRate*ts.Config.AttentionRate, mom)
 		case LayerRNN:
-			ts.tweenRNN(cfg, input, outputGaps, layerRate*ts.RNNRate, mom)
+			ts.tweenRNN(cfg, input, outputGaps, layerRate*ts.Config.RNNRate, mom)
 		case LayerLSTM:
-			ts.tweenLSTM(cfg, input, outputGaps, layerRate*ts.LSTMRate, mom)
+			ts.tweenLSTM(cfg, input, outputGaps, layerRate*ts.Config.LSTMRate, mom)
 		case LayerNorm, LayerRMSNorm:
-			ts.tweenNorm(cfg, outputGaps, layerRate*ts.NormRate)
+			ts.tweenNorm(cfg, outputGaps, layerRate*ts.Config.NormRate)
 		case LayerSwiGLU:
-			ts.tweenSwiGLU(cfg, input, outputGaps, layerRate*ts.SwiGLURate, mom)
+			ts.tweenSwiGLU(cfg, input, outputGaps, layerRate*ts.Config.SwiGLURate, mom)
 			// LayerSoftmax, LayerResidual, LayerParallel - no trainable weights
 		}
 
@@ -817,7 +857,7 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 // TweenWeightsChainRule: Use chain rule gradients directly for weight updates
 // This is the proper gradient-based approach: dW = input^T * output_gradient
 func (ts *TweenState) TweenWeightsChainRule(n *Network, rate float32) {
-	mom := ts.Momentum
+	mom := ts.Config.Momentum
 
 	for i := 0; i < ts.TotalLayers; i++ {
 		cfg := ts.getLayerCfg(n, i)
@@ -849,24 +889,24 @@ func (ts *TweenState) TweenWeightsChainRule(n *Network, rate float32) {
 
 		// Compute depth scale: deeper layers (closer to input) get higher scale
 		depthFromOutput := float32(ts.TotalLayers - 1 - i)
-		depthScale := float32(math.Pow(float64(ts.DepthScaleFactor), float64(depthFromOutput)))
+		depthScale := float32(math.Pow(float64(ts.Config.DepthScaleFactor), float64(depthFromOutput)))
 
 		// Apply updates based on layer type
 		switch cfg.Type {
 		case LayerDense:
-			ts.chainRuleUpdateDense(cfg, input, output, outputGrad, rate*ts.DenseRate*depthScale, mom, i)
+			ts.chainRuleUpdateDense(cfg, input, output, outputGrad, rate*ts.Config.DenseRate*depthScale, mom, i)
 		case LayerConv2D:
-			ts.chainRuleUpdateConv2D(cfg, input, output, outputGrad, rate*ts.Conv2DRate*depthScale, mom)
+			ts.chainRuleUpdateConv2D(cfg, input, output, outputGrad, rate*ts.Config.Conv2DRate*depthScale, mom)
 		case LayerMultiHeadAttention:
-			ts.chainRuleUpdateAttention(cfg, input, output, outputGrad, rate*ts.AttentionRate*depthScale, mom)
+			ts.chainRuleUpdateAttention(cfg, input, output, outputGrad, rate*ts.Config.AttentionRate*depthScale, mom)
 		case LayerRNN:
-			ts.chainRuleUpdateRNN(cfg, input, output, outputGrad, rate*ts.RNNRate*depthScale, mom)
+			ts.chainRuleUpdateRNN(cfg, input, output, outputGrad, rate*ts.Config.RNNRate*depthScale, mom)
 		case LayerLSTM:
-			ts.chainRuleUpdateLSTM(cfg, input, output, outputGrad, rate*ts.LSTMRate*depthScale, mom)
+			ts.chainRuleUpdateLSTM(cfg, input, output, outputGrad, rate*ts.Config.LSTMRate*depthScale, mom)
 		case LayerNorm, LayerRMSNorm:
-			ts.chainRuleUpdateNorm(cfg, input, output, outputGrad, rate*ts.NormRate*depthScale)
+			ts.chainRuleUpdateNorm(cfg, input, output, outputGrad, rate*ts.Config.NormRate*depthScale)
 		case LayerSwiGLU:
-			ts.chainRuleUpdateSwiGLU(cfg, input, output, outputGrad, rate*ts.SwiGLURate*depthScale, mom)
+			ts.chainRuleUpdateSwiGLU(cfg, input, output, outputGrad, rate*ts.Config.SwiGLURate*depthScale, mom)
 		}
 
 		row := i / (n.GridCols * n.LayersPerCell)
@@ -892,7 +932,7 @@ func (ts *TweenState) chainRuleUpdateDense(cfg *LayerConfig, input, output, outp
 	// Apply activation derivative to output gradient
 	localGrad := make([]float32, len(outputGrad))
 	for j := 0; j < len(outputGrad) && j < len(output); j++ {
-		actDeriv := activateDerivativeFromOutput(output[j], cfg.Activation)
+		actDeriv := ts.activateDerivativeFromOutput(output[j], cfg.Activation)
 		localGrad[j] = outputGrad[j] * actDeriv
 	}
 
@@ -1045,7 +1085,7 @@ func (ts *TweenState) chainRuleUpdateRNN(cfg *LayerConfig, input, output, output
 	// Apply activation derivative (RNN uses tanh)
 	localGrad := make([]float32, len(outputGrad))
 	for j := 0; j < len(outputGrad) && j < len(output); j++ {
-		actDeriv := activateDerivativeFromOutput(output[j], ActivationTanh)
+		actDeriv := ts.activateDerivativeFromOutput(output[j], ActivationTanh)
 		localGrad[j] = outputGrad[j] * actDeriv
 	}
 
@@ -1078,7 +1118,7 @@ func (ts *TweenState) chainRuleUpdateLSTM(cfg *LayerConfig, input, output, outpu
 	// Apply activation derivative with clipping
 	localGrad := make([]float32, len(outputGrad))
 	for j := 0; j < len(outputGrad) && j < len(output); j++ {
-		actDeriv := activateDerivativeFromOutput(output[j], ActivationTanh)
+		actDeriv := ts.activateDerivativeFromOutput(output[j], ActivationTanh)
 		localGrad[j] = clipGrad(outputGrad[j]*actDeriv, maxGrad)
 	}
 
@@ -1199,7 +1239,7 @@ func (ts *TweenState) tweenDense(cfg *LayerConfig, input, gaps []float32, rate, 
 
 		// Update bias using configurable multiplier
 		if out < len(cfg.Bias) {
-			cfg.Bias[out] += rate * gap * ts.BiasRateMultiplier
+			cfg.Bias[out] += rate * gap * ts.Config.BiasRateMultiplier
 		}
 
 		// Update weights: Hebbian with gap using configurable multiplier
@@ -1208,7 +1248,7 @@ func (ts *TweenState) tweenDense(cfg *LayerConfig, input, gaps []float32, rate, 
 			if wIdx >= len(cfg.Kernel) {
 				continue
 			}
-			delta := rate * input[in] * gap * ts.WeightRateMultiplier
+			delta := rate * input[in] * gap * ts.Config.WeightRateMultiplier
 			if layerIdx < len(ts.WeightVel) && wIdx < len(ts.WeightVel[layerIdx]) {
 				ts.WeightVel[layerIdx][wIdx] = mom*ts.WeightVel[layerIdx][wIdx] + (1-mom)*delta
 				cfg.Kernel[wIdx] += ts.WeightVel[layerIdx][wIdx]
@@ -1255,7 +1295,7 @@ func (ts *TweenState) tweenConv2D(cfg *LayerConfig, input, gaps []float32, rate,
 	// Update filter weights based on gap
 	kernelPerFilter := len(cfg.Kernel) / numFilters
 	for f := 0; f < numFilters; f++ {
-		gap := perFilterGap[f] * rate * ts.WeightRateMultiplier
+		gap := perFilterGap[f] * rate * ts.Config.WeightRateMultiplier
 		for k := 0; k < kernelPerFilter; k++ {
 			idx := f*kernelPerFilter + k
 			if idx < len(cfg.Kernel) {
@@ -1263,7 +1303,7 @@ func (ts *TweenState) tweenConv2D(cfg *LayerConfig, input, gaps []float32, rate,
 			}
 		}
 		if f < len(cfg.Bias) {
-			cfg.Bias[f] += perFilterGap[f] * rate * ts.BiasRateMultiplier
+			cfg.Bias[f] += perFilterGap[f] * rate * ts.Config.BiasRateMultiplier
 		}
 	}
 }
@@ -1510,7 +1550,7 @@ func (ts *TweenState) TweenStep(n *Network, input []float32, targetClass int, ou
 	output := ts.ForwardPass(n, input)
 
 	// 2. Backward: propagate expected output upward (chain rule or legacy)
-	if ts.UseChainRule {
+	if ts.Config.UseChainRule {
 		ts.BackwardPassChainRule(n, targetClass, outputSize)
 	} else {
 		ts.BackwardPass(n, targetClass, outputSize)
@@ -1520,7 +1560,7 @@ func (ts *TweenState) TweenStep(n *Network, input []float32, targetClass int, ou
 	ts.CalculateLinkBudgets()
 
 	// 4. Tween weights to close gaps (use chain rule or legacy)
-	if ts.UseChainRule {
+	if ts.Config.UseChainRule {
 		ts.TweenWeightsChainRule(n, rate)
 	} else {
 		ts.TweenWeights(n, rate)
@@ -1555,7 +1595,7 @@ func (ts *TweenState) TweenStepAccumulate(n *Network, input []float32, targetCla
 	output := ts.ForwardPass(n, input)
 
 	// 2. Backward: propagate expected output upward (chain rule or legacy)
-	if ts.UseChainRule {
+	if ts.Config.UseChainRule {
 		ts.BackwardPassChainRule(n, targetClass, outputSize)
 	} else {
 		ts.BackwardPass(n, targetClass, outputSize)
@@ -1610,12 +1650,12 @@ func (ts *TweenState) TweenBatchApply(n *Network, rate float32) {
 		return
 	}
 
-	mom := ts.Momentum
+	mom := ts.Config.Momentum
 	batchScale := 1.0 / float32(ts.BatchCount)
 
 	for i := 0; i < ts.TotalLayers; i++ {
 		budget := ts.LinkBudgets[i]
-		if budget < ts.IgnoreThreshold {
+		if budget < ts.Config.IgnoreThreshold {
 			continue
 		}
 
@@ -1638,47 +1678,47 @@ func (ts *TweenState) TweenBatchApply(n *Network, rate float32) {
 
 		// Compute depth scale for chain rule
 		depthFromOutput := float32(ts.TotalLayers - 1 - i)
-		depthScale := float32(math.Pow(float64(ts.DepthScaleFactor), float64(depthFromOutput)))
+		depthScale := float32(math.Pow(float64(ts.Config.DepthScaleFactor), float64(depthFromOutput)))
 
 		// Use chain rule or legacy tweening
-		if ts.UseChainRule {
+		if ts.Config.UseChainRule {
 			// Use averaged gaps as output gradient for chain rule update
 			switch cfg.Type {
 			case LayerDense:
-				ts.chainRuleUpdateDense(cfg, input, output, avgGaps, rate*ts.DenseRate*depthScale, mom, i)
+				ts.chainRuleUpdateDense(cfg, input, output, avgGaps, rate*ts.Config.DenseRate*depthScale, mom, i)
 			case LayerConv2D:
-				ts.chainRuleUpdateConv2D(cfg, input, output, avgGaps, rate*ts.Conv2DRate*depthScale, mom)
+				ts.chainRuleUpdateConv2D(cfg, input, output, avgGaps, rate*ts.Config.Conv2DRate*depthScale, mom)
 			case LayerMultiHeadAttention:
-				ts.chainRuleUpdateAttention(cfg, input, output, avgGaps, rate*ts.AttentionRate*depthScale, mom)
+				ts.chainRuleUpdateAttention(cfg, input, output, avgGaps, rate*ts.Config.AttentionRate*depthScale, mom)
 			case LayerRNN:
-				ts.chainRuleUpdateRNN(cfg, input, output, avgGaps, rate*ts.RNNRate*depthScale, mom)
+				ts.chainRuleUpdateRNN(cfg, input, output, avgGaps, rate*ts.Config.RNNRate*depthScale, mom)
 			case LayerLSTM:
-				ts.chainRuleUpdateLSTM(cfg, input, output, avgGaps, rate*ts.LSTMRate*depthScale, mom)
+				ts.chainRuleUpdateLSTM(cfg, input, output, avgGaps, rate*ts.Config.LSTMRate*depthScale, mom)
 			case LayerNorm, LayerRMSNorm:
-				ts.chainRuleUpdateNorm(cfg, input, output, avgGaps, rate*ts.NormRate*depthScale)
+				ts.chainRuleUpdateNorm(cfg, input, output, avgGaps, rate*ts.Config.NormRate*depthScale)
 			case LayerSwiGLU:
-				ts.chainRuleUpdateSwiGLU(cfg, input, output, avgGaps, rate*ts.SwiGLURate*depthScale, mom)
+				ts.chainRuleUpdateSwiGLU(cfg, input, output, avgGaps, rate*ts.Config.SwiGLURate*depthScale, mom)
 			}
 		} else {
 			// Scale rate by link budget
-			layerRate := rate * (ts.LinkBudgetScale + budget*ts.LinkBudgetScale)
+			layerRate := rate * (ts.Config.LinkBudgetScale + budget*ts.Config.LinkBudgetScale)
 
 			// Apply legacy tweening based on layer type
 			switch cfg.Type {
 			case LayerDense:
-				ts.tweenDense(cfg, input, avgGaps, layerRate*ts.DenseRate, mom, i)
+				ts.tweenDense(cfg, input, avgGaps, layerRate*ts.Config.DenseRate, mom, i)
 			case LayerConv2D:
-				ts.tweenConv2D(cfg, input, avgGaps, layerRate*ts.Conv2DRate, mom)
+				ts.tweenConv2D(cfg, input, avgGaps, layerRate*ts.Config.Conv2DRate, mom)
 			case LayerMultiHeadAttention:
-				ts.tweenAttention(cfg, input, avgGaps, layerRate*ts.AttentionRate, mom)
+				ts.tweenAttention(cfg, input, avgGaps, layerRate*ts.Config.AttentionRate, mom)
 			case LayerRNN:
-				ts.tweenRNN(cfg, input, avgGaps, layerRate*ts.RNNRate, mom)
+				ts.tweenRNN(cfg, input, avgGaps, layerRate*ts.Config.RNNRate, mom)
 			case LayerLSTM:
-				ts.tweenLSTM(cfg, input, avgGaps, layerRate*ts.LSTMRate, mom)
+				ts.tweenLSTM(cfg, input, avgGaps, layerRate*ts.Config.LSTMRate, mom)
 			case LayerNorm, LayerRMSNorm:
-				ts.tweenNorm(cfg, avgGaps, layerRate*ts.NormRate)
+				ts.tweenNorm(cfg, avgGaps, layerRate*ts.Config.NormRate)
 			case LayerSwiGLU:
-				ts.tweenSwiGLU(cfg, input, avgGaps, layerRate*ts.SwiGLURate, mom)
+				ts.tweenSwiGLU(cfg, input, avgGaps, layerRate*ts.Config.SwiGLURate, mom)
 			}
 		}
 
@@ -1735,7 +1775,7 @@ func (ts *TweenState) Train(n *Network, inputs [][]float32, expected []float64, 
 		// Record history for visualization (every epoch)
 		ts.recordEpochHistory(epoch)
 
-		if epoch%ts.EvalFrequency == 0 || epoch == epochs-1 {
+		if epoch%ts.Config.EvalFrequency == 0 || epoch == epochs-1 {
 			metrics, _ := n.EvaluateNetwork(inputs, expected)
 			if metrics.Score > ts.BestScore {
 				ts.BestScore = metrics.Score
@@ -1753,9 +1793,9 @@ func (ts *TweenState) Train(n *Network, inputs [][]float32, expected []float64, 
 			if callback != nil {
 				callback(epoch+1, avgLoss, metrics)
 			}
-			if metrics.Score >= ts.EarlyStopThreshold {
+			if metrics.Score >= ts.Config.EarlyStopThreshold {
 				if ts.Verbose {
-					fmt.Printf("\n🎯 Early stop! Score %.2f%% >= threshold %.2f%%\n", metrics.Score, ts.EarlyStopThreshold)
+					fmt.Printf("\n🎯 Early stop! Score %.2f%% >= threshold %.2f%%\n", metrics.Score, ts.Config.EarlyStopThreshold)
 				}
 				ts.RestoreBest(n)
 				return
@@ -1852,7 +1892,7 @@ func (ts *TweenState) printVerboseProgress(epoch, totalEpochs int, avgLoss float
 	// Visual heatmap bar for link budgets
 	fmt.Print(" [")
 	for _, b := range ts.LinkBudgets {
-		if b < ts.IgnoreThreshold {
+		if b < ts.Config.IgnoreThreshold {
 			fmt.Print("X") // Ignored (Dead)
 		} else if b > 0.8 {
 			fmt.Print("█") // High budget
@@ -1947,7 +1987,7 @@ func clamp(v, min, max float32) float32 {
 
 // checkAndPruneLayers detects, toggles off, and eventually deletes dead layers
 func (ts *TweenState) checkAndPruneLayers(n *Network) {
-	if !ts.PruneEnabled {
+	if !ts.Config.PruneEnabled {
 		return
 	}
 
@@ -1965,7 +2005,7 @@ func (ts *TweenState) checkAndPruneLayers(n *Network) {
 
 			// CHECK FOR PHYSICAL REMOVAL (The "Decide to delete" phase)
 			// If it's been disabled for another patience cycle, chop it out
-			if ts.DeadEpochs[i] >= ts.PrunePatience {
+			if ts.DeadEpochs[i] >= ts.Config.PrunePatience {
 				ts.physicallyRemoveLayer(n, i)
 				return // Indices shifted, abort this pass
 			}
@@ -1973,7 +2013,7 @@ func (ts *TweenState) checkAndPruneLayers(n *Network) {
 		}
 
 		// If active but bad budget, increment dead count
-		if ts.LinkBudgets[i] < ts.PruneThreshold {
+		if ts.LinkBudgets[i] < ts.Config.PruneThreshold {
 			ts.DeadEpochs[i]++
 		} else {
 			ts.DeadEpochs[i] = 0 // Reset if it recovers
@@ -1989,7 +2029,7 @@ func (ts *TweenState) checkAndPruneLayers(n *Network) {
 		if n.Layers[i].IsDisabled {
 			continue
 		}
-		if ts.DeadEpochs[i] >= ts.PrunePatience {
+		if ts.DeadEpochs[i] >= ts.Config.PrunePatience {
 			pruneStartIdx = i
 			break // Found the first candidate
 		}

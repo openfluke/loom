@@ -279,7 +279,7 @@ func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, ta
 	inputSize := len(data.Samples[0].Input)
 	state := net.InitStepState(inputSize)
 
-	ts := nn.NewTweenState(net)
+	ts := nn.NewTweenState(net, nil)
 	ts.Verbose = false
 
 	// Memory tracking
