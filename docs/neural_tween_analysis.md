@@ -289,3 +289,80 @@ After testing **5 different approaches**, we've learned:
 2. **Match dimensions** - Use 8→8 instead of 8→32 expansion
 3. **Shorter networks** - Fewer layers = less signal decay
 4. **More epochs** - RNN broke through at epoch 141, not epoch 30
+
+---
+
+## New Approach: "Sharpening the Blurry Image"
+
+**Insight (Test 16):** Tween gets to ~47% accuracy very quickly (faster than backprop to 40%), but then plateaus. It's like getting a blurry photo instantly - we just need to sharpen it slightly.
+
+### Proposed Sharpening Techniques
+
+#### 1. Error-Proportional TweenFactor
+Scale tweenFactor by how wrong each output is - bigger errors get bigger pushes.
+
+// Instead of flat tweenFactor = 0.3
+for i := range output {
+    error := target[i] - output[i]
+    dynamicFactor := tweenFactor * math.Abs(error)  // More wrong = bigger push
+    // Apply update with dynamicFactor
+}
+
+
+
+#### 2. Winner-Take-More
+Amplify gap for the correct class (×1.5), dampen wrong classes (×0.7).
+
+// Boost the signal for the target class
+gap[targetClass] *= 1.5  // Push harder toward correct answer
+for i := range gap {
+    if i != targetClass {
+        gap[i] *= 0.7  // Dampen wrong classes
+    }
+}
+
+#### 3. Momentum on Gap Direction
+Remember which direction previous gaps pointed, use momentum toward persistent patterns.
+
+// Track gap momentum per layer
+gapMomentum[layer] = 0.9*gapMomentum[layer] + 0.1*currentGap
+// Use gapMomentum instead of raw gap
+
+
+
+#### 4. Temperature Sharpening
+Apply temperature < 1.0 to outputs before computing gap, sharpening probability distribution.
+
+// Sharpen probabilities (like knowledge distillation but inverse)
+temperature := 0.5  // < 1 = sharper
+for i := range output {
+    output[i] = exp(log(output[i]) / temperature)
+}
+// Then normalize and compute gap
+
+#### 5. Layer-Specific Gap Scaling ⭐ (TESTED - Mixed Results)
+Earlier layers get amplified gap signal since they're hardest to reach:
+```go
+layerBoost := 1.0 + float32(totalLayers-1-layerIdx) * 0.3
+gap *= layerBoost
+```
+
+### Test Results: Layer Gap Boost (Test 16)
+
+| Network | Before | After | Change |
+|---------|--------|-------|--------|
+| Dense NormTween | 47.2% | 53.4% | **+6.2%** ✅ |
+| Conv2D NormTween | 68.8% | 78.8% | **+10%** ✅ |
+| Conv2D StepTween | 51.4% | 71.2% | **+19.8%** ✅ |
+| RNN NormTween | 47.8% | 34.0% | **-13.8%** ❌ |
+
+**Verdict:** Works for Dense/Conv2D, hurts RNN. May need layer-type-specific boost factors.
+
+---
+
+## Ideas Still To Try
+
+1. **Error-Proportional TweenFactor** - Scale by how wrong each output
+2. **Winner-Take-More** - Amplify gap for correct class 
+3. **Momentum on Gap Direction** - Persistent pattern momentum
+4. **Temperature Sharpening** - Sharpen output probabilities
