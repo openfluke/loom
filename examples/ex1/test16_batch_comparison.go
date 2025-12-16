@@ -33,7 +33,7 @@ func main() {
 	// Layer depths to test
 	layerDepths := []int{3, 5, 9, 15, 20}
 
-	results := []ComparisonResult{}
+	results := []nn.ComparisonResult{}
 
 	for _, numLayers := range layerDepths {
 		fmt.Printf("\n========== TESTING WITH %d LAYERS ==========\n", numLayers)
@@ -126,40 +126,16 @@ func createSwiGLUNetwork(numLayers int) *nn.Network {
 }
 
 // ============================================================================
-// Result Structures
-// ============================================================================
-
-type Metrics struct {
-	Steps        int
-	Accuracy     float64
-	Loss         float32
-	TimeTotal    time.Duration
-	TimeToTarget time.Duration
-	MemoryPeakMB float64
-	Milestones   map[int]time.Duration // Time to reach 10%, 20%, ... 100%
-}
-
-type ComparisonResult struct {
-	Name           string
-	NormalBP       Metrics // Normal backprop (no stepping)
-	NormalTween    Metrics // Normal tween training
-	StepBP         Metrics
-	StepTween      Metrics
-	BatchTween     Metrics
-	StepBatchTween Metrics
-}
-
-// ============================================================================
 // Comparison Runner
 // ============================================================================
 
-func runComparison(name string, netFactory func() *nn.Network, data TrainingData, duration time.Duration, targetAcc float64, batchSize int, supportsStep bool) ComparisonResult {
+func runComparison(name string, netFactory func() *nn.Network, data TrainingData, duration time.Duration, targetAcc float64, batchSize int, supportsStep bool) nn.ComparisonResult {
 	fmt.Printf("\n┌─────────────────────────────────────────────────────────────────────┐\n")
 	fmt.Printf("│ %-67s │\n", name+" Network — Running for "+duration.String())
 	fmt.Printf("└─────────────────────────────────────────────────────────────────────┘\n")
 
 	var wg sync.WaitGroup
-	var normalBP, normalTween, stepBP, stepTween, batchTween, stepBatchTween Metrics
+	var normalBP, normalTween, stepBP, stepTween, batchTween, stepBatchTween nn.TrainingMetrics
 
 	// Count modes to run:
 	// - NormalBP + NormalTween + BatchTween always run (they use network.Train/TweenStep which work on all layers)
@@ -220,7 +196,7 @@ func runComparison(name string, netFactory func() *nn.Network, data TrainingData
 
 	wg.Wait()
 
-	return ComparisonResult{
+	return nn.ComparisonResult{
 		Name:           name,
 		NormalBP:       normalBP,
 		NormalTween:    normalTween,
@@ -235,7 +211,7 @@ func runComparison(name string, netFactory func() *nn.Network, data TrainingData
 // Training Mode 1: Normal Backprop (no stepping)
 // ============================================================================
 
-func runNormalBackprop(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) Metrics {
+func runNormalBackprop(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) nn.TrainingMetrics {
 	peakMB := getMemoryMB()
 	done := make(chan bool)
 	go trackPeakMemory(done, &peakMB)
@@ -302,7 +278,7 @@ func runNormalBackprop(net *nn.Network, data TrainingData, duration time.Duratio
 	fmt.Printf("  [Normal BP] Done: %d epochs | Acc: %.1f%% | Loss: %.4f | Mem: %.1fMB\n",
 		totalEpochs, accuracy, finalLoss, peakMB)
 
-	return Metrics{
+	return nn.TrainingMetrics{
 		Steps:        totalEpochs * len(data.Samples),
 		Accuracy:     accuracy,
 		Loss:         finalLoss,
@@ -317,7 +293,7 @@ func runNormalBackprop(net *nn.Network, data TrainingData, duration time.Duratio
 // Training Mode 2: Normal Tween (no stepping)
 // ============================================================================
 
-func runNormalTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) Metrics {
+func runNormalTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) nn.TrainingMetrics {
 	ts := nn.NewTweenState(net, nil)
 	ts.Verbose = false
 	outputSize := len(data.Samples[0].Target)
@@ -376,7 +352,7 @@ func runNormalTween(net *nn.Network, data TrainingData, duration time.Duration, 
 	fmt.Printf("  [Normal Tween] Done: %d epochs | Acc: %.1f%% | Loss: %.4f | Mem: %.1fMB\n",
 		epochs, accuracy, finalLoss, peakMB)
 
-	return Metrics{
+	return nn.TrainingMetrics{
 		Steps:        epochs * len(data.Samples),
 		Accuracy:     accuracy,
 		Loss:         finalLoss,
@@ -391,7 +367,7 @@ func runNormalTween(net *nn.Network, data TrainingData, duration time.Duration, 
 // Training Mode 3: Step + Backprop
 // ============================================================================
 
-func runStepBackprop(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) Metrics {
+func runStepBackprop(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) nn.TrainingMetrics {
 	inputSize := len(data.Samples[0].Input)
 	state := net.InitStepState(inputSize)
 
@@ -473,7 +449,7 @@ func runStepBackprop(net *nn.Network, data TrainingData, duration time.Duration,
 	fmt.Printf("  [Step+BP] Done: %dk steps | Acc: %.1f%% | Loss: %.4f | Mem: %.1fMB\n",
 		steps/1000, accuracy, finalLoss, peakMB)
 
-	return Metrics{
+	return nn.TrainingMetrics{
 		Steps:        steps,
 		Accuracy:     accuracy,
 		Loss:         finalLoss,
@@ -488,7 +464,7 @@ func runStepBackprop(net *nn.Network, data TrainingData, duration time.Duration,
 // Training Mode 2: Step + Tween
 // ============================================================================
 
-func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) Metrics {
+func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) nn.TrainingMetrics {
 	inputSize := len(data.Samples[0].Input)
 	state := net.InitStepState(inputSize)
 
@@ -553,7 +529,7 @@ func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, ta
 	fmt.Printf("  [Step+Tween] Done: %dk steps | Acc: %.1f%% | Loss: %.4f | Mem: %.1fMB\n",
 		steps/1000, accuracy, finalLoss, peakMB)
 
-	return Metrics{
+	return nn.TrainingMetrics{
 		Steps:        steps,
 		Accuracy:     accuracy,
 		Loss:         finalLoss,
@@ -568,7 +544,7 @@ func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, ta
 // Training Mode 3: Batch Tween (non-stepping)
 // ============================================================================
 
-func runBatchTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64, batchSize int) Metrics {
+func runBatchTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64, batchSize int) nn.TrainingMetrics {
 	ts := nn.NewTweenState(net, nil)
 	ts.Verbose = false
 	ts.Config.BatchSize = batchSize
@@ -639,7 +615,7 @@ func runBatchTween(net *nn.Network, data TrainingData, duration time.Duration, t
 	fmt.Printf("  [Batch Tween] Done: %d batches | Acc: %.1f%% | Loss: %.4f | Mem: %.1fMB\n",
 		batches, accuracy, finalLoss, peakMB)
 
-	return Metrics{
+	return nn.TrainingMetrics{
 		Steps:        batches * batchSize,
 		Accuracy:     accuracy,
 		Loss:         finalLoss,
@@ -654,7 +630,7 @@ func runBatchTween(net *nn.Network, data TrainingData, duration time.Duration, t
 // Training Mode 4: Step + Batch Tween
 // ============================================================================
 
-func runStepBatchTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64, batchSize int) Metrics {
+func runStepBatchTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64, batchSize int) nn.TrainingMetrics {
 	inputSize := len(data.Samples[0].Input)
 	state := net.InitStepState(inputSize)
 
@@ -725,7 +701,7 @@ func runStepBatchTween(net *nn.Network, data TrainingData, duration time.Duratio
 	fmt.Printf("  [Step+Batch Tween] Done: %dk steps | Acc: %.1f%% | Loss: %.4f | Mem: %.1fMB\n",
 		steps/1000, accuracy, finalLoss, peakMB)
 
-	return Metrics{
+	return nn.TrainingMetrics{
 		Steps:        steps,
 		Accuracy:     accuracy,
 		Loss:         finalLoss,
@@ -1077,7 +1053,7 @@ func generateTrainingData(inputSize, numClasses int) TrainingData {
 // Summary Table
 // ============================================================================
 
-func printSummaryTable(results []ComparisonResult, targetAcc float64) {
+func printSummaryTable(results []nn.ComparisonResult, targetAcc float64) {
 	fmt.Println("\n")
 	fmt.Println("╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                                                       TRAINING METHOD COMPARISON (6 Modes)                                                                                   ║")
@@ -1087,7 +1063,7 @@ func printSummaryTable(results []ComparisonResult, targetAcc float64) {
 	fmt.Println("╠═══════════╬═══════════╬═══════════╬═══════════╬═══════════╬═══════════╬═══════════╬═══════════════════╣")
 
 	for _, r := range results {
-		best := determineBest(r)
+		best := r.DetermineBest()
 		fmt.Printf("║ %-9s ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %-17s ║\n",
 			r.Name,
 			r.NormalBP.Accuracy,
@@ -1113,7 +1089,7 @@ func printSummaryTable(results []ComparisonResult, targetAcc float64) {
 		// Print each method that was tested
 		methods := []struct {
 			name    string
-			metrics Metrics
+			metrics nn.TrainingMetrics
 		}{
 			{"NormalBP", r.NormalBP},
 			{"NormTween", r.NormalTween},
@@ -1164,34 +1140,6 @@ func formatLoss(loss float32) string {
 		return "NaN"
 	}
 	return fmt.Sprintf("%.4f", loss)
-}
-
-func determineBest(r ComparisonResult) string {
-	methods := []struct {
-		name string
-		acc  float64
-		loss float32
-	}{
-		{"NormalBP", r.NormalBP.Accuracy, r.NormalBP.Loss},
-		{"NormTween", r.NormalTween.Accuracy, r.NormalTween.Loss},
-		{"Step+BP", r.StepBP.Accuracy, r.StepBP.Loss},
-		{"StepTween", r.StepTween.Accuracy, r.StepTween.Loss},
-		{"BatchTween", r.BatchTween.Accuracy, r.BatchTween.Loss},
-		{"StepBatch", r.StepBatchTween.Accuracy, r.StepBatchTween.Loss},
-	}
-
-	bestIdx := 0
-	for i := 1; i < len(methods); i++ {
-		if methods[i].acc > methods[bestIdx].acc+1 {
-			bestIdx = i
-		} else if math.Abs(methods[i].acc-methods[bestIdx].acc) <= 1 {
-			// Tie on accuracy, prefer lower loss
-			if !math.IsNaN(float64(methods[i].loss)) && methods[i].loss < methods[bestIdx].loss {
-				bestIdx = i
-			}
-		}
-	}
-	return methods[bestIdx].name + " ✓"
 }
 
 // ============================================================================

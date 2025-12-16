@@ -9,6 +9,85 @@ import (
 	"time"
 )
 
+// ============================================================================
+// Training Comparison Metrics
+// ============================================================================
+
+// TrainingMetrics captures performance metrics for a training run
+type TrainingMetrics struct {
+	Steps        int                   `json:"steps"`          // Total training steps/iterations
+	Accuracy     float64               `json:"accuracy"`       // Final accuracy percentage
+	Loss         float32               `json:"loss"`           // Final loss value
+	TimeTotal    time.Duration         `json:"time_total"`     // Total training time
+	TimeToTarget time.Duration         `json:"time_to_target"` // Time to reach target accuracy
+	MemoryPeakMB float64               `json:"memory_peak_mb"` // Peak memory usage in MB
+	Milestones   map[int]time.Duration `json:"milestones"`     // Time to reach 10%, 20%, ... 100% accuracy
+}
+
+// NewTrainingMetrics creates an initialized TrainingMetrics with milestone tracking
+func NewTrainingMetrics() TrainingMetrics {
+	milestones := make(map[int]time.Duration)
+	for i := 10; i <= 100; i += 10 {
+		milestones[i] = 0
+	}
+	return TrainingMetrics{
+		Milestones: milestones,
+	}
+}
+
+// ComparisonResult holds results from comparing multiple training methods
+type ComparisonResult struct {
+	Name           string          `json:"name"`             // Network/test name
+	NumLayers      int             `json:"num_layers"`       // Number of layers tested
+	NormalBP       TrainingMetrics `json:"normal_bp"`        // Normal backprop (no stepping)
+	NormalTween    TrainingMetrics `json:"normal_tween"`     // Normal tween training
+	StepBP         TrainingMetrics `json:"step_bp"`          // Stepping + backprop
+	StepTween      TrainingMetrics `json:"step_tween"`       // Stepping + tween
+	BatchTween     TrainingMetrics `json:"batch_tween"`      // Batch tween (non-stepping)
+	StepBatchTween TrainingMetrics `json:"step_batch_tween"` // Stepping + batch tween
+}
+
+// DetermineBest returns the name of the best performing training method
+func (cr *ComparisonResult) DetermineBest() string {
+	methods := []struct {
+		name string
+		acc  float64
+		loss float32
+	}{
+		{"NormalBP", cr.NormalBP.Accuracy, cr.NormalBP.Loss},
+		{"NormTween", cr.NormalTween.Accuracy, cr.NormalTween.Loss},
+		{"Step+BP", cr.StepBP.Accuracy, cr.StepBP.Loss},
+		{"StepTween", cr.StepTween.Accuracy, cr.StepTween.Loss},
+		{"BatchTween", cr.BatchTween.Accuracy, cr.BatchTween.Loss},
+		{"StepBatch", cr.StepBatchTween.Accuracy, cr.StepBatchTween.Loss},
+	}
+
+	bestIdx := 0
+	for i := 1; i < len(methods); i++ {
+		if methods[i].acc > methods[bestIdx].acc+1 {
+			bestIdx = i
+		} else if math.Abs(methods[i].acc-methods[bestIdx].acc) <= 1 {
+			// Tie on accuracy, prefer lower loss
+			if !math.IsNaN(float64(methods[i].loss)) && methods[i].loss < methods[bestIdx].loss {
+				bestIdx = i
+			}
+		}
+	}
+	return methods[bestIdx].name + " ✓"
+}
+
+// UpdateMilestone records the time when an accuracy milestone is reached
+func (tm *TrainingMetrics) UpdateMilestone(accuracy float64, elapsed time.Duration) {
+	if tm.Milestones == nil {
+		tm.Milestones = make(map[int]time.Duration)
+	}
+	for threshold := 10; threshold <= 100; threshold += 10 {
+		if tm.Milestones[threshold] == 0 && accuracy >= float64(threshold) {
+			tm.Milestones[threshold] = elapsed
+		}
+	}
+}
+
 // DeviationMetrics - Accuracy Deviation Heatmap Distribution
 // Provides detailed performance breakdown showing how far predictions deviate from expected values
 /*
