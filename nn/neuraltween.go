@@ -75,6 +75,9 @@ type TweenConfig struct {
 	AttentionBiasRate    float32 // Default: 0.05 (Scaling for attention bias)
 	NormBetaRate         float32 // Default: 0.1 (Scaling for Norm Beta)
 	NormGammaRate        float32 // Default: 0.01 (Scaling for Norm Gamma)
+
+	// === EXPLOSION DETECTION ===
+	ExplosionDetection bool // Default: false (must be enabled explicitly)
 }
 
 // DefaultTweenConfig returns the standard configuration
@@ -119,6 +122,7 @@ func DefaultTweenConfig(totalLayers int) *TweenConfig {
 		AttentionBiasRate:    0.05,
 		NormBetaRate:         0.1,
 		NormGammaRate:        0.01,
+		ExplosionDetection:   false, // Disabled by default
 	}
 }
 
@@ -1672,6 +1676,11 @@ func (ts *TweenState) TweenStep(n *Network, input []float32, targetClass int, ou
 // getAdaptiveRateMultiplier computes a learning rate multiplier based on gap behavior
 // Returns a value between 0.01 and 1.0 to dampen learning when gaps explode
 func (ts *TweenState) getAdaptiveRateMultiplier(currentGap float32) float32 {
+	// If explosion detection is disabled, always return 1.0 (no rate adjustment)
+	if !ts.Config.ExplosionDetection {
+		return 1.0
+	}
+
 	// Initialize adaptive rate if not set
 	if ts.AdaptiveRate == 0 {
 		ts.AdaptiveRate = 1.0
