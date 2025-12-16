@@ -484,7 +484,7 @@ The chain rule in backpropagation doesn't just provide direction - it provides *
 
 ## Final Conclusion
 
-After testing **8 different approaches** to improve Neural Tweening:
+After testing **9 different approaches** to improve Neural Tweening:
 
 | Approach | Result |
 |----------|--------|
@@ -495,13 +495,70 @@ After testing **8 different approaches** to improve Neural Tweening:
 | Curriculum (Boosted early rates) | ❌ -10.7% (killed layers) |
 | Approximate Backprop | ❌ Made things worse |
 | Hybrid Tween-Backprop | ❌ No improvement |
-| **Sign-Aligned Pseudo-Gradient** | ❌ No improvement |
+| Sign-Aligned Pseudo-Gradient | ❌ No improvement |
+| **Perturb-Tween** | ❌ No improvement |
 
 **The ~50% barrier appears to be a fundamental limitation of gradient-free weight updates.**
 
-Neural Tweening's value may be limited to:
+---
+
+## ~~Perturb-Tween (Perturbation-Based Directional Tweening)~~ ❌ FAILED
+
+**Status: TESTED - Did NOT break the 50% barrier**
+
+### Core Idea
+
+Use weight perturbations to empirically estimate update direction without gradients:
+1. For each weight, apply a small random perturbation
+2. Measure how local loss changes
+3. If loss increases, flip the update direction; if decreases, keep it
+4. Blend perturbation-based direction with classic tween
+
+### Implementation
+
+New fields added to `TweenState`:
+```go
+PerturbEnabled  bool    // Default: true
+PerturbStrength float32 // Default: 0.01 (perturbation magnitude)
+PerturbFraction float32 // Default: 0.2 (perturb 20% of weights per update)
+PerturbBlend    float32 // Default: 0.5 (50% classic + 50% perturb)
+```
+
+### Test Results (2025-12-16)
+
+| Network   | NormalBP | NormalTween | BatchTween |
+|-----------|----------|-------------|------------|
+| Dense     | 99.4%    | 48.6%       | 47.8%      |
+| Conv2D    | 87.6%    | 51.2%       | 50.6%      |
+| RNN       | 98.2%    | 54.0%       | 49.2%      |
+| LSTM      | 92.6%    | 49.8%       | 49.8%      |
+| Attention | 50.4%    | 50.4%       | 50.4%      |
+
+**Result: Perturb-Tween did NOT break the 50% barrier.**
+
+The variation observed between runs (~47-55%) is just random weight initialization flux, not actual improvement from the perturbation technique.
+
+### Why It Failed
+
+1. **Local approximation is too crude** - Perturbing one weight and measuring "local" loss change doesn't capture how that weight affects the full network output
+2. **Random perturbations don't correlate with optimal direction** - Unlike finite differences in backprop, we don't evaluate the actual loss function, just a local gap approximation  
+3. **Same underlying problem** - We're still estimating direction from the noisy backward target gap, not from the true loss surface
+
+---
+
+## Absolute Final Conclusion
+
+Neural Tweening's ~50% barrier is a **fundamental limitation** of any approach that doesn't compute how weight changes propagate through the entire network (i.e., the chain rule).
+
+All gradient-free attempts have failed because:
+- **No error attribution**: Without derivatives, we can't know which specific weights caused the error
+- **No sensitivity information**: We don't know how much each weight affects the final output
+- **Noisy backward targets**: The "backward pass" estimation is inherently approximate and noisy
+
+Neural Tweening's value is limited to:
 - Fast initial exploration (reaches 40% quickly before plateauing)
 - Stabilizing attention layers (prevents NaN)
 - Extremely resource-constrained environments where backprop is impossible
+- Potential hybrid approaches where Tween does exploration and backprop does refinement
 
 ---
