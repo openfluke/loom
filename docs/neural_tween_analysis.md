@@ -192,3 +192,100 @@ The Dense `8→32` adapter at Layer 0 consistently shows:
 4. More training time (RNN needed 60+ epochs to break through)
 
 The multi-signal experiments were useful for understanding the problem, but the fix needs to be architectural, not algorithmic.
+
+---
+
+## LBL (Layer-by-Layer Training) Results
+
+We tried freezing early layers and training from output backward - unfreeze progressively.
+
+### The Theory
+
+```
+Epoch 1-30:   Train only L6 (output)      [L0-L5 frozen]
+Epoch 31-60:  Train L5+L6                 [L0-L4 frozen]  
+Epoch 61-90:  Train L4+L5+L6              [L0-L3 frozen]
+...until all unfrozen...
+```
+
+**Expected**: Output learns first with good signal, then each layer gets TRAINED targets.
+
+### The Results: Catastrophic Failure
+
+| Layer Type | Single | LBL | Delta |
+|------------|--------|-----|-------|
+| Dense | 43.2% | 44.5% | +1.3% |
+| SwiGLU | 43.2% | 44.5% | +1.3% |
+| RNN | **92.2%** | 44.5% | **-47.6%** |
+
+**LBL destroyed RNN's breakthrough!**
+
+### Why It Failed
+
+1. **RNN's breakthrough happens around epoch 61-71** when ALL layers co-adapt
+2. LBL froze L0-L5 during this critical window
+3. Frozen layers produced random noise → L6 learned garbage mapping
+4. When layers unfroze, they couldn't unlearn L6's bad patterns
+5. Loss stayed at ~1.14 vs Single's 0.37
+
+**Key insight**: The "breakthrough" requires simultaneous multi-layer learning. Freezing breaks this.
+
+---
+
+## Curriculum (Boosted Early-Layer Rates) Results  
+
+We tried giving higher learning rates to early layers: L0=3x, L1=2.5x, L2=2x, L3=1.5x.
+
+### The Results: Also Failed
+
+| Layer Type | Single | CURR | Delta |
+|------------|--------|------|-------|
+| Dense | 45.6% | 45.6% | 0.0% |
+| SwiGLU | 45.6% | 45.6% | 0.0% |
+| MHA | 25.6% | 45.6% | **+20.0%** |
+| RNN | **88.5%** | 45.6% | **-42.9%** |
+| LSTM | **86.9%** | 45.6% | **-41.3%** |
+| Conv2D | 45.6% | 45.6% | 0.0% |
+
+**Average: -10.68%** - Curriculum hurt more than helped!
+
+### Why It Failed
+
+1. **High rates killed layers**: Early layers went to `X` (dead) by epoch 31
+2. **RNN/LSTM needed normal rates**: Their breakthroughs require careful weight evolution
+3. **MHA was saved by accident**: High rates prevented NaN (stabilization effect)
+4. **Loss stayed at ~1.6**: Never dropped below 1.1
+
+**Key insight**: L0 isn't stuck because the rate is too low - it's stuck because the backward
+target estimation can't provide useful signal. Increasing the rate just amplifies garbage.
+
+---
+
+## Complete Experiment Summary
+
+| Approach | Strategy | Result | Killed RNN? |
+|----------|----------|--------|-------------|
+| WDM | Multiple samples | Ties | No |
+| RMT | Same sample + perturbations | Ties | No |
+| HLT | Layer voting on targets | Ties | No |
+| **LBL** | Freeze + progressive unfreeze | **-15%** | **YES (-47.6%)** |
+| **Curriculum** | Boosted early-layer rates | **-10.7%** | **YES (-42.9%)** |
+
+**The pattern is clear**: Any modification that disrupts the natural weight evolution destroys the "breakthrough" phenomenon seen in RNN/LSTM.
+
+---
+
+## The Real Conclusion
+
+After testing **5 different approaches**, we've learned:
+
+1. **RNN/LSTM can break through** - but ONLY with standard single-signal training
+2. **Breakthroughs are fragile** - freezing, boosting, or averaging kills them
+3. **The L0 bottleneck is architectural** - no training modification can fix 8→32 Dense
+4. **Attention benefits from stabilization** - WDM's averaging or Curriculum's high rates help
+
+**What would actually work:**
+1. **Skip connections** - Let signal bypass L0 entirely
+2. **Match dimensions** - Use 8→8 instead of 8→32 expansion
+3. **Shorter networks** - Fewer layers = less signal decay
+4. **More epochs** - RNN broke through at epoch 141, not epoch 30

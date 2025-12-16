@@ -2026,16 +2026,26 @@ func test11_layer_safari() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TEST 12: RMT (Resonant Multi-Pass Training) 🔄
-// Tests multiple passes on SAME sample with perturbations for coherent training
+// TEST 12: LBL (Layer-by-Layer Training)
+// Train output layers first, then progressively unfreeze earlier layers
 // ═══════════════════════════════════════════════════════════════════════════
 
 func test12_resonant() {
 	fmt.Println("\n═══════════════════════════════════════════════════════════════")
-	fmt.Println(" TEST 12: (Placeholder)")
-	fmt.Println(" Previous experiments: WDM, RMT, HLT all tied with single-signal")
-	fmt.Println(" Next step: Try architectural changes (skip connections)")
+	fmt.Println(" TEST 12: RESERVED FOR FUTURE EXPERIMENTS")
 	fmt.Println("═══════════════════════════════════════════════════════════════")
-	fmt.Println("\n🔬 This test is currently disabled pending new experiments.")
-	fmt.Println("   Run tests 1-11 instead.")
+	fmt.Println("")
+	fmt.Println("Previous experiments tested: LBL, Curriculum Learning")
+	fmt.Println("Both failed to improve upon single-signal training.")
+	fmt.Println("See docs/neural_tween_analysis.md for full analysis.")
+	fmt.Println("")
+	fmt.Println("Key findings:")
+	fmt.Println("  - LBL: -47.6% RNN (freezing prevents breakthrough)")
+	fmt.Println("  - Curriculum: -42.9% RNN (high rates kill layers)")
+	fmt.Println("  - The L0 bottleneck is ARCHITECTURAL, not training-related")
+	fmt.Println("")
+	fmt.Println("What would actually work:")
+	fmt.Println("  1. Skip connections (bypass L0)")
+	fmt.Println("  2. Matched dimensions (8→8 not 8→32)")
+	fmt.Println("  3. More epochs (RNN breakthrough at epoch 141)")
 }
