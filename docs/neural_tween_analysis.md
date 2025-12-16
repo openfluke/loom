@@ -360,9 +360,25 @@ gap *= layerBoost
 
 ---
 
-## Ideas Still To Try
+## Sharpening Ideas - ALL FAILED
 
-1. **Error-Proportional TweenFactor** - Scale by how wrong each output
+1. ~~**Error-Proportional TweenFactor**~~ ❌ FAILED - No breakthrough
 2. ~~**Winner-Take-More**~~ ❌ FAILED - No breakthrough (~47% still)
 3. ~~**Momentum on Gap Direction**~~ ❌ FAILED - No improvement (~47% still)
 4. ~~**Temperature Sharpening**~~ ❌ FAILED - Made Conv2D worse (68% → 27%)
+5. ~~**Layer-Specific Gap Scaling**~~ ❌ FAILED - Mixed results, hurt RNN
+
+---
+
+## Conclusion
+
+**All 5 sharpening ideas have been tested and failed to break the ~50% accuracy barrier.**
+
+The fundamental limitation of Neural Tweening appears to be the **lack of gradient direction information**. Tweening knows "I'm wrong by X amount" but doesn't know "which specific weights caused the error" or "which direction to push them."
+
+This is analogous to being blindfolded and told "you're 10 degrees off target" without knowing if you're pointing too far left or right. The chain rule in backpropagation provides this directional information; Tweening does not.
+
+**Use cases where Tweening may still be valuable:**
+- Fast initial exploration before switching to backprop
+- Online/streaming settings where speed matters more than optimal accuracy
+- Reinforcement learning where approximate updates are acceptable
