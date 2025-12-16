@@ -364,5 +364,5 @@ gap *= layerBoost
 
 1. **Error-Proportional TweenFactor** - Scale by how wrong each output
 2. **Winner-Take-More** - Amplify gap for correct class 
-3. **Momentum on Gap Direction** - Persistent pattern momentum
-4. **Temperature Sharpening** - Sharpen output probabilities
+3. ~~**Momentum on Gap Direction**~~ ❌ FAILED - No improvement (~47% still)
+4. ~~**Temperature Sharpening**~~ ❌ FAILED - Made Conv2D worse (68% → 27%)
