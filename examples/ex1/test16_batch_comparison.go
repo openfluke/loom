@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -136,72 +137,67 @@ func runComparison(name string, netFactory func() *nn.Network, data TrainingData
 
 	var wg sync.WaitGroup
 	var normalBP, normalTween, stepBP, stepTween, stepTweenChain, batchTween, stepBatchTween nn.TrainingMetrics
+	var mu sync.Mutex // Protects error reporting
 
-	// Count modes to run:
-	// - NormalBP + NormalTween + BatchTween always run (they use network.Train/TweenStep which work on all layers)
-	// - StepBP + StepTween + StepTweenChain + StepBatchTween only if supportsStep (Dense/Conv2D)
-	modesToRun := 3 // Normal BP, Normal Tween, Batch Tween always run
-	if supportsStep {
-		modesToRun += 4 // Step BP, Step Tween, Step Tween Chain, Step Batch Tween
-	}
-	wg.Add(modesToRun)
-
-	// 1. Normal Backprop (uses network.Train - works on all layers)
-	go func() {
+	// Helper to create a safe runner with panic recovery
+	safeRun := func(methodName string, runner func() nn.TrainingMetrics, result *nn.TrainingMetrics) {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				mu.Lock()
+				fmt.Printf("  [%s] ❌ PANIC: %v\n", methodName, r)
+				fmt.Printf("  Stack trace:\n%s\n", debug.Stack())
+				mu.Unlock()
+				// Result stays zero-initialized (TrainingMetrics with 0 accuracy)
+			}
+		}()
+		*result = runner()
+	}
+
+	// Always run all 7 methods on all layer types
+	wg.Add(7)
+
+	// 1. Normal Backprop
+	go safeRun("Normal BP", func() nn.TrainingMetrics {
 		net := netFactory()
-		normalBP = runNormalBackprop(net, data, duration, targetAcc)
-	}()
+		return runNormalBackprop(net, data, duration, targetAcc)
+	}, &normalBP)
 
-	// 2. Normal Tween (always runs - uses TweenStep which works on all layers)
-	go func() {
-		defer wg.Done()
+	// 2. Normal Tween
+	go safeRun("Normal Tween", func() nn.TrainingMetrics {
 		net := netFactory()
-		normalTween = runNormalTween(net, data, duration, targetAcc)
-	}()
+		return runNormalTween(net, data, duration, targetAcc)
+	}, &normalTween)
 
-	// 3. Step + Backprop (only if layer supports stepping)
-	if supportsStep {
-		go func() {
-			defer wg.Done()
-			net := netFactory()
-			stepBP = runStepBackprop(net, data, duration, targetAcc)
-		}()
-	}
-
-	// 4. Step + Tween Legacy (only if layer supports stepping)
-	if supportsStep {
-		go func() {
-			defer wg.Done()
-			net := netFactory()
-			stepTween = runStepTween(net, data, duration, targetAcc)
-		}()
-	}
-
-	// 5. Step + Tween Chain Rule (only if layer supports stepping)
-	if supportsStep {
-		go func() {
-			defer wg.Done()
-			net := netFactory()
-			stepTweenChain = runStepTweenChain(net, data, duration, targetAcc)
-		}()
-	}
-
-	// 6. Batch Tween (non-stepping) - always runs
-	go func() {
-		defer wg.Done()
+	// 3. Step + Backprop
+	go safeRun("Step+BP", func() nn.TrainingMetrics {
 		net := netFactory()
-		batchTween = runBatchTween(net, data, duration, targetAcc, batchSize)
-	}()
+		return runStepBackprop(net, data, duration, targetAcc)
+	}, &stepBP)
 
-	// 7. Step + Batch Tween (only if layer supports stepping)
-	if supportsStep {
-		go func() {
-			defer wg.Done()
-			net := netFactory()
-			stepBatchTween = runStepBatchTween(net, data, duration, targetAcc, batchSize)
-		}()
-	}
+	// 4. Step + Tween Legacy
+	go safeRun("Step+Tween", func() nn.TrainingMetrics {
+		net := netFactory()
+		return runStepTween(net, data, duration, targetAcc)
+	}, &stepTween)
+
+	// 5. Step + Tween Chain Rule
+	go safeRun("TChain", func() nn.TrainingMetrics {
+		net := netFactory()
+		return runStepTweenChain(net, data, duration, targetAcc)
+	}, &stepTweenChain)
+
+	// 6. Batch Tween
+	go safeRun("Batch Tween", func() nn.TrainingMetrics {
+		net := netFactory()
+		return runBatchTween(net, data, duration, targetAcc, batchSize)
+	}, &batchTween)
+
+	// 7. Step + Batch Tween
+	go safeRun("Step+Batch", func() nn.TrainingMetrics {
+		net := netFactory()
+		return runStepBatchTween(net, data, duration, targetAcc, batchSize)
+	}, &stepBatchTween)
 
 	wg.Wait()
 
