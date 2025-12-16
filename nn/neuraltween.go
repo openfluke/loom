@@ -181,6 +181,14 @@ type TweenState struct {
 
 	// === CHAIN RULE SUPPORT ===
 	ChainGradients [][]float32 // Gradient at each layer, computed via chain rule
+
+	// === GRADIENT EXPLOSION DETECTION ===
+	PrevAvgGap     float32 // Previous epoch's average gap
+	GapGrowthRate  float32 // Rate of gap growth (current/previous)
+	ExplosionCount int     // Consecutive epochs with explosion detected
+	AdaptiveRate   float32 // Current adaptive learning rate multiplier (0-1)
+	BaselineGap    float32 // Baseline gap from first few epochs
+	GapSamples     int     // Number of samples for baseline calculation
 }
 
 // TweenEpochMetrics captures detailed per-epoch information for visualization
@@ -384,8 +392,9 @@ func (ts *TweenState) BackwardPassChainRule(n *Network, targetClass int, outputS
 		}
 
 		// Compute depth scale: deeper layers (closer to input) get higher scale
+		// Use safe scaling to prevent explosion in very deep networks
 		depthFromOutput := float32(ts.TotalLayers - 1 - i)
-		depthScale := float32(math.Pow(float64(ts.Config.DepthScaleFactor), float64(depthFromOutput)))
+		depthScale := safeDepthScale(depthFromOutput, ts.Config.DepthScaleFactor, 100.0)
 
 		switch cfg.Type {
 		case LayerDense:
@@ -418,6 +427,12 @@ func (ts *TweenState) BackwardPassChainRule(n *Network, targetClass int, outputS
 			}
 		}
 
+		// Sanitize gradients: replace NaN/Inf with 0, clip to reasonable range
+		const maxGradMagnitude float32 = 10.0
+		for j := range currentGrad {
+			currentGrad[j] = safeGrad(currentGrad[j], maxGradMagnitude)
+		}
+
 		// Store gradient for this layer
 		ts.ChainGradients[i] = currentGrad
 
@@ -433,8 +448,11 @@ func (ts *TweenState) BackwardPassChainRule(n *Network, targetClass int, outputS
 			}
 		}
 
-		// Clamp to valid activation range
+		// Clamp to valid activation range and ensure no NaN/Inf
 		for j := 0; j < len(backwardTarget); j++ {
+			// First sanitize NaN/Inf
+			backwardTarget[j] = safeValue(backwardTarget[j], layerInput[j])
+			// Then clamp to activation range
 			if cfg.Activation == ActivationTanh {
 				backwardTarget[j] = clamp(backwardTarget[j], ts.Config.TanhClampMin, ts.Config.TanhClampMax)
 			} else if cfg.Activation == ActivationSigmoid {
@@ -460,29 +478,37 @@ func (ts *TweenState) chainRuleBackwardDense(cfg *LayerConfig, input, output, gr
 		outputSize = len(output)
 	}
 
-	// Apply activation derivative to output gradient
-	// For simplicity, we estimate pre-activation by inverting the activation
+	// Maximum gradient magnitude to prevent explosion
+	const maxLocalGrad float32 = 10.0
+
+	// Apply activation derivative to output gradient with clipping
 	localGrad := make([]float32, len(gradOutput))
 	for j := 0; j < len(gradOutput) && j < len(output); j++ {
-		// Compute activation derivative at this output value
-		// We use the output value directly for stable gradient estimation
 		actDeriv := ts.activateDerivativeFromOutput(output[j], cfg.Activation)
-		localGrad[j] = gradOutput[j] * actDeriv * depthScale
+		localGrad[j] = safeGrad(gradOutput[j]*actDeriv*depthScale, maxLocalGrad)
 	}
 
 	// Propagate gradient to input: grad_input = W^T * local_grad
+	// Use sqrt-based normalization to control magnitude without killing signal
 	gradInput := make([]float32, inputSize)
+
+	// Softer normalization: use sqrt(outputSize) instead of outputSize
+	// This preserves more gradient signal while still controlling growth
+	normFactor := float32(1.0)
+	if outputSize > 1 {
+		normFactor = 1.0 / float32(math.Sqrt(float64(outputSize)))
+	}
 
 	for in := 0; in < inputSize; in++ {
 		gradSum := float32(0)
 		for out := 0; out < outputSize && out < len(localGrad); out++ {
-			// Weight index: cfg.Kernel is [inputSize x outputSize] stored row-major
 			wIdx := in*outputSize + out
 			if wIdx < len(cfg.Kernel) {
 				gradSum += cfg.Kernel[wIdx] * localGrad[out]
 			}
 		}
-		gradInput[in] = gradSum
+		// Apply sqrt-normalization and clip the final gradient
+		gradInput[in] = safeGrad(gradSum*normFactor, maxLocalGrad)
 	}
 
 	return gradInput
@@ -735,6 +761,54 @@ func clipGrad(grad, maxMagnitude float32) float32 {
 	return grad
 }
 
+// isNaN32 checks if a float32 is NaN
+func isNaN32(f float32) bool {
+	return f != f
+}
+
+// isInf32 checks if a float32 is infinite
+func isInf32(f float32) bool {
+	return f > math.MaxFloat32 || f < -math.MaxFloat32
+}
+
+// safeGrad ensures a gradient is finite and clipped
+// Returns 0 for NaN/Inf values, otherwise clips to maxMagnitude
+func safeGrad(grad, maxMagnitude float32) float32 {
+	if isNaN32(grad) || isInf32(grad) {
+		return 0
+	}
+	return clipGrad(grad, maxMagnitude)
+}
+
+// safeValue ensures a value is finite, returning fallback if not
+func safeValue(v, fallback float32) float32 {
+	if isNaN32(v) || isInf32(v) {
+		return fallback
+	}
+	return v
+}
+
+// safeDepthScale computes depth scaling with a maximum cap to prevent explosion
+// For deep networks (>10 layers), this prevents the exponential growth from causing overflow
+func safeDepthScale(depthFromOutput float32, scaleFactor float32, maxScale float32) float32 {
+	if depthFromOutput <= 0 {
+		return 1.0
+	}
+	// Cap the depth contribution to prevent exponential explosion
+	cappedDepth := depthFromOutput
+	if cappedDepth > 10 {
+		cappedDepth = 10 + float32(math.Log(float64(depthFromOutput-9))) // Logarithmic growth after depth 10
+	}
+	scale := float32(math.Pow(float64(scaleFactor), float64(cappedDepth)))
+	if scale > maxScale {
+		return maxScale
+	}
+	if isNaN32(scale) || isInf32(scale) {
+		return 1.0
+	}
+	return scale
+}
+
 // CalculateLinkBudgets: Measure information preservation at each layer
 // High budget = good signal flow, Low budget = high attenuation
 func (ts *TweenState) CalculateLinkBudgets() {
@@ -887,8 +961,9 @@ func (ts *TweenState) TweenWeightsChainRule(n *Network, rate float32) {
 		}
 
 		// Compute depth scale: deeper layers (closer to input) get higher scale
+		// Use safe scaling to prevent explosion in very deep networks
 		depthFromOutput := float32(ts.TotalLayers - 1 - i)
-		depthScale := float32(math.Pow(float64(ts.Config.DepthScaleFactor), float64(depthFromOutput)))
+		depthScale := safeDepthScale(depthFromOutput, ts.Config.DepthScaleFactor, 100.0)
 
 		// Apply updates based on layer type
 		switch cfg.Type {
@@ -935,9 +1010,10 @@ func (ts *TweenState) chainRuleUpdateDense(cfg *LayerConfig, input, output, outp
 		localGrad[j] = outputGrad[j] * actDeriv
 	}
 
-	// Update biases: dB = local_grad
+	// Update biases: dB = local_grad (with NaN protection)
 	for out := 0; out < outputSize && out < len(localGrad) && out < len(cfg.Bias); out++ {
-		cfg.Bias[out] += rate * localGrad[out]
+		delta := safeGrad(rate*localGrad[out], 1.0)
+		cfg.Bias[out] = safeValue(cfg.Bias[out]+delta, cfg.Bias[out])
 	}
 
 	// Update weights: dW[in][out] = input[in] * local_grad[out]
@@ -948,15 +1024,17 @@ func (ts *TweenState) chainRuleUpdateDense(cfg *LayerConfig, input, output, outp
 				continue
 			}
 
-			// Proper gradient: input * output_gradient
-			delta := rate * input[in] * localGrad[out]
+			// Proper gradient: input * output_gradient (with NaN protection)
+			delta := safeGrad(rate*input[in]*localGrad[out], 1.0)
 
 			// Apply momentum
 			if layerIdx < len(ts.WeightVel) && wIdx < len(ts.WeightVel[layerIdx]) {
 				ts.WeightVel[layerIdx][wIdx] = mom*ts.WeightVel[layerIdx][wIdx] + (1-mom)*delta
-				cfg.Kernel[wIdx] += ts.WeightVel[layerIdx][wIdx]
+				newWeight := cfg.Kernel[wIdx] + ts.WeightVel[layerIdx][wIdx]
+				cfg.Kernel[wIdx] = safeValue(newWeight, cfg.Kernel[wIdx])
 			} else {
-				cfg.Kernel[wIdx] += delta
+				newWeight := cfg.Kernel[wIdx] + delta
+				cfg.Kernel[wIdx] = safeValue(newWeight, cfg.Kernel[wIdx])
 			}
 		}
 	}
@@ -1543,7 +1621,7 @@ func avgSlice(s []float32) float32 {
 	return sum / float32(len(s))
 }
 
-// TweenStep: One complete bidirectional iteration
+// TweenStep: One complete bidirectional iteration with explosion detection
 func (ts *TweenState) TweenStep(n *Network, input []float32, targetClass int, outputSize int, rate float32) float32 {
 	// 1. Forward: push through untrained network
 	output := ts.ForwardPass(n, input)
@@ -1558,11 +1636,23 @@ func (ts *TweenState) TweenStep(n *Network, input []float32, targetClass int, ou
 	// 3. Calculate link budgets (information preservation)
 	ts.CalculateLinkBudgets()
 
-	// 4. Tween weights to close gaps (use chain rule or legacy)
+	// 4. Calculate current average gap for explosion detection
+	avgGap := float32(0)
+	for _, g := range ts.Gaps {
+		avgGap += g
+	}
+	if len(ts.Gaps) > 0 {
+		avgGap /= float32(len(ts.Gaps))
+	}
+
+	// 5. Detect gradient explosion and compute adaptive rate
+	effectiveRate := rate * ts.getAdaptiveRateMultiplier(avgGap)
+
+	// 6. Tween weights to close gaps (use chain rule or legacy) with effective rate
 	if ts.Config.UseChainRule {
-		ts.TweenWeightsChainRule(n, rate)
+		ts.TweenWeightsChainRule(n, effectiveRate)
 	} else {
-		ts.TweenWeights(n, rate)
+		ts.TweenWeights(n, effectiveRate)
 	}
 
 	ts.TweenSteps++
@@ -1577,6 +1667,70 @@ func (ts *TweenState) TweenStep(n *Network, input []float32, targetClass int, ou
 		loss += (v - t) * (v - t)
 	}
 	return loss
+}
+
+// getAdaptiveRateMultiplier computes a learning rate multiplier based on gap behavior
+// Returns a value between 0.01 and 1.0 to dampen learning when gaps explode
+func (ts *TweenState) getAdaptiveRateMultiplier(currentGap float32) float32 {
+	// Initialize adaptive rate if not set
+	if ts.AdaptiveRate == 0 {
+		ts.AdaptiveRate = 1.0
+	}
+
+	// Build baseline from first few epochs
+	if ts.GapSamples < 10 {
+		ts.BaselineGap = (ts.BaselineGap*float32(ts.GapSamples) + currentGap) / float32(ts.GapSamples+1)
+		ts.GapSamples++
+		ts.PrevAvgGap = currentGap
+		return ts.AdaptiveRate
+	}
+
+	// Calculate gap growth rate
+	if ts.PrevAvgGap > 0.0001 {
+		ts.GapGrowthRate = currentGap / ts.PrevAvgGap
+	} else {
+		ts.GapGrowthRate = 1.0
+	}
+
+	// Explosion detection thresholds
+	const (
+		growthThreshold  float32 = 1.5  // Gap grew by 50%+
+		explodeThreshold float32 = 10.0 // Gap is 10x baseline = definitely exploding
+		dampenFactor     float32 = 0.7  // Reduce rate by 30% when explosion detected
+		recoverFactor    float32 = 1.05 // Increase rate by 5% when stable
+		minRate          float32 = 0.01 // Minimum rate multiplier
+		maxRate          float32 = 1.0  // Maximum rate multiplier
+	)
+
+	// Check for explosion
+	isExploding := ts.GapGrowthRate > growthThreshold ||
+		(ts.BaselineGap > 0 && currentGap > ts.BaselineGap*explodeThreshold)
+
+	if isExploding {
+		ts.ExplosionCount++
+		// Dampen more aggressively with consecutive explosions
+		dampen := dampenFactor
+		if ts.ExplosionCount > 5 {
+			dampen = 0.5 // More aggressive dampening
+		}
+		if ts.ExplosionCount > 10 {
+			dampen = 0.3 // Very aggressive dampening
+		}
+		ts.AdaptiveRate *= dampen
+		if ts.AdaptiveRate < minRate {
+			ts.AdaptiveRate = minRate
+		}
+	} else {
+		// Stable - slowly recover rate
+		ts.ExplosionCount = 0
+		ts.AdaptiveRate *= recoverFactor
+		if ts.AdaptiveRate > maxRate {
+			ts.AdaptiveRate = maxRate
+		}
+	}
+
+	ts.PrevAvgGap = currentGap
+	return ts.AdaptiveRate
 }
 
 // ResetBatch clears accumulated batch gaps
@@ -1676,8 +1830,9 @@ func (ts *TweenState) TweenBatchApply(n *Network, rate float32) {
 		}
 
 		// Compute depth scale for chain rule
+		// Use safe scaling to prevent explosion in very deep networks
 		depthFromOutput := float32(ts.TotalLayers - 1 - i)
-		depthScale := float32(math.Pow(float64(ts.Config.DepthScaleFactor), float64(depthFromOutput)))
+		depthScale := safeDepthScale(depthFromOutput, ts.Config.DepthScaleFactor, 100.0)
 
 		// Use chain rule or legacy tweening
 		if ts.Config.UseChainRule {
