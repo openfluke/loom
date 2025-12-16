@@ -135,14 +135,14 @@ func runComparison(name string, netFactory func() *nn.Network, data TrainingData
 	fmt.Printf("└─────────────────────────────────────────────────────────────────────┘\n")
 
 	var wg sync.WaitGroup
-	var normalBP, normalTween, stepBP, stepTween, batchTween, stepBatchTween nn.TrainingMetrics
+	var normalBP, normalTween, stepBP, stepTween, stepTweenChain, batchTween, stepBatchTween nn.TrainingMetrics
 
 	// Count modes to run:
 	// - NormalBP + NormalTween + BatchTween always run (they use network.Train/TweenStep which work on all layers)
-	// - StepBP + StepTween + StepBatchTween only if supportsStep (Dense/Conv2D)
+	// - StepBP + StepTween + StepTweenChain + StepBatchTween only if supportsStep (Dense/Conv2D)
 	modesToRun := 3 // Normal BP, Normal Tween, Batch Tween always run
 	if supportsStep {
-		modesToRun += 3 // Step BP, Step Tween, Step Batch Tween
+		modesToRun += 4 // Step BP, Step Tween, Step Tween Chain, Step Batch Tween
 	}
 	wg.Add(modesToRun)
 
@@ -169,7 +169,7 @@ func runComparison(name string, netFactory func() *nn.Network, data TrainingData
 		}()
 	}
 
-	// 4. Step + Tween (only if layer supports stepping)
+	// 4. Step + Tween Legacy (only if layer supports stepping)
 	if supportsStep {
 		go func() {
 			defer wg.Done()
@@ -178,14 +178,23 @@ func runComparison(name string, netFactory func() *nn.Network, data TrainingData
 		}()
 	}
 
-	// 5. Batch Tween (non-stepping) - always runs
+	// 5. Step + Tween Chain Rule (only if layer supports stepping)
+	if supportsStep {
+		go func() {
+			defer wg.Done()
+			net := netFactory()
+			stepTweenChain = runStepTweenChain(net, data, duration, targetAcc)
+		}()
+	}
+
+	// 6. Batch Tween (non-stepping) - always runs
 	go func() {
 		defer wg.Done()
 		net := netFactory()
 		batchTween = runBatchTween(net, data, duration, targetAcc, batchSize)
 	}()
 
-	// 6. Step + Batch Tween (only if layer supports stepping)
+	// 7. Step + Batch Tween (only if layer supports stepping)
 	if supportsStep {
 		go func() {
 			defer wg.Done()
@@ -202,6 +211,7 @@ func runComparison(name string, netFactory func() *nn.Network, data TrainingData
 		NormalTween:    normalTween,
 		StepBP:         stepBP,
 		StepTween:      stepTween,
+		StepTweenChain: stepTweenChain,
 		BatchTween:     batchTween,
 		StepBatchTween: stepBatchTween,
 	}
@@ -541,7 +551,88 @@ func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, ta
 }
 
 // ============================================================================
-// Training Mode 3: Batch Tween (non-stepping)
+// Training Mode 5: Step + Tween Chain Rule
+// ============================================================================
+
+func runStepTweenChain(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) nn.TrainingMetrics {
+	inputSize := len(data.Samples[0].Input)
+	state := net.InitStepState(inputSize)
+
+	ts := nn.NewTweenState(net, nil)
+	ts.Verbose = false
+	ts.Config.UseChainRule = true // Use chain rule gradient propagation
+
+	peakMB := getMemoryMB()
+	done := make(chan bool)
+	go trackPeakMemory(done, &peakMB)
+
+	// Milestone tracking
+	milestones := make(map[int]time.Duration)
+	for i := 10; i <= 100; i += 10 {
+		milestones[i] = 0
+	}
+
+	start := time.Now()
+	var timeToTarget time.Duration
+	steps := 0
+	sampleIdx := 0
+	var finalLoss float32
+	tweenEvery := 5
+
+	fmt.Printf("  [TChain] Starting...\n")
+
+	for time.Since(start) < duration {
+		if steps%20 == 0 {
+			sampleIdx = rand.Intn(len(data.Samples))
+		}
+		sample := data.Samples[sampleIdx]
+
+		state.SetInput(sample.Input)
+		net.StepForward(state)
+
+		if steps%tweenEvery == 0 {
+			targetClass := argmax(sample.Target)
+			loss := ts.TweenStep(net, sample.Input, targetClass, len(sample.Target), 0.15)
+			if !math.IsNaN(float64(loss)) && !math.IsInf(float64(loss), 0) {
+				finalLoss = loss
+			}
+		}
+
+		steps++
+
+		if steps%5000 == 0 {
+			acc := evaluateSteppingNetwork(net, data, state)
+			elapsed := time.Since(start)
+			for threshold := 10; threshold <= 100; threshold += 10 {
+				if milestones[threshold] == 0 && acc >= float64(threshold) {
+					milestones[threshold] = elapsed
+				}
+			}
+			if timeToTarget == 0 && acc >= targetAcc {
+				timeToTarget = elapsed
+			}
+		}
+	}
+
+	done <- true
+	accuracy := evaluateSteppingNetwork(net, data, state)
+
+	fmt.Printf("  [TChain] Done: %dk steps | Acc: %.1f%% | Loss: %.4f | Mem: %.1fMB\n",
+		steps/1000, accuracy, finalLoss, peakMB)
+
+	return nn.TrainingMetrics{
+		Steps:        steps,
+		Accuracy:     accuracy,
+		Loss:         finalLoss,
+		TimeTotal:    time.Since(start),
+		TimeToTarget: timeToTarget,
+		MemoryPeakMB: peakMB,
+		Milestones:   milestones,
+	}
+}
+
+// ============================================================================
+// Training Mode 6: Batch Tween (non-stepping)
 // ============================================================================
 
 func runBatchTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64, batchSize int) nn.TrainingMetrics {
@@ -1055,27 +1146,28 @@ func generateTrainingData(inputSize, numClasses int) TrainingData {
 
 func printSummaryTable(results []nn.ComparisonResult, targetAcc float64) {
 	fmt.Println("\n")
-	fmt.Println("╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                                                       TRAINING METHOD COMPARISON (6 Modes)                                                                                   ║")
-	fmt.Printf("║                                                       Target Accuracy: %.0f%%                                                                                                     ║\n", targetAcc)
-	fmt.Println("╠═══════════╦═══════════╦═══════════╦═══════════╦═══════════╦═══════════╦═══════════╦═══════════════════╗")
-	fmt.Println("║ Network   ║ NormalBP  ║ NormTween ║ Step+BP   ║ StepTween ║ BatchTwn  ║ StepBatch ║ Best Method       ║")
-	fmt.Println("╠═══════════╬═══════════╬═══════════╬═══════════╬═══════════╬═══════════╬═══════════╬═══════════════════╣")
+	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                                                       TRAINING METHOD COMPARISON (7 Modes)                                                                                                        ║")
+	fmt.Printf("║                                                       Target Accuracy: %.0f%%                                                                                                                          ║\n", targetAcc)
+	fmt.Println("╠═══════════╦═══════════╦═══════════╦═══════════╦═══════════╦═══════════╦═══════════╦═══════════╦═══════════════════╗")
+	fmt.Println("║ Network   ║ NormalBP  ║ NormTween ║ Step+BP   ║ StepTween ║ TChain ║ BatchTwn  ║ StepBatch ║ Best Method       ║")
+	fmt.Println("╠═══════════╬═══════════╬═══════════╬═══════════╬═══════════╬═══════════╬═══════════╬═══════════╬═══════════════════╣")
 
 	for _, r := range results {
 		best := r.DetermineBest()
-		fmt.Printf("║ %-9s ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %-17s ║\n",
+		fmt.Printf("║ %-9s ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %6.1f%%   ║ %-17s ║\n",
 			r.Name,
 			r.NormalBP.Accuracy,
 			r.NormalTween.Accuracy,
 			r.StepBP.Accuracy,
 			r.StepTween.Accuracy,
+			r.StepTweenChain.Accuracy,
 			r.BatchTween.Accuracy,
 			r.StepBatchTween.Accuracy,
 			best)
 	}
 
-	fmt.Println("╚═══════════╩═══════════╩═══════════╩═══════════╩═══════════╩═══════════╩═══════════╩═══════════════════╝")
+	fmt.Println("╚═══════════╩═══════════╩═══════════╩═══════════╩═══════════╩═══════════╩═══════════╩═══════════╩═══════════════════╝")
 
 	// Print convergence milestone table
 	fmt.Println("\n")
@@ -1095,6 +1187,7 @@ func printSummaryTable(results []nn.ComparisonResult, targetAcc float64) {
 			{"NormTween", r.NormalTween},
 			{"Step+BP", r.StepBP},
 			{"StepTween", r.StepTween},
+			{"TChain", r.StepTweenChain},
 			{"BatchTween", r.BatchTween},
 			{"StepBatch", r.StepBatchTween},
 		}

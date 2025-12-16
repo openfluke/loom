@@ -42,7 +42,8 @@ type ComparisonResult struct {
 	NormalBP       TrainingMetrics `json:"normal_bp"`        // Normal backprop (no stepping)
 	NormalTween    TrainingMetrics `json:"normal_tween"`     // Normal tween training
 	StepBP         TrainingMetrics `json:"step_bp"`          // Stepping + backprop
-	StepTween      TrainingMetrics `json:"step_tween"`       // Stepping + tween
+	StepTween      TrainingMetrics `json:"step_tween"`       // Stepping + tween (legacy mode)
+	StepTweenChain TrainingMetrics `json:"step_tween_chain"` // Stepping + tween (chain rule mode)
 	BatchTween     TrainingMetrics `json:"batch_tween"`      // Batch tween (non-stepping)
 	StepBatchTween TrainingMetrics `json:"step_batch_tween"` // Stepping + batch tween
 }
@@ -58,6 +59,7 @@ func (cr *ComparisonResult) DetermineBest() string {
 		{"NormTween", cr.NormalTween.Accuracy, cr.NormalTween.Loss},
 		{"Step+BP", cr.StepBP.Accuracy, cr.StepBP.Loss},
 		{"StepTween", cr.StepTween.Accuracy, cr.StepTween.Loss},
+		{"TChain", cr.StepTweenChain.Accuracy, cr.StepTweenChain.Loss},
 		{"BatchTween", cr.BatchTween.Accuracy, cr.BatchTween.Loss},
 		{"StepBatch", cr.StepBatchTween.Accuracy, cr.StepBatchTween.Loss},
 	}
