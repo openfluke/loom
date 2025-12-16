@@ -363,6 +363,6 @@ gap *= layerBoost
 ## Ideas Still To Try
 
 1. **Error-Proportional TweenFactor** - Scale by how wrong each output
-2. **Winner-Take-More** - Amplify gap for correct class 
+2. ~~**Winner-Take-More**~~ ❌ FAILED - No breakthrough (~47% still)
 3. ~~**Momentum on Gap Direction**~~ ❌ FAILED - No improvement (~47% still)
 4. ~~**Temperature Sharpening**~~ ❌ FAILED - Made Conv2D worse (68% → 27%)
