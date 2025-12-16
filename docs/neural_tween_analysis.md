@@ -394,3 +394,26 @@ This is analogous to being blindfolded and told "you're 10 degrees off target" w
 **Result:** No improvement over vanilla Tween. Dense: 48%, Conv2D: 60.4% (same or worse than Normal Tween).
 
 The hybrid approach didn't break the ~50% barrier. The chain rule gradients appear to be undermined by the tween-style update mechanism.
+
+---
+
+## ~~Approximate Backprop~~ ❌ FAILED
+
+**Concept:** Create a *cheaper* version of backprop that approximates its behavior:
+
+| Full Backprop | Approximate Backprop (Cheaper) |
+|---------------|--------------------------------|
+| `dL/dOut = output - target` | ✅ Same |
+| `dL/dInput = W^T × grad × act_derivative` | ⚡ `W^T × grad` (skip activation derivative) |
+| `dW = input × grad` | ✅ Same |
+
+### Results
+
+**V1 (no act derivative, no link budget):** Showed promise on Conv2D (77%)
+
+**V2 (added act derivatives + link budget):** Made things WORSE
+- Conv2D: 77% → 59% ❌
+- LSTM: 56.6% → 51.2% ❌
+- RNN: 52.2% → 43.2% ❌
+
+The added complexity hurt rather than helped. Even the V1 results weren't consistent enough to be useful.
