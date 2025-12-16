@@ -112,6 +112,12 @@ type TweenState struct {
 
 	// Per-epoch metrics for plotting
 	EpochMetrics []TweenEpochMetrics
+
+	// === CHAIN RULE SUPPORT ===
+	// Enable proper gradient propagation through layers using the chain rule
+	UseChainRule     bool        // Default: true, use chain rule backward pass
+	DepthScaleFactor float32     // Default: 1.2, amplify learning for deeper layers
+	ChainGradients   [][]float32 // Gradient at each layer, computed via chain rule
 }
 
 // TweenEpochMetrics captures detailed per-epoch information for visualization
@@ -185,6 +191,11 @@ func NewTweenState(n *Network) *TweenState {
 		DepthBarrier:        make([]float32, total),
 		DepthBarrierHistory: make([]float32, 0),
 		EpochMetrics:        make([]TweenEpochMetrics, 0),
+
+		// Chain rule defaults
+		UseChainRule:     true,                       // Enable chain rule by default
+		DepthScaleFactor: 1.2,                        // Amplify learning for deeper layers
+		ChainGradients:   make([][]float32, total+1), // Gradients per layer
 	}
 
 	// Init momentum
@@ -277,6 +288,399 @@ func (ts *TweenState) BackwardPass(n *Network, targetClass int, outputSize int) 
 
 		ts.BackwardTargets[i] = estimated
 		currentTarget = estimated
+	}
+}
+
+// BackwardPassChainRule: Proper chain rule gradient propagation
+// Unlike BackwardPass which uses heuristics, this properly applies:
+// 1. Output error gradient (target - actual)
+// 2. Activation function derivatives at each layer
+// 3. Transpose weight multiplication to propagate gradients
+// 4. Depth scaling to combat vanishing gradients
+func (ts *TweenState) BackwardPassChainRule(n *Network, targetClass int, outputSize int) {
+	// Start at output: compute error gradient (target - actual)
+	actual := ts.ForwardActs[ts.TotalLayers]
+	if len(actual) == 0 {
+		return
+	}
+
+	// Create output gradient: target - actual (for MSE derivative)
+	outputGrad := make([]float32, outputSize)
+	for i := 0; i < outputSize; i++ {
+		if i == targetClass {
+			outputGrad[i] = 1.0 - actual[i]
+		} else if i < len(actual) {
+			outputGrad[i] = 0.0 - actual[i]
+		}
+	}
+
+	// Store the output gradient
+	ts.ChainGradients[ts.TotalLayers] = outputGrad
+	ts.BackwardTargets[ts.TotalLayers] = make([]float32, outputSize)
+	for i := 0; i < outputSize; i++ {
+		if i == targetClass {
+			ts.BackwardTargets[ts.TotalLayers][i] = 1.0
+		}
+	}
+
+	// Propagate gradients backward using chain rule
+	currentGrad := outputGrad
+
+	for i := ts.TotalLayers - 1; i >= 0; i-- {
+		cfg := ts.getLayerCfg(n, i)
+		if cfg == nil {
+			ts.ChainGradients[i] = currentGrad
+			ts.BackwardTargets[i] = ts.ForwardActs[i]
+			continue
+		}
+
+		// Get pre-activation values if available (for derivative computation)
+		// We reconstruct from the forward activations
+		layerOutput := ts.ForwardActs[i+1]
+		layerInput := ts.ForwardActs[i]
+
+		if len(layerOutput) == 0 || len(layerInput) == 0 {
+			ts.ChainGradients[i] = currentGrad
+			ts.BackwardTargets[i] = layerInput
+			continue
+		}
+
+		// Compute depth scale: deeper layers (closer to input) get higher scale
+		depthFromOutput := float32(ts.TotalLayers - 1 - i)
+		depthScale := float32(math.Pow(float64(ts.DepthScaleFactor), float64(depthFromOutput)))
+
+		switch cfg.Type {
+		case LayerDense:
+			currentGrad = ts.chainRuleBackwardDense(cfg, layerInput, layerOutput, currentGrad, depthScale, i)
+		case LayerConv2D:
+			currentGrad = ts.chainRuleBackwardConv2D(cfg, layerInput, layerOutput, currentGrad, depthScale)
+		case LayerMultiHeadAttention:
+			currentGrad = ts.chainRuleBackwardAttention(cfg, layerInput, layerOutput, currentGrad, depthScale)
+		case LayerRNN:
+			currentGrad = ts.chainRuleBackwardRNN(cfg, layerInput, layerOutput, currentGrad, depthScale)
+		case LayerLSTM:
+			currentGrad = ts.chainRuleBackwardLSTM(cfg, layerInput, layerOutput, currentGrad, depthScale)
+		case LayerNorm, LayerRMSNorm:
+			currentGrad = ts.chainRuleBackwardNorm(cfg, layerInput, layerOutput, currentGrad, depthScale)
+		case LayerSwiGLU:
+			currentGrad = ts.chainRuleBackwardSwiGLU(cfg, layerInput, layerOutput, currentGrad, depthScale)
+		default:
+			// Pass gradient through for non-trainable layers (Softmax, Residual, etc.)
+			if len(currentGrad) != len(layerInput) {
+				// Dimension mismatch - create gradient matching input size
+				newGrad := make([]float32, len(layerInput))
+				minLen := len(currentGrad)
+				if len(layerInput) < minLen {
+					minLen = len(layerInput)
+				}
+				for j := 0; j < minLen; j++ {
+					newGrad[j] = currentGrad[j]
+				}
+				currentGrad = newGrad
+			}
+		}
+
+		// Store gradient for this layer
+		ts.ChainGradients[i] = currentGrad
+
+		// Compute backward target: what the layer input SHOULD be to reduce error
+		// This is the forward activation PLUS the scaled gradient (direction to improve)
+		backwardTarget := make([]float32, len(layerInput))
+		for j := 0; j < len(layerInput); j++ {
+			if j < len(currentGrad) {
+				// Target = current + gradient direction (scaled for stability)
+				backwardTarget[j] = layerInput[j] + currentGrad[j]*0.1
+			} else {
+				backwardTarget[j] = layerInput[j]
+			}
+		}
+
+		// Clamp to valid activation range
+		for j := 0; j < len(backwardTarget); j++ {
+			if cfg.Activation == ActivationTanh {
+				backwardTarget[j] = clamp(backwardTarget[j], ts.TanhClampMin, ts.TanhClampMax)
+			} else if cfg.Activation == ActivationSigmoid {
+				backwardTarget[j] = clamp(backwardTarget[j], ts.SigmoidClampMin, ts.SigmoidClampMax)
+			} else if cfg.Activation == ActivationScaledReLU || cfg.Activation == ActivationLeakyReLU {
+				backwardTarget[j] = clamp(backwardTarget[j], -ts.ReLUClampMax, ts.ReLUClampMax)
+			}
+		}
+
+		ts.BackwardTargets[i] = backwardTarget
+	}
+}
+
+// chainRuleBackwardDense: Proper chain rule for Dense layers
+// Returns gradient w.r.t. input: grad_input = W^T * (grad_output ⊙ activation'(pre_activation))
+func (ts *TweenState) chainRuleBackwardDense(cfg *LayerConfig, input, output, gradOutput []float32, depthScale float32, layerIdx int) []float32 {
+	inputSize := cfg.InputHeight
+	if inputSize <= 0 {
+		inputSize = len(input)
+	}
+	outputSize := cfg.OutputHeight
+	if outputSize <= 0 {
+		outputSize = len(output)
+	}
+
+	// Apply activation derivative to output gradient
+	// For simplicity, we estimate pre-activation by inverting the activation
+	localGrad := make([]float32, len(gradOutput))
+	for j := 0; j < len(gradOutput) && j < len(output); j++ {
+		// Compute activation derivative at this output value
+		// We use the output value directly for stable gradient estimation
+		actDeriv := activateDerivativeFromOutput(output[j], cfg.Activation)
+		localGrad[j] = gradOutput[j] * actDeriv * depthScale
+	}
+
+	// Propagate gradient to input: grad_input = W^T * local_grad
+	gradInput := make([]float32, inputSize)
+
+	for in := 0; in < inputSize; in++ {
+		gradSum := float32(0)
+		for out := 0; out < outputSize && out < len(localGrad); out++ {
+			// Weight index: cfg.Kernel is [inputSize x outputSize] stored row-major
+			wIdx := in*outputSize + out
+			if wIdx < len(cfg.Kernel) {
+				gradSum += cfg.Kernel[wIdx] * localGrad[out]
+			}
+		}
+		gradInput[in] = gradSum
+	}
+
+	return gradInput
+}
+
+// chainRuleBackwardConv2D: Chain rule for Conv2D layers
+func (ts *TweenState) chainRuleBackwardConv2D(cfg *LayerConfig, input, output, gradOutput []float32, depthScale float32) []float32 {
+	// Apply activation derivative
+	localGrad := make([]float32, len(gradOutput))
+	for j := 0; j < len(gradOutput) && j < len(output); j++ {
+		actDeriv := activateDerivativeFromOutput(output[j], cfg.Activation)
+		localGrad[j] = gradOutput[j] * actDeriv * depthScale
+	}
+
+	// For Conv2D, we need to do "transposed convolution"
+	// Simplified: average gradients weighted by filter importance
+	numFilters := cfg.Filters
+	if numFilters == 0 {
+		numFilters = len(cfg.Bias)
+	}
+	if numFilters == 0 {
+		return localGrad
+	}
+
+	// Compute average gradient per filter
+	gradInput := make([]float32, len(input))
+	gapsPerFilter := len(localGrad) / numFilters
+	if gapsPerFilter == 0 {
+		gapsPerFilter = 1
+	}
+
+	// Distribute gradients back to input positions
+	kernelPerFilter := len(cfg.Kernel) / numFilters
+	inChannels := cfg.InputChannels
+	if inChannels == 0 {
+		inChannels = 1
+	}
+
+	for f := 0; f < numFilters; f++ {
+		// Average gradient for this filter
+		filterGrad := float32(0)
+		for j := f * gapsPerFilter; j < (f+1)*gapsPerFilter && j < len(localGrad); j++ {
+			filterGrad += localGrad[j]
+		}
+		if gapsPerFilter > 0 {
+			filterGrad /= float32(gapsPerFilter)
+		}
+
+		// Distribute to input via kernel weights
+		for k := 0; k < kernelPerFilter; k++ {
+			kIdx := f*kernelPerFilter + k
+			if kIdx < len(cfg.Kernel) {
+				// Map kernel position back to input position
+				inIdx := k % len(input)
+				gradInput[inIdx] += cfg.Kernel[kIdx] * filterGrad
+			}
+		}
+	}
+
+	return gradInput
+}
+
+// chainRuleBackwardAttention: Chain rule for Multi-Head Attention
+func (ts *TweenState) chainRuleBackwardAttention(cfg *LayerConfig, input, output, gradOutput []float32, depthScale float32) []float32 {
+	localGrad := make([]float32, len(gradOutput))
+	for j := 0; j < len(gradOutput) && j < len(output); j++ {
+		localGrad[j] = gradOutput[j] * depthScale
+	}
+
+	// Backprop through output projection: grad_attn = OutputWeight^T * local_grad
+	dModel := cfg.DModel
+	if dModel == 0 {
+		dModel = len(output)
+	}
+
+	gradAttn := make([]float32, dModel)
+	for i := 0; i < dModel; i++ {
+		sum := float32(0)
+		for j := 0; j < len(localGrad); j++ {
+			wIdx := i*len(localGrad) + j
+			if wIdx < len(cfg.OutputWeight) {
+				sum += cfg.OutputWeight[wIdx] * localGrad[j]
+			}
+		}
+		gradAttn[i] = sum
+	}
+
+	// Backprop through V projection: grad_input += VWeights^T * grad_attn
+	gradInput := make([]float32, len(input))
+	for i := 0; i < len(input); i++ {
+		sum := float32(0)
+		for j := 0; j < len(gradAttn); j++ {
+			wIdx := i*len(gradAttn) + j
+			if wIdx < len(cfg.VWeights) {
+				sum += cfg.VWeights[wIdx] * gradAttn[j]
+			}
+		}
+		gradInput[i] = sum
+	}
+
+	return gradInput
+}
+
+// chainRuleBackwardRNN: Chain rule for RNN layers
+func (ts *TweenState) chainRuleBackwardRNN(cfg *LayerConfig, input, output, gradOutput []float32, depthScale float32) []float32 {
+	localGrad := make([]float32, len(gradOutput))
+	for j := 0; j < len(gradOutput) && j < len(output); j++ {
+		actDeriv := activateDerivativeFromOutput(output[j], ActivationTanh) // RNN typically uses tanh
+		localGrad[j] = gradOutput[j] * actDeriv * depthScale
+	}
+
+	// Backprop through input-to-hidden weights
+	gradInput := make([]float32, len(input))
+	hiddenSize := cfg.HiddenSize
+	inputSize := cfg.RNNInputSize
+	if inputSize == 0 {
+		inputSize = len(input)
+	}
+
+	for i := 0; i < inputSize && i < len(input); i++ {
+		sum := float32(0)
+		for h := 0; h < hiddenSize && h < len(localGrad); h++ {
+			wIdx := h*inputSize + i
+			if wIdx < len(cfg.WeightIH) {
+				sum += cfg.WeightIH[wIdx] * localGrad[h]
+			}
+		}
+		gradInput[i] = sum
+	}
+
+	return gradInput
+}
+
+// chainRuleBackwardLSTM: Chain rule for LSTM layers
+func (ts *TweenState) chainRuleBackwardLSTM(cfg *LayerConfig, input, output, gradOutput []float32, depthScale float32) []float32 {
+	localGrad := make([]float32, len(gradOutput))
+	for j := 0; j < len(gradOutput) && j < len(output); j++ {
+		// LSTM output goes through tanh
+		actDeriv := activateDerivativeFromOutput(output[j], ActivationTanh)
+		localGrad[j] = gradOutput[j] * actDeriv * depthScale
+	}
+
+	// Backprop through all 4 gates (simplified - average contribution)
+	gradInput := make([]float32, len(input))
+	inputSize := cfg.RNNInputSize
+	if inputSize == 0 {
+		inputSize = len(input)
+	}
+	hiddenSize := cfg.HiddenSize
+
+	for i := 0; i < inputSize && i < len(input); i++ {
+		sum := float32(0)
+		for h := 0; h < hiddenSize && h < len(localGrad); h++ {
+			wIdx := h*inputSize + i
+			// Average contribution from all 4 gates
+			if wIdx < len(cfg.WeightIH_i) {
+				sum += cfg.WeightIH_i[wIdx] * localGrad[h] * 0.25
+			}
+			if wIdx < len(cfg.WeightIH_f) {
+				sum += cfg.WeightIH_f[wIdx] * localGrad[h] * 0.25
+			}
+			if wIdx < len(cfg.WeightIH_g) {
+				sum += cfg.WeightIH_g[wIdx] * localGrad[h] * 0.25
+			}
+			if wIdx < len(cfg.WeightIH_o) {
+				sum += cfg.WeightIH_o[wIdx] * localGrad[h] * 0.25
+			}
+		}
+		gradInput[i] = sum
+	}
+
+	return gradInput
+}
+
+// chainRuleBackwardNorm: Chain rule for LayerNorm/RMSNorm
+func (ts *TweenState) chainRuleBackwardNorm(cfg *LayerConfig, input, output, gradOutput []float32, depthScale float32) []float32 {
+	// Norm layers are nearly linear, gradient passes through scaled by gamma
+	gradInput := make([]float32, len(input))
+	for j := 0; j < len(input) && j < len(gradOutput); j++ {
+		gamma := float32(1.0)
+		if j < len(cfg.Gamma) {
+			gamma = cfg.Gamma[j]
+		}
+		gradInput[j] = gradOutput[j] * gamma * depthScale
+	}
+	return gradInput
+}
+
+// chainRuleBackwardSwiGLU: Chain rule for SwiGLU layers
+func (ts *TweenState) chainRuleBackwardSwiGLU(cfg *LayerConfig, input, output, gradOutput []float32, depthScale float32) []float32 {
+	localGrad := make([]float32, len(gradOutput))
+	for j := 0; j < len(gradOutput); j++ {
+		localGrad[j] = gradOutput[j] * depthScale
+	}
+
+	// Backprop through down projection
+	gradInput := make([]float32, len(input))
+	for i := 0; i < len(input); i++ {
+		sum := float32(0)
+		for j := 0; j < len(localGrad); j++ {
+			wIdx := i*len(localGrad) + j
+			if wIdx < len(cfg.DownWeights) {
+				sum += cfg.DownWeights[wIdx] * localGrad[j]
+			}
+		}
+		gradInput[i] = sum
+	}
+
+	return gradInput
+}
+
+// activateDerivativeFromOutput computes activation derivative from the output value
+// This is more stable than trying to invert the activation
+func activateDerivativeFromOutput(output float32, activation ActivationType) float32 {
+	switch activation {
+	case ActivationScaledReLU:
+		if output > 0 {
+			return 1.1
+		}
+		return 0.0
+	case ActivationSigmoid:
+		// For sigmoid: output = sigmoid(x), derivative = output * (1 - output)
+		return output*(1.0-output) + 0.01 // +0.01 for stability
+	case ActivationTanh:
+		// For tanh: output = tanh(x), derivative = 1 - output^2
+		return (1.0 - output*output) + 0.01 // +0.01 for stability
+	case ActivationSoftplus:
+		// Softplus derivative is sigmoid
+		return 1.0/(1.0+float32(math.Exp(-float64(output)))) + 0.01
+	case ActivationLeakyReLU:
+		if output >= 0 {
+			return 1.0
+		}
+		return 0.1
+	default:
+		return 1.0
 	}
 }
 
@@ -395,6 +799,332 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 		col := (i / n.LayersPerCell) % n.GridCols
 		layer := i % n.LayersPerCell
 		n.SetLayer(row, col, layer, *cfg)
+	}
+}
+
+// TweenWeightsChainRule: Use chain rule gradients directly for weight updates
+// This is the proper gradient-based approach: dW = input^T * output_gradient
+func (ts *TweenState) TweenWeightsChainRule(n *Network, rate float32) {
+	mom := ts.Momentum
+
+	for i := 0; i < ts.TotalLayers; i++ {
+		cfg := ts.getLayerCfg(n, i)
+		if cfg == nil {
+			continue
+		}
+
+		input := ts.ForwardActs[i]
+		output := ts.ForwardActs[i+1]
+
+		// Get the chain gradient for this layer's OUTPUT
+		var outputGrad []float32
+		if i+1 < len(ts.ChainGradients) && len(ts.ChainGradients[i+1]) > 0 {
+			outputGrad = ts.ChainGradients[i+1]
+		} else {
+			// Fallback to gap-based
+			target := ts.BackwardTargets[i+1]
+			if len(target) > 0 && len(output) > 0 {
+				outputGrad = make([]float32, len(output))
+				for j := 0; j < len(output) && j < len(target); j++ {
+					outputGrad[j] = target[j] - output[j]
+				}
+			}
+		}
+
+		if len(input) == 0 || len(outputGrad) == 0 {
+			continue
+		}
+
+		// Compute depth scale: deeper layers (closer to input) get higher scale
+		depthFromOutput := float32(ts.TotalLayers - 1 - i)
+		depthScale := float32(math.Pow(float64(ts.DepthScaleFactor), float64(depthFromOutput)))
+
+		// Apply updates based on layer type
+		switch cfg.Type {
+		case LayerDense:
+			ts.chainRuleUpdateDense(cfg, input, output, outputGrad, rate*ts.DenseRate*depthScale, mom, i)
+		case LayerConv2D:
+			ts.chainRuleUpdateConv2D(cfg, input, output, outputGrad, rate*ts.Conv2DRate*depthScale, mom)
+		case LayerMultiHeadAttention:
+			ts.chainRuleUpdateAttention(cfg, input, output, outputGrad, rate*ts.AttentionRate*depthScale, mom)
+		case LayerRNN:
+			ts.chainRuleUpdateRNN(cfg, input, output, outputGrad, rate*ts.RNNRate*depthScale, mom)
+		case LayerLSTM:
+			ts.chainRuleUpdateLSTM(cfg, input, output, outputGrad, rate*ts.LSTMRate*depthScale, mom)
+		case LayerNorm, LayerRMSNorm:
+			ts.chainRuleUpdateNorm(cfg, input, output, outputGrad, rate*ts.NormRate*depthScale)
+		case LayerSwiGLU:
+			ts.chainRuleUpdateSwiGLU(cfg, input, output, outputGrad, rate*ts.SwiGLURate*depthScale, mom)
+		}
+
+		row := i / (n.GridCols * n.LayersPerCell)
+		col := (i / n.LayersPerCell) % n.GridCols
+		layer := i % n.LayersPerCell
+		n.SetLayer(row, col, layer, *cfg)
+	}
+}
+
+// chainRuleUpdateDense: Apply proper gradient update to Dense layer
+// dW[in][out] = input[in] * output_grad[out] (outer product)
+// dB[out] = output_grad[out]
+func (ts *TweenState) chainRuleUpdateDense(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32, layerIdx int) {
+	inputSize := cfg.InputHeight
+	if inputSize <= 0 {
+		inputSize = len(input)
+	}
+	outputSize := cfg.OutputHeight
+	if outputSize <= 0 {
+		outputSize = len(output)
+	}
+
+	// Apply activation derivative to output gradient
+	localGrad := make([]float32, len(outputGrad))
+	for j := 0; j < len(outputGrad) && j < len(output); j++ {
+		actDeriv := activateDerivativeFromOutput(output[j], cfg.Activation)
+		localGrad[j] = outputGrad[j] * actDeriv
+	}
+
+	// Update biases: dB = local_grad
+	for out := 0; out < outputSize && out < len(localGrad) && out < len(cfg.Bias); out++ {
+		cfg.Bias[out] += rate * localGrad[out]
+	}
+
+	// Update weights: dW[in][out] = input[in] * local_grad[out]
+	for in := 0; in < inputSize && in < len(input); in++ {
+		for out := 0; out < outputSize && out < len(localGrad); out++ {
+			wIdx := in*outputSize + out
+			if wIdx >= len(cfg.Kernel) {
+				continue
+			}
+
+			// Proper gradient: input * output_gradient
+			delta := rate * input[in] * localGrad[out]
+
+			// Apply momentum
+			if layerIdx < len(ts.WeightVel) && wIdx < len(ts.WeightVel[layerIdx]) {
+				ts.WeightVel[layerIdx][wIdx] = mom*ts.WeightVel[layerIdx][wIdx] + (1-mom)*delta
+				cfg.Kernel[wIdx] += ts.WeightVel[layerIdx][wIdx]
+			} else {
+				cfg.Kernel[wIdx] += delta
+			}
+		}
+	}
+}
+
+// chainRuleUpdateConv2D: Apply gradient update to Conv2D layer
+func (ts *TweenState) chainRuleUpdateConv2D(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32) {
+	if len(cfg.Kernel) == 0 {
+		return
+	}
+
+	numFilters := cfg.Filters
+	if numFilters == 0 {
+		numFilters = len(cfg.Bias)
+	}
+	if numFilters == 0 {
+		return
+	}
+
+	// Compute gradient per filter
+	gapsPerFilter := len(outputGrad) / numFilters
+	if gapsPerFilter == 0 {
+		gapsPerFilter = 1
+	}
+
+	kernelPerFilter := len(cfg.Kernel) / numFilters
+	if kernelPerFilter == 0 {
+		return
+	}
+
+	for f := 0; f < numFilters; f++ {
+		// Sum gradient for this filter
+		filterGrad := float32(0)
+		for j := f * gapsPerFilter; j < (f+1)*gapsPerFilter && j < len(outputGrad); j++ {
+			filterGrad += outputGrad[j]
+		}
+		filterGrad /= float32(gapsPerFilter)
+
+		// Update kernel weights
+		for k := 0; k < kernelPerFilter; k++ {
+			kIdx := f*kernelPerFilter + k
+			if kIdx < len(cfg.Kernel) {
+				inIdx := k % len(input)
+				if inIdx < len(input) {
+					cfg.Kernel[kIdx] += rate * input[inIdx] * filterGrad
+				}
+			}
+		}
+
+		// Update bias
+		if f < len(cfg.Bias) {
+			cfg.Bias[f] += rate * filterGrad
+		}
+	}
+}
+
+// chainRuleUpdateAttention: Apply gradient update to Attention layer
+func (ts *TweenState) chainRuleUpdateAttention(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32) {
+	dModel := cfg.DModel
+	if dModel == 0 {
+		dModel = len(output)
+	}
+
+	// Update output projection
+	for i := 0; i < dModel && i < len(input); i++ {
+		for j := 0; j < len(outputGrad); j++ {
+			wIdx := i*len(outputGrad) + j
+			if wIdx < len(cfg.OutputWeight) {
+				cfg.OutputWeight[wIdx] += rate * input[i] * outputGrad[j]
+			}
+		}
+	}
+
+	// Update biases
+	for j := 0; j < len(outputGrad) && j < len(cfg.OutputBias); j++ {
+		cfg.OutputBias[j] += rate * outputGrad[j]
+	}
+
+	// Update V weights (simplified)
+	avgGrad := avgSlice(outputGrad)
+	for i := range cfg.VWeights {
+		inIdx := i % len(input)
+		if inIdx < len(input) {
+			cfg.VWeights[i] += rate * input[inIdx] * avgGrad * 0.1
+		}
+	}
+
+	// Update Q,K weights
+	for i := range cfg.QWeights {
+		inIdx := i % len(input)
+		if inIdx < len(input) {
+			cfg.QWeights[i] += rate * input[inIdx] * avgGrad * 0.05
+			cfg.KWeights[i] += rate * input[inIdx] * avgGrad * 0.05
+		}
+	}
+}
+
+// chainRuleUpdateRNN: Apply gradient update to RNN layer
+func (ts *TweenState) chainRuleUpdateRNN(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32) {
+	hiddenSize := cfg.HiddenSize
+	inputSize := cfg.RNNInputSize
+	if inputSize == 0 {
+		inputSize = len(input)
+	}
+
+	// Apply activation derivative (RNN uses tanh)
+	localGrad := make([]float32, len(outputGrad))
+	for j := 0; j < len(outputGrad) && j < len(output); j++ {
+		actDeriv := activateDerivativeFromOutput(output[j], ActivationTanh)
+		localGrad[j] = outputGrad[j] * actDeriv
+	}
+
+	// Update input-to-hidden weights
+	for h := 0; h < hiddenSize && h < len(localGrad); h++ {
+		for i := 0; i < inputSize && i < len(input); i++ {
+			wIdx := h*inputSize + i
+			if wIdx < len(cfg.WeightIH) {
+				cfg.WeightIH[wIdx] += rate * input[i] * localGrad[h]
+			}
+		}
+		if h < len(cfg.BiasH) {
+			cfg.BiasH[h] += rate * localGrad[h]
+		}
+	}
+}
+
+// chainRuleUpdateLSTM: Apply gradient update to LSTM layer
+func (ts *TweenState) chainRuleUpdateLSTM(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32) {
+	hiddenSize := cfg.HiddenSize
+	inputSize := cfg.RNNInputSize
+	if inputSize == 0 {
+		inputSize = len(input)
+	}
+
+	// Apply activation derivative
+	localGrad := make([]float32, len(outputGrad))
+	for j := 0; j < len(outputGrad) && j < len(output); j++ {
+		actDeriv := activateDerivativeFromOutput(output[j], ActivationTanh)
+		localGrad[j] = outputGrad[j] * actDeriv
+	}
+
+	// Update all 4 gates
+	for h := 0; h < hiddenSize && h < len(localGrad); h++ {
+		for i := 0; i < inputSize && i < len(input); i++ {
+			wIdx := h*inputSize + i
+			grad := rate * input[i] * localGrad[h] * 0.25 // Split across 4 gates
+
+			if wIdx < len(cfg.WeightIH_i) {
+				cfg.WeightIH_i[wIdx] += grad
+			}
+			if wIdx < len(cfg.WeightIH_f) {
+				cfg.WeightIH_f[wIdx] += grad
+			}
+			if wIdx < len(cfg.WeightIH_g) {
+				cfg.WeightIH_g[wIdx] += grad
+			}
+			if wIdx < len(cfg.WeightIH_o) {
+				cfg.WeightIH_o[wIdx] += grad
+			}
+		}
+
+		biasGrad := rate * localGrad[h] * 0.25
+		if h < len(cfg.BiasH_i) {
+			cfg.BiasH_i[h] += biasGrad
+		}
+		if h < len(cfg.BiasH_f) {
+			cfg.BiasH_f[h] += biasGrad
+		}
+		if h < len(cfg.BiasH_g) {
+			cfg.BiasH_g[h] += biasGrad
+		}
+		if h < len(cfg.BiasH_o) {
+			cfg.BiasH_o[h] += biasGrad
+		}
+	}
+}
+
+// chainRuleUpdateNorm: Apply gradient update to LayerNorm/RMSNorm
+func (ts *TweenState) chainRuleUpdateNorm(cfg *LayerConfig, input, output, outputGrad []float32, rate float32) {
+	for j := 0; j < len(outputGrad) && j < len(cfg.Gamma); j++ {
+		// Gamma gradient: output_grad * normalized_input
+		if j < len(output) {
+			cfg.Gamma[j] += rate * outputGrad[j] * output[j] * 0.01
+		}
+	}
+	if cfg.Type == LayerNorm {
+		for j := 0; j < len(outputGrad) && j < len(cfg.Beta); j++ {
+			cfg.Beta[j] += rate * outputGrad[j] * 0.1
+		}
+	}
+}
+
+// chainRuleUpdateSwiGLU: Apply gradient update to SwiGLU layer
+func (ts *TweenState) chainRuleUpdateSwiGLU(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32) {
+	// Update down projection (most direct path)
+	for i := 0; i < len(input); i++ {
+		for j := 0; j < len(outputGrad); j++ {
+			wIdx := i*len(outputGrad) + j
+			if wIdx < len(cfg.DownWeights) {
+				cfg.DownWeights[wIdx] += rate * input[i] * outputGrad[j]
+			}
+		}
+	}
+
+	// Update biases
+	avgGrad := avgSlice(outputGrad)
+	for j := range cfg.DownBias {
+		if j < len(outputGrad) {
+			cfg.DownBias[j] += rate * outputGrad[j]
+		}
+	}
+
+	// Update gate and up projections
+	for i := range cfg.GateWeights {
+		inIdx := i % len(input)
+		if inIdx < len(input) {
+			cfg.GateWeights[i] += rate * input[inIdx] * avgGrad * 0.1
+			cfg.UpWeights[i] += rate * input[inIdx] * avgGrad * 0.1
+		}
 	}
 }
 
@@ -715,14 +1445,22 @@ func (ts *TweenState) TweenStep(n *Network, input []float32, targetClass int, ou
 	// 1. Forward: push through untrained network
 	output := ts.ForwardPass(n, input)
 
-	// 2. Backward: propagate expected output upward
-	ts.BackwardPass(n, targetClass, outputSize)
+	// 2. Backward: propagate expected output upward (chain rule or legacy)
+	if ts.UseChainRule {
+		ts.BackwardPassChainRule(n, targetClass, outputSize)
+	} else {
+		ts.BackwardPass(n, targetClass, outputSize)
+	}
 
 	// 3. Calculate link budgets (information preservation)
 	ts.CalculateLinkBudgets()
 
-	// 4. Tween weights to close gaps
-	ts.TweenWeights(n, rate)
+	// 4. Tween weights to close gaps (use chain rule or legacy)
+	if ts.UseChainRule {
+		ts.TweenWeightsChainRule(n, rate)
+	} else {
+		ts.TweenWeights(n, rate)
+	}
 
 	ts.TweenSteps++
 
@@ -752,8 +1490,12 @@ func (ts *TweenState) TweenStepAccumulate(n *Network, input []float32, targetCla
 	// 1. Forward: push through network
 	output := ts.ForwardPass(n, input)
 
-	// 2. Backward: propagate expected output upward
-	ts.BackwardPass(n, targetClass, outputSize)
+	// 2. Backward: propagate expected output upward (chain rule or legacy)
+	if ts.UseChainRule {
+		ts.BackwardPassChainRule(n, targetClass, outputSize)
+	} else {
+		ts.BackwardPass(n, targetClass, outputSize)
+	}
 
 	// 3. Calculate link budgets
 	ts.CalculateLinkBudgets()
@@ -819,12 +1561,10 @@ func (ts *TweenState) TweenBatchApply(n *Network, rate float32) {
 		}
 
 		input := ts.ForwardActs[i]
+		output := ts.ForwardActs[i+1]
 		if len(input) == 0 || len(ts.BatchGaps[i]) == 0 {
 			continue
 		}
-
-		// Scale rate by link budget
-		layerRate := rate * (ts.LinkBudgetScale + budget*ts.LinkBudgetScale)
 
 		// Average the accumulated gaps
 		avgGaps := make([]float32, len(ts.BatchGaps[i]))
@@ -832,22 +1572,50 @@ func (ts *TweenState) TweenBatchApply(n *Network, rate float32) {
 			avgGaps[j] = ts.BatchGaps[i][j] * batchScale
 		}
 
-		// Apply tweening based on layer type
-		switch cfg.Type {
-		case LayerDense:
-			ts.tweenDense(cfg, input, avgGaps, layerRate*ts.DenseRate, mom, i)
-		case LayerConv2D:
-			ts.tweenConv2D(cfg, input, avgGaps, layerRate*ts.Conv2DRate, mom)
-		case LayerMultiHeadAttention:
-			ts.tweenAttention(cfg, input, avgGaps, layerRate*ts.AttentionRate, mom)
-		case LayerRNN:
-			ts.tweenRNN(cfg, input, avgGaps, layerRate*ts.RNNRate, mom)
-		case LayerLSTM:
-			ts.tweenLSTM(cfg, input, avgGaps, layerRate*ts.LSTMRate, mom)
-		case LayerNorm, LayerRMSNorm:
-			ts.tweenNorm(cfg, avgGaps, layerRate*ts.NormRate)
-		case LayerSwiGLU:
-			ts.tweenSwiGLU(cfg, input, avgGaps, layerRate*ts.SwiGLURate, mom)
+		// Compute depth scale for chain rule
+		depthFromOutput := float32(ts.TotalLayers - 1 - i)
+		depthScale := float32(math.Pow(float64(ts.DepthScaleFactor), float64(depthFromOutput)))
+
+		// Use chain rule or legacy tweening
+		if ts.UseChainRule {
+			// Use averaged gaps as output gradient for chain rule update
+			switch cfg.Type {
+			case LayerDense:
+				ts.chainRuleUpdateDense(cfg, input, output, avgGaps, rate*ts.DenseRate*depthScale, mom, i)
+			case LayerConv2D:
+				ts.chainRuleUpdateConv2D(cfg, input, output, avgGaps, rate*ts.Conv2DRate*depthScale, mom)
+			case LayerMultiHeadAttention:
+				ts.chainRuleUpdateAttention(cfg, input, output, avgGaps, rate*ts.AttentionRate*depthScale, mom)
+			case LayerRNN:
+				ts.chainRuleUpdateRNN(cfg, input, output, avgGaps, rate*ts.RNNRate*depthScale, mom)
+			case LayerLSTM:
+				ts.chainRuleUpdateLSTM(cfg, input, output, avgGaps, rate*ts.LSTMRate*depthScale, mom)
+			case LayerNorm, LayerRMSNorm:
+				ts.chainRuleUpdateNorm(cfg, input, output, avgGaps, rate*ts.NormRate*depthScale)
+			case LayerSwiGLU:
+				ts.chainRuleUpdateSwiGLU(cfg, input, output, avgGaps, rate*ts.SwiGLURate*depthScale, mom)
+			}
+		} else {
+			// Scale rate by link budget
+			layerRate := rate * (ts.LinkBudgetScale + budget*ts.LinkBudgetScale)
+
+			// Apply legacy tweening based on layer type
+			switch cfg.Type {
+			case LayerDense:
+				ts.tweenDense(cfg, input, avgGaps, layerRate*ts.DenseRate, mom, i)
+			case LayerConv2D:
+				ts.tweenConv2D(cfg, input, avgGaps, layerRate*ts.Conv2DRate, mom)
+			case LayerMultiHeadAttention:
+				ts.tweenAttention(cfg, input, avgGaps, layerRate*ts.AttentionRate, mom)
+			case LayerRNN:
+				ts.tweenRNN(cfg, input, avgGaps, layerRate*ts.RNNRate, mom)
+			case LayerLSTM:
+				ts.tweenLSTM(cfg, input, avgGaps, layerRate*ts.LSTMRate, mom)
+			case LayerNorm, LayerRMSNorm:
+				ts.tweenNorm(cfg, avgGaps, layerRate*ts.NormRate)
+			case LayerSwiGLU:
+				ts.tweenSwiGLU(cfg, input, avgGaps, layerRate*ts.SwiGLURate, mom)
+			}
 		}
 
 		row := i / (n.GridCols * n.LayersPerCell)
