@@ -59,6 +59,8 @@ func main() {
 		test10_depth_charge()
 	case "11":
 		test11_layer_safari()
+	case "12":
+		test12_resonant()
 	case "all":
 		test1_tween()
 		test2_backprop()
@@ -70,8 +72,10 @@ func main() {
 		test8_spiral()
 		test9_two_moons()
 		test10_depth_charge()
+		test11_layer_safari()
+		test12_resonant()
 	default:
-		fmt.Println("Usage: go run main.go [1|2|3|4|5|6|7|8|9|10|all]")
+		fmt.Println("Usage: go run main.go [1|2|3|4|5|6|7|8|9|10|11|12|all]")
 		fmt.Println("  1  - Neural Tweening (simple)")
 		fmt.Println("  2  - Standard Backpropagation")
 		fmt.Println("  3  - Deep Network Tweening")
@@ -82,6 +86,8 @@ func main() {
 		fmt.Println("  8  - SPIRAL TEST (nonlinear classification)")
 		fmt.Println("  9  - TWO-MOONS (generalization + reproducibility)")
 		fmt.Println("  10 - DEPTH CHARGE (20 layers, vanishing gradient test)")
+		fmt.Println("  11 - LAYER SAFARI (auto-pruning test)")
+		fmt.Println("  12 - RMT (resonant multi-pass training)")
 		fmt.Println("  all - Run all tests")
 	}
 }
@@ -2016,5 +2022,189 @@ func test11_layer_safari() {
 		} else {
 			fmt.Println("⚠️  Pruning FAILED (Signal too strong or config issue)")
 		}
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 12: RMT (Resonant Multi-Pass Training) 🔄
+// Tests multiple passes on SAME sample with perturbations for coherent training
+// ═══════════════════════════════════════════════════════════════════════════
+
+func test12_resonant() {
+	fmt.Println("\n═══════════════════════════════════════════════════════════════")
+	fmt.Println(" TEST 12: HLT (Harmonic Layer Training) 🎶")
+	fmt.Println(" Goal: Test if layer-voting consensus improves training")
+	fmt.Println(" Method: Compare single-signal vs HLT harmonic Tween")
+	fmt.Println(" Concept: Each layer VOTES on target, weighted by health")
+	fmt.Println(" Pruning: DISABLED (isolating effect of HLT)")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+
+	types := []string{
+		"Dense",
+		"SwiGLU",
+		"MultiHeadAttention",
+		"RNN",
+		"LSTM",
+		"Conv2D",
+	}
+
+	samples := 500
+	inputs, expected := generateSimple8to4(samples)
+	epochs := 200
+
+	type Result struct {
+		LayerType   string
+		SingleScore float64
+		SingleTime  time.Duration
+		HLTScore    float64
+		HLTTime     time.Duration
+		Winner      string
+		Improvement float64
+	}
+
+	results := make([]Result, 0)
+
+	for _, t := range types {
+		fmt.Printf("\n\n>>> TESTING LAYER TYPE: %s <<<\n", t)
+		fmt.Printf("---------------------------------------------------\n")
+
+		// Build a network of this type
+		// Architecture: Input(8) -> Adapter(32) -> [Type(32)]x5 -> Output(4)
+		// TOTAL: 7 layers
+		layers := make([]string, 0)
+		hidden := 32
+
+		// 0. Adapter (Dense)
+		layers = append(layers, fmt.Sprintf(`{"type":"dense","activation":"tanh","input_height":8,"output_height":%d}`, hidden))
+
+		// 1..5. Stack of Target Type
+		for i := 0; i < 5; i++ {
+			switch t {
+			case "Dense":
+				layers = append(layers, fmt.Sprintf(`{"type":"dense","activation":"tanh","input_height":%d,"output_height":%d}`, hidden, hidden))
+			case "SwiGLU":
+				layers = append(layers, fmt.Sprintf(`{"type":"swiglu","input_height":%d,"output_height":%d}`, hidden, hidden))
+			case "MultiHeadAttention":
+				layers = append(layers, fmt.Sprintf(`{"type":"mha","num_heads":4,"d_model":%d,"seq_length":1}`, hidden))
+			case "RNN":
+				layers = append(layers, fmt.Sprintf(`{"type":"rnn","hidden_size":%d,"input_size":%d,"seq_length":1}`, hidden, hidden))
+			case "LSTM":
+				layers = append(layers, fmt.Sprintf(`{"type":"lstm","hidden_size":%d,"input_size":%d,"seq_length":1}`, hidden, hidden))
+			case "Conv2D":
+				layers = append(layers, fmt.Sprintf(`{"type":"conv2d","filters":1,"kernel_size":3,"stride":1,"padding":1,"input_height":1,"input_width":%d,"output_height":1,"output_width":%d,"input_channels":1,"activation":"tanh"}`, hidden, hidden))
+			}
+		}
+
+		// 6. Output Head (Dense)
+		layers = append(layers, fmt.Sprintf(`{"type":"dense","activation":"sigmoid","input_height":%d,"output_height":4}`, hidden))
+
+		cfg := fmt.Sprintf(`{"batch_size":1,"grid_rows":1,"grid_cols":1,"layers_per_cell":%d,"layers":[%s]}`,
+			len(layers), joinStrings(layers, ","))
+
+		// Create and save base network
+		rand.Seed(42)
+		baseNet, err := nn.BuildNetworkFromJSON(cfg)
+		if err != nil {
+			fmt.Printf("❌ Failed to build %s network: %v\n", t, err)
+			continue
+		}
+		baseNet.InitializeWeights()
+
+		tempFile := fmt.Sprintf("/tmp/test12_%s.json", t)
+		baseNet.SaveModel(tempFile, "base")
+
+		// === SINGLE-SIGNAL TWEEN ===
+		fmt.Println("▶ SINGLE-SIGNAL TWEEN:")
+		netSingle, _ := nn.LoadModel(tempFile, "base")
+
+		tsSingle := nn.NewTweenState(netSingle)
+		tsSingle.Verbose = true
+		tsSingle.EvalFrequency = 10
+		tsSingle.PruneEnabled = false // No pruning!
+
+		startSingle := time.Now()
+		tsSingle.Train(netSingle, inputs, expected, epochs, 0.3, nil)
+		singleTime := time.Since(startSingle)
+		singleScore, _ := netSingle.EvaluateNetwork(inputs, expected)
+		fmt.Printf("  SINGLE Score: %.1f%% in %v\n", singleScore.Score, singleTime)
+
+		// === HLT HARMONIC LAYER TWEEN ===
+		fmt.Println("\n▶ HLT HARMONIC LAYER TWEEN (layers vote on targets):")
+		netHLT, _ := nn.LoadModel(tempFile, "base")
+
+		tsHLT := nn.NewTweenState(netHLT)
+		tsHLT.Verbose = true
+		tsHLT.EvalFrequency = 10
+		tsHLT.PruneEnabled = false // No pruning!
+		tsHLT.HLTEnabled = true
+
+		startHLT := time.Now()
+		tsHLT.TrainHLT(netHLT, inputs, expected, epochs, 0.3, nil)
+		hltTime := time.Since(startHLT)
+		hltScore, _ := netHLT.EvaluateNetwork(inputs, expected)
+		fmt.Printf("  HLT Score: %.1f%% in %v\n", hltScore.Score, hltTime)
+
+		// === COMPARISON ===
+		winner := "TIE"
+		improvement := hltScore.Score - singleScore.Score
+		if improvement > 3 {
+			winner = "HLT"
+		} else if improvement < -3 {
+			winner = "SINGLE"
+		}
+
+		results = append(results, Result{
+			LayerType:   t,
+			SingleScore: singleScore.Score,
+			SingleTime:  singleTime,
+			HLTScore:    hltScore.Score,
+			HLTTime:     hltTime,
+			Winner:      winner,
+			Improvement: improvement,
+		})
+
+		fmt.Printf("\n└─ %s: Single=%.1f%% vs HLT=%.1f%% → %s (Δ%+.1f%%)\n",
+			t, singleScore.Score, hltScore.Score, winner, improvement)
+	}
+
+	// === SUMMARY ===
+	fmt.Println("\n═══════════════════════════════════════════════════════════════")
+	fmt.Println(" HLT HARMONIC LAYER TRAINING SUMMARY")
+	fmt.Println("═══════════════════════════════════════════════════════════════")
+	fmt.Printf("%-20s | %10s | %10s | %8s | %8s\n", "Layer Type", "Single %", "HLT %", "Delta", "Winner")
+	fmt.Println("────────────────────────────────────────────────────────────────────")
+
+	hltWins := 0
+	singleWins := 0
+	ties := 0
+	totalImprovement := 0.0
+
+	for _, r := range results {
+		fmt.Printf("%-20s | %9.1f%% | %9.1f%% | %+7.1f%% | %s\n",
+			r.LayerType, r.SingleScore, r.HLTScore, r.Improvement, r.Winner)
+		totalImprovement += r.Improvement
+		switch r.Winner {
+		case "HLT":
+			hltWins++
+		case "SINGLE":
+			singleWins++
+		default:
+			ties++
+		}
+	}
+
+	fmt.Println("────────────────────────────────────────────────────────────────────")
+	avgImprovement := totalImprovement / float64(len(results))
+	fmt.Printf("Average Improvement: %+.2f%%\n", avgImprovement)
+	fmt.Printf("Scoreboard: HLT=%d wins | Single=%d wins | Ties=%d\n", hltWins, singleWins, ties)
+
+	if hltWins > singleWins {
+		fmt.Println("\n🏆 HLT HARMONIC LAYER TRAINING WINS OVERALL!")
+		fmt.Println("   Layer consensus improves training quality.")
+	} else if singleWins > hltWins {
+		fmt.Println("\n📈 SINGLE-SIGNAL TRAINING WINS OVERALL")
+		fmt.Println("   Traditional approach still effective.")
+	} else {
+		fmt.Println("\n🤝 TIE - Both methods perform similarly")
 	}
 }

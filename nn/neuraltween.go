@@ -106,6 +106,16 @@ type TweenState struct {
 
 	// Per-epoch metrics for plotting
 	EpochMetrics []TweenEpochMetrics
+
+	// === HLT (Harmonic Layer Training) ===
+	// Each layer generates its own "vote" for what the target should be
+	// Votes are weighted by layer health (LinkBudget)
+	// Final target is the CONSENSUS of all layer opinions
+	// This creates layer-to-layer communication through democratic negotiation
+	HLTEnabled bool // Default: false, use standard single-signal training
+
+	// HLT state: [layer] = this layer's vote for output target
+	HLTLayerVotes [][]float32
 }
 
 // TweenEpochMetrics captures detailed per-epoch information for visualization
@@ -175,6 +185,9 @@ func NewTweenState(n *Network) *TweenState {
 		DepthBarrier:        make([]float32, total),
 		DepthBarrierHistory: make([]float32, 0),
 		EpochMetrics:        make([]TweenEpochMetrics, 0),
+
+		// HLT (Harmonic Layer Training) defaults
+		HLTEnabled: false, // Off by default, use single-signal training
 	}
 
 	// Init momentum
@@ -960,6 +973,291 @@ func clamp(v, min, max float32) float32 {
 		return max
 	}
 	return v
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HLT (Harmonic Layer Training)
+// Each layer generates its own "vote" for targets, weighted by health
+// Layers negotiate consensus = democratic training signal
+// ═══════════════════════════════════════════════════════════════════════════
+
+// TweenStepHLT: Harmonic Layer Training step
+// Each layer generates its opinion of what the target should be
+// Opinions are weighted by layer health (LinkBudget)
+// Final consensus target is used for weight updates
+func (ts *TweenState) TweenStepHLT(n *Network, input []float32, targetClass int, outputSize int, rate float32) float32 {
+	// === Phase 1: Normal forward pass ===
+	output := ts.ForwardPass(n, input)
+
+	// === Phase 2: Generate layer votes ===
+	ts.generateLayerVotes(n, targetClass, outputSize)
+
+	// === Phase 3: Harmonize votes into consensus ===
+	consensusTarget := ts.harmonizeVotes(n, targetClass, outputSize)
+
+	// === Phase 4: Use consensus to compute backward targets ===
+	ts.BackwardPassWithConsensus(n, targetClass, outputSize, consensusTarget)
+
+	// === Phase 5: Calculate link budgets with consensus-informed targets ===
+	ts.CalculateLinkBudgets()
+
+	// === Phase 6: Tween weights ===
+	ts.TweenWeights(n, rate)
+
+	ts.TweenSteps++
+
+	// Loss tracking
+	loss := float32(0)
+	for i, v := range output {
+		t := float32(0)
+		if i == targetClass {
+			t = 1.0
+		}
+		loss += (v - t) * (v - t)
+	}
+	return loss
+}
+
+// generateLayerVotes: Each layer generates its "vote" for output
+func (ts *TweenState) generateLayerVotes(n *Network, targetClass int, outputSize int) {
+	ts.HLTLayerVotes = make([][]float32, ts.TotalLayers)
+	expectedOutput := make([]float32, outputSize)
+	expectedOutput[targetClass] = 1.0
+
+	for layer := 0; layer < ts.TotalLayers; layer++ {
+		cfg := ts.getLayerCfg(n, layer)
+		if cfg == nil {
+			ts.HLTLayerVotes[layer] = expectedOutput
+			continue
+		}
+
+		budget := ts.LinkBudgets[layer]
+		if budget < 0.1 {
+			budget = 0.1
+		}
+
+		localView := ts.projectToOutput(n, layer, outputSize)
+		vote := make([]float32, outputSize)
+		for i := 0; i < outputSize; i++ {
+			blendFactor := budget * 0.3
+			vote[i] = (1-blendFactor)*expectedOutput[i] + blendFactor*localView[i]
+		}
+		ts.HLTLayerVotes[layer] = vote
+	}
+}
+
+// projectToOutput: Project layer's activation toward output space
+func (ts *TweenState) projectToOutput(n *Network, layer int, outputSize int) []float32 {
+	result := make([]float32, outputSize)
+	if layer >= len(ts.ForwardActs) || len(ts.ForwardActs[layer]) == 0 {
+		return result
+	}
+	acts := ts.ForwardActs[layer]
+
+	maxAct := float32(0)
+	for _, a := range acts {
+		if a > maxAct {
+			maxAct = a
+		}
+	}
+
+	if maxAct > 0 {
+		sumAct := float32(0)
+		for _, a := range acts {
+			if a > 0 {
+				sumAct += a
+			}
+		}
+		for i := 0; i < len(acts) && i < outputSize; i++ {
+			if sumAct > 0 {
+				result[i%outputSize] += acts[i] / sumAct
+			}
+		}
+	}
+	return result
+}
+
+// harmonizeVotes: Combine layer votes into consensus target
+func (ts *TweenState) harmonizeVotes(n *Network, targetClass int, outputSize int) []float32 {
+	consensus := make([]float32, outputSize)
+	totalWeight := float32(0)
+
+	for layer := 0; layer < ts.TotalLayers; layer++ {
+		if layer >= len(ts.HLTLayerVotes) || len(ts.HLTLayerVotes[layer]) == 0 {
+			continue
+		}
+		weight := ts.LinkBudgets[layer]
+		if weight < 0.1 {
+			weight = 0.1
+		}
+		for i := 0; i < outputSize && i < len(ts.HLTLayerVotes[layer]); i++ {
+			consensus[i] += ts.HLTLayerVotes[layer][i] * weight
+		}
+		totalWeight += weight
+	}
+
+	if totalWeight > 0 {
+		for i := range consensus {
+			consensus[i] /= totalWeight
+		}
+	}
+
+	hardTarget := make([]float32, outputSize)
+	hardTarget[targetClass] = 1.0
+	for i := range consensus {
+		consensus[i] = 0.4*consensus[i] + 0.6*hardTarget[i]
+	}
+	return consensus
+}
+
+// BackwardPassWithConsensus: Backward pass using harmonized consensus
+func (ts *TweenState) BackwardPassWithConsensus(n *Network, targetClass int, outputSize int, consensus []float32) {
+	ts.BackwardTargets[ts.TotalLayers] = consensus
+	currentTarget := consensus
+
+	for i := ts.TotalLayers - 1; i >= 0; i-- {
+		cfg := ts.getLayerCfg(n, i)
+		if cfg == nil || cfg.Type != LayerDense {
+			ts.BackwardTargets[i] = currentTarget
+			continue
+		}
+
+		inputSize := cfg.InputHeight
+		if inputSize <= 0 {
+			inputSize = len(ts.ForwardActs[i])
+		}
+
+		estimated := make([]float32, inputSize)
+		for in := 0; in < inputSize; in++ {
+			importance := float32(0)
+			totalWeight := float32(0)
+			for out := 0; out < len(currentTarget); out++ {
+				wIdx := in*cfg.OutputHeight + out
+				if wIdx < len(cfg.Kernel) {
+					w := cfg.Kernel[wIdx]
+					importance += w * currentTarget[out]
+					totalWeight += float32(math.Abs(float64(w)))
+				}
+			}
+			if totalWeight > 0.01 {
+				estimated[in] = importance / totalWeight
+			}
+			if cfg.Activation == ActivationTanh {
+				estimated[in] = clamp(estimated[in], ts.TanhClampMin, ts.TanhClampMax)
+			} else if cfg.Activation == ActivationSigmoid {
+				estimated[in] = clamp(estimated[in], ts.SigmoidClampMin, ts.SigmoidClampMax)
+			} else if cfg.Activation == ActivationScaledReLU || cfg.Activation == ActivationLeakyReLU {
+				estimated[in] = clamp(estimated[in], 0, ts.ReLUClampMax)
+			}
+		}
+		ts.BackwardTargets[i] = estimated
+		currentTarget = estimated
+	}
+}
+
+// TrainHLT: Full training loop with Harmonic Layer Training
+func (ts *TweenState) TrainHLT(n *Network, inputs [][]float32, expected []float64, epochs int, rate float32,
+	callback func(epoch int, avgLoss float32, metrics *DeviationMetrics)) {
+
+	outSize := 2
+	lastCfg := ts.getLayerCfg(n, ts.TotalLayers-1)
+	if lastCfg != nil && lastCfg.OutputHeight > 0 {
+		outSize = lastCfg.OutputHeight
+	}
+
+	for epoch := 0; epoch < epochs; epoch++ {
+		epochLoss := float32(0)
+
+		// Shuffle indices
+		perm := rand.Perm(len(inputs))
+
+		// Process each sample with harmonic training
+		for _, idx := range perm {
+			epochLoss += ts.TweenStepHLT(n, inputs[idx], int(expected[idx]), outSize, rate)
+		}
+
+		avgLoss := epochLoss / float32(len(inputs))
+		ts.LossHistory = append(ts.LossHistory, avgLoss)
+
+		// Record history
+		ts.recordEpochHistory(epoch)
+
+		if epoch%ts.EvalFrequency == 0 || epoch == epochs-1 {
+			metrics, _ := n.EvaluateNetwork(inputs, expected)
+			if metrics.Score > ts.BestScore {
+				ts.BestScore = metrics.Score
+				ts.SaveBest(n)
+			}
+
+			ts.recordEpochMetrics(epoch+1, avgLoss, metrics)
+
+			if ts.Verbose {
+				ts.printVerboseProgressHLT(epoch+1, epochs, avgLoss, metrics)
+			}
+
+			if callback != nil {
+				callback(epoch+1, avgLoss, metrics)
+			}
+
+			if metrics.Score >= ts.EarlyStopThreshold {
+				if ts.Verbose {
+					fmt.Printf("\n🎯 HLT Early stop! Score %.2f%% >= threshold %.2f%%\n", metrics.Score, ts.EarlyStopThreshold)
+				}
+				ts.RestoreBest(n)
+				return
+			}
+		}
+	}
+
+	if ts.BestScore > 0 {
+		ts.RestoreBest(n)
+	}
+}
+
+// printVerboseProgressHLT prints HLT training progress
+func (ts *TweenState) printVerboseProgressHLT(epoch, totalEpochs int, avgLoss float32, metrics *DeviationMetrics) {
+	avgBudget, minBudget, _ := ts.GetBudgetSummary()
+	avgGap, _ := ts.GetGapSummary()
+
+	// Find bottleneck
+	bottleneck := 0
+	minB := float32(1.0)
+	for i, b := range ts.LinkBudgets {
+		if b < minB {
+			minB = b
+			bottleneck = i
+		}
+	}
+
+	// Overall depth barrier
+	depthBarrier := float32(1.0)
+	for _, b := range ts.LinkBudgets {
+		depthBarrier *= b
+	}
+
+	fmt.Printf("HLT E%4d/%d | Loss: %.4f | Score: %5.1f%% | ",
+		epoch, totalEpochs, avgLoss, metrics.Score)
+	fmt.Printf("Budget: %.3f (min %.3f @L%d) | ", avgBudget, minBudget, bottleneck)
+	fmt.Printf("Gap: %.4f | DB: %.4f", avgGap, depthBarrier)
+
+	// Visual heatmap bar
+	fmt.Print(" [")
+	for _, b := range ts.LinkBudgets {
+		if b < ts.IgnoreThreshold {
+			fmt.Print("X")
+		} else if b > 0.8 {
+			fmt.Print("█")
+		} else if b > 0.6 {
+			fmt.Print("▓")
+		} else if b > 0.4 {
+			fmt.Print("▒")
+		} else if b > 0.2 {
+			fmt.Print("░")
+		} else {
+			fmt.Print("·")
+		}
+	}
+	fmt.Println("]")
 }
 
 // checkAndPruneLayers detects, toggles off, and eventually deletes dead layers
