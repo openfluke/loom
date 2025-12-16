@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"runtime"
 	"sync"
 	"time"
 
@@ -12,57 +13,57 @@ import (
 
 // Test 13: Real-time Step Training Comparison
 //
-// Compares two CONTINUOUS training approaches:
-// 1. Step + Backprop: StepForward → StepBackward → ApplyGradients (traditional stepping)
-// 2. Step + Tween: StepForward → TweenStep (gradient-free, bidirectional)
-//
-// Both run for ~2 seconds to demonstrate real-time learning while running.
+// Compares Step + Backprop vs Step + Tween with comprehensive metrics:
+// 1. Time: Total training duration
+// 2. Memory: Peak RAM allocation during training
+// 3. Accuracy: Final classification accuracy
+// 4. Speed: Time to reach target accuracy threshold
 
 func main() {
 	fmt.Println("╔══════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║  Test 13: Real-time Stepping Training Comparison                         ║")
-	fmt.Println("║  Step + Backprop vs Step + Tween — Learning While Running                ║")
+	fmt.Println("║  Test 13: Comprehensive Step Training Comparison                         ║")
+	fmt.Println("║  Metrics: Time | Memory | Accuracy | Convergence Speed                   ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
 	runDuration := 2 * time.Second
+	targetAcc := 80.0 // Target accuracy for "time to reach" metric
 
 	// Run tests for each architecture
 	results := []ComparisonResult{}
 
-	results = append(results, runRealtimeComparison("Dense", createDenseNetwork, generateTrainingData(4, 3), runDuration))
-	results = append(results, runRealtimeComparison("Conv2D", createConv2DNetwork, generateTrainingData(16, 3), runDuration))
-	results = append(results, runRealtimeComparison("RNN", createRNNNetwork, generateTrainingData(12, 3), runDuration))
-	results = append(results, runRealtimeComparison("LSTM", createLSTMNetwork, generateTrainingData(12, 3), runDuration))
-	results = append(results, runRealtimeComparison("Attention", createAttentionNetwork, generateTrainingData(16, 3), runDuration))
-	results = append(results, runRealtimeComparison("Norm", createNormNetwork, generateTrainingData(8, 3), runDuration))
-	results = append(results, runRealtimeComparison("SwiGLU", createSwiGLUNetwork, generateTrainingData(8, 3), runDuration))
-	results = append(results, runRealtimeComparison("Parallel", createParallelNetwork, generateTrainingData(4, 3), runDuration))
-	results = append(results, runRealtimeComparison("Mixed", createMixedNetwork, generateTrainingData(8, 3), runDuration))
+	results = append(results, runComparison("Dense", createDenseNetwork, generateTrainingData(4, 3), runDuration, targetAcc))
+	results = append(results, runComparison("Conv2D", createConv2DNetwork, generateTrainingData(16, 3), runDuration, targetAcc))
+	results = append(results, runComparison("RNN", createRNNNetwork, generateTrainingData(12, 3), runDuration, targetAcc))
+	results = append(results, runComparison("LSTM", createLSTMNetwork, generateTrainingData(12, 3), runDuration, targetAcc))
+	results = append(results, runComparison("Attention", createAttentionNetwork, generateTrainingData(16, 3), runDuration, targetAcc))
+	results = append(results, runComparison("Norm", createNormNetwork, generateTrainingData(8, 3), runDuration, targetAcc))
+	results = append(results, runComparison("SwiGLU", createSwiGLUNetwork, generateTrainingData(8, 3), runDuration, targetAcc))
+	results = append(results, runComparison("Parallel", createParallelNetwork, generateTrainingData(4, 3), runDuration, targetAcc))
+	results = append(results, runComparison("Mixed", createMixedNetwork, generateTrainingData(8, 3), runDuration, targetAcc))
 
 	// Print summary
-	printSummaryTable(results)
+	printSummaryTable(results, targetAcc)
 }
 
 // ============================================================================
-// Result Structure
+// Result Structure with Comprehensive Metrics
 // ============================================================================
 
+type Metrics struct {
+	Steps        int
+	Accuracy     float64
+	Loss         float32
+	TimeTotal    time.Duration
+	TimeToTarget time.Duration // Time to reach target accuracy (0 if never reached)
+	MemoryPeakMB float64       // Peak memory allocation in MB
+	StepsPS      float64       // Steps per second
+}
+
 type ComparisonResult struct {
-	Name string
-
-	// Step + Backprop
-	BPSteps    int
-	BPAccuracy float64
-	BPLoss     float32
-	BPStepsPS  float64 // Steps per second
-
-	// Step + Tween
-	TweenSteps    int
-	TweenAccuracy float64
-	TweenLoss     float32
-	TweenStepsPS  float64 // Steps per second
-
+	Name   string
+	BP     Metrics
+	Tween  Metrics
 	Winner string
 }
 
@@ -70,68 +71,122 @@ type ComparisonResult struct {
 // Real-time Comparison Runner
 // ============================================================================
 
-func runRealtimeComparison(name string, netFactory func() *nn.Network, data TrainingData, duration time.Duration) ComparisonResult {
+func runComparison(name string, netFactory func() *nn.Network, data TrainingData, duration time.Duration, targetAcc float64) ComparisonResult {
 	fmt.Printf("\n┌─────────────────────────────────────────────────────────────────────┐\n")
 	fmt.Printf("│ %-67s │\n", name+" Network — Running for "+duration.String())
 	fmt.Printf("└─────────────────────────────────────────────────────────────────────┘\n")
 
-	// Run both in parallel to ensure fair comparison
+	// Run both in parallel
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	var bpResult, tweenResult struct {
-		steps    int
-		accuracy float64
-		loss     float32
-	}
+	var bpMetrics, tweenMetrics Metrics
 
 	// Step + Backprop
 	go func() {
 		defer wg.Done()
 		net := netFactory()
-		bpResult.steps, bpResult.accuracy, bpResult.loss = runStepBackprop(net, data, duration, name+" BP")
+		bpMetrics = runStepBackprop(net, data, duration, targetAcc, name+" BP")
 	}()
 
 	// Step + Tween
 	go func() {
 		defer wg.Done()
 		net := netFactory()
-		tweenResult.steps, tweenResult.accuracy, tweenResult.loss = runStepTween(net, data, duration, name+" Tween")
+		tweenMetrics = runStepTween(net, data, duration, targetAcc, name+" Tween")
 	}()
 
 	wg.Wait()
 
-	// Determine winner based on accuracy (then steps if tied)
-	winner := "Backprop"
-	if tweenResult.accuracy > bpResult.accuracy {
-		winner = "Tween ✓"
-	} else if tweenResult.accuracy == bpResult.accuracy && tweenResult.steps > bpResult.steps {
-		winner = "Tween ✓"
-	}
+	// Determine winner based on accuracy, then loss, then time-to-target
+	winner := determineWinner(bpMetrics, tweenMetrics)
 
 	return ComparisonResult{
-		Name:          name,
-		BPSteps:       bpResult.steps,
-		BPAccuracy:    bpResult.accuracy,
-		BPLoss:        bpResult.loss,
-		BPStepsPS:     float64(bpResult.steps) / duration.Seconds(),
-		TweenSteps:    tweenResult.steps,
-		TweenAccuracy: tweenResult.accuracy,
-		TweenLoss:     tweenResult.loss,
-		TweenStepsPS:  float64(tweenResult.steps) / duration.Seconds(),
-		Winner:        winner,
+		Name:   name,
+		BP:     bpMetrics,
+		Tween:  tweenMetrics,
+		Winner: winner,
+	}
+}
+
+func determineWinner(bp, tween Metrics) string {
+	// 1. Higher accuracy wins
+	if tween.Accuracy > bp.Accuracy+1 {
+		return "Tween ✓"
+	}
+	if bp.Accuracy > tween.Accuracy+1 {
+		return "BP ✓"
+	}
+
+	// 2. Accuracy tied - compare loss (lower is better)
+	tweenLossValid := !math.IsNaN(float64(tween.Loss)) && !math.IsInf(float64(tween.Loss), 0)
+	bpLossValid := !math.IsNaN(float64(bp.Loss)) && !math.IsInf(float64(bp.Loss), 0)
+
+	if tweenLossValid && bpLossValid {
+		if tween.Loss < bp.Loss*0.8 {
+			return "Tween ✓"
+		}
+		if bp.Loss < tween.Loss*0.8 {
+			return "BP ✓"
+		}
+	} else if tweenLossValid && !bpLossValid {
+		return "Tween ✓"
+	} else if bpLossValid && !tweenLossValid {
+		return "BP ✓"
+	}
+
+	// 3. Compare time to reach target (faster is better)
+	if tween.TimeToTarget > 0 && bp.TimeToTarget > 0 {
+		if tween.TimeToTarget < bp.TimeToTarget*8/10 {
+			return "Tween ✓"
+		}
+		if bp.TimeToTarget < tween.TimeToTarget*8/10 {
+			return "BP ✓"
+		}
+	} else if tween.TimeToTarget > 0 && bp.TimeToTarget == 0 {
+		return "Tween ✓"
+	} else if bp.TimeToTarget > 0 && tween.TimeToTarget == 0 {
+		return "BP ✓"
+	}
+
+	return "Tie"
+}
+
+// ============================================================================
+// Memory Tracking Helpers
+// ============================================================================
+
+func getMemoryMB() float64 {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return float64(m.Alloc) / 1024 / 1024
+}
+
+func trackPeakMemory(done chan bool, peakMB *float64) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			current := getMemoryMB()
+			if current > *peakMB {
+				*peakMB = current
+			}
+		}
 	}
 }
 
 // ============================================================================
-// Step + Backprop Training (Continuous Real-time)
+// Step + Backprop Training
 // ============================================================================
 
-func runStepBackprop(net *nn.Network, data TrainingData, duration time.Duration, label string) (steps int, accuracy float64, finalLoss float32) {
+func runStepBackprop(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64, label string) Metrics {
 	inputSize := len(data.Samples[0].Input)
 	state := net.InitStepState(inputSize)
 
-	// Target queue for delayed targets (accounts for network depth)
+	// Target queue for delayed targets
 	targetDelay := net.TotalLayers()
 	targetQueue := NewTargetQueue(targetDelay)
 
@@ -139,34 +194,34 @@ func runStepBackprop(net *nn.Network, data TrainingData, duration time.Duration,
 	decayRate := float32(0.9999)
 	minLR := float32(0.001)
 
-	start := time.Now()
-	sampleIdx := 0
-	logInterval := 50000 // Log every N steps
+	// Memory tracking
+	peakMB := getMemoryMB()
+	done := make(chan bool)
+	go trackPeakMemory(done, &peakMB)
 
-	fmt.Printf("  [Step+Backprop] Starting continuous training...\n")
+	start := time.Now()
+	var timeToTarget time.Duration
+	steps := 0
+	sampleIdx := 0
+	var finalLoss float32
+	evalInterval := 10000
+
+	fmt.Printf("  [Step+Backprop] Starting...\n")
 
 	for time.Since(start) < duration {
-		// Rotate samples
 		if steps%20 == 0 {
 			sampleIdx = rand.Intn(len(data.Samples))
 		}
 		sample := data.Samples[sampleIdx]
 
-		// 1. Set Input
 		state.SetInput(sample.Input)
-
-		// 2. Step Forward (produces output while training!)
 		net.StepForward(state)
-
-		// 3. Queue target (accounts for propagation delay)
 		targetQueue.Push(sample.Target)
 
-		// 4. When queue is full, we can compare output to delayed target
 		if targetQueue.IsFull() {
 			delayedTarget := targetQueue.Pop()
 			output := state.GetOutput()
 
-			// Calculate loss and gradient
 			loss := float32(0)
 			gradOutput := make([]float32, len(output))
 			for i := 0; i < len(output); i++ {
@@ -178,13 +233,9 @@ func runStepBackprop(net *nn.Network, data TrainingData, duration time.Duration,
 			}
 			finalLoss = loss
 
-			// 5. Step Backward
 			net.StepBackward(state, gradOutput)
-
-			// 6. Apply Gradients
 			net.ApplyGradients(learningRate)
 
-			// Decay LR
 			learningRate *= decayRate
 			if learningRate < minLR {
 				learningRate = minLR
@@ -193,85 +244,112 @@ func runStepBackprop(net *nn.Network, data TrainingData, duration time.Duration,
 
 		steps++
 
-		// Real-time logging
-		if steps%logInterval == 0 {
-			elapsed := time.Since(start)
-			stepsPS := float64(steps) / elapsed.Seconds()
-			fmt.Printf("    Step %6d | %.0f steps/sec | Loss: %.4f\n", steps, stepsPS, finalLoss)
+		// Check accuracy periodically
+		if steps%evalInterval == 0 && timeToTarget == 0 {
+			acc := evaluateSteppingNetwork(net, data, state)
+			if acc >= targetAcc {
+				timeToTarget = time.Since(start)
+			}
 		}
 	}
 
-	// Final evaluation
-	accuracy = evaluateSteppingNetwork(net, data, state)
-	fmt.Printf("  [Step+Backprop] Done: %d steps | Acc: %.1f%% | Loss: %.4f\n", steps, accuracy, finalLoss)
+	done <- true
+	elapsed := time.Since(start)
+	accuracy := evaluateSteppingNetwork(net, data, state)
 
-	return steps, accuracy, finalLoss
+	fmt.Printf("  [Step+Backprop] Done: %dk steps | Acc: %.1f%% | Loss: %.4f | Mem: %.1fMB\n",
+		steps/1000, accuracy, finalLoss, peakMB)
+
+	return Metrics{
+		Steps:        steps,
+		Accuracy:     accuracy,
+		Loss:         finalLoss,
+		TimeTotal:    elapsed,
+		TimeToTarget: timeToTarget,
+		MemoryPeakMB: peakMB,
+		StepsPS:      float64(steps) / elapsed.Seconds(),
+	}
 }
 
 // ============================================================================
-// Step + Tween Training (Continuous Real-time)
+// Step + Tween Training
 // ============================================================================
 
-func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, label string) (steps int, accuracy float64, finalLoss float32) {
+func runStepTween(net *nn.Network, data TrainingData, duration time.Duration, targetAcc float64, label string) Metrics {
 	inputSize := len(data.Samples[0].Input)
 	state := net.InitStepState(inputSize)
 
-	// Initialize Tween state
 	ts := nn.NewTweenState(net)
 	ts.Verbose = false
 
-	start := time.Now()
-	sampleIdx := 0
-	logInterval := 50000 // Log every N steps
-	tweenEvery := 10     // Tween every N steps (balance speed vs learning)
+	// Memory tracking
+	peakMB := getMemoryMB()
+	done := make(chan bool)
+	go trackPeakMemory(done, &peakMB)
 
-	fmt.Printf("  [Step+Tween] Starting continuous training...\n")
+	start := time.Now()
+	var timeToTarget time.Duration
+	steps := 0
+	sampleIdx := 0
+	var finalLoss float32
+	tweenEvery := 5 // Tween more frequently for better learning
+	evalInterval := 10000
+
+	fmt.Printf("  [Step+Tween] Starting...\n")
 
 	for time.Since(start) < duration {
-		// Rotate samples
 		if steps%20 == 0 {
 			sampleIdx = rand.Intn(len(data.Samples))
 		}
 		sample := data.Samples[sampleIdx]
 
-		// 1. Set Input
 		state.SetInput(sample.Input)
-
-		// 2. Step Forward (produces output while training!)
 		net.StepForward(state)
 
-		// 3. Tween step (every N steps to avoid overhead)
 		if steps%tweenEvery == 0 {
 			targetClass := argmax(sample.Target)
-			loss := ts.TweenStep(net, sample.Input, targetClass, len(sample.Target), 0.1)
-			finalLoss = loss
+			loss := ts.TweenStep(net, sample.Input, targetClass, len(sample.Target), 0.15)
+			if !math.IsNaN(float64(loss)) && !math.IsInf(float64(loss), 0) {
+				finalLoss = loss
+			}
 		}
 
 		steps++
 
-		// Real-time logging
-		if steps%logInterval == 0 {
-			elapsed := time.Since(start)
-			stepsPS := float64(steps) / elapsed.Seconds()
-			avgBudget, _, _ := ts.GetBudgetSummary()
-			fmt.Printf("    Step %6d | %.0f steps/sec | Loss: %.4f | Budget: %.3f\n", steps, stepsPS, finalLoss, avgBudget)
+		// Check accuracy periodically
+		if steps%evalInterval == 0 && timeToTarget == 0 {
+			acc := evaluateSteppingNetwork(net, data, state)
+			if acc >= targetAcc {
+				timeToTarget = time.Since(start)
+			}
 		}
 	}
 
-	// Final evaluation
-	accuracy = evaluateSteppingNetwork(net, data, state)
-	fmt.Printf("  [Step+Tween] Done: %d steps | Acc: %.1f%% | Loss: %.4f\n", steps, accuracy, finalLoss)
+	done <- true
+	elapsed := time.Since(start)
+	accuracy := evaluateSteppingNetwork(net, data, state)
 
-	return steps, accuracy, finalLoss
+	fmt.Printf("  [Step+Tween] Done: %dk steps | Acc: %.1f%% | Loss: %.4f | Mem: %.1fMB\n",
+		steps/1000, accuracy, finalLoss, peakMB)
+
+	return Metrics{
+		Steps:        steps,
+		Accuracy:     accuracy,
+		Loss:         finalLoss,
+		TimeTotal:    elapsed,
+		TimeToTarget: timeToTarget,
+		MemoryPeakMB: peakMB,
+		StepsPS:      float64(steps) / elapsed.Seconds(),
+	}
 }
 
 // ============================================================================
-// Evaluation (uses stepping to settle network)
+// Evaluation
 // ============================================================================
 
 func evaluateSteppingNetwork(net *nn.Network, data TrainingData, state *nn.StepState) float64 {
 	correct := 0
-	settleSteps := 10 // Let network settle
+	settleSteps := 10
 
 	for _, sample := range data.Samples {
 		state.SetInput(sample.Input)
@@ -292,7 +370,7 @@ func evaluateSteppingNetwork(net *nn.Network, data TrainingData, state *nn.StepS
 }
 
 // ============================================================================
-// Target Queue (for delayed target matching in stepping)
+// Target Queue
 // ============================================================================
 
 type TargetQueue struct {
@@ -427,9 +505,13 @@ func createLSTMNetwork() *nn.Network {
 }
 
 func createAttentionNetwork() *nn.Network {
-	net := nn.NewNetwork(16, 1, 1, 2)
+	net := nn.NewNetwork(16, 1, 1, 3) // Added extra layer for stability
 	net.BatchSize = 1
 
+	// First: Dense layer to stabilize input
+	net.SetLayer(0, 0, 0, nn.InitDenseLayer(16, 16, nn.ActivationLeakyReLU))
+
+	// Attention layer with smaller, safer initialization
 	attn := nn.LayerConfig{
 		Type:      nn.LayerMultiHeadAttention,
 		DModel:    4,
@@ -447,13 +529,15 @@ func createAttentionNetwork() *nn.Network {
 	attn.VBias = make([]float32, 4)
 	attn.OutputBias = make([]float32, 4)
 
-	initRandomSlice(attn.QWeights, 0.1)
-	initRandomSlice(attn.KWeights, 0.1)
-	initRandomSlice(attn.VWeights, 0.1)
-	initRandomSlice(attn.OutputWeight, 0.1)
-	net.SetLayer(0, 0, 0, attn)
+	// Smaller initialization to prevent exploding gradients
+	initRandomSlice(attn.QWeights, 0.05)
+	initRandomSlice(attn.KWeights, 0.05)
+	initRandomSlice(attn.VWeights, 0.05)
+	initRandomSlice(attn.OutputWeight, 0.05)
+	net.SetLayer(0, 0, 1, attn)
 
-	net.SetLayer(0, 0, 1, nn.InitDenseLayer(16, 3, nn.ActivationSigmoid))
+	// Output layer
+	net.SetLayer(0, 0, 2, nn.InitDenseLayer(16, 3, nn.ActivationSigmoid))
 	return net
 }
 
@@ -507,9 +591,9 @@ func createSwiGLUNetwork() *nn.Network {
 	swiglu.GateBias = make([]float32, 32)
 	swiglu.UpBias = make([]float32, 32)
 	swiglu.DownBias = make([]float32, 16)
-	initRandomSlice(swiglu.GateWeights, 0.1)
-	initRandomSlice(swiglu.UpWeights, 0.1)
-	initRandomSlice(swiglu.DownWeights, 0.1)
+	initRandomSlice(swiglu.GateWeights, 0.05)
+	initRandomSlice(swiglu.UpWeights, 0.05)
+	initRandomSlice(swiglu.DownWeights, 0.05)
 	net.SetLayer(0, 0, 1, swiglu)
 
 	net.SetLayer(0, 0, 2, nn.InitDenseLayer(16, 3, nn.ActivationSigmoid))
@@ -585,12 +669,10 @@ type TrainingData struct {
 func generateTrainingData(inputSize, numClasses int) TrainingData {
 	samples := []Sample{}
 
-	// Generate samples for each class
 	for class := 0; class < numClasses; class++ {
-		for i := 0; i < 4; i++ { // 4 samples per class
+		for i := 0; i < 4; i++ {
 			input := make([]float32, inputSize)
 			for j := 0; j < inputSize; j++ {
-				// Base pattern per class + noise
 				base := float32(class) / float32(numClasses)
 				input[j] = base + rand.Float32()*0.3 - 0.15
 				input[j] = clamp(input[j], 0, 1)
@@ -614,55 +696,64 @@ func generateTrainingData(inputSize, numClasses int) TrainingData {
 // Summary Table
 // ============================================================================
 
-func printSummaryTable(results []ComparisonResult) {
+func printSummaryTable(results []ComparisonResult, targetAcc float64) {
 	fmt.Println("\n")
-	fmt.Println("╔═══════════════════════════════════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                          REAL-TIME STEPPING COMPARISON SUMMARY                                        ║")
-	fmt.Println("╠═══════════╦═══════════════════════════════════════╦═══════════════════════════════════════╦═══════════╣")
-	fmt.Println("║ Network   ║ Step + Backprop                       ║ Step + Tween                          ║ Winner    ║")
-	fmt.Println("║           ║ Steps   │ Steps/s │ Acc%   │ Loss    ║ Steps   │ Steps/s │ Acc%   │ Loss    ║           ║")
-	fmt.Println("╠═══════════╬═════════╪═════════╪════════╪═════════╬═════════╪═════════╪════════╪═════════╬═══════════╣")
+	fmt.Println("╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                               COMPREHENSIVE COMPARISON SUMMARY                                                    ║")
+	fmt.Printf("║                               Target Accuracy: %.0f%%                                                               ║\n", targetAcc)
+	fmt.Println("╠═══════════╦═════════════════════════════════════════════╦═════════════════════════════════════════════╦═══════════╣")
+	fmt.Println("║ Network   ║ Step + Backprop                             ║ Step + Tween                                ║ Winner    ║")
+	fmt.Println("║           ║ Acc%   │ Loss   │ Mem MB │ TimeToTgt        ║ Acc%   │ Loss   │ Mem MB │ TimeToTgt        ║           ║")
+	fmt.Println("╠═══════════╬════════╪════════╪════════╪══════════════════╬════════╪════════╪════════╪══════════════════╬═══════════╣")
 
-	tweenWins := 0
 	bpWins := 0
-	totalBPSteps := 0
-	totalTweenSteps := 0
+	tweenWins := 0
+	ties := 0
 
 	for _, r := range results {
-		totalBPSteps += r.BPSteps
-		totalTweenSteps += r.TweenSteps
-
 		if r.Winner == "Tween ✓" {
 			tweenWins++
-		} else {
+		} else if r.Winner == "BP ✓" {
 			bpWins++
+		} else {
+			ties++
 		}
 
-		fmt.Printf("║ %-9s ║ %7d │ %7.0f │ %5.1f%% │ %7.4f ║ %7d │ %7.0f │ %5.1f%% │ %7.4f ║ %-9s ║\n",
+		bpTTT := "N/A"
+		if r.BP.TimeToTarget > 0 {
+			bpTTT = r.BP.TimeToTarget.Round(time.Millisecond).String()
+		}
+		tweenTTT := "N/A"
+		if r.Tween.TimeToTarget > 0 {
+			tweenTTT = r.Tween.TimeToTarget.Round(time.Millisecond).String()
+		}
+
+		bpLoss := fmt.Sprintf("%.4f", r.BP.Loss)
+		if math.IsNaN(float64(r.BP.Loss)) || math.IsInf(float64(r.BP.Loss), 0) {
+			bpLoss = "NaN"
+		}
+		tweenLoss := fmt.Sprintf("%.4f", r.Tween.Loss)
+		if math.IsNaN(float64(r.Tween.Loss)) || math.IsInf(float64(r.Tween.Loss), 0) {
+			tweenLoss = "NaN"
+		}
+
+		fmt.Printf("║ %-9s ║ %5.1f%% │ %6s │ %6.1f │ %16s ║ %5.1f%% │ %6s │ %6.1f │ %16s ║ %-9s ║\n",
 			r.Name,
-			r.BPSteps, r.BPStepsPS, r.BPAccuracy, r.BPLoss,
-			r.TweenSteps, r.TweenStepsPS, r.TweenAccuracy, r.TweenLoss,
+			r.BP.Accuracy, bpLoss, r.BP.MemoryPeakMB, bpTTT,
+			r.Tween.Accuracy, tweenLoss, r.Tween.MemoryPeakMB, tweenTTT,
 			r.Winner)
 	}
 
-	fmt.Println("╠═══════════╬═════════╧═════════╧════════╧═════════╬═════════╧═════════╧════════╧═════════╬═══════════╣")
-	fmt.Printf("║ TOTAL     ║ Steps: %-28d ║ Steps: %-28d ║           ║\n", totalBPSteps, totalTweenSteps)
-	fmt.Println("╠═══════════╩═══════════════════════════════════════╩═══════════════════════════════════════╩═══════════╣")
-
-	fmt.Printf("║ Tween Wins: %d/%d (%.1f%%)  |  Backprop Wins: %d/%d (%.1f%%)                                            ║\n",
-		tweenWins, len(results), float64(tweenWins)/float64(len(results))*100,
-		bpWins, len(results), float64(bpWins)/float64(len(results))*100)
-
-	speedRatio := float64(totalTweenSteps) / float64(totalBPSteps)
-	if speedRatio >= 1 {
-		fmt.Printf("║ Tween processed %.2fx more steps (gradient-free overhead is lower)                                   ║\n", speedRatio)
-	} else {
-		fmt.Printf("║ Backprop processed %.2fx more steps                                                                   ║\n", 1/speedRatio)
-	}
-
-	fmt.Println("╚═══════════════════════════════════════════════════════════════════════════════════════════════════════╝")
-	fmt.Println()
-	fmt.Println("Key Insight: Both methods run CONTINUOUSLY — the network produces outputs while learning!")
+	fmt.Println("╠═══════════╩═════════════════════════════════════════════╩═════════════════════════════════════════════╩═══════════╣")
+	fmt.Printf("║ Results: Backprop Wins: %d | Tween Wins: %d | Ties: %d                                                             ║\n",
+		bpWins, tweenWins, ties)
+	fmt.Println("╠═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣")
+	fmt.Println("║ Metrics Explained:                                                                                                ║")
+	fmt.Println("║   • Acc%: Final classification accuracy (higher = better)                                                        ║")
+	fmt.Println("║   • Loss: Final training loss (lower = better)                                                                   ║")
+	fmt.Println("║   • Mem MB: Peak memory usage during training (lower = more efficient)                                           ║")
+	fmt.Printf("║   • TimeToTgt: Time to reach %.0f%% accuracy (faster = better, N/A = never reached)                               ║\n", targetAcc)
+	fmt.Println("╚═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
 }
 
 // ============================================================================
