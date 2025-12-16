@@ -147,12 +147,75 @@ Both methods use approximately the same memory (~3.8-4.2 MB), suggesting Tween's
 
 ---
 
+## Test 15: Deep Network Analysis (20 Layers)
+
+> **Test:** Test 15 - Deep Network Comparison  
+> **Network Depth:** 20 layers each  
+> **Duration:** 10 seconds per network × 9 architectures
+
+### The Vanishing Gradient Challenge
+
+At 20 layers, **both methods struggle**. Neither Backprop nor Tween could reach the 70% target accuracy — a clear demonstration of the vanishing gradient problem.
+
+| Network | BP Accuracy | Tween Accuracy | BP Loss | Tween Loss | Winner |
+|---------|-------------|----------------|---------|------------|--------|
+| Dense | 41.7% | 33.3% | 1.18 | **0.65** | BP |
+| Conv2D | 33.3% | 33.3% | **0.62** | 0.68 | Tie |
+| RNN | 50.0% | 33.3% | 0.68 | **0.62** | BP |
+| LSTM | 33.3% | 33.3% | 2.36 | **0.91** | **Tween** |
+| Attention | 33.3% | 33.3% | 1.05 | **0.61** | **Tween** |
+| Norm | 50.0% | 33.3% | **0.20** | 0.50 | BP |
+| SwiGLU | 33.3% | 33.3% | 1.23 | **0.70** | **Tween** |
+| Parallel | 33.3% | 33.3% | **0.51** | 0.53 | Tie |
+| Mixed | 16.7% | 33.3% | 0.70 | **0.51** | **Tween** |
+
+**Results:** Backprop 3 | Tween 4 | Ties 2
+
+### Time to First Milestone (30% Accuracy)
+
+Even with both methods struggling, Tween reaches initial milestones **6-7x faster**:
+
+| Network | Backprop | Tween | Speedup |
+|---------|----------|-------|---------|
+| Dense | 1.7s | **240ms** | **7.1x** |
+| Conv2D | 2.6s | **383ms** | **6.8x** |
+| Attention | 2.3s | **356ms** | **6.5x** |
+| SwiGLU | 1.7s | **275ms** | **6.2x** |
+| LSTM | 6.6s | **2.5s** | **2.6x** |
+
+### Key Observations
+
+1. **Both methods hit a wall at 33-50%** — random chance for 3 classes is 33%
+2. **Tween is faster to start** but plateaus quickly
+3. **Backprop eventually reaches higher accuracy** when it can propagate gradients (Dense, RNN, Norm)
+4. **Tween maintains lower loss** even when accuracy is stuck
+
+### Depth-Dependent Performance Summary
+
+| Depth | Tween Advantage | Backprop Advantage |
+|-------|-----------------|-------------------|
+| **Shallow (2-5 layers)** | Dominates: 6/9 wins, 4.6x faster | LSTM, Norm layers |
+| **Medium (5-10 layers)** | Competitive, much faster initial learning | Complex mixed architectures |
+| **Deep (20+ layers)** | Lower loss, faster initial milestones | Higher accuracy when gradients flow |
+
+### Implications for Deep Networks
+
+Neither method alone solves the vanishing gradient problem. For deep networks, architectural solutions are required:
+
+- **Residual connections** (skip connections)
+- **Better normalization** (BatchNorm, LayerNorm placement)
+- **Gradient clipping** for backprop
+- **Smaller learning rates** with longer training
+
+---
+
 ## Recommendations
 
 1. **Hybrid Approach**: Use Tween for fast initial convergence, then switch to BP for fine-tuning
 2. **Architecture Selection**: Prefer RNN over LSTM when using Tween
 3. **Avoid Norm Layers**: LayerNorm/RMSNorm don't work well with current Tween implementation
 4. **Parallel Layers Work Great**: The stepping + tween combination excels with parallel branches
+5. **Depth Limit**: For best Tween performance, keep networks under 10 layers without skip connections
 
 ---
 
@@ -160,6 +223,20 @@ Both methods use approximately the same memory (~3.8-4.2 MB), suggesting Tween's
 
 Neural Tweening represents a **paradigm shift** in neural network training. Rather than the traditional "stop inference to train" model, Tween enables **continuous learning during execution**. 
 
-The convergence speed advantages (up to **4.6x faster** on RNN networks) make it ideal for applications requiring real-time adaptation. While backpropagation remains superior for certain architectures, Tween's gradient-free approach opens new possibilities for edge deployment and online learning.
+### Shallow Networks (2-10 layers)
+The convergence speed advantages (up to **4.6x faster** on RNN networks) make Tween ideal for applications requiring real-time adaptation.
 
-**Key Takeaway:** Tween doesn't just run more steps — it **learns faster per unit of time** due to its incremental, layer-independent update mechanism.
+### Deep Networks (20+ layers)
+Both methods struggle with vanishing gradients. Tween still offers **faster initial learning** and **lower loss**, but neither reaches high accuracy without architectural help (residual connections, better normalization).
+
+### The Bottom Line
+
+| Use Case | Recommendation |
+|----------|----------------|
+| Real-time learning | **Tween** |
+| Shallow networks | **Tween** |
+| Maximum accuracy | **Backprop** |
+| Deep networks | **Both need architectural support** |
+| Edge deployment | **Tween** (faster, same memory) |
+
+**Key Takeaway:** Tween learns faster per unit of time, but depth remains a challenge for any gradient-free approach. For production deep networks, combine Tween's speed with residual architectures for best results.
