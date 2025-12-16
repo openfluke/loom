@@ -88,6 +88,12 @@ type TweenState struct {
 	PrunePatience  int     // Default: 10, how many epochs to wait before amputating
 	DeadEpochs     []int   // Tracks consecutive epochs a layer has been dead
 
+	// === BATCH TRAINING ===
+	// Accumulate gaps across multiple samples before applying weight updates
+	BatchSize  int         // Default: 1 (online), set >1 for batch mode
+	BatchGaps  [][]float32 // Accumulated gaps per layer [layer][output]
+	BatchCount int         // Current samples in batch
+
 	// === VISUALIZATION & DEBUGGING ===
 	Verbose bool // If true, print training progress to console
 
@@ -167,6 +173,10 @@ func NewTweenState(n *Network) *TweenState {
 		PruneThreshold: 0.1,
 		PrunePatience:  10,
 		DeadEpochs:     make([]int, total),
+		// Batch training
+		BatchSize:  1, // Online by default
+		BatchGaps:  make([][]float32, total),
+		BatchCount: 0,
 
 		// Visualization defaults
 		Verbose:             false,
@@ -726,6 +736,147 @@ func (ts *TweenState) TweenStep(n *Network, input []float32, targetClass int, ou
 		loss += (v - t) * (v - t)
 	}
 	return loss
+}
+
+// ResetBatch clears accumulated batch gaps
+func (ts *TweenState) ResetBatch() {
+	for i := range ts.BatchGaps {
+		ts.BatchGaps[i] = nil
+	}
+	ts.BatchCount = 0
+}
+
+// TweenStepAccumulate: Accumulates gaps without applying weight updates
+// Call TweenBatchApply when batch is complete to apply averaged updates
+func (ts *TweenState) TweenStepAccumulate(n *Network, input []float32, targetClass int, outputSize int) float32 {
+	// 1. Forward: push through network
+	output := ts.ForwardPass(n, input)
+
+	// 2. Backward: propagate expected output upward
+	ts.BackwardPass(n, targetClass, outputSize)
+
+	// 3. Calculate link budgets
+	ts.CalculateLinkBudgets()
+
+	// 4. Accumulate gaps per layer (don't apply weights yet)
+	for i := 0; i < ts.TotalLayers; i++ {
+		actual := ts.ForwardActs[i+1]
+		target := ts.BackwardTargets[i+1]
+
+		if len(actual) == 0 || len(target) == 0 {
+			continue
+		}
+
+		minOut := len(actual)
+		if len(target) < minOut {
+			minOut = len(target)
+		}
+
+		// Initialize batch gaps slice if needed
+		if ts.BatchGaps[i] == nil {
+			ts.BatchGaps[i] = make([]float32, minOut)
+		}
+
+		// Accumulate gaps
+		for j := 0; j < minOut && j < len(ts.BatchGaps[i]); j++ {
+			ts.BatchGaps[i][j] += target[j] - actual[j]
+		}
+	}
+
+	ts.BatchCount++
+	ts.TweenSteps++
+
+	// Loss for tracking
+	loss := float32(0)
+	for i, v := range output {
+		t := float32(0)
+		if i == targetClass {
+			t = 1.0
+		}
+		loss += (v - t) * (v - t)
+	}
+	return loss
+}
+
+// TweenBatchApply: Applies accumulated batch gaps as averaged weight updates
+func (ts *TweenState) TweenBatchApply(n *Network, rate float32) {
+	if ts.BatchCount == 0 {
+		return
+	}
+
+	mom := ts.Momentum
+	batchScale := 1.0 / float32(ts.BatchCount)
+
+	for i := 0; i < ts.TotalLayers; i++ {
+		budget := ts.LinkBudgets[i]
+		if budget < ts.IgnoreThreshold {
+			continue
+		}
+
+		cfg := ts.getLayerCfg(n, i)
+		if cfg == nil {
+			continue
+		}
+
+		input := ts.ForwardActs[i]
+		if len(input) == 0 || len(ts.BatchGaps[i]) == 0 {
+			continue
+		}
+
+		// Scale rate by link budget
+		layerRate := rate * (ts.LinkBudgetScale + budget*ts.LinkBudgetScale)
+
+		// Average the accumulated gaps
+		avgGaps := make([]float32, len(ts.BatchGaps[i]))
+		for j := range ts.BatchGaps[i] {
+			avgGaps[j] = ts.BatchGaps[i][j] * batchScale
+		}
+
+		// Apply tweening based on layer type
+		switch cfg.Type {
+		case LayerDense:
+			ts.tweenDense(cfg, input, avgGaps, layerRate*ts.DenseRate, mom, i)
+		case LayerConv2D:
+			ts.tweenConv2D(cfg, input, avgGaps, layerRate*ts.Conv2DRate, mom)
+		case LayerMultiHeadAttention:
+			ts.tweenAttention(cfg, input, avgGaps, layerRate*ts.AttentionRate, mom)
+		case LayerRNN:
+			ts.tweenRNN(cfg, input, avgGaps, layerRate*ts.RNNRate, mom)
+		case LayerLSTM:
+			ts.tweenLSTM(cfg, input, avgGaps, layerRate*ts.LSTMRate, mom)
+		case LayerNorm, LayerRMSNorm:
+			ts.tweenNorm(cfg, avgGaps, layerRate*ts.NormRate)
+		case LayerSwiGLU:
+			ts.tweenSwiGLU(cfg, input, avgGaps, layerRate*ts.SwiGLURate, mom)
+		}
+
+		row := i / (n.GridCols * n.LayersPerCell)
+		col := (i / n.LayersPerCell) % n.GridCols
+		layer := i % n.LayersPerCell
+		n.SetLayer(row, col, layer, *cfg)
+	}
+
+	// Reset batch state
+	ts.ResetBatch()
+}
+
+// TweenBatch: Convenience function for batch training (non-stepping mode)
+// Processes all samples in batch, accumulates gaps, then applies averaged update
+func (ts *TweenState) TweenBatch(n *Network, inputs [][]float32, targetClasses []int, outputSize int, rate float32) float32 {
+	if len(inputs) == 0 {
+		return 0
+	}
+
+	ts.ResetBatch()
+	totalLoss := float32(0)
+
+	for i := range inputs {
+		loss := ts.TweenStepAccumulate(n, inputs[i], targetClasses[i], outputSize)
+		totalLoss += loss
+	}
+
+	ts.TweenBatchApply(n, rate)
+	return totalLoss / float32(len(inputs))
 }
 
 // Train with early stopping
