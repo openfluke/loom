@@ -22,7 +22,7 @@ import (
 func main() {
 	fmt.Println("╔══════════════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║  Test 16: BATCH TRAINING Comparison                                      ║")
-	fmt.Println("║  4 Modes | 10s Training | Step vs Batch Analysis                         ║")
+	fmt.Println("║  6 Modes | Variable Depth | Step vs Batch Analysis                       ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
@@ -30,65 +30,98 @@ func main() {
 	targetAcc := 90.0
 	batchSize := 32
 
+	// Layer depths to test
+	layerDepths := []int{3, 5, 9, 15, 20}
+
 	results := []ComparisonResult{}
 
-	// Networks compatible with Step modes (Dense, Conv2D)
-	results = append(results, runComparison("Dense", createDenseNetwork, generateTrainingData(8, 3), runDuration, targetAcc, batchSize, true))
-	results = append(results, runComparison("Conv2D", createConv2DNetwork, generateTrainingData(64, 3), runDuration, targetAcc, batchSize, true))
+	for _, numLayers := range layerDepths {
+		fmt.Printf("\n========== TESTING WITH %d LAYERS ==========\n", numLayers)
 
-	// Networks that crash with Step modes - run only Batch Tween
-	results = append(results, runComparison("RNN", createRNNNetwork, generateTrainingData(32, 3), runDuration, targetAcc, batchSize, false))
-	results = append(results, runComparison("LSTM", createLSTMNetwork, generateTrainingData(32, 3), runDuration, targetAcc, batchSize, false))
-	results = append(results, runComparison("Attention", createAttentionNetwork, generateTrainingData(64, 3), runDuration, targetAcc, batchSize, false))
-	results = append(results, runComparison("Norm", createNormNetwork, generateTrainingData(16, 3), runDuration, targetAcc, batchSize, false))
-	results = append(results, runComparison("SwiGLU", createSwiGLUNetwork, generateTrainingData(16, 3), runDuration, targetAcc, batchSize, false))
+		// Networks compatible with Step modes (Dense, Conv2D)
+		results = append(results, runComparison(fmt.Sprintf("Dense-%dL", numLayers), func() *nn.Network { return createDenseNetwork(numLayers) }, generateTrainingData(8, 3), runDuration, targetAcc, batchSize, true))
+		results = append(results, runComparison(fmt.Sprintf("Conv2D-%dL", numLayers), func() *nn.Network { return createConv2DNetwork(numLayers) }, generateTrainingData(64, 3), runDuration, targetAcc, batchSize, true))
+
+		// Networks that crash with Step modes - run only Batch Tween
+		results = append(results, runComparison(fmt.Sprintf("RNN-%dL", numLayers), func() *nn.Network { return createRNNNetwork(numLayers) }, generateTrainingData(32, 3), runDuration, targetAcc, batchSize, false))
+		results = append(results, runComparison(fmt.Sprintf("LSTM-%dL", numLayers), func() *nn.Network { return createLSTMNetwork(numLayers) }, generateTrainingData(32, 3), runDuration, targetAcc, batchSize, false))
+		results = append(results, runComparison(fmt.Sprintf("Attn-%dL", numLayers), func() *nn.Network { return createAttentionNetwork(numLayers) }, generateTrainingData(64, 3), runDuration, targetAcc, batchSize, false))
+		results = append(results, runComparison(fmt.Sprintf("Norm-%dL", numLayers), func() *nn.Network { return createNormNetwork(numLayers) }, generateTrainingData(16, 3), runDuration, targetAcc, batchSize, false))
+		results = append(results, runComparison(fmt.Sprintf("SwiGLU-%dL", numLayers), func() *nn.Network { return createSwiGLUNetwork(numLayers) }, generateTrainingData(16, 3), runDuration, targetAcc, batchSize, false))
+	}
 
 	printSummaryTable(results, targetAcc)
 }
 
-// createNormNetwork creates a network with LayerNorm
-func createNormNetwork() *nn.Network {
-	net := nn.NewNetwork(16, 1, 1, 3)
+// createNormNetwork creates a network with LayerNorm - variable depth
+func createNormNetwork(numLayers int) *nn.Network {
+	net := nn.NewNetwork(16, 1, 1, numLayers)
 	net.BatchSize = 1
+
+	// First layer: input -> hidden
 	net.SetLayer(0, 0, 0, nn.InitDenseLayer(16, 32, nn.ActivationLeakyReLU))
 
-	norm := nn.LayerConfig{
-		Type:         nn.LayerNorm,
-		InputHeight:  32,
-		OutputHeight: 32,
+	// Middle layers: alternating Dense and LayerNorm
+	for i := 1; i < numLayers-1; i++ {
+		if i%2 == 1 {
+			// LayerNorm
+			norm := nn.LayerConfig{
+				Type:         nn.LayerNorm,
+				InputHeight:  32,
+				OutputHeight: 32,
+			}
+			norm.Gamma = make([]float32, 32)
+			norm.Beta = make([]float32, 32)
+			for j := range norm.Gamma {
+				norm.Gamma[j] = 1.0
+			}
+			net.SetLayer(0, 0, i, norm)
+		} else {
+			// Dense
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
+		}
 	}
-	norm.Gamma = make([]float32, 32)
-	norm.Beta = make([]float32, 32)
-	for i := range norm.Gamma {
-		norm.Gamma[i] = 1.0
-	}
-	net.SetLayer(0, 0, 1, norm)
-	net.SetLayer(0, 0, 2, nn.InitDenseLayer(32, 3, nn.ActivationSigmoid))
+
+	// Output layer
+	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(32, 3, nn.ActivationSigmoid))
 	return net
 }
 
-// createSwiGLUNetwork creates a network with SwiGLU
-func createSwiGLUNetwork() *nn.Network {
-	net := nn.NewNetwork(16, 1, 1, 3)
+// createSwiGLUNetwork creates a network with SwiGLU - variable depth
+func createSwiGLUNetwork(numLayers int) *nn.Network {
+	net := nn.NewNetwork(16, 1, 1, numLayers)
 	net.BatchSize = 1
+
+	// First layer: input -> hidden
 	net.SetLayer(0, 0, 0, nn.InitDenseLayer(16, 32, nn.ActivationLeakyReLU))
 
-	swiglu := nn.LayerConfig{
-		Type:         nn.LayerSwiGLU,
-		InputHeight:  32,
-		OutputHeight: 32,
+	// Middle layers: alternating Dense and SwiGLU
+	for i := 1; i < numLayers-1; i++ {
+		if i%2 == 1 {
+			// SwiGLU
+			swiglu := nn.LayerConfig{
+				Type:         nn.LayerSwiGLU,
+				InputHeight:  32,
+				OutputHeight: 32,
+			}
+			swiglu.GateWeights = make([]float32, 32*32)
+			swiglu.UpWeights = make([]float32, 32*32)
+			swiglu.DownWeights = make([]float32, 32*32)
+			swiglu.GateBias = make([]float32, 32)
+			swiglu.UpBias = make([]float32, 32)
+			swiglu.DownBias = make([]float32, 32)
+			initRandomSlice(swiglu.GateWeights, 0.1)
+			initRandomSlice(swiglu.UpWeights, 0.1)
+			initRandomSlice(swiglu.DownWeights, 0.1)
+			net.SetLayer(0, 0, i, swiglu)
+		} else {
+			// Dense
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
+		}
 	}
-	swiglu.GateWeights = make([]float32, 32*32)
-	swiglu.UpWeights = make([]float32, 32*32)
-	swiglu.DownWeights = make([]float32, 32*32)
-	swiglu.GateBias = make([]float32, 32)
-	swiglu.UpBias = make([]float32, 32)
-	swiglu.DownBias = make([]float32, 32)
-	initRandomSlice(swiglu.GateWeights, 0.1)
-	initRandomSlice(swiglu.UpWeights, 0.1)
-	initRandomSlice(swiglu.DownWeights, 0.1)
-	net.SetLayer(0, 0, 1, swiglu)
-	net.SetLayer(0, 0, 2, nn.InitDenseLayer(32, 3, nn.ActivationSigmoid))
+
+	// Output layer
+	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(32, 3, nn.ActivationSigmoid))
 	return net
 }
 
@@ -813,20 +846,36 @@ func (q *TargetQueue) IsFull() bool {
 // Network Factories
 // ============================================================================
 
-func createDenseNetwork() *nn.Network {
-	net := nn.NewNetwork(8, 1, 1, 4)
+func createDenseNetwork(numLayers int) *nn.Network {
+	net := nn.NewNetwork(8, 1, 1, numLayers)
 	net.BatchSize = 1
+
+	// First layer: input -> hidden
 	net.SetLayer(0, 0, 0, nn.InitDenseLayer(8, 64, nn.ActivationLeakyReLU))
-	net.SetLayer(0, 0, 1, nn.InitDenseLayer(64, 32, nn.ActivationTanh))
-	net.SetLayer(0, 0, 2, nn.InitDenseLayer(32, 16, nn.ActivationLeakyReLU))
-	net.SetLayer(0, 0, 3, nn.InitDenseLayer(16, 3, nn.ActivationSigmoid))
+
+	// Middle layers with varying sizes
+	hiddenSizes := []int{64, 48, 32, 24, 16}
+	for i := 1; i < numLayers-1; i++ {
+		inSize := hiddenSizes[(i-1)%len(hiddenSizes)]
+		outSize := hiddenSizes[i%len(hiddenSizes)]
+		activation := nn.ActivationLeakyReLU
+		if i%2 == 0 {
+			activation = nn.ActivationTanh
+		}
+		net.SetLayer(0, 0, i, nn.InitDenseLayer(inSize, outSize, activation))
+	}
+
+	// Output layer
+	lastHidden := hiddenSizes[(numLayers-2)%len(hiddenSizes)]
+	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(lastHidden, 3, nn.ActivationSigmoid))
 	return net
 }
 
-func createConv2DNetwork() *nn.Network {
-	net := nn.NewNetwork(64, 1, 1, 3)
+func createConv2DNetwork(numLayers int) *nn.Network {
+	net := nn.NewNetwork(64, 1, 1, numLayers)
 	net.BatchSize = 1
 
+	// First layer: Conv2D
 	conv := nn.LayerConfig{
 		Type:          nn.LayerConv2D,
 		InputHeight:   8,
@@ -845,71 +894,111 @@ func createConv2DNetwork() *nn.Network {
 	initRandomSlice(conv.Kernel, 0.2)
 	net.SetLayer(0, 0, 0, conv)
 
-	net.SetLayer(0, 0, 1, nn.InitDenseLayer(288, 32, nn.ActivationLeakyReLU))
-	net.SetLayer(0, 0, 2, nn.InitDenseLayer(32, 3, nn.ActivationSigmoid))
+	// Middle layers: Dense
+	for i := 1; i < numLayers-1; i++ {
+		if i == 1 {
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(288, 64, nn.ActivationLeakyReLU))
+		} else {
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(64, 64, nn.ActivationLeakyReLU))
+		}
+	}
+
+	// Output layer
+	if numLayers > 2 {
+		net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(64, 3, nn.ActivationSigmoid))
+	} else {
+		net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(288, 3, nn.ActivationSigmoid))
+	}
 	return net
 }
 
-func createRNNNetwork() *nn.Network {
+func createRNNNetwork(numLayers int) *nn.Network {
 	// Input: 32, RNN expects seqLength * featureSize = 32 (4 steps x 8 features)
-	net := nn.NewNetwork(32, 1, 1, 3)
+	net := nn.NewNetwork(32, 1, 1, numLayers)
 	net.BatchSize = 1
 
-	// Dense layer to maintain 32 dimensions
+	// First layer: Dense
 	net.SetLayer(0, 0, 0, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
 
-	// RNN: 32 = 4 timesteps x 8 features -> hiddenSize*seqLength = 4*8 = 32
-	rnn := nn.InitRNNLayer(8, 8, 1, 4) // inputSize=8, hiddenSize=8, batchSize=1, seqLength=4
-	net.SetLayer(0, 0, 1, rnn)
+	// Middle layers: alternating RNN and Dense
+	for i := 1; i < numLayers-1; i++ {
+		if i%2 == 1 {
+			// RNN layer
+			rnn := nn.InitRNNLayer(8, 8, 1, 4) // inputSize=8, hiddenSize=8, seqLength=4 -> output 32
+			net.SetLayer(0, 0, i, rnn)
+		} else {
+			// Dense layer
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
+		}
+	}
 
-	// Output: 32 -> 3 classes
-	net.SetLayer(0, 0, 2, nn.InitDenseLayer(32, 3, nn.ActivationSigmoid))
+	// Output layer
+	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(32, 3, nn.ActivationSigmoid))
 	return net
 }
 
-func createLSTMNetwork() *nn.Network {
+func createLSTMNetwork(numLayers int) *nn.Network {
 	// Input: 32, LSTM expects seqLength * featureSize = 32 (4 steps x 8 features)
-	net := nn.NewNetwork(32, 1, 1, 3)
+	net := nn.NewNetwork(32, 1, 1, numLayers)
 	net.BatchSize = 1
 
-	// Dense layer to maintain 32 dimensions
+	// First layer: Dense
 	net.SetLayer(0, 0, 0, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
 
-	// LSTM: 32 = 4 timesteps x 8 features -> hiddenSize*seqLength = 4*8 = 32
-	lstm := nn.InitLSTMLayer(8, 8, 1, 4) // inputSize=8, hiddenSize=8, batchSize=1, seqLength=4
-	net.SetLayer(0, 0, 1, lstm)
+	// Middle layers: alternating LSTM and Dense
+	for i := 1; i < numLayers-1; i++ {
+		if i%2 == 1 {
+			// LSTM layer
+			lstm := nn.InitLSTMLayer(8, 8, 1, 4) // inputSize=8, hiddenSize=8, seqLength=4 -> output 32
+			net.SetLayer(0, 0, i, lstm)
+		} else {
+			// Dense layer
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
+		}
+	}
 
-	// Output: 32 -> 3 classes
-	net.SetLayer(0, 0, 2, nn.InitDenseLayer(32, 3, nn.ActivationSigmoid))
+	// Output layer
+	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(32, 3, nn.ActivationSigmoid))
 	return net
 }
 
-func createAttentionNetwork() *nn.Network {
-	net := nn.NewNetwork(64, 1, 1, 2)
+func createAttentionNetwork(numLayers int) *nn.Network {
+	net := nn.NewNetwork(64, 1, 1, numLayers)
 	net.BatchSize = 1
 	dModel := 64
 	numHeads := 4
-
-	mha := nn.LayerConfig{
-		Type:     nn.LayerMultiHeadAttention,
-		DModel:   dModel,
-		NumHeads: numHeads,
-	}
 	headDim := dModel / numHeads
-	mha.QWeights = make([]float32, dModel*dModel)
-	mha.KWeights = make([]float32, dModel*dModel)
-	mha.VWeights = make([]float32, dModel*dModel)
-	mha.OutputWeight = make([]float32, dModel*dModel)
-	mha.QBias = make([]float32, dModel)
-	mha.KBias = make([]float32, dModel)
-	mha.VBias = make([]float32, dModel)
-	mha.OutputBias = make([]float32, dModel)
-	initRandomSlice(mha.QWeights, 0.1/float32(math.Sqrt(float64(headDim))))
-	initRandomSlice(mha.KWeights, 0.1/float32(math.Sqrt(float64(headDim))))
-	initRandomSlice(mha.VWeights, 0.1/float32(math.Sqrt(float64(headDim))))
-	initRandomSlice(mha.OutputWeight, 0.1/float32(math.Sqrt(float64(dModel))))
-	net.SetLayer(0, 0, 0, mha)
-	net.SetLayer(0, 0, 1, nn.InitDenseLayer(dModel, 3, nn.ActivationSigmoid))
+
+	// Middle layers: alternating Attention and Dense
+	for i := 0; i < numLayers-1; i++ {
+		if i%2 == 0 {
+			// Multi-head attention
+			mha := nn.LayerConfig{
+				Type:     nn.LayerMultiHeadAttention,
+				DModel:   dModel,
+				NumHeads: numHeads,
+			}
+			mha.QWeights = make([]float32, dModel*dModel)
+			mha.KWeights = make([]float32, dModel*dModel)
+			mha.VWeights = make([]float32, dModel*dModel)
+			mha.OutputWeight = make([]float32, dModel*dModel)
+			mha.QBias = make([]float32, dModel)
+			mha.KBias = make([]float32, dModel)
+			mha.VBias = make([]float32, dModel)
+			mha.OutputBias = make([]float32, dModel)
+			initRandomSlice(mha.QWeights, 0.1/float32(math.Sqrt(float64(headDim))))
+			initRandomSlice(mha.KWeights, 0.1/float32(math.Sqrt(float64(headDim))))
+			initRandomSlice(mha.VWeights, 0.1/float32(math.Sqrt(float64(headDim))))
+			initRandomSlice(mha.OutputWeight, 0.1/float32(math.Sqrt(float64(dModel))))
+			net.SetLayer(0, 0, i, mha)
+		} else {
+			// Dense layer
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(dModel, dModel, nn.ActivationLeakyReLU))
+		}
+	}
+
+	// Output layer
+	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(dModel, 3, nn.ActivationSigmoid))
 	return net
 }
 
