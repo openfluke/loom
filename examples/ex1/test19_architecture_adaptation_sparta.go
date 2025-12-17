@@ -679,88 +679,102 @@ func createDenseNetwork(numLayers int) *nn.Network {
 	net := nn.NewNetwork(8, 1, 1, numLayers)
 	net.BatchSize = 1
 
-	// Dynamic layer sizes - start at 8, expand to 64, contract back to 4
-	getLayerSize := func(layer, total int) int {
-		if layer == 0 {
-			return 8
-		}
-		if layer == total-1 {
-			return 4
-		}
-		// Middle layers: expand then contract
-		mid := total / 2
-		if layer <= mid {
-			size := 8 * (1 << layer) // Expand: 8, 16, 32, 64
-			if size > 64 {
-				return 64
-			}
-			return size
-		}
-		size := 64 >> (layer - mid) // Contract: 64, 32, 16
-		if size < 16 {
-			return 16
-		}
-		return size
+	net.SetLayer(0, 0, 0, nn.InitDenseLayer(8, 64, nn.ActivationLeakyReLU))
+
+	hiddenSizes := []int{64, 48, 32, 24, 16}
+	for i := 1; i < numLayers-1; i++ {
+		inSize := hiddenSizes[(i-1)%len(hiddenSizes)]
+		outSize := hiddenSizes[i%len(hiddenSizes)]
+		net.SetLayer(0, 0, i, nn.InitDenseLayer(inSize, outSize, nn.ActivationLeakyReLU))
 	}
 
-	for i := 0; i < numLayers; i++ {
-		inSize := getLayerSize(i, numLayers)
-		outSize := getLayerSize(i+1, numLayers)
-		activation := nn.ActivationLeakyReLU
-		if i == numLayers-1 {
-			activation = nn.ActivationSigmoid
-		}
-		net.SetLayer(0, 0, i, nn.InitDenseLayer(inSize, outSize, activation))
-	}
+	lastHidden := hiddenSizes[(numLayers-2)%len(hiddenSizes)]
+	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(lastHidden, 4, nn.ActivationSigmoid))
 	return net
 }
 
 func createConv2DNetwork(numLayers int) *nn.Network {
-	inputSize := 64
-	net := nn.NewNetwork(inputSize, 1, 1, numLayers)
+	net := nn.NewNetwork(64, 1, 1, numLayers)
 	net.BatchSize = 1
 
-	net.SetLayer(0, 0, 0, nn.InitConv2DLayer(8, 8, 1, 4, 3, 1, 1, nn.ActivationLeakyReLU))
+	conv := nn.LayerConfig{
+		Type:          nn.LayerConv2D,
+		InputHeight:   8,
+		InputWidth:    8,
+		InputChannels: 1,
+		Filters:       8,
+		KernelSize:    3,
+		Stride:        1,
+		Padding:       0,
+		OutputHeight:  6,
+		OutputWidth:   6,
+		Activation:    nn.ActivationLeakyReLU,
+	}
+	conv.Kernel = make([]float32, 8*1*3*3)
+	conv.Bias = make([]float32, 8)
+	initRandomSlice(conv.Kernel, 0.2)
+	net.SetLayer(0, 0, 0, conv)
 
 	for i := 1; i < numLayers-1; i++ {
-		inSize := 36 * 4
-		outSize := 32
-		net.SetLayer(0, 0, i, nn.InitDenseLayer(inSize, outSize, nn.ActivationLeakyReLU))
+		if i == 1 {
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(288, 64, nn.ActivationLeakyReLU))
+		} else {
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(64, 64, nn.ActivationLeakyReLU))
+		}
 	}
-	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(32, 4, nn.ActivationSigmoid))
+
+	if numLayers > 2 {
+		net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(64, 4, nn.ActivationSigmoid))
+	} else {
+		net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(288, 4, nn.ActivationSigmoid))
+	}
 	return net
 }
 
 func createRNNNetwork(numLayers int) *nn.Network {
-	net := nn.NewNetwork(8, 1, 1, numLayers)
+	net := nn.NewNetwork(32, 1, 1, numLayers)
 	net.BatchSize = 1
 
-	net.SetLayer(0, 0, 0, nn.InitRNNLayer(8, 32, 1, 32))
+	net.SetLayer(0, 0, 0, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
+
 	for i := 1; i < numLayers-1; i++ {
-		net.SetLayer(0, 0, i, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
+		if i%2 == 1 {
+			rnn := nn.InitRNNLayer(8, 8, 1, 4)
+			net.SetLayer(0, 0, i, rnn)
+		} else {
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
+		}
 	}
+
 	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(32, 4, nn.ActivationSigmoid))
 	return net
 }
 
 func createLSTMNetwork(numLayers int) *nn.Network {
-	net := nn.NewNetwork(8, 1, 1, numLayers)
+	net := nn.NewNetwork(32, 1, 1, numLayers)
 	net.BatchSize = 1
 
-	net.SetLayer(0, 0, 0, nn.InitLSTMLayer(8, 32, 1, 32))
+	net.SetLayer(0, 0, 0, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
+
 	for i := 1; i < numLayers-1; i++ {
-		net.SetLayer(0, 0, i, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
+		if i%2 == 1 {
+			lstm := nn.InitLSTMLayer(8, 8, 1, 4)
+			net.SetLayer(0, 0, i, lstm)
+		} else {
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(32, 32, nn.ActivationLeakyReLU))
+		}
 	}
+
 	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(32, 4, nn.ActivationSigmoid))
 	return net
 }
 
 func createAttentionNetwork(numLayers int) *nn.Network {
+	net := nn.NewNetwork(64, 1, 1, numLayers)
+	net.BatchSize = 1
 	dModel := 64
 	numHeads := 4
 	headDim := dModel / numHeads
-	net := nn.NewNetwork(dModel, 1, 1, numLayers)
-	net.BatchSize = 1
 
 	for i := 0; i < numLayers-1; i++ {
 		if i%2 == 0 {
@@ -786,6 +800,7 @@ func createAttentionNetwork(numLayers int) *nn.Network {
 			net.SetLayer(0, 0, i, nn.InitDenseLayer(dModel, dModel, nn.ActivationLeakyReLU))
 		}
 	}
+
 	net.SetLayer(0, 0, numLayers-1, nn.InitDenseLayer(dModel, 4, nn.ActivationSigmoid))
 	return net
 }
