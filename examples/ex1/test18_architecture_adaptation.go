@@ -69,28 +69,39 @@ func main() {
 
 				result := runAdaptationTest(net, mode, testDuration)
 
-				// Get pre-change accuracy (window before change)
+				// Extract adaptation metrics from TaskChanges
+				change1Accuracy := 0.0
+				change2Accuracy := 0.0
 				preChange1 := 0.0
 				preChange2 := 0.0
-				if len(result.Windows) > 3 {
-					preChange1 = result.Windows[2] // Window before 1st change (at 1/3)
+
+				if len(result.TaskChanges) > 0 {
+					preChange1 = result.TaskChanges[0].PreAccuracy
+					change1Accuracy = result.TaskChanges[0].PostAccuracy
 				}
-				if len(result.Windows) > 6 {
-					preChange2 = result.Windows[5] // Window before 2nd change (at 2/3)
+				if len(result.TaskChanges) > 1 {
+					preChange2 = result.TaskChanges[1].PreAccuracy
+					change2Accuracy = result.TaskChanges[1].PostAccuracy
+				}
+
+				// Convert windows to float64 slice for SummaryResult18
+				windowAccuracies := make([]float64, len(result.Windows))
+				for i, w := range result.Windows {
+					windowAccuracies[i] = w.Accuracy
 				}
 
 				allResults[configName][mode] = SummaryResult18{
 					AvgAccuracy:   result.AvgAccuracy,
-					Change1Adapt:  result.Change1Accuracy,
-					Change2Adapt:  result.Change2Accuracy,
+					Change1Adapt:  change1Accuracy,
+					Change2Adapt:  change2Accuracy,
 					TotalOutputs:  result.TotalOutputs,
-					Windows:       result.Windows,
+					Windows:       windowAccuracies,
 					PreChange1Acc: preChange1,
 					PreChange2Acc: preChange2,
 				}
 
 				fmt.Printf("Avg: %5.1f%% | After 1st: %5.1f%% | After 2nd: %5.1f%% | Outputs: %d\n",
-					result.AvgAccuracy, result.Change1Accuracy, result.Change2Accuracy, result.TotalOutputs)
+					result.AvgAccuracy, change1Accuracy, change2Accuracy, result.TotalOutputs)
 			}
 		}
 	}
@@ -139,13 +150,7 @@ type SummaryResult18 struct {
 	PreChange2Acc float64
 }
 
-type AdaptationResult struct {
-	TotalOutputs    int
-	AvgAccuracy     float64
-	Change1Accuracy float64 // Accuracy in window immediately after 1st task change
-	Change2Accuracy float64 // Accuracy in window immediately after 2nd task change
-	Windows         []float64
-}
+// Note: AdaptationResult is now provided by nn.AdaptationResult from the framework
 
 type Environment struct {
 	AgentPos  [2]float32
@@ -157,17 +162,22 @@ type Environment struct {
 // Main Benchmark
 // ============================================================================
 
-func runAdaptationTest(net *nn.Network, mode TrainingMode, duration time.Duration) *AdaptationResult {
+func runAdaptationTest(net *nn.Network, mode TrainingMode, duration time.Duration) *nn.AdaptationResult {
 	inputSize := net.InputSize
 	outputSize := 4
 
-	result := &AdaptationResult{}
 	windowDuration := 1 * time.Second
-	numWindows := int(duration / windowDuration)
-	result.Windows = make([]float64, numWindows)
 
-	windowOutputs := make([]int, numWindows)
-	windowCorrect := make([]int, numWindows)
+	// Create the AdaptationTracker from the framework
+	tracker := nn.NewAdaptationTracker(windowDuration, duration)
+	tracker.SetModelInfo(fmt.Sprintf("%s", modeNames[mode]), modeNames[mode])
+
+	// Schedule task changes: [0-1/3: chase] → [1/3-2/3: avoid] → [2/3-1: chase]
+	oneThird := duration / 3
+	twoThirds := 2 * oneThird
+
+	tracker.ScheduleTaskChange(oneThird, 1, "AVOID")  // Switch to avoid at 1/3
+	tracker.ScheduleTaskChange(twoThirds, 0, "CHASE") // Switch back to chase at 2/3
 
 	// Initialize states based on mode
 	var state *nn.StepState
@@ -195,24 +205,15 @@ func runAdaptationTest(net *nn.Network, mode TrainingMode, duration time.Duratio
 	lastTrainTime := time.Now()
 	trainInterval := 50 * time.Millisecond
 
+	// Start tracking
+	tracker.Start("CHASE", 0)
+
 	start := time.Now()
 
 	for time.Since(start) < duration {
-		elapsed := time.Since(start)
-		currentWindow := int(elapsed / windowDuration)
-		if currentWindow >= numWindows {
-			currentWindow = numWindows - 1
-		}
-
-		// Task changes: [0-1/3: chase] → [1/3-2/3: avoid] → [2/3-1: chase]
-		oneThird := duration / 3
-		twoThirds := 2 * oneThird
-
-		if elapsed >= oneThird && elapsed < twoThirds {
-			env.Task = 1 // AVOID
-		} else {
-			env.Task = 0 // CHASE
-		}
+		// Get current task from tracker (handles task changes automatically)
+		currentTaskID := tracker.GetCurrentTask()
+		env.Task = currentTaskID
 
 		// Get observation (pad/truncate to match network input size)
 		obs := getObservation(env, inputSize)
@@ -239,12 +240,9 @@ func runAdaptationTest(net *nn.Network, mode TrainingMode, duration time.Duratio
 		action := argmax(output[:outputSize])
 		optimalAction := getOptimalAction(env)
 
-		// Record to window
-		windowOutputs[currentWindow]++
-		result.TotalOutputs++
-		if action == optimalAction {
-			windowCorrect[currentWindow]++
-		}
+		// Record output to tracker (handles window tracking and task changes)
+		isCorrect := action == optimalAction
+		tracker.RecordOutput(isCorrect)
 
 		// Execute action
 		executeAction(env, action)
@@ -294,29 +292,8 @@ func runAdaptationTest(net *nn.Network, mode TrainingMode, duration time.Duratio
 		updateEnvironment(env)
 	}
 
-	// Calculate window accuracies
-	totalAcc := 0.0
-	for i := 0; i < numWindows; i++ {
-		if windowOutputs[i] > 0 {
-			result.Windows[i] = float64(windowCorrect[i]) / float64(windowOutputs[i]) * 100
-		}
-		totalAcc += result.Windows[i]
-	}
-	result.AvgAccuracy = totalAcc / float64(numWindows)
-
-	// Get accuracy after task changes
-	// Task changes at 1/3 and 2/3 of duration
-	changeWindow1 := numWindows / 3
-	changeWindow2 := 2 * numWindows / 3
-
-	if changeWindow1 < numWindows {
-		result.Change1Accuracy = result.Windows[changeWindow1]
-	}
-	if changeWindow2 < numWindows {
-		result.Change2Accuracy = result.Windows[changeWindow2]
-	}
-
-	return result
+	// Finalize and return result from framework
+	return tracker.Finalize()
 }
 
 // ============================================================================
