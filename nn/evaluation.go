@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -476,4 +477,535 @@ func LoadMetrics(filepath string) (*DeviationMetrics, error) {
 	}
 
 	return &metrics, nil
+}
+
+// ============================================================================
+// Time-Window Adaptation Metrics (from Test 17/18)
+// ============================================================================
+
+// TimeWindow captures metrics for a single time window (typically 1 second)
+type TimeWindow struct {
+	WindowIndex   int           `json:"window_index"`
+	Duration      time.Duration `json:"duration"`
+	Outputs       int           `json:"outputs"`  // Number of outputs in this window
+	Correct       int           `json:"correct"`  // Number of correct predictions
+	Accuracy      float64       `json:"accuracy"` // Accuracy percentage
+	OutputsPerSec int           `json:"outputs_per_sec"`
+	CurrentTask   string        `json:"current_task"` // Task label for this window
+	TaskID        int           `json:"task_id"`      // Numeric task identifier
+}
+
+// TaskChange represents a point where the task/goal changes
+type TaskChange struct {
+	AtTime           time.Duration `json:"at_time"`            // When the change occurs
+	FromTask         string        `json:"from_task"`          // Previous task name
+	ToTask           string        `json:"to_task"`            // New task name
+	PreChangeWindow  int           `json:"pre_change_window"`  // Window index before change
+	PostChangeWindow int           `json:"post_change_window"` // Window index after change
+	PreAccuracy      float64       `json:"pre_accuracy"`       // Accuracy before change
+	PostAccuracy     float64       `json:"post_accuracy"`      // Accuracy after change
+	RecoveryWindows  int           `json:"recovery_windows"`   // Windows to recover to 50%+
+	RecoveryTime     time.Duration `json:"recovery_time"`      // Time to recover
+}
+
+// AdaptationResult captures the full adaptation performance across time windows
+type AdaptationResult struct {
+	ModelName    string        `json:"model_name"`
+	ModeName     string        `json:"mode_name"`
+	TotalOutputs int           `json:"total_outputs"`
+	AvgAccuracy  float64       `json:"avg_accuracy"`
+	Windows      []TimeWindow  `json:"windows"`
+	TaskChanges  []TaskChange  `json:"task_changes"`
+	Duration     time.Duration `json:"duration"`
+}
+
+// AdaptationTracker tracks accuracy over time with task changes
+type AdaptationTracker struct {
+	mu             sync.RWMutex
+	windowDuration time.Duration
+	numWindows     int
+	windows        []TimeWindow
+	taskChanges    []TaskChange
+	currentWindow  int
+	startTime      time.Time
+	totalOutputs   int
+	modelName      string
+	modeName       string
+
+	// Task state
+	currentTask   string
+	currentTaskID int
+	taskSchedule  []scheduledTask // Pre-scheduled task changes
+}
+
+type scheduledTask struct {
+	atTime time.Duration
+	taskID int
+	name   string
+}
+
+// NewAdaptationTracker creates a tracker for measuring adaptation over time
+// windowDuration: typically 1 second
+// totalDuration: total test duration (determines number of windows)
+func NewAdaptationTracker(windowDuration, totalDuration time.Duration) *AdaptationTracker {
+	numWindows := int(totalDuration / windowDuration)
+	if numWindows < 1 {
+		numWindows = 1
+	}
+
+	windows := make([]TimeWindow, numWindows)
+	for i := range windows {
+		windows[i] = TimeWindow{
+			WindowIndex: i,
+			Duration:    windowDuration,
+		}
+	}
+
+	return &AdaptationTracker{
+		windowDuration: windowDuration,
+		numWindows:     numWindows,
+		windows:        windows,
+		taskChanges:    []TaskChange{},
+		taskSchedule:   []scheduledTask{},
+	}
+}
+
+// SetModelInfo sets the model and mode name for this tracker
+func (at *AdaptationTracker) SetModelInfo(modelName, modeName string) {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+	at.modelName = modelName
+	at.modeName = modeName
+}
+
+// ScheduleTaskChange schedules a task change at a specific time offset
+// This should be called before Start()
+func (at *AdaptationTracker) ScheduleTaskChange(atOffset time.Duration, taskID int, taskName string) {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+	at.taskSchedule = append(at.taskSchedule, scheduledTask{
+		atTime: atOffset,
+		taskID: taskID,
+		name:   taskName,
+	})
+}
+
+// Start begins the tracking session
+func (at *AdaptationTracker) Start(initialTask string, initialTaskID int) {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+	at.startTime = time.Now()
+	at.currentTask = initialTask
+	at.currentTaskID = initialTaskID
+	at.currentWindow = 0
+	at.windows[0].CurrentTask = initialTask
+	at.windows[0].TaskID = initialTaskID
+}
+
+// RecordOutput records an output (prediction) and whether it was correct
+// Returns the current task ID so the caller knows what behavior to expect
+func (at *AdaptationTracker) RecordOutput(correct bool) int {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+
+	elapsed := time.Since(at.startTime)
+	newWindow := int(elapsed / at.windowDuration)
+
+	// Check for task changes
+	previousTaskID := at.currentTaskID
+	for _, scheduled := range at.taskSchedule {
+		if elapsed >= scheduled.atTime && at.currentTaskID != scheduled.taskID {
+			// Record the task change
+			preWindow := newWindow - 1
+			if preWindow < 0 {
+				preWindow = 0
+			}
+			at.taskChanges = append(at.taskChanges, TaskChange{
+				AtTime:           scheduled.atTime,
+				FromTask:         at.currentTask,
+				ToTask:           scheduled.name,
+				PreChangeWindow:  preWindow,
+				PostChangeWindow: newWindow,
+			})
+			at.currentTask = scheduled.name
+			at.currentTaskID = scheduled.taskID
+		}
+	}
+
+	// Handle window transitions
+	if newWindow != at.currentWindow && at.currentWindow < at.numWindows {
+		// Finalize previous window
+		w := &at.windows[at.currentWindow]
+		if w.Outputs > 0 {
+			w.Accuracy = float64(w.Correct) / float64(w.Outputs) * 100
+			w.OutputsPerSec = w.Outputs
+		}
+	}
+
+	// Update window index
+	if newWindow < at.numWindows {
+		at.currentWindow = newWindow
+		w := &at.windows[at.currentWindow]
+		w.Outputs++
+		at.totalOutputs++
+		if correct {
+			w.Correct++
+		}
+		w.CurrentTask = at.currentTask
+		w.TaskID = at.currentTaskID
+	}
+
+	// Return previous task ID (so caller can compare)
+	return previousTaskID
+}
+
+// GetCurrentTask returns the current task ID
+func (at *AdaptationTracker) GetCurrentTask() int {
+	at.mu.RLock()
+	defer at.mu.RUnlock()
+	return at.currentTaskID
+}
+
+// Finalize computes final metrics and returns the AdaptationResult
+func (at *AdaptationTracker) Finalize() *AdaptationResult {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+
+	// Finalize last window
+	if at.currentWindow < at.numWindows {
+		w := &at.windows[at.currentWindow]
+		if w.Outputs > 0 {
+			w.Accuracy = float64(w.Correct) / float64(w.Outputs) * 100
+			w.OutputsPerSec = w.Outputs
+		}
+	}
+
+	// Calculate average accuracy
+	totalAcc := 0.0
+	count := 0
+	for _, w := range at.windows {
+		if w.Outputs > 0 {
+			totalAcc += w.Accuracy
+			count++
+		}
+	}
+	avgAcc := 0.0
+	if count > 0 {
+		avgAcc = totalAcc / float64(count)
+	}
+
+	// Calculate task change adaptation metrics
+	for i := range at.taskChanges {
+		tc := &at.taskChanges[i]
+		if tc.PreChangeWindow >= 0 && tc.PreChangeWindow < len(at.windows) {
+			tc.PreAccuracy = at.windows[tc.PreChangeWindow].Accuracy
+		}
+		if tc.PostChangeWindow >= 0 && tc.PostChangeWindow < len(at.windows) {
+			tc.PostAccuracy = at.windows[tc.PostChangeWindow].Accuracy
+		}
+
+		// Calculate recovery time (windows to reach 50%+ accuracy)
+		tc.RecoveryWindows = -1
+		for j := tc.PostChangeWindow; j < len(at.windows); j++ {
+			if at.windows[j].Accuracy >= 50 {
+				tc.RecoveryWindows = j - tc.PostChangeWindow
+				tc.RecoveryTime = time.Duration(tc.RecoveryWindows) * at.windowDuration
+				break
+			}
+		}
+	}
+
+	return &AdaptationResult{
+		ModelName:    at.modelName,
+		ModeName:     at.modeName,
+		TotalOutputs: at.totalOutputs,
+		AvgAccuracy:  avgAcc,
+		Windows:      at.windows,
+		TaskChanges:  at.taskChanges,
+		Duration:     time.Since(at.startTime),
+	}
+}
+
+// GetWindows returns a copy of the current windows (thread-safe)
+func (at *AdaptationTracker) GetWindows() []TimeWindow {
+	at.mu.RLock()
+	defer at.mu.RUnlock()
+	result := make([]TimeWindow, len(at.windows))
+	copy(result, at.windows)
+	return result
+}
+
+// ============================================================================
+// Adaptation Result Printing
+// ============================================================================
+
+// PrintTimeline prints an ASCII timeline of accuracy over time
+func (ar *AdaptationResult) PrintTimeline() {
+	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  %s — ACCURACY OVER TIME (per window)                                        ║\n", ar.ModelName)
+
+	// Build task phase header
+	phases := ""
+	if len(ar.TaskChanges) > 0 {
+		phases = "║  "
+		lastEnd := 0
+		for i, tc := range ar.TaskChanges {
+			windowsInPhase := tc.PostChangeWindow - lastEnd
+			if windowsInPhase < 0 {
+				windowsInPhase = 0
+			}
+			label := fmt.Sprintf("[%s]", tc.FromTask)
+			phases += fmt.Sprintf("%-*s", windowsInPhase*5, label)
+			lastEnd = tc.PostChangeWindow
+			if i == len(ar.TaskChanges)-1 {
+				// Last phase
+				remaining := len(ar.Windows) - lastEnd
+				label2 := fmt.Sprintf("[%s]", tc.ToTask)
+				phases += fmt.Sprintf("%-*s", remaining*5, label2)
+			}
+		}
+		phases += " ║"
+	}
+	if phases != "" {
+		fmt.Println(phases)
+	}
+
+	// Header
+	fmt.Print("╠═══════════════════╦")
+	for i := 0; i < len(ar.Windows) && i < 15; i++ {
+		fmt.Print("════╦")
+	}
+	fmt.Println()
+
+	fmt.Printf("║ %-17s ║", "Window")
+	for i := 0; i < len(ar.Windows) && i < 15; i++ {
+		fmt.Printf(" %2ds ║", i+1)
+	}
+	fmt.Println()
+
+	fmt.Print("╠═══════════════════╬")
+	for i := 0; i < len(ar.Windows) && i < 15; i++ {
+		fmt.Print("════╬")
+	}
+	fmt.Println()
+
+	// Data row
+	fmt.Printf("║ %-17s ║", ar.ModeName)
+	for i := 0; i < len(ar.Windows) && i < 15; i++ {
+		fmt.Printf(" %2.0f%%║", ar.Windows[i].Accuracy)
+	}
+	fmt.Println()
+
+	fmt.Print("╚═══════════════════╩")
+	for i := 0; i < len(ar.Windows) && i < 15; i++ {
+		fmt.Print("════╩")
+	}
+	fmt.Println()
+
+	// Task change markers
+	if len(ar.TaskChanges) > 0 {
+		markerLine := "                     "
+		for _, tc := range ar.TaskChanges {
+			pos := tc.PostChangeWindow*5 + 10
+			for len(markerLine) < pos {
+				markerLine += " "
+			}
+			markerLine = markerLine[:pos] + "↑ CHANGE"
+		}
+		fmt.Println(markerLine)
+	}
+}
+
+// PrintAdaptationSummary prints a summary of adaptation performance
+func (ar *AdaptationResult) PrintAdaptationSummary() {
+	fmt.Println("\n╔═══════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Printf("║  %s — ADAPTATION SUMMARY                                                     ║\n", ar.ModelName)
+	fmt.Println("╠═══════════════════╦═════════════════╦═══════════════════════════╦══════════════╣")
+	fmt.Println("║ Mode              ║ Total Outputs   ║ Task Changes              ║ Avg Acc      ║")
+	fmt.Println("╠═══════════════════╬═════════════════╬═══════════════════════════╬══════════════╣")
+
+	changeInfo := ""
+	for _, tc := range ar.TaskChanges {
+		changeInfo += fmt.Sprintf("%.0f%%→%.0f%% ", tc.PreAccuracy, tc.PostAccuracy)
+	}
+	if changeInfo == "" {
+		changeInfo = "N/A"
+	}
+
+	fmt.Printf("║ %-17s ║ %13d   ║ %-25s ║   %5.1f%%    ║\n",
+		ar.ModeName,
+		ar.TotalOutputs,
+		changeInfo,
+		ar.AvgAccuracy)
+
+	fmt.Println("╚═══════════════════╩═════════════════╩═══════════════════════════╩══════════════╝")
+}
+
+// ============================================================================
+// Multi-Model Comparison
+// ============================================================================
+
+// AdaptationComparison holds results from multiple models/modes for comparison
+type AdaptationComparison struct {
+	Results []AdaptationResult `json:"results"`
+}
+
+// NewAdaptationComparison creates a new comparison container
+func NewAdaptationComparison() *AdaptationComparison {
+	return &AdaptationComparison{
+		Results: []AdaptationResult{},
+	}
+}
+
+// AddResult adds a result to the comparison
+func (ac *AdaptationComparison) AddResult(result *AdaptationResult) {
+	ac.Results = append(ac.Results, *result)
+}
+
+// PrintComparisonTimeline prints a side-by-side timeline comparison
+func (ac *AdaptationComparison) PrintComparisonTimeline(title string, numWindows int) {
+	if numWindows < 1 || numWindows > 20 {
+		numWindows = 10
+	}
+
+	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  %-90s  ║\n", title+" — ACCURACY OVER TIME")
+
+	// Header
+	fmt.Print("╠═══════════════════╦")
+	for i := 0; i < numWindows; i++ {
+		fmt.Print("════╦")
+	}
+	fmt.Println()
+
+	fmt.Printf("║ %-17s ║", "Mode")
+	for i := 0; i < numWindows; i++ {
+		fmt.Printf(" %2ds ║", i+1)
+	}
+	fmt.Println()
+
+	fmt.Print("╠═══════════════════╬")
+	for i := 0; i < numWindows; i++ {
+		fmt.Print("════╬")
+	}
+	fmt.Println()
+
+	// Data rows
+	for _, r := range ac.Results {
+		fmt.Printf("║ %-17s ║", r.ModeName)
+		for i := 0; i < numWindows; i++ {
+			if i < len(r.Windows) {
+				fmt.Printf(" %2.0f%%║", r.Windows[i].Accuracy)
+			} else {
+				fmt.Printf("  - ║")
+			}
+		}
+		fmt.Println()
+	}
+
+	fmt.Print("╚═══════════════════╩")
+	for i := 0; i < numWindows; i++ {
+		fmt.Print("════╩")
+	}
+	fmt.Println()
+}
+
+// PrintComparisonSummary prints a summary table comparing all results
+func (ac *AdaptationComparison) PrintComparisonSummary(title string) {
+	fmt.Println("\n╔═══════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Printf("║  %-90s  ║\n", title+" — ADAPTATION SUMMARY")
+	fmt.Println("╠═══════════════════╦═════════════════╦═══════════════════════════════════════════════╦══════════════╣")
+	fmt.Println("║ Mode              ║ Total Outputs   ║ Task Change Adaptations                       ║ Avg Acc      ║")
+	fmt.Println("║                   ║                 ║ Before→After (recovery)                       ║              ║")
+	fmt.Println("╠═══════════════════╬═════════════════╬═══════════════════════════════════════════════╬══════════════╣")
+
+	for _, r := range ac.Results {
+		changeInfo := ""
+		for i, tc := range r.TaskChanges {
+			recovery := "N/A"
+			if tc.RecoveryWindows >= 0 {
+				recovery = fmt.Sprintf("%ds", tc.RecoveryWindows)
+			}
+			changeInfo += fmt.Sprintf("%.0f%%→%.0f%%(%s)", tc.PreAccuracy, tc.PostAccuracy, recovery)
+			if i < len(r.TaskChanges)-1 {
+				changeInfo += " | "
+			}
+		}
+		if changeInfo == "" {
+			changeInfo = "No task changes"
+		}
+		// Truncate if too long
+		if len(changeInfo) > 45 {
+			changeInfo = changeInfo[:42] + "..."
+		}
+
+		fmt.Printf("║ %-17s ║ %13d   ║ %-45s ║   %5.1f%%    ║\n",
+			r.ModeName,
+			r.TotalOutputs,
+			changeInfo,
+			r.AvgAccuracy)
+	}
+
+	fmt.Println("╚═══════════════════╩═════════════════╩═══════════════════════════════════════════════╩══════════════╝")
+}
+
+// GetBestByAvgAccuracy returns the result with the highest average accuracy
+func (ac *AdaptationComparison) GetBestByAvgAccuracy() *AdaptationResult {
+	if len(ac.Results) == 0 {
+		return nil
+	}
+	best := &ac.Results[0]
+	for i := 1; i < len(ac.Results); i++ {
+		if ac.Results[i].AvgAccuracy > best.AvgAccuracy {
+			best = &ac.Results[i]
+		}
+	}
+	return best
+}
+
+// GetMostStable returns the result with the smallest accuracy variance (most consistent)
+func (ac *AdaptationComparison) GetMostStable() *AdaptationResult {
+	if len(ac.Results) == 0 {
+		return nil
+	}
+
+	minVariance := math.MaxFloat64
+	var mostStable *AdaptationResult
+
+	for i := range ac.Results {
+		r := &ac.Results[i]
+		if len(r.Windows) == 0 {
+			continue
+		}
+
+		// Calculate variance
+		sum := 0.0
+		for _, w := range r.Windows {
+			sum += w.Accuracy
+		}
+		mean := sum / float64(len(r.Windows))
+
+		variance := 0.0
+		for _, w := range r.Windows {
+			diff := w.Accuracy - mean
+			variance += diff * diff
+		}
+		variance /= float64(len(r.Windows))
+
+		if variance < minVariance {
+			minVariance = variance
+			mostStable = r
+		}
+	}
+
+	return mostStable
+}
+
+// SaveToJSON saves the comparison results to a JSON file
+func (ac *AdaptationComparison) SaveToJSON(filepath string) error {
+	data, err := json.MarshalIndent(ac, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal comparison: %w", err)
+	}
+	return os.WriteFile(filepath, data, 0644)
 }
