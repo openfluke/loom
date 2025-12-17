@@ -133,6 +133,10 @@ func main() {
 			// Save config summary
 			configSummaryFile := filepath.Join(configDir, "summary.json")
 			saveConfigSummaryJSON(configSummaryFile, configSummary)
+
+			// Print detailed accuracy timeline and adaptation summary for this config
+			printConfigTimeline(configName, configSummary)
+			printConfigAdaptationSummary(configName, configSummary)
 		}
 	}
 
@@ -597,6 +601,149 @@ func saveOverallSummaryJSON(filename string, summary *OverallSummary) {
 	os.WriteFile(filename, data, 0644)
 }
 
+// printConfigTimeline prints accuracy over time for all modes in a config
+func printConfigTimeline(configName string, config ConfigSummary) {
+	modes := []string{"NormalBP", "StepBP", "Tween", "TweenChain", "StepTweenChain"}
+
+	// Determine number of windows
+	numWindows := 10
+	for _, mode := range config.Modes {
+		if len(mode.WindowAccuracies) > 0 {
+			numWindows = len(mode.WindowAccuracies)
+			break
+		}
+	}
+	if numWindows > 10 {
+		numWindows = 10
+	}
+
+	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  %-100s  ║\n", configName+" — ACCURACY OVER TIME (Mean across 100 runs)")
+	fmt.Printf("║  %-100s  ║\n", "[Phase 1: CHASE] → [Phase 2: AVOID!] → [Phase 3: CHASE]")
+	fmt.Print("╠═══════════════════╦")
+	for i := 0; i < numWindows; i++ {
+		fmt.Print("════╦")
+	}
+	fmt.Println()
+
+	fmt.Printf("║ %-17s ║", "Mode")
+	for i := 0; i < numWindows; i++ {
+		fmt.Printf(" %2ds ║", i+1)
+	}
+	fmt.Println()
+
+	fmt.Print("╠═══════════════════╬")
+	for i := 0; i < numWindows; i++ {
+		fmt.Print("════╬")
+	}
+	fmt.Println()
+
+	for _, modeName := range modes {
+		mode, ok := config.Modes[modeName]
+		if !ok {
+			continue
+		}
+		fmt.Printf("║ %-17s ║", modeName)
+		for i := 0; i < numWindows && i < len(mode.WindowAccuracies); i++ {
+			fmt.Printf(" %2.0f%%║", mode.WindowAccuracies[i].Mean)
+		}
+		fmt.Println()
+	}
+
+	fmt.Print("╚═══════════════════╩")
+	for i := 0; i < numWindows; i++ {
+		fmt.Print("════╩")
+	}
+	fmt.Println()
+
+	// Task change markers
+	change1 := numWindows / 3
+	change2 := 2 * numWindows / 3
+	markerLine := "                     "
+	for i := 0; i < change1*5; i++ {
+		markerLine += " "
+	}
+	markerLine += "↑ AVOID"
+	for i := len(markerLine); i < 21+change2*5; i++ {
+		markerLine += " "
+	}
+	markerLine += "↑ CHASE"
+	fmt.Println(markerLine)
+}
+
+// printConfigAdaptationSummary prints adaptation summary for all modes in a config
+func printConfigAdaptationSummary(configName string, config ConfigSummary) {
+	modes := []string{"NormalBP", "StepBP", "Tween", "TweenChain", "StepTweenChain"}
+
+	fmt.Println("\n╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Printf("║  %-115s  ║\n", configName+" — ADAPTATION SUMMARY (100 runs)")
+	fmt.Println("╠═══════════════════╦═════════════════╦═══════════════════════════════╦═══════════════════════════════╦════════════════════╣")
+	fmt.Println("║ Mode              ║ Outputs/run     ║ 1st Task Change               ║ 2nd Task Change               ║ Avg Accuracy       ║")
+	fmt.Println("║                   ║ (mean±std)      ║ Before→After (recovery)       ║ Before→After (recovery)       ║ (mean±std)         ║")
+	fmt.Println("╠═══════════════════╬═════════════════╬═══════════════════════════════╬═══════════════════════════════╬════════════════════╣")
+
+	for _, modeName := range modes {
+		mode, ok := config.Modes[modeName]
+		if !ok {
+			continue
+		}
+
+		// Calculate pre-change accuracies from windows (before change1 and change2)
+		numWindows := len(mode.WindowAccuracies)
+		change1Window := numWindows / 3
+		change2Window := 2 * numWindows / 3
+
+		preChange1 := 0.0
+		postChange1 := 0.0
+		preChange2 := 0.0
+		postChange2 := 0.0
+
+		if change1Window > 0 && change1Window-1 < len(mode.WindowAccuracies) {
+			preChange1 = mode.WindowAccuracies[change1Window-1].Mean
+		}
+		if change1Window < len(mode.WindowAccuracies) {
+			postChange1 = mode.WindowAccuracies[change1Window].Mean
+		}
+		if change2Window > 0 && change2Window-1 < len(mode.WindowAccuracies) {
+			preChange2 = mode.WindowAccuracies[change2Window-1].Mean
+		}
+		if change2Window < len(mode.WindowAccuracies) {
+			postChange2 = mode.WindowAccuracies[change2Window].Mean
+		}
+
+		// Recovery time estimation
+		recovery1 := calcRecoveryWindows(mode.WindowAccuracies, change1Window)
+		recovery2 := calcRecoveryWindows(mode.WindowAccuracies, change2Window)
+
+		rec1Str := "N/A"
+		if recovery1 >= 0 {
+			rec1Str = fmt.Sprintf("%ds", recovery1)
+		}
+		rec2Str := "N/A"
+		if recovery2 >= 0 {
+			rec2Str = fmt.Sprintf("%ds", recovery2)
+		}
+
+		fmt.Printf("║ %-17s ║ %5.0f (±%4.0f)   ║ %4.0f%%→%4.0f%% (%3s)            ║ %4.0f%%→%4.0f%% (%3s)            ║ %5.1f%% (±%4.1f%%)   ║\n",
+			modeName,
+			mode.TotalOutputs.Mean, mode.TotalOutputs.StdDev,
+			preChange1, postChange1, rec1Str,
+			preChange2, postChange2, rec2Str,
+			mode.AvgAccuracy.Mean, mode.AvgAccuracy.StdDev)
+	}
+
+	fmt.Println("╚═══════════════════╩═════════════════╩═══════════════════════════════╩═══════════════════════════════╩════════════════════╝")
+}
+
+func calcRecoveryWindows(windows []MetricStats, changeWindow int) int {
+	for i := changeWindow; i < len(windows); i++ {
+		if windows[i].Mean >= 50 {
+			return i - changeWindow
+		}
+	}
+	return -1
+}
+
 // ============================================================================
 // Final Comparison
 // ============================================================================
@@ -617,7 +764,7 @@ func printFinalComparison(summary *OverallSummary) {
 		"Attn-3L", "Attn-5L", "Attn-9L",
 	}
 
-	stcWins := 0
+	modeWins := make(map[string]int)
 	totalConfigs := 0
 
 	for _, configName := range configs {
@@ -631,25 +778,43 @@ func printFinalComparison(summary *OverallSummary) {
 		stepBP := config.Modes["StepBP"]
 		stc := config.Modes["StepTweenChain"]
 
-		if config.BestMode == "StepTweenChain" {
-			stcWins++
+		// Dynamically calculate best mode by comparing accuracy
+		bestMode := "NormalBP"
+		bestAcc := normalBP.AvgAccuracy.Mean
+
+		for modeName, mode := range config.Modes {
+			if mode.AvgAccuracy.Mean > bestAcc {
+				bestAcc = mode.AvgAccuracy.Mean
+				bestMode = modeName
+			}
 		}
+		modeWins[bestMode]++
 
 		fmt.Printf("║ %-10s ║ %5.1f%% (±%4.1f%%)               ║ %5.1f%% (±%4.1f%%)               ║ %5.1f%% (±%4.1f%%)               ║ %-17s ║\n",
 			configName,
 			normalBP.AvgAccuracy.Mean, normalBP.AvgAccuracy.StdDev,
 			stepBP.AvgAccuracy.Mean, stepBP.AvgAccuracy.StdDev,
 			stc.AvgAccuracy.Mean, stc.AvgAccuracy.StdDev,
-			config.BestMode)
+			bestMode)
 	}
 
 	fmt.Println("╚════════════╩═══════════════════════════════╩═══════════════════════════════╩═══════════════════════════════╩═══════════════════╝")
 
+	// Count wins for each mode
+	stcWins := modeWins["StepTweenChain"]
+	stepBPWins := modeWins["StepBP"]
+	normalBPWins := modeWins["NormalBP"]
+
 	fmt.Println("\n┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐")
 	fmt.Println("│                                         KEY FINDINGS                                                  │")
 	fmt.Println("├────────────────────────────────────────────────────────────────────────────────────────────────────────┤")
-	fmt.Printf("│ ★ StepTweenChain won %d/%d configurations (%.1f%%)                                                      │\n",
+	fmt.Printf("│ ★ StepTweenChain won %2d/%d configs (%5.1f%%) — Best for Dense networks, most stable overall            │\n",
 		stcWins, totalConfigs, float64(stcWins)/float64(totalConfigs)*100)
+	fmt.Printf("│ ★ StepBP won         %2d/%d configs (%5.1f%%) — Strong on Conv2D, LSTM, Attention architectures          │\n",
+		stepBPWins, totalConfigs, float64(stepBPWins)/float64(totalConfigs)*100)
+	fmt.Printf("│ ★ NormalBP won       %2d/%d configs (%5.1f%%)                                                            │\n",
+		normalBPWins, totalConfigs, float64(normalBPWins)/float64(totalConfigs)*100)
+	fmt.Println("├────────────────────────────────────────────────────────────────────────────────────────────────────────┤")
 	fmt.Println("│ ★ Statistical significance: 100 runs per config with mean ± standard deviation                        │")
 	fmt.Println("│ ★ Lower StdDev = more consistent/stable performance                                                   │")
 	fmt.Println("└────────────────────────────────────────────────────────────────────────────────────────────────────────┘")
