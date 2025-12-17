@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/openfluke/loom/nn"
@@ -42,13 +43,24 @@ func main() {
 
 	// Run all modes and collect time-series data
 	allResults := make(map[TrainingMode]*AdaptationResult)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
 	for _, mode := range modes {
-		fmt.Printf("Running [%s]... ", modeNames[mode])
-		result := runAdaptationTest(mode)
-		allResults[mode] = result
-		fmt.Printf("Done — Total outputs: %d\n", result.TotalOutputs)
+		wg.Add(1)
+		go func(m TrainingMode) {
+			defer wg.Done()
+			fmt.Printf("Starting [%s]...\n", modeNames[m])
+			result := runAdaptationTest(m)
+			mu.Lock()
+			allResults[m] = result
+			mu.Unlock()
+			fmt.Printf("Finished [%s] — Total outputs: %d\n", modeNames[m], result.TotalOutputs)
+		}(mode)
 	}
+
+	wg.Wait()
+	fmt.Println("\nAll tests complete.")
 
 	// Print time-series comparison
 	printAdaptationTimeline(allResults, modes)

@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/openfluke/loom/nn"
@@ -47,64 +48,73 @@ func main() {
 
 	// Results storage
 	allResults := make(map[string]map[TrainingMode]SummaryResult18)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
 	for _, netType := range networkTypes {
 		for _, depth := range depths {
 			configName := fmt.Sprintf("%s-%dL", netType, depth)
+			mu.Lock()
 			allResults[configName] = make(map[TrainingMode]SummaryResult18)
-
-			fmt.Printf("\n┌─────────────────────────────────────────────────────────────────────┐\n")
-			fmt.Printf("│ %-67s │\n", configName+" — Testing 5 training modes")
-			fmt.Printf("└─────────────────────────────────────────────────────────────────────┘\n")
+			mu.Unlock()
 
 			for _, mode := range modes {
-				fmt.Printf("  [%s] ", modeNames[mode])
+				wg.Add(1)
+				go func(nt string, d int, cn string, m TrainingMode) {
+					defer wg.Done()
 
-				// Create network based on type
-				net := createNetwork(netType, depth)
-				if net == nil {
-					fmt.Printf("SKIP (unsupported)\n")
-					continue
-				}
+					// Create network based on type
+					net := createNetwork(nt, d)
+					if net == nil {
+						fmt.Printf("  [%s-%dL] [%s] SKIP (unsupported)\n", nt, d, modeNames[m])
+						return
+					}
 
-				result := runAdaptationTest(net, mode, testDuration)
+					fmt.Printf("  [%s-%dL] Starting [%s]...\n", nt, d, modeNames[m])
+					result := runAdaptationTest(net, m, testDuration)
 
-				// Extract adaptation metrics from TaskChanges
-				change1Accuracy := 0.0
-				change2Accuracy := 0.0
-				preChange1 := 0.0
-				preChange2 := 0.0
+					// Extract adaptation metrics from TaskChanges
+					change1Accuracy := 0.0
+					change2Accuracy := 0.0
+					preChange1 := 0.0
+					preChange2 := 0.0
 
-				if len(result.TaskChanges) > 0 {
-					preChange1 = result.TaskChanges[0].PreAccuracy
-					change1Accuracy = result.TaskChanges[0].PostAccuracy
-				}
-				if len(result.TaskChanges) > 1 {
-					preChange2 = result.TaskChanges[1].PreAccuracy
-					change2Accuracy = result.TaskChanges[1].PostAccuracy
-				}
+					if len(result.TaskChanges) > 0 {
+						preChange1 = result.TaskChanges[0].PreAccuracy
+						change1Accuracy = result.TaskChanges[0].PostAccuracy
+					}
+					if len(result.TaskChanges) > 1 {
+						preChange2 = result.TaskChanges[1].PreAccuracy
+						change2Accuracy = result.TaskChanges[1].PostAccuracy
+					}
 
-				// Convert windows to float64 slice for SummaryResult18
-				windowAccuracies := make([]float64, len(result.Windows))
-				for i, w := range result.Windows {
-					windowAccuracies[i] = w.Accuracy
-				}
+					// Convert windows to float64 slice for SummaryResult18
+					windowAccuracies := make([]float64, len(result.Windows))
+					for i, w := range result.Windows {
+						windowAccuracies[i] = w.Accuracy
+					}
 
-				allResults[configName][mode] = SummaryResult18{
-					AvgAccuracy:   result.AvgAccuracy,
-					Change1Adapt:  change1Accuracy,
-					Change2Adapt:  change2Accuracy,
-					TotalOutputs:  result.TotalOutputs,
-					Windows:       windowAccuracies,
-					PreChange1Acc: preChange1,
-					PreChange2Acc: preChange2,
-				}
+					mu.Lock()
+					allResults[cn][m] = SummaryResult18{
+						AvgAccuracy:   result.AvgAccuracy,
+						Change1Adapt:  change1Accuracy,
+						Change2Adapt:  change2Accuracy,
+						TotalOutputs:  result.TotalOutputs,
+						Windows:       windowAccuracies,
+						PreChange1Acc: preChange1,
+						PreChange2Acc: preChange2,
+					}
+					mu.Unlock()
 
-				fmt.Printf("Avg: %5.1f%% | After 1st: %5.1f%% | After 2nd: %5.1f%% | Outputs: %d\n",
-					result.AvgAccuracy, change1Accuracy, change2Accuracy, result.TotalOutputs)
+					fmt.Printf("  [%s-%dL] Finished [%s] | Avg: %5.1f%% | Outputs: %d\n",
+						nt, d, modeNames[m], result.AvgAccuracy, result.TotalOutputs)
+				}(netType, depth, configName, mode)
 			}
 		}
 	}
+
+	wg.Wait()
+	fmt.Println("\nAll benchmarks complete.")
 
 	// Print summary table
 	printSummaryTable(allResults, networkTypes, depths, modes)
