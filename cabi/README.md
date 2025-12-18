@@ -344,23 +344,38 @@ loom.Loom_FreeCString(resultPtr);
 
 **✅ All build scripts now include `transformer.go`** - All platforms will have transformer inference support.
 
-### Current Platform
+### Quick Start (Recommended)
+
+Each platform script now builds **all variants automatically**:
 
 ```bash
-./build.sh
+# macOS - builds arm64 + x86_64 + universal (3 outputs)
+./build_macos.sh
+
+# iOS - builds device + simulators + XCFramework (4 outputs)  
+./build_ios.sh
+
+# Linux - builds for current architecture
+./build_linux.sh
 ```
 
-### Multi-Platform
+### Manual Platform Selection
 
 ```bash
 ./build_all.sh linux arm64          # Linux ARM64
 ./build_all.sh macos universal      # macOS Universal Binary
 ./build_all.sh windows x86_64       # Windows 64-bit
 ./build_all.sh android arm64        # Android ARM64
-./build_all.sh ios xcframework      # iOS XCFramework
 
 # Build all available platforms at once
 ./build_all.sh --clean all
+```
+
+### Package & Serve Builds
+
+```bash
+# Zip all compiled builds and start HTTP server for download
+./serve_builds.sh
 ```
 
 ### Verify Transformer Functions
@@ -382,15 +397,29 @@ You should see: `LoadTokenizerFromBytes`, `LoadTransformerFromBytes`, `EncodeTex
 
 ### Supported Platforms
 
-| Platform | Architectures                | Output          | Notes                   |
-| -------- | ---------------------------- | --------------- | ----------------------- |
-| Linux    | x86_64, arm64, armv7, x86    | `libloom.so`    | Native or cross-compile |
-| macOS    | x86_64, arm64, universal     | `libloom.dylib` | Universal = fat binary  |
-| Windows  | x86_64, x86, arm64           | `libloom.dll`   | Requires mingw-w64      |
-| Android  | arm64, armv7, x86_64, x86    | `libloom.so`    | Requires Android NDK    |
-| iOS      | arm64, x86_64_sim, arm64_sim | `libloom.dylib` | Requires Xcode          |
+| Platform | Architectures | Output | Status | Notes |
+|----------|---------------|--------|--------|-------|
+| **macOS** | arm64, x86_64, universal | `libloom.dylib` | ✅ Tested | Universal = fat binary for both archs |
+| **iOS** | arm64 (device), x86_64_sim, arm64_sim | `libloom.a` | 🔨 Builds | Static library, not yet tested on device |
+| **Linux** | x86_64 | `libloom.so` | ✅ Tested | Native build |
+| **Linux** | arm64 | `libloom.so` | ❌ Broken | WebGPU compile error (on todo list) |
+| **Windows** | x86_64 | `libloom.dll` | ✅ Tested | Works via NuGet package |
+| **Windows** | arm64 | `libloom.dll` | ❌ Broken | WebGPU compile error (on todo list) |
+| **Android** | arm64, armv7, x86_64, x86 | `libloom.so` | ✅ Tested | Requires Android NDK |
+| **WebAssembly** | wasm32 | `main.wasm` | ✅ Tested | Browser/Node.js via wasm/ |
 
-Output goes to `compiled/<platform>_<arch>/`.
+> **Legend:** ✅ Tested = verified working on target platform | 🔨 Builds = compiles successfully, not yet device-tested | ⚠️ Untested = build script exists but not verified
+
+**Build Output Directories:**
+- `compiled/macos_arm64/` - Apple Silicon Macs
+- `compiled/macos_x86_64/` - Intel Macs  
+- `compiled/macos_universal/` - Universal binary (24MB, both archs)
+- `compiled/ios_arm64/` - iPhone/iPad devices
+- `compiled/ios_arm64_sim/` - Simulator on Apple Silicon Macs
+- `compiled/ios_x86_64_sim/` - Simulator on Intel Macs
+- `compiled/ios_xcframework/` - XCFramework for Xcode integration
+- `compiled/linux_x86_64/` - Linux x86_64
+- `compiled/android_arm64/` - Android ARM64
 
 ## Neural Network API (Legacy)
 
