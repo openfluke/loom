@@ -1,18 +1,12 @@
 #!/bin/bash
 
-# LOOM C ABI Multi-Platform Build System
-# Builds for iOS (ARM64 device, x86_64 simulator, Universal Framework)
+# LOOM C ABI Build System for iOS
+# Builds static libraries (.a) for iOS - Go does NOT support shared libraries on iOS
+# Output: libloom.a (static library) + libloom.h (header)
 
 set -e
 
-echo "=== Building LOOM C ABI for iOS ==="
-
-# Detect current architecture if not specified
-if [ -z "$ARCH" ]; then
-    ARCH="arm64"  # Default to ARM64 (device)
-fi
-
-echo "Target Architecture: $ARCH"
+echo "=== Building LOOM C ABI for iOS (Static Library) ==="
 
 # Check if running on macOS
 if [[ "$OSTYPE" != "darwin"* ]]; then
@@ -29,118 +23,167 @@ fi
 
 # iOS minimum deployment target
 IOS_VERSION=13.0
+LIB_NAME="libloom.a"
 
-# Map architecture names
-case "$ARCH" in
-    arm64|device)
-        GOARCH="arm64"
-        DIR_ARCH="arm64"
-        SDK="iphoneos"
-        PLATFORM="iOS"
-        ;;
-    x86_64|simulator|sim)
-        GOARCH="amd64"
-        DIR_ARCH="x86_64_sim"
-        SDK="iphonesimulator"
-        PLATFORM="iOS-Simulator"
-        ;;
-    arm64_sim)
-        GOARCH="arm64"
-        DIR_ARCH="arm64_sim"
-        SDK="iphonesimulator"
-        PLATFORM="iOS-Simulator"
-        ;;
-    universal|xcframework)
-        # Build XCFramework with all architectures
-        echo "Building XCFramework (device + simulator)..."
-        
-        # Build for device (arm64)
-        OUTPUT_DIR_DEVICE="compiled/ios_arm64"
-        mkdir -p "$OUTPUT_DIR_DEVICE"
-        SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-        CC="$(xcrun --sdk iphoneos --find clang) -isysroot $SDK_PATH -mios-version-min=$IOS_VERSION -arch arm64"
-        GOOS=ios GOARCH=arm64 CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
-        
-        # Build for simulator (x86_64)
-        OUTPUT_DIR_SIM_X64="compiled/ios_x86_64_sim"
-        mkdir -p "$OUTPUT_DIR_SIM_X64"
-        SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
-        CC="$(xcrun --sdk iphonesimulator --find clang) -isysroot $SDK_PATH -mios-simulator-version-min=$IOS_VERSION -arch x86_64"
-        GOOS=ios GOARCH=amd64 CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
-        
-        # Build for simulator (arm64)
-        OUTPUT_DIR_SIM_ARM="compiled/ios_arm64_sim"
-        mkdir -p "$OUTPUT_DIR_SIM_ARM"
-        SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
-        CC="$(xcrun --sdk iphonesimulator --find clang) -isysroot $SDK_PATH -mios-simulator-version-min=$IOS_VERSION -arch arm64"
-        GOOS=ios GOARCH=arm64 CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
-        
-        # Create fat binary for simulator
-        OUTPUT_DIR="compiled/ios_xcframework"
-        mkdir -p "$OUTPUT_DIR/simulator"
-        lipo -create "$OUTPUT_DIR_SIM_X64/libloom.dylib" "$OUTPUT_DIR_SIM_ARM/libloom.dylib" -output "$OUTPUT_DIR/simulator/libloom.dylib"
-        
-        # Create XCFramework
-        xcodebuild -create-xcframework \
-            -library "$OUTPUT_DIR_DEVICE/libloom.dylib" \
-            -headers "$OUTPUT_DIR_DEVICE" \
-            -library "$OUTPUT_DIR/simulator/libloom.dylib" \
-            -headers "$OUTPUT_DIR/simulator" \
-            -output "$OUTPUT_DIR/LOOM.xcframework"
-        
-        echo "✓ XCFramework created: $OUTPUT_DIR/LOOM.xcframework"
+BUILD_SUCCESS_DEVICE=false
+BUILD_SUCCESS_SIM_X64=false
+BUILD_SUCCESS_SIM_ARM=false
+
+# Function to build for a specific iOS target
+build_ios_arch() {
+    local GOARCH=$1
+    local DIR_ARCH=$2
+    local SDK=$3
+    local OUTPUT_DIR="compiled/ios_${DIR_ARCH}"
+    
+    echo ""
+    echo "--- Building for $DIR_ARCH (SDK=$SDK, GOARCH=$GOARCH) ---"
+    
+    mkdir -p "$OUTPUT_DIR"
+    
+    # Get SDK path and set up compiler
+    SDK_PATH=$(xcrun --sdk $SDK --show-sdk-path)
+    
+    if [ "$SDK" = "iphoneos" ]; then
+        MIN_VERSION_FLAG="-mios-version-min=$IOS_VERSION"
+    else
+        MIN_VERSION_FLAG="-mios-simulator-version-min=$IOS_VERSION"
+    fi
+    
+    # Map GOARCH to clang arch
+    if [ "$GOARCH" = "amd64" ]; then
+        CLANG_ARCH="x86_64"
+    else
+        CLANG_ARCH="$GOARCH"
+    fi
+    
+    CC="$(xcrun --sdk $SDK --find clang) -isysroot $SDK_PATH $MIN_VERSION_FLAG -arch $CLANG_ARCH"
+    
+    echo "SDK Path: $SDK_PATH"
+    echo "Compiler arch: $CLANG_ARCH"
+    
+    # Build Go static library (c-archive, not c-shared!)
+    echo "Building static library..."
+    if GOOS=ios GOARCH=$GOARCH CGO_ENABLED=1 CC="$CC" go build -buildmode=c-archive -o "$OUTPUT_DIR/$LIB_NAME" *.go 2>&1; then
+        echo "✓ Static library built: $OUTPUT_DIR/$LIB_NAME"
+        echo ""
         ls -lh "$OUTPUT_DIR"
-        echo "Import into Xcode project via 'Add Files to Project'"
-        exit 0
-        ;;
-    *)
-        echo "Unsupported architecture: $ARCH"
-        echo "Use: arm64 (device), x86_64 (simulator), arm64_sim, or universal (XCFramework)"
-        exit 1
-        ;;
-esac
+        return 0
+    else
+        echo "✗ Failed to build static library for $DIR_ARCH"
+        return 1
+    fi
+}
 
-OUTPUT_DIR="compiled/ios_${DIR_ARCH}"
-LIB_NAME="libloom.dylib"
-
-echo "Output directory: $OUTPUT_DIR"
-echo "GOARCH: $GOARCH"
-echo "SDK: $SDK"
-echo "Platform: $PLATFORM"
-
-# Create output directory
-mkdir -p "$OUTPUT_DIR"
-
-# Get SDK path and set up compiler
-SDK_PATH=$(xcrun --sdk $SDK --show-sdk-path)
-
-if [ "$SDK" = "iphoneos" ]; then
-    MIN_VERSION_FLAG="-mios-version-min=$IOS_VERSION"
-else
-    MIN_VERSION_FLAG="-mios-simulator-version-min=$IOS_VERSION"
+# Build arm64 device
+echo ""
+echo "=========================================="
+echo "  Step 1/3: Building ARM64 (iOS Device)"
+echo "=========================================="
+if build_ios_arch "arm64" "arm64" "iphoneos"; then
+    BUILD_SUCCESS_DEVICE=true
 fi
 
-CC="$(xcrun --sdk $SDK --find clang) -isysroot $SDK_PATH $MIN_VERSION_FLAG -arch $GOARCH"
-
-echo "SDK Path: $SDK_PATH"
-echo "Compiler: $CC"
-
-# Build Go shared library
-echo "Building shared library..."
-GOOS=ios GOARCH=$GOARCH CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go
-
-echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
-
-# Note: simple_bench and test18_adaptation can't run on iOS directly (needs to be in an app bundle)
+# Build x86_64 simulator (Intel Macs)
 echo ""
-echo "NOTE: iOS libraries must be embedded in an app. Benchmarks skipped."
-echo "C test files available: simple_bench.c, test18_adaptation.c"
-echo "Use the XCFramework build (ARCH=universal) for Xcode integration."
+echo "=========================================="
+echo "  Step 2/3: Building x86_64 (Simulator)"
+echo "=========================================="
+if build_ios_arch "amd64" "x86_64_sim" "iphonesimulator"; then
+    BUILD_SUCCESS_SIM_X64=true
+fi
 
-# Show files
-ls -lh "$OUTPUT_DIR"
+# Build arm64 simulator (Apple Silicon Macs)
+echo ""
+echo "=========================================="
+echo "  Step 3/3: Building ARM64 (Simulator)"
+echo "=========================================="
+if build_ios_arch "arm64" "arm64_sim" "iphonesimulator"; then
+    BUILD_SUCCESS_SIM_ARM=true
+fi
+
+# Create XCFramework if all builds succeeded
+echo ""
+echo "=========================================="
+echo "  Creating XCFramework"
+echo "=========================================="
+
+if $BUILD_SUCCESS_DEVICE && ($BUILD_SUCCESS_SIM_X64 || $BUILD_SUCCESS_SIM_ARM); then
+    OUTPUT_DIR="compiled/ios_xcframework"
+    rm -rf "$OUTPUT_DIR"
+    mkdir -p "$OUTPUT_DIR"
+    
+    # Create fat library for simulator (combine x86_64 + arm64 sim)
+    if $BUILD_SUCCESS_SIM_X64 && $BUILD_SUCCESS_SIM_ARM; then
+        echo "Creating fat simulator library..."
+        mkdir -p "$OUTPUT_DIR/sim_combined"
+        lipo -create \
+            "compiled/ios_x86_64_sim/libloom.a" \
+            "compiled/ios_arm64_sim/libloom.a" \
+            -output "$OUTPUT_DIR/sim_combined/libloom.a"
+        cp "compiled/ios_arm64_sim/libloom.h" "$OUTPUT_DIR/sim_combined/libloom.h"
+        SIM_LIB="$OUTPUT_DIR/sim_combined/libloom.a"
+        SIM_HEADERS="$OUTPUT_DIR/sim_combined"
+    elif $BUILD_SUCCESS_SIM_ARM; then
+        SIM_LIB="compiled/ios_arm64_sim/libloom.a"
+        SIM_HEADERS="compiled/ios_arm64_sim"
+    else
+        SIM_LIB="compiled/ios_x86_64_sim/libloom.a"
+        SIM_HEADERS="compiled/ios_x86_64_sim"
+    fi
+    
+    echo "Creating XCFramework..."
+    xcodebuild -create-xcframework \
+        -library "compiled/ios_arm64/libloom.a" \
+        -headers "compiled/ios_arm64" \
+        -library "$SIM_LIB" \
+        -headers "$SIM_HEADERS" \
+        -output "$OUTPUT_DIR/LOOM.xcframework"
+    
+    echo "✓ XCFramework created: $OUTPUT_DIR/LOOM.xcframework"
+    echo ""
+    ls -lh "$OUTPUT_DIR"
+else
+    echo "⚠ Skipping XCFramework (requires device + at least one simulator build)"
+fi
+
+# Summary
+echo ""
+echo "=========================================="
+echo "  Build Summary"
+echo "=========================================="
+echo ""
+if $BUILD_SUCCESS_DEVICE; then
+    echo "✓ iOS Device (arm64):      compiled/ios_arm64/"
+else
+    echo "✗ iOS Device (arm64):      FAILED"
+fi
+
+if $BUILD_SUCCESS_SIM_X64; then
+    echo "✓ Simulator (x86_64):      compiled/ios_x86_64_sim/"
+else
+    echo "✗ Simulator (x86_64):      FAILED"
+fi
+
+if $BUILD_SUCCESS_SIM_ARM; then
+    echo "✓ Simulator (arm64):       compiled/ios_arm64_sim/"
+else
+    echo "✗ Simulator (arm64):       FAILED"
+fi
+
+if $BUILD_SUCCESS_DEVICE && ($BUILD_SUCCESS_SIM_X64 || $BUILD_SUCCESS_SIM_ARM); then
+    echo "✓ XCFramework:             compiled/ios_xcframework/LOOM.xcframework"
+else
+    echo "⚠ XCFramework:             SKIPPED"
+fi
 
 echo ""
 echo "=== Build Complete ==="
-echo "Integrate into Xcode project or build XCFramework with: ARCH=universal ./build_ios.sh"
+echo ""
+echo "To use in Xcode:"
+echo "  1. Drag LOOM.xcframework into your Xcode project"
+echo "  2. Add to 'Frameworks, Libraries, and Embedded Content'"
+echo "  3. Include the header: #import \"libloom.h\""
+echo ""
+echo "NOTE: These are STATIC libraries (.a). Link against them at build time."
 
