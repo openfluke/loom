@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPARTA - Adaptation Analytics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0a0a0f;
+            --surface-color: #12121a;
+            --surface-hover: #1a1a25;
+            --accent-color: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.3);
+            --success-color: #22c55e;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --text-color: #e4e4e7;
+            --secondary-text: #71717a;
+            --border-color: #27272a;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            min-height: 100vh;
+        }
+
+        header {
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .logo {
+            font-size: 1.25rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #6366f1, #a855f7);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .container { max-width: 1800px; margin: 0 auto; padding: 1rem; }
+
+        /* Architecture Quick Select */
+        .arch-select {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .arch-btn {
+            padding: 0.6rem 1.5rem;
+            border-radius: 8px;
+            border: 2px solid var(--border-color);
+            background: var(--surface-color);
+            color: var(--text-color);
+            font-family: inherit;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .arch-btn:hover { border-color: var(--accent-color); }
+        .arch-btn.active {
+            background: var(--accent-color);
+            border-color: var(--accent-color);
+            color: white;
+            box-shadow: 0 0 15px var(--accent-glow);
+        }
+
+        /* Mode toggles */
+        .mode-toggles {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .mode-btn {
+            padding: 0.4rem 0.8rem;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background: transparent;
+            color: var(--secondary-text);
+            font-family: inherit;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .mode-btn:hover { border-color: var(--accent-color); color: var(--text-color); }
+        .mode-btn.active { background: var(--surface-hover); border-color: var(--accent-color); color: var(--text-color); }
+
+        /* Full width chart */
+        .chart-section {
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .chart-title { font-size: 1.1rem; font-weight: 600; }
+        .chart-subtitle { font-size: 0.8rem; color: var(--secondary-text); }
+
+        #main-canvas { height: 400px !important; }
+
+        .task-indicator {
+            display: flex;
+            margin-top: 0.5rem;
+            font-size: 0.7rem;
+            color: var(--secondary-text);
+        }
+
+        .task-phase {
+            flex: 1;
+            text-align: center;
+            padding: 0.25rem;
+            border-top: 2px dashed var(--border-color);
+        }
+
+        .task-phase.avoid {
+            background: rgba(239, 68, 68, 0.1);
+            border-color: var(--danger-color);
+        }
+
+        /* Insights grid below chart */
+        .insights-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1rem;
+        }
+
+        .insight-card {
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+        }
+
+        .insight-card h4 {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--secondary-text);
+            margin-bottom: 0.5rem;
+        }
+
+        .insight-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent-color);
+        }
+
+        .insight-detail {
+            font-size: 0.8rem;
+            color: var(--secondary-text);
+            margin-top: 0.25rem;
+        }
+
+        .insight-value.success { color: var(--success-color); }
+        .insight-value.danger { color: var(--danger-color); }
+
+        .highlight-card {
+            background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(168,85,247,0.1));
+            border-color: var(--accent-color);
+        }
+
+        /* Rankings */
+        .rankings-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+        .rankings-table th { text-align: left; padding: 0.4rem 0; color: var(--secondary-text); font-weight: 500; border-bottom: 1px solid var(--border-color); }
+        .rankings-table td { padding: 0.4rem 0; border-bottom: 1px solid var(--border-color); }
+        .rankings-table tr:last-child td { border-bottom: none; }
+
+        .rank-badge {
+            display: inline-block;
+            width: 18px; height: 18px; line-height: 18px;
+            text-align: center; border-radius: 4px;
+            font-size: 0.7rem; font-weight: 600; margin-right: 0.4rem;
+        }
+
+        .rank-1 { background: linear-gradient(135deg, #fbbf24, #f59e0b); color: #000; }
+        .rank-2 { background: linear-gradient(135deg, #9ca3af, #6b7280); color: #fff; }
+        .rank-3 { background: linear-gradient(135deg, #d97706, #b45309); color: #fff; }
+
+        /* Legend */
+        .legend { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.75rem; margin-top: 1rem; justify-content: center; }
+        .legend-item { display: flex; align-items: center; gap: 0.3rem; }
+        .legend-color { width: 12px; height: 12px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">SPARTA Analytics</div>
+        <span style="font-size:0.8rem;color:var(--secondary-text)" id="data-timestamp">Loading...</span>
+    </header>
+
+    <div class="container">
+        <!-- Architecture Quick Select -->
+        <div class="arch-select" id="arch-select">
+            <button class="arch-btn active" data-arch="all">All</button>
+            <button class="arch-btn" data-arch="Dense">Dense</button>
+            <button class="arch-btn" data-arch="Conv2D">Conv2D</button>
+            <button class="arch-btn" data-arch="RNN">RNN</button>
+            <button class="arch-btn" data-arch="LSTM">LSTM</button>
+            <button class="arch-btn" data-arch="Attn">Attn</button>
+        </div>
+
+        <!-- Mode Quick Select -->
+        <div class="arch-select" id="mode-select">
+            <button class="arch-btn active" data-mode="all">All</button>
+            <button class="arch-btn" data-mode="NormalBP" style="border-left:4px solid hsl(0,80%,50%)">NormalBP</button>
+            <button class="arch-btn" data-mode="Step+BP" style="border-left:4px solid hsl(210,80%,50%)">Step+BP</button>
+            <button class="arch-btn" data-mode="Tween" style="border-left:4px solid hsl(50,80%,50%)">Tween</button>
+            <button class="arch-btn" data-mode="TweenChain" style="border-left:4px solid hsl(150,80%,50%)">TweenChain</button>
+            <button class="arch-btn" data-mode="StepTweenChain" style="border-left:4px solid hsl(270,80%,50%)">StepTweenChain</button>
+        </div>
+
+        <!-- Algorithm Selector -->
+        <div style="display:flex;justify-content:center;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
+            <span style="font-size:0.8rem;color:var(--secondary-text)">Scoring Algorithm:</span>
+            <select id="algorithm-select" style="background:var(--surface-color);color:var(--text-color);border:1px solid var(--border-color);padding:0.5rem 1rem;border-radius:8px;font-family:inherit;cursor:pointer">
+                <option value="balanced">Balanced (T×S×C) - default</option>
+                <option value="throughput-stability">Throughput × Stability</option>
+                <option value="consistency-first">Consistency First</option>
+                <option value="throughput-first">Throughput First</option>
+            </select>
+            <span id="formula-display" style="font-size:0.75rem;color:var(--accent-color);font-family:monospace"></span>
+        </div>
+
+        <!-- Full Width Chart -->
+        <div class="chart-section">
+            <div class="chart-header">
+                <div>
+                    <div class="chart-title">Accuracy Over Time</div>
+                    <div class="chart-subtitle">Comparing stability and throughput across configurations</div>
+                </div>
+                <div id="active-arch" style="font-size:0.9rem;color:var(--accent-color);font-weight:600"></div>
+            </div>
+            <canvas id="main-canvas"></canvas>
+            <div class="task-indicator">
+                <div class="task-phase">CHASE (0-3s)</div>
+                <div class="task-phase avoid">AVOID (3-7s)</div>
+                <div class="task-phase">CHASE (7-10s)</div>
+            </div>
+            <div class="legend" id="legend"></div>
+        </div>
+
+        <!-- Insights Grid -->
+        <div class="insights-grid">
+            <div class="insight-card highlight-card">
+                <div style="display:flex;gap:1.5rem;flex-wrap:wrap">
+                    <div style="flex:1;min-width:200px">
+                        <h4 style="margin-bottom:0.4rem">🚀 Winner</h4>
+                        <div class="insight-value success" id="overall-winner" style="font-size:1.3rem">—</div>
+                        <div class="insight-detail" id="overall-winner-detail"></div>
+                    </div>
+                    <div style="flex:1;min-width:200px;border-left:1px solid var(--border-color);padding-left:1.5rem">
+                        <h4 style="margin-bottom:0.4rem">⚠️ Worst</h4>
+                        <div class="insight-value danger" id="worst-mode" style="font-size:1.3rem">—</div>
+                        <div class="insight-detail" id="worst-mode-detail"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="insight-card" style="grid-column: span 2;">
+                <h4>📊 Mode Comparison (All Metrics)</h4>
+                <div style="font-size:0.7rem;color:var(--secondary-text);margin-bottom:0.5rem">
+                    <span id="comparison-formula" style="color:var(--accent-color);font-family:monospace"></span> | Higher is better
+                </div>
+                <table class="rankings-table" id="comparison-table">
+                    <thead>
+                        <tr>
+                            <th>Mode</th>
+                            <th style="text-align:right">Stability</th>
+                            <th style="text-align:right">Throughput</th>
+                            <th style="text-align:right">Consistency</th>
+                            <th style="text-align:right">= Score</th>
+                        </tr>
+                    </thead>
+                    <tbody id="comparison-tbody"></tbody>
+                </table>
+            </div>
+
+
+        </div>
+    </div>
+
+    <script>
+        let resultsData = null;
+        let chart = null;
+        let selectedArch = 'all';
+        let selectedModes = new Set();
+        let selectedAlgorithm = 'balanced';
+
+        // Algorithm formulas
+        const algorithms = {
+            'throughput-stability': {
+                name: 'Throughput × Stability',
+                formula: 'Score = (Stability × Throughput) / 1000',
+                calc: (t, s, c) => (s * t) / 1000
+            },
+            'balanced': {
+                name: 'Balanced (T×S×C)',
+                formula: 'Score = (T × S × C) / 100000',
+                calc: (t, s, c) => (t * s * c) / 100000
+            },
+            'consistency-first': {
+                name: 'Consistency First',
+                formula: 'Score = (C² × T × S) / 10000000',
+                calc: (t, s, c) => (c * c * t * s) / 10000000
+            },
+            'throughput-first': {
+                name: 'Throughput First',
+                formula: 'Score = (T² × S) / 1000000000',
+                calc: (t, s, c) => (t * t * s) / 1000000000
+            }
+        };
+
+        // Different hues for each mode, with varying lightness for depth
+        const modeHues = {
+            "NormalBP": 0,       // Red
+            "Step+BP": 210,      // Blue
+            "Tween": 50,         // Yellow
+            "TweenChain": 150,   // Green
+            "StepTweenChain": 270 // Purple
+        };
+
+        const depthLightness = { 3: 65, 5: 50, 9: 35 };
+
+        function getModeColor(mode, depth) {
+            const hue = modeHues[mode] || 0;
+            const lightness = depthLightness[depth] || 50;
+            return `hsl(${hue}, 80%, ${lightness}%)`;
+        }
+
+        function updateFormulaDisplay() {
+            const formula = algorithms[selectedAlgorithm].formula;
+            document.getElementById('formula-display').innerText = formula;
+            document.getElementById('comparison-formula').innerText = formula;
+        }
+
+        async function init() {
+            try {
+                const response = await fetch('test18_results.json');
+                resultsData = await response.json();
+                document.getElementById('data-timestamp').innerText = new Date(resultsData.timestamp).toLocaleString();
+
+                // Initialize all modes as selected
+                resultsData.modes.forEach(m => selectedModes.add(m.trim()));
+
+                setupArchButtons();
+                setupModeButtons();
+                setupAlgorithmSelect();
+                updateFormulaDisplay();
+                updateChart();
+            } catch (e) {
+                console.error("Failed to load data:", e);
+            }
+        }
+
+        function setupAlgorithmSelect() {
+            const select = document.getElementById('algorithm-select');
+            select.addEventListener('change', () => {
+                selectedAlgorithm = select.value;
+                updateFormulaDisplay();
+                updateChart();
+            });
+        }
+
+        function setupArchButtons() {
+            document.querySelectorAll('#arch-select .arch-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('#arch-select .arch-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    selectedArch = btn.dataset.arch;
+                    document.getElementById('active-arch').innerText = selectedArch === 'all' ? 'All Architectures' : selectedArch;
+                    updateChart();
+                });
+            });
+            document.getElementById('active-arch').innerText = 'All Architectures';
+        }
+
+        function setupModeButtons() {
+            document.querySelectorAll('#mode-select .arch-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const mode = btn.dataset.mode;
+                    
+                    if (mode === 'all') {
+                        // Select all modes
+                        document.querySelectorAll('#mode-select .arch-btn').forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        selectedModes.clear();
+                        resultsData.modes.forEach(m => selectedModes.add(m.trim()));
+                    } else {
+                        // Toggle individual mode
+                        document.querySelector('#mode-select .arch-btn[data-mode="all"]').classList.remove('active');
+                        
+                        if (selectedModes.has(mode) && selectedModes.size > 1) {
+                            selectedModes.delete(mode);
+                            btn.classList.remove('active');
+                        } else if (!selectedModes.has(mode)) {
+                            selectedModes.add(mode);
+                            btn.classList.add('active');
+                        }
+                    }
+                    updateChart();
+                });
+            });
+        }
+
+        function calcStability(windows) {
+            if (!windows || windows.length === 0) return 0;
+            const mean = windows.reduce((a, b) => a + b, 0) / windows.length;
+            const variance = windows.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / windows.length;
+            return Math.max(0, 100 - Math.sqrt(variance));
+        }
+
+        function calcConsistency(windows, threshold = 30) {
+            if (!windows || windows.length === 0) return 0;
+            return (windows.filter(w => w >= threshold).length / windows.length) * 100;
+        }
+
+        function updateChart() {
+            const ctx = document.getElementById('main-canvas').getContext('2d');
+            if (chart) chart.destroy();
+
+            const datasets = [];
+            const modeStats = {};
+            const legendItems = [];
+
+            for (const configName in resultsData.results) {
+                const [arch, depthStr] = configName.split('-');
+                const depth = parseInt(depthStr.replace('L', ''));
+
+                if (selectedArch !== 'all' && arch !== selectedArch) continue;
+
+                const configResults = resultsData.results[configName];
+                for (const modeKey in configResults) {
+                    const cleanMode = modeKey.trim();
+                    if (!selectedModes.has(cleanMode)) continue;
+
+                    const res = configResults[modeKey];
+                    const color = getModeColor(cleanMode, depth);
+                    const label = `${arch}-${depth}L ${cleanMode}`;
+
+                    datasets.push({
+                        label: label,
+                        data: res.windows,
+                        borderColor: color,
+                        backgroundColor: color.replace(')', ', 0.1)').replace('hsl', 'hsla'),
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 1,
+                        pointHoverRadius: 4
+                    });
+
+                    legendItems.push({ label: `${cleanMode} (${depth}L)`, color });
+
+                    if (!modeStats[cleanMode]) {
+                        modeStats[cleanMode] = { allWindows: [], totalOutputs: 0, count: 0 };
+                    }
+                    modeStats[cleanMode].allWindows.push(...res.windows);
+                    modeStats[cleanMode].totalOutputs += res.totalOutputs;
+                    modeStats[cleanMode].count++;
+                }
+            }
+
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: ['1s', '2s', '3s', '4s', '5s', '6s', '7s', '8s', '9s', '10s'],
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        y: { beginAtZero: true, max: 100, ticks: { color: '#71717a', callback: v => v + '%' }, grid: { color: '#27272a' } },
+                        x: { ticks: { color: '#71717a' }, grid: { color: '#27272a' } }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { backgroundColor: '#18181b', borderColor: '#3f3f46', borderWidth: 1 }
+                    }
+                }
+            });
+
+            // Build legend (grouped by mode, showing depth variations)
+            const legendContainer = document.getElementById('legend');
+            const uniqueLegend = new Map();
+            legendItems.forEach(item => { if (!uniqueLegend.has(item.label)) uniqueLegend.set(item.label, item.color); });
+            legendContainer.innerHTML = Array.from(uniqueLegend.entries()).map(([label, color]) =>
+                `<div class="legend-item"><div class="legend-color" style="background:${color}"></div>${label}</div>`
+            ).join('');
+
+            updateInsights(modeStats);
+        }
+
+        function updateInsights(modeStats) {
+            const modeMetrics = [];
+            const calcFn = algorithms[selectedAlgorithm].calc;
+            
+            for (const mode in modeStats) {
+                const windows = modeStats[mode].allWindows;
+                const stability = calcStability(windows);
+                const consistency = calcConsistency(windows);
+                const minAcc = windows.length > 0 ? Math.min(...windows) : 0;
+                const avgThroughput = Math.round(modeStats[mode].totalOutputs / modeStats[mode].count);
+                
+                // Use selected algorithm for scoring
+                const score = calcFn(avgThroughput, stability, consistency);
+                
+                modeMetrics.push({ mode, stability, consistency, minAcc, avgThroughput, score });
+            }
+
+            modeMetrics.sort((a, b) => b.score - a.score);
+
+            if (modeMetrics.length > 0) {
+                const best = modeMetrics[0];
+                document.getElementById('overall-winner').innerText = best.mode;
+                document.getElementById('overall-winner-detail').innerHTML =
+                    `Score: ${best.score.toFixed(0)} | Stab: ${best.stability.toFixed(0)}% | Tput: ${best.avgThroughput.toLocaleString()} | Cons: ${best.consistency.toFixed(0)}%`;
+
+                const worst = modeMetrics[modeMetrics.length - 1];
+                document.getElementById('worst-mode').innerText = worst.mode;
+                document.getElementById('worst-mode-detail').innerHTML =
+                    `Score: ${worst.score.toFixed(0)} | Tput: ${worst.avgThroughput.toLocaleString()} | Cons: ${worst.consistency.toFixed(0)}%`;
+
+                // Combined comparison table
+                const maxT = Math.max(...modeMetrics.map(m => m.avgThroughput));
+                const comparisonTbody = document.getElementById('comparison-tbody');
+                comparisonTbody.innerHTML = modeMetrics.map((m, i) => {
+                    const rankClass = i < 3 ? `rank-${i+1}` : '';
+                    const isLowThroughput = m.avgThroughput < maxT * 0.5;
+                    return `<tr>
+                        <td><span class="rank-badge ${rankClass}">${i+1}</span><span style="color:hsl(${modeHues[m.mode]},80%,50%)">${m.mode}</span></td>
+                        <td style="text-align:right">${m.stability.toFixed(0)}%</td>
+                        <td style="text-align:right;${isLowThroughput ? 'color:var(--danger-color)' : ''}">${m.avgThroughput.toLocaleString()}</td>
+                        <td style="text-align:right">${m.consistency.toFixed(0)}%</td>
+                        <td style="text-align:right;font-weight:700;color:var(--accent-color)">${m.score.toFixed(0)}</td>
+                    </tr>`;
+                }).join('');
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>

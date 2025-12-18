@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -118,6 +120,55 @@ func main() {
 
 	// Print summary table
 	printSummaryTable(allResults, networkTypes, depths, modes)
+
+	// Export to JSON
+	exportResultsToJSON(allResults, networkTypes, depths, modes)
+}
+
+func exportResultsToJSON(results map[string]map[TrainingMode]SummaryResult18, networkTypes []string, depths []int, modes []TrainingMode) {
+	fmt.Print("\nExporting results to JSON... ")
+
+	// Convert results to a more serializable format (strings for modes)
+	serializableResults := make(map[string]map[string]SummaryResult18)
+	for config, modeMap := range results {
+		serializableResults[config] = make(map[string]SummaryResult18)
+		for mode, res := range modeMap {
+			serializableResults[config][modeNames[mode]] = res
+		}
+	}
+
+	modeStringNames := make([]string, len(modes))
+	for i, m := range modes {
+		modeStringNames[i] = modeNames[m]
+	}
+
+	data := struct {
+		NetworkTypes []string                              `json:"networkTypes"`
+		Depths       []int                                 `json:"depths"`
+		Modes        []string                              `json:"modes"`
+		Results      map[string]map[string]SummaryResult18 `json:"results"`
+		Timestamp    string                                `json:"timestamp"`
+	}{
+		NetworkTypes: networkTypes,
+		Depths:       depths,
+		Modes:        modeStringNames,
+		Results:      serializableResults,
+		Timestamp:    time.Now().Format(time.RFC3339),
+	}
+
+	file, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		fmt.Printf("Error marshaling JSON: %v\n", err)
+		return
+	}
+
+	err = os.WriteFile("test18_results.json", file, 0644)
+	if err != nil {
+		fmt.Printf("Error writing file: %v\n", err)
+		return
+	}
+
+	fmt.Println("Done (test18_results.json)")
 }
 
 // ============================================================================
@@ -151,13 +202,13 @@ var modeShortNames18 = map[TrainingMode]string{
 }
 
 type SummaryResult18 struct {
-	AvgAccuracy   float64
-	Change1Adapt  float64
-	Change2Adapt  float64
-	TotalOutputs  int
-	Windows       []float64
-	PreChange1Acc float64
-	PreChange2Acc float64
+	AvgAccuracy   float64   `json:"avgAccuracy"`
+	Change1Adapt  float64   `json:"change1Adapt"`
+	Change2Adapt  float64   `json:"change2Adapt"`
+	TotalOutputs  int       `json:"totalOutputs"`
+	Windows       []float64 `json:"windows"`
+	PreChange1Acc float64   `json:"preChange1Acc"`
+	PreChange2Acc float64   `json:"preChange2Acc"`
 }
 
 // Note: AdaptationResult is now provided by nn.AdaptationResult from the framework
