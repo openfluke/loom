@@ -1247,6 +1247,8 @@ func LoadModelFromJSON(jsonPtr *byte, jsonLen int) *Network {
 
 ## GPU Architecture
 
+> ⚠️ **Experimental Feature**: GPU support is currently in active development. Results may vary across hardware configurations.
+
 ### WebGPU Compute Shaders
 
 Loom uses WGSL (WebGPU Shading Language) for GPU compute:
@@ -1257,13 +1259,13 @@ Loom uses WGSL (WebGPU Shading Language) for GPU compute:
 
 ### GPU Status by Layer Type
 
-| Layer Type | Forward GPU | Backward GPU | Status                           |
-| ---------- | ----------- | ------------ | -------------------------------- |
-| Dense      | ✅ Active   | ✅ Active    | Production ready                 |
-| MHA        | ✅ Hybrid   | ✅ Hybrid    | Production ready (1.07x speedup) |
-| Conv2D     | ⚠️ Buggy    | ⚠️ Buggy     | Falls back to CPU                |
-| RNN        | ❌ CPU      | ❌ CPU       | Sequential nature                |
-| LSTM       | ❌ CPU      | ❌ CPU       | Sequential nature                |
+| Layer Type | Forward GPU | Backward GPU | Status                              |
+| ---------- | ----------- | ------------ | ----------------------------------- |
+| Dense      | ✅ Active   | ✅ Active    | Development (functional)            |
+| MHA        | ⚠️ Hybrid   | ⚠️ Hybrid    | Experimental (may have issues)      |
+| Conv2D     | ❌ Buggy    | ❌ Buggy     | Falls back to CPU                   |
+| RNN        | ❌ CPU      | ❌ CPU       | CPU only (sequential nature)        |
+| LSTM       | ❌ CPU      | ❌ CPU       | CPU only (sequential nature)        |
 
 ## Documentation
 
