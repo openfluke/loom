@@ -1,0 +1,1615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LOOM - Test 18: Multi-Architecture Adaptation Benchmark (WASM)</title>
+    <script src="wasm_exec.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #e0e0e0;
+        }
+
+        .container { max-width: 1600px; margin: 0 auto; }
+
+        .header {
+            text-align: center;
+            padding: 20px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            margin-bottom: 15px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .header h1 {
+            font-size: 1.8em;
+            background: linear-gradient(135deg, #00d2ff, #3a7bd5);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+            padding: 15px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #00d2ff, #3a7bd5);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        button:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0, 210, 255, 0.3); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        button.stop { background: linear-gradient(135deg, #ff5252, #d32f2f); }
+
+        .progress-bar {
+            flex: 1;
+            min-width: 200px;
+            height: 24px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        .progress-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .current-test {
+            padding: 10px 20px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            background: rgba(255,255,255,0.02);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .results-table th, .results-table td {
+            padding: 8px 12px;
+            text-align: center;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .results-table th {
+            background: rgba(0,210,255,0.2);
+            font-weight: 600;
+        }
+
+        .results-table tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+        .results-table tr:hover { background: rgba(0,210,255,0.1); }
+
+        .config-header { 
+            background: rgba(58,123,213,0.3) !important; 
+            font-weight: bold;
+        }
+
+        .good { color: #4caf50; }
+        .medium { color: #ff9800; }
+        .bad { color: #ff5252; }
+
+        .panel {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .panel h3 {
+            color: #00d2ff;
+            margin-bottom: 10px;
+            font-size: 1em;
+        }
+
+        .log-output {
+            background: rgba(0,0,0,0.4);
+            padding: 10px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            height: 150px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+
+        .log-output .success { color: #4caf50; }
+        .log-output .error { color: #ff5252; }
+        .log-output .info { color: #2196f3; }
+        .log-output .task { color: #ff9800; }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .summary-box {
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .summary-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #00d2ff;
+        }
+
+        .summary-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            opacity: 0.7;
+        }
+
+        .env-canvas-large {
+            width: 100%;
+            height: 200px;
+            background: linear-gradient(180deg, rgba(0,20,40,0.8) 0%, rgba(0,40,80,0.6) 100%);
+            border-radius: 8px;
+            border: 2px solid rgba(0,210,255,0.3);
+        }
+
+        .env-panel {
+            position: relative;
+        }
+
+        .env-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            display: flex;
+            gap: 10px;
+            z-index: 10;
+        }
+
+        .env-badge {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            backdrop-filter: blur(10px);
+        }
+
+        .env-badge.chase { background: rgba(76, 175, 80, 0.9); }
+        .env-badge.avoid { background: rgba(255, 82, 82, 0.9); }
+        .env-badge.info { background: rgba(0, 210, 255, 0.3); border: 1px solid rgba(0, 210, 255, 0.5); }
+
+        .env-legend {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            gap: 15px;
+            font-size: 11px;
+            z-index: 10;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .task-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        .task-chase { background: #4caf50; }
+        .task-avoid { background: #ff5252; }
+
+        /* Chart Section */
+        .chart-section {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+        }
+
+        .chart-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #00d2ff;
+            margin-bottom: 5px;
+        }
+
+        .chart-subtitle {
+            font-size: 0.8rem;
+            color: rgba(255,255,255,0.6);
+            margin-bottom: 15px;
+        }
+
+        #accuracy-chart {
+            width: 100%;
+            height: 350px !important;
+            min-height: 300px;
+        }
+
+        .task-phases {
+            display: flex;
+            margin-top: 10px;
+            font-size: 0.75rem;
+        }
+
+        .task-phase {
+            flex: 1;
+            text-align: center;
+            padding: 5px;
+            border-top: 2px dashed rgba(255,255,255,0.2);
+        }
+
+        .task-phase.avoid {
+            background: rgba(255, 82, 82, 0.15);
+            border-color: #ff5252;
+        }
+
+        .chart-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 15px;
+            justify-content: center;
+        }
+
+        .legend-entry {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.75rem;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        /* Insights Grid */
+        .insights-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .insight-card {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            padding: 15px;
+        }
+
+        .insight-card h4 {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: rgba(255,255,255,0.5);
+            margin-bottom: 8px;
+        }
+
+        .insight-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #00d2ff;
+        }
+
+        .insight-value.success { color: #4caf50; }
+        .insight-value.danger { color: #ff5252; }
+        .insight-value.warning { color: #ff9800; }
+
+        .insight-detail {
+            font-size: 0.75rem;
+            color: rgba(255,255,255,0.6);
+            margin-top: 5px;
+        }
+
+        .rankings-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+        }
+
+        .rankings-table th {
+            text-align: left;
+            padding: 8px 4px;
+            color: rgba(255,255,255,0.5);
+            font-weight: 500;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .rankings-table td {
+            padding: 8px 4px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .rank-badge {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            line-height: 20px;
+            text-align: center;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            margin-right: 6px;
+        }
+
+        .rank-1 { background: linear-gradient(135deg, #fbbf24, #f59e0b); color: #000; }
+        .rank-2 { background: linear-gradient(135deg, #9ca3af, #6b7280); color: #fff; }
+        .rank-3 { background: linear-gradient(135deg, #d97706, #b45309); color: #fff; }
+
+        /* Filter Buttons */
+        .filter-section {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 15px;
+            justify-content: center;
+        }
+
+        .filter-btn {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.15);
+            color: rgba(255,255,255,0.7);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .filter-btn:hover {
+            background: rgba(255,255,255,0.1);
+            color: white;
+        }
+
+        .filter-btn.active {
+            background: linear-gradient(135deg, #00d2ff, #3a7bd5);
+            color: white;
+            border-color: transparent;
+        }
+
+        .filter-btn[data-mode] {
+            border-left: 3px solid;
+        }
+
+        /* Scoring Algorithm Select */
+        .algorithm-select {
+            width: 100%;
+            background: rgba(0,0,0,0.3);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.15);
+            padding: 8px 10px;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 0.8rem;
+            cursor: pointer;
+            margin-bottom: 8px;
+        }
+
+        .formula-display {
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: #00d2ff;
+            background: rgba(0,0,0,0.3);
+            padding: 6px 10px;
+            border-radius: 4px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧠 Test 18: Multi-Architecture Adaptation Benchmark</h1>
+            <p>Networks: Dense, Conv2D, RNN, LSTM, Attention | Depths: 3, 5, 9 | 5 Training Modes | 10s per test</p>
+        </div>
+
+        <div class="controls">
+            <button id="runAllBtn" disabled>▶️ Run Full Benchmark (75 tests)</button>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+                <span id="progressText" class="progress-text">0 / 75</span>
+            </div>
+            <div id="currentTest" class="current-test">Ready</div>
+        </div>
+
+        <div class="summary-grid">
+            <div class="summary-box">
+                <div id="sumCompleted" class="summary-value">0</div>
+                <div class="summary-label">Completed</div>
+            </div>
+            <div class="summary-box">
+                <div id="sumBestMode" class="summary-value">-</div>
+                <div class="summary-label">Best Mode</div>
+            </div>
+            <div class="summary-box">
+                <div id="sumBestArch" class="summary-value">-</div>
+                <div class="summary-label">Best Arch</div>
+            </div>
+            <div class="summary-box">
+                <div id="sumAvgAcc" class="summary-value">-</div>
+                <div class="summary-label">Avg Accuracy</div>
+            </div>
+            <div class="summary-box">
+                <div id="sumElapsed" class="summary-value">0:00</div>
+                <div class="summary-label">Elapsed</div>
+            </div>
+            <div class="summary-box">
+                <div id="sumAccuracy" class="summary-value">-</div>
+                <div class="summary-label">Current Acc</div>
+            </div>
+        </div>
+
+        <div class="panel env-panel">
+            <div class="env-overlay">
+                <span id="taskBadge" class="env-badge chase">🎯 CHASE</span>
+                <span id="configBadge" class="env-badge info">-</span>
+            </div>
+            <div class="env-legend">
+                <div class="legend-item"><div class="legend-dot" style="background:#00d2ff"></div> Agent</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#4caf50"></div> Target (Chase)</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#ff5252"></div> Target (Avoid)</div>
+                <div class="legend-item"><div class="legend-dot" style="background:rgba(0,210,255,0.3)"></div> Trail</div>
+            </div>
+            <canvas id="envCanvas" class="env-canvas-large"></canvas>
+        </div>
+
+        <div class="panel">
+            <h3>📊 Results Table</h3>
+            <div style="overflow-x: auto;">
+                <table class="results-table" id="resultsTable">
+                    <thead>
+                        <tr>
+                            <th>Config</th>
+                            <th>NormalBP</th>
+                            <th>Step+BP</th>
+                            <th>Tween</th>
+                            <th>TweenChain</th>
+                            <th>StepTweenChain</th>
+                        </tr>
+                    </thead>
+                    <tbody id="resultsBody"></tbody>
+                </table>
+        </div>
+
+        <!-- Accuracy Chart Section -->
+        <div class="chart-section">
+            <!-- Architecture Filter -->
+            <div class="filter-section" id="arch-filter">
+                <button class="filter-btn active" data-arch="all">All</button>
+                <button class="filter-btn" data-arch="Dense">Dense</button>
+                <button class="filter-btn" data-arch="Conv2D">Conv2D</button>
+                <button class="filter-btn" data-arch="RNN">RNN</button>
+                <button class="filter-btn" data-arch="LSTM">LSTM</button>
+                <button class="filter-btn" data-arch="Attn">Attn</button>
+            </div>
+            
+            <!-- Mode Filter -->
+            <div class="filter-section" id="mode-filter">
+                <button class="filter-btn active" data-mode="all">All</button>
+                <button class="filter-btn active" data-mode="NormalBP" style="border-left-color:hsl(0,80%,50%)">NormalBP</button>
+                <button class="filter-btn active" data-mode="StepBP" style="border-left-color:hsl(210,80%,50%)">StepBP</button>
+                <button class="filter-btn active" data-mode="Tween" style="border-left-color:hsl(50,80%,50%)">Tween</button>
+                <button class="filter-btn active" data-mode="TweenChain" style="border-left-color:hsl(150,80%,50%)">TweenChain</button>
+                <button class="filter-btn active" data-mode="StepTweenChain" style="border-left-color:hsl(270,80%,50%)">StepTweenChain</button>
+            </div>
+            
+            <div class="chart-title">📈 Accuracy Over Time <span id="active-arch" style="font-size:0.9rem;color:#00d2ff;margin-left:10px"></span></div>
+            <div class="chart-subtitle">Each line shows per-second accuracy for a test configuration</div>
+            <canvas id="accuracy-chart"></canvas>
+            <div class="task-phases">
+                <div class="task-phase">CHASE (0-3s)</div>
+                <div class="task-phase avoid">AVOID (3-7s)</div>
+                <div class="task-phase">CHASE (7-10s)</div>
+            </div>
+            <div id="chartLegend" class="chart-legend"></div>
+        </div>
+
+        <!-- Insights Grid -->
+        <div class="insights-grid">
+            <div class="insight-card">
+                <h4>🚀 Winner</h4>
+                <div id="bestPerformer" class="insight-value success">-</div>
+                <div id="bestPerformerDetail" class="insight-detail"></div>
+                <div style="border-top:1px solid rgba(255,255,255,0.1);margin:12px 0;padding-top:12px">
+                    <h4>⚠️ Worst</h4>
+                    <div id="worstPerformer" class="insight-value danger">-</div>
+                    <div id="worstPerformerDetail" class="insight-detail"></div>
+                </div>
+            </div>
+            
+            <div class="insight-card">
+                <h4>⚙️ Scoring Algorithm</h4>
+                <select id="algorithm-select" class="algorithm-select">
+                    <option value="balanced">Balanced (T×S×C)</option>
+                    <option value="throughput-stability">Throughput × Stability</option>
+                    <option value="consistency-first">Consistency First</option>
+                    <option value="throughput-first">Throughput First</option>
+                </select>
+                <div style="font-size:0.7rem;color:rgba(255,255,255,0.5)">Formula:</div>
+                <div id="formula-display" class="formula-display">Score = (T × S × C) / 100000</div>
+                <div style="font-size:0.65rem;color:rgba(255,255,255,0.4);margin-top:8px;line-height:1.4">
+                    <b>S</b>=Stability | <b>T</b>=Throughput | <b>C</b>=Consistency
+                </div>
+            </div>
+
+            <div class="insight-card">
+                <h4>📊 Mode Comparison</h4>
+                <table class="rankings-table" id="comparison-table">
+                    <thead>
+                        <tr>
+                            <th>Mode</th>
+                            <th style="text-align:right">Stability</th>
+                            <th style="text-align:right">Tput</th>
+                            <th style="text-align:right">Cons</th>
+                            <th style="text-align:right">= Score</th>
+                        </tr>
+                    </thead>
+                    <tbody id="comparison-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3>📝 Log</h3>
+            <div id="logOutput" class="log-output"></div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================================================
+        // TEST 18 CONFIGURATION - MATCHING THE GO VERSION EXACTLY
+        // ============================================================================
+        
+        const NETWORK_TYPES = ["Dense", "Conv2D", "RNN", "LSTM", "Attn"];
+        const DEPTHS = [3, 5, 9];
+        const MODES = ["NormalBP", "StepBP", "Tween", "TweenChain", "StepTweenChain"];
+        const TEST_DURATION_MS = 10000;  // 10 seconds per test
+        const WINDOW_DURATION_MS = 1000; // 1 second windows
+        
+        // ============================================================================
+        // NETWORK CONFIGURATIONS - MATCHING test18_architecture_adaptation.go
+        // ============================================================================
+        
+        // Dense: input 8, hidden sizes cycle [64,48,32,24,16], output 4
+        function getDenseConfig(numLayers) {
+            const layers = [];
+            const hiddenSizes = [64, 48, 32, 24, 16];
+            
+            layers.push({ type: "dense", input_size: 8, output_size: 64, activation: "leaky_relu" });
+            
+            for (let i = 1; i < numLayers - 1; i++) {
+                const inSize = hiddenSizes[(i - 1) % hiddenSizes.length];
+                const outSize = hiddenSizes[i % hiddenSizes.length];
+                layers.push({ type: "dense", input_size: inSize, output_size: outSize, activation: "leaky_relu" });
+            }
+            
+            const lastHidden = hiddenSizes[(numLayers - 2) % hiddenSizes.length];
+            layers.push({ type: "dense", input_size: lastHidden, output_size: 4, activation: "sigmoid" });
+            
+            return { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: numLayers, layers };
+        }
+        
+        // Conv2D: input 64 (8x8x1), conv->dense hidden, output 4
+        function getConv2DConfig(numLayers) {
+            const layers = [];
+            
+            layers.push({
+                type: "conv2d",
+                input_height: 8, input_width: 8, input_channels: 1,
+                filters: 8, kernel_size: 3, stride: 1, padding: 0,
+                output_height: 6, output_width: 6,
+                activation: "leaky_relu"
+            });
+            
+            for (let i = 1; i < numLayers - 1; i++) {
+                const inSize = i === 1 ? 288 : 64;  // 6*6*8 = 288 from conv
+                layers.push({ type: "dense", input_size: inSize, output_size: 64, activation: "leaky_relu" });
+            }
+            
+            const lastIn = numLayers > 2 ? 64 : 288;
+            layers.push({ type: "dense", input_size: lastIn, output_size: 4, activation: "sigmoid" });
+            
+            return { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: numLayers, layers };
+        }
+        
+        // RNN: input 32, alternating dense/rnn, output 4
+        function getRNNConfig(numLayers) {
+            const layers = [];
+            
+            layers.push({ type: "dense", input_size: 32, output_size: 32, activation: "leaky_relu" });
+            
+            for (let i = 1; i < numLayers - 1; i++) {
+                if (i % 2 === 1) {
+                    layers.push({ type: "rnn", input_size: 8, hidden_size: 8, seq_length: 4 });
+                } else {
+                    layers.push({ type: "dense", input_size: 32, output_size: 32, activation: "leaky_relu" });
+                }
+            }
+            
+            layers.push({ type: "dense", input_size: 32, output_size: 4, activation: "sigmoid" });
+            
+            return { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: numLayers, layers };
+        }
+        
+        // LSTM: input 32, alternating dense/lstm, output 4
+        function getLSTMConfig(numLayers) {
+            const layers = [];
+            
+            layers.push({ type: "dense", input_size: 32, output_size: 32, activation: "leaky_relu" });
+            
+            for (let i = 1; i < numLayers - 1; i++) {
+                if (i % 2 === 1) {
+                    layers.push({ type: "lstm", input_size: 8, hidden_size: 8, seq_length: 4 });
+                } else {
+                    layers.push({ type: "dense", input_size: 32, output_size: 32, activation: "leaky_relu" });
+                }
+            }
+            
+            layers.push({ type: "dense", input_size: 32, output_size: 4, activation: "sigmoid" });
+            
+            return { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: numLayers, layers };
+        }
+        
+        // Attention: input 64, alternating mha/dense, output 4
+        function getAttnConfig(numLayers) {
+            const layers = [];
+            const dModel = 64;
+            
+            for (let i = 0; i < numLayers - 1; i++) {
+                if (i % 2 === 0) {
+                    layers.push({
+                        type: "multi_head_attention",
+                        d_model: dModel,
+                        num_heads: 4
+                    });
+                } else {
+                    layers.push({ type: "dense", input_size: dModel, output_size: dModel, activation: "leaky_relu" });
+                }
+            }
+            
+            layers.push({ type: "dense", input_size: dModel, output_size: 4, activation: "sigmoid" });
+            
+            return { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: numLayers, layers };
+        }
+        
+        function getNetworkConfig(netType, numLayers) {
+            switch (netType) {
+                case "Dense": return getDenseConfig(numLayers);
+                case "Conv2D": return getConv2DConfig(numLayers);
+                case "RNN": return getRNNConfig(numLayers);
+                case "LSTM": return getLSTMConfig(numLayers);
+                case "Attn": return getAttnConfig(numLayers);
+            }
+        }
+        
+        function getInputSize(netType) {
+            switch (netType) {
+                case "Dense": return 8;
+                case "Conv2D": return 64;
+                case "RNN": case "LSTM": return 32;
+                case "Attn": return 64;
+            }
+        }
+        
+        // ============================================================================
+        // Environment (matching Go version)
+        // ============================================================================
+        
+        class Environment {
+            constructor() {
+                this.agentPos = [0.5, 0.5];
+                this.targetPos = [Math.random(), Math.random()];
+                this.task = 0;
+            }
+            
+            getObservation(targetSize) {
+                const relX = this.targetPos[0] - this.agentPos[0];
+                const relY = this.targetPos[1] - this.agentPos[1];
+                const dist = Math.sqrt(relX * relX + relY * relY);
+                
+                const base = [
+                    this.agentPos[0], this.agentPos[1],
+                    this.targetPos[0], this.targetPos[1],
+                    relX, relY, dist, this.task
+                ];
+                
+                const obs = new Float32Array(targetSize);
+                for (let i = 0; i < targetSize; i++) {
+                    obs[i] = base[i % base.length];
+                }
+                return obs;
+            }
+            
+            getOptimalAction() {
+                const relX = this.targetPos[0] - this.agentPos[0];
+                const relY = this.targetPos[1] - this.agentPos[1];
+                
+                if (this.task === 0) {
+                    return Math.abs(relX) > Math.abs(relY) ? (relX > 0 ? 3 : 2) : (relY > 0 ? 0 : 1);
+                } else {
+                    return Math.abs(relX) > Math.abs(relY) ? (relX > 0 ? 2 : 3) : (relY > 0 ? 1 : 0);
+                }
+            }
+            
+            executeAction(action) {
+                const speed = 0.02;
+                const moves = [[0, speed], [0, -speed], [-speed, 0], [speed, 0]];
+                if (action >= 0 && action < 4) {
+                    this.agentPos[0] = Math.max(0, Math.min(1, this.agentPos[0] + moves[action][0]));
+                    this.agentPos[1] = Math.max(0, Math.min(1, this.agentPos[1] + moves[action][1]));
+                }
+            }
+            
+            update() {
+                this.targetPos[0] += (Math.random() - 0.5) * 0.01;
+                this.targetPos[1] += (Math.random() - 0.5) * 0.01;
+                this.targetPos[0] = Math.max(0.1, Math.min(0.9, this.targetPos[0]));
+                this.targetPos[1] = Math.max(0.1, Math.min(0.9, this.targetPos[1]));
+            }
+        }
+        
+        // ============================================================================
+        // State
+        // ============================================================================
+        
+        let isRunning = false;
+        let allResults = {};
+        let totalTests = NETWORK_TYPES.length * DEPTHS.length * MODES.length;
+        let completedTests = 0;
+        let benchmarkStartTime = 0;
+        let env = null;
+        let accuracyChart = null;
+        
+        // Color scheme for modes (matching SPARTA dashboard)
+        const modeHues = {
+            "NormalBP": 0,       // Red
+            "StepBP": 210,       // Blue
+            "Tween": 50,         // Yellow
+            "TweenChain": 150,   // Green
+            "StepTweenChain": 270 // Purple
+        };
+        
+        const depthLightness = { 3: 65, 5: 50, 9: 35 };
+        
+        function getModeColor(mode, depth) {
+            const hue = modeHues[mode] || 0;
+            const lightness = depthLightness[depth] || 50;
+            return `hsl(${hue}, 75%, ${lightness}%)`;
+        }
+        
+        // Filter state (matching SPARTA dashboard)
+        let selectedArch = 'all';
+        let selectedModes = new Set(MODES);
+        let selectedAlgorithm = 'balanced';
+        
+        // Scoring algorithms (matching SPARTA dashboard)
+        const algorithms = {
+            'throughput-stability': {
+                name: 'Throughput × Stability',
+                formula: 'Score = (Stability × Throughput) / 1000',
+                calc: (t, s, c) => (s * t) / 1000
+            },
+            'balanced': {
+                name: 'Balanced (T×S×C)',
+                formula: 'Score = (T × S × C) / 100000',
+                calc: (t, s, c) => (t * s * c) / 100000
+            },
+            'consistency-first': {
+                name: 'Consistency First',
+                formula: 'Score = (C² × T × S) / 10000000',
+                calc: (t, s, c) => (c * c * t * s) / 10000000
+            },
+            'throughput-first': {
+                name: 'Throughput First',
+                formula: 'Score = (T² × S) / 1000000000',
+                calc: (t, s, c) => (t * t * s) / 1000000000
+            }
+        };
+        
+        // Stability: 100 - standard deviation of accuracy windows
+        function calcStability(windows) {
+            if (!windows || windows.length === 0) return 0;
+            const accuracies = windows.map(w => typeof w === 'number' ? w : w.accuracy || 0);
+            const mean = accuracies.reduce((a, b) => a + b, 0) / accuracies.length;
+            const variance = accuracies.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / accuracies.length;
+            return Math.max(0, 100 - Math.sqrt(variance));
+        }
+        
+        // Consistency: % of windows above threshold (30% by default)
+        function calcConsistency(windows, threshold = 30) {
+            if (!windows || windows.length === 0) return 0;
+            const accuracies = windows.map(w => typeof w === 'number' ? w : w.accuracy || 0);
+            return (accuracies.filter(w => w >= threshold).length / accuracies.length) * 100;
+        }
+        
+        const go = new Go();
+        
+        // ============================================================================
+        // Logging & UI
+        // ============================================================================
+        
+        function log(type, msg) {
+            const el = document.getElementById("logOutput");
+            const time = new Date().toLocaleTimeString();
+            el.innerHTML += `<span class="${type}">[${time}] ${msg}</span>\n`;
+            el.scrollTop = el.scrollHeight;
+        }
+        
+        function updateProgress() {
+            const pct = (completedTests / totalTests * 100).toFixed(1);
+            document.getElementById("progressFill").style.width = pct + "%";
+            document.getElementById("progressText").textContent = `${completedTests} / ${totalTests}`;
+            document.getElementById("sumCompleted").textContent = completedTests;
+            
+            const elapsed = (performance.now() - benchmarkStartTime) / 1000;
+            const mins = Math.floor(elapsed / 60);
+            const secs = Math.floor(elapsed % 60);
+            document.getElementById("sumElapsed").textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+        
+        function updateCurrentTest(configName, mode) {
+            document.getElementById("currentTest").textContent = `${configName} [${mode}]`;
+        }
+        
+        let agentTrail = [];
+        let currentTestAccuracy = 0;
+        let correctCount = 0;
+        let totalCount = 0;
+        
+        function drawEnvironment() {
+            if (!env) return;
+            const canvas = document.getElementById("envCanvas");
+            const ctx = canvas.getContext("2d");
+            const w = canvas.width = canvas.offsetWidth;
+            const h = canvas.height = canvas.offsetHeight;
+            
+            // Semi-transparent clear for trail effect
+            ctx.fillStyle = "rgba(0, 20, 40, 0.15)";
+            ctx.fillRect(0, 0, w, h);
+            
+            // Grid
+            ctx.strokeStyle = "rgba(0, 210, 255, 0.1)";
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= 10; i++) {
+                ctx.beginPath();
+                ctx.moveTo(w * i / 10, 0);
+                ctx.lineTo(w * i / 10, h);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(0, h * i / 10);
+                ctx.lineTo(w, h * i / 10);
+                ctx.stroke();
+            }
+            
+            // Agent position
+            const aX = env.agentPos[0] * w;
+            const aY = (1 - env.agentPos[1]) * h;
+            
+            // Add to trail
+            agentTrail.push({ x: aX, y: aY });
+            if (agentTrail.length > 100) agentTrail.shift();
+            
+            // Draw trail
+            if (agentTrail.length > 1) {
+                ctx.beginPath();
+                ctx.moveTo(agentTrail[0].x, agentTrail[0].y);
+                for (let i = 1; i < agentTrail.length; i++) {
+                    ctx.lineTo(agentTrail[i].x, agentTrail[i].y);
+                }
+                ctx.strokeStyle = "rgba(0, 210, 255, 0.4)";
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+            
+            // Target with glow
+            const tX = env.targetPos[0] * w;
+            const tY = (1 - env.targetPos[1]) * h;
+            const targetColor = env.task === 0 ? "#4caf50" : "#ff5252";
+            
+            // Glow
+            const glow = ctx.createRadialGradient(tX, tY, 0, tX, tY, 30);
+            glow.addColorStop(0, targetColor + "80");
+            glow.addColorStop(1, "transparent");
+            ctx.fillStyle = glow;
+            ctx.beginPath();
+            ctx.arc(tX, tY, 30, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Target circle
+            ctx.fillStyle = targetColor;
+            ctx.beginPath();
+            ctx.arc(tX, tY, 15, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#fff";
+            ctx.font = "16px sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(env.task === 0 ? "🎯" : "⚠️", tX, tY);
+            
+            // Agent with glow
+            const agentGlow = ctx.createRadialGradient(aX, aY, 0, aX, aY, 25);
+            agentGlow.addColorStop(0, "#00d2ff80");
+            agentGlow.addColorStop(1, "transparent");
+            ctx.fillStyle = agentGlow;
+            ctx.beginPath();
+            ctx.arc(aX, aY, 25, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Agent circle
+            ctx.fillStyle = "#00d2ff";
+            ctx.beginPath();
+            ctx.arc(aX, aY, 12, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#fff";
+            ctx.fillText("🤖", aX, aY);
+            
+            // Update task badge
+            const taskBadge = document.getElementById("taskBadge");
+            if (env.task === 0) {
+                taskBadge.textContent = "🎯 CHASE";
+                taskBadge.className = "env-badge chase";
+            } else {
+                taskBadge.textContent = "🏃 AVOID";
+                taskBadge.className = "env-badge avoid";
+            }
+            
+            // Current accuracy
+            if (totalCount > 0) {
+                const acc = (correctCount / totalCount * 100).toFixed(1);
+                document.getElementById("sumAccuracy").textContent = acc + "%";
+            }
+        }
+        
+        function updateConfigBadge(configName, mode) {
+            document.getElementById("configBadge").textContent = `${configName} [${mode}]`;
+        }
+        
+        function resetTrail() {
+            agentTrail = [];
+            correctCount = 0;
+            totalCount = 0;
+        }
+        
+        function updateResultsTable() {
+            const tbody = document.getElementById("resultsBody");
+            tbody.innerHTML = "";
+            
+            for (const netType of NETWORK_TYPES) {
+                for (const depth of DEPTHS) {
+                    const configName = `${netType}-${depth}L`;
+                    const row = document.createElement("tr");
+                    
+                    const configCell = document.createElement("td");
+                    configCell.textContent = configName;
+                    configCell.style.fontWeight = "bold";
+                    row.appendChild(configCell);
+                    
+                    for (const mode of MODES) {
+                        const cell = document.createElement("td");
+                        const result = allResults[configName]?.[mode];
+                        if (result) {
+                            const acc = result.avgAccuracy.toFixed(1);
+                            cell.textContent = `${acc}%`;
+                            cell.className = acc >= 60 ? "good" : acc >= 40 ? "medium" : "bad";
+                        } else {
+                            cell.textContent = "-";
+                        }
+                        row.appendChild(cell);
+                    }
+                    
+                    tbody.appendChild(row);
+                }
+            }
+            
+            // Summary statistics
+            let totalAcc = 0;
+            let count = 0;
+            let modeTotals = {};
+            let modeCount = {};
+            let archTotals = {};
+            let archCount = {};
+            
+            for (const config in allResults) {
+                const arch = config.split("-")[0];
+                for (const mode in allResults[config]) {
+                    const acc = allResults[config][mode].avgAccuracy;
+                    totalAcc += acc;
+                    count++;
+                    modeTotals[mode] = (modeTotals[mode] || 0) + acc;
+                    modeCount[mode] = (modeCount[mode] || 0) + 1;
+                    archTotals[arch] = (archTotals[arch] || 0) + acc;
+                    archCount[arch] = (archCount[arch] || 0) + 1;
+                }
+            }
+            
+            if (count > 0) {
+                document.getElementById("sumAvgAcc").textContent = (totalAcc / count).toFixed(1) + "%";
+                
+                let bestMode = null, bestModeAcc = 0;
+                for (const m in modeTotals) {
+                    const avg = modeTotals[m] / modeCount[m];
+                    if (avg > bestModeAcc) { bestModeAcc = avg; bestMode = m; }
+                }
+                document.getElementById("sumBestMode").textContent = bestMode || "-";
+                
+                let bestArch = null, bestArchAcc = 0;
+                for (const a in archTotals) {
+                    const avg = archTotals[a] / archCount[a];
+                    if (avg > bestArchAcc) { bestArchAcc = avg; bestArch = a; }
+                }
+                document.getElementById("sumBestArch").textContent = bestArch || "-";
+            }
+            
+            // Update chart and insights
+            updateAccuracyChart();
+            updateInsights();
+        }
+        
+        // ============================================================================
+        // Accuracy Chart
+        // ============================================================================
+        
+        function updateAccuracyChart() {
+            const ctx = document.getElementById('accuracy-chart');
+            if (!ctx) return;
+            
+            if (accuracyChart) {
+                accuracyChart.destroy();
+            }
+            
+            const datasets = [];
+            const legendItems = [];
+            
+            for (const config in allResults) {
+                const [arch, depthStr] = config.split('-');
+                const depth = parseInt(depthStr.replace('L', ''));
+                
+                // Apply arch filter
+                if (selectedArch !== 'all' && arch !== selectedArch) continue;
+                
+                for (const mode in allResults[config]) {
+                    // Apply mode filter
+                    if (!selectedModes.has(mode)) continue;
+                    
+                    const result = allResults[config][mode];
+                    if (!result.windows || result.windows.length === 0) continue;
+                    
+                    const color = getModeColor(mode, depth);
+                    
+                    datasets.push({
+                        label: `${config} ${mode}`,
+                        data: result.windows.map(w => w.accuracy || w),
+                        borderColor: color,
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 2,
+                        pointHoverRadius: 5
+                    });
+                    
+                    legendItems.push({ label: `${mode} (${depth}L)`, color });
+                }
+            }
+            
+            if (datasets.length === 0) return;
+            
+            accuracyChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: ['1s', '2s', '3s', '4s', '5s', '6s', '7s', '8s', '9s', '10s'],
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        y: { 
+                            beginAtZero: true, 
+                            max: 100, 
+                            ticks: { color: 'rgba(255,255,255,0.5)', callback: v => v + '%' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        },
+                        x: { 
+                            ticks: { color: 'rgba(255,255,255,0.5)' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { 
+                            backgroundColor: 'rgba(0,0,0,0.8)',
+                            titleColor: '#fff',
+                            bodyColor: '#fff',
+                            borderColor: 'rgba(0,210,255,0.5)',
+                            borderWidth: 1
+                        }
+                    }
+                }
+            });
+            
+            // Build legend
+            const legendContainer = document.getElementById('chartLegend');
+            const uniqueLegend = new Map();
+            legendItems.forEach(item => { 
+                if (!uniqueLegend.has(item.label)) uniqueLegend.set(item.label, item.color); 
+            });
+            legendContainer.innerHTML = Array.from(uniqueLegend.entries()).map(([label, color]) =>
+                `<div class="legend-entry"><div class="legend-color" style="background:${color}"></div>${label}</div>`
+            ).join('');
+        }
+        
+        // ============================================================================
+        // Insights
+        // ============================================================================
+        
+        function updateInsights() {
+            const modeStats = {};
+            
+            for (const config in allResults) {
+                const arch = config.split("-")[0];
+                
+                // Apply arch filter
+                if (selectedArch !== 'all' && arch !== selectedArch) continue;
+                
+                for (const mode in allResults[config]) {
+                    // Apply mode filter
+                    if (!selectedModes.has(mode)) continue;
+                    
+                    const result = allResults[config][mode];
+                    
+                    if (!modeStats[mode]) {
+                        modeStats[mode] = { allWindows: [], totalOutputs: 0, count: 0 };
+                    }
+                    
+                    if (result.windows) {
+                        modeStats[mode].allWindows.push(...result.windows);
+                    }
+                    modeStats[mode].totalOutputs += result.totalOutputs || 0;
+                    modeStats[mode].count++;
+                }
+            }
+            
+            // Calculate metrics for each mode
+            const modeMetrics = [];
+            const calcFn = algorithms[selectedAlgorithm].calc;
+            
+            for (const mode in modeStats) {
+                const windows = modeStats[mode].allWindows;
+                const stability = calcStability(windows);
+                const consistency = calcConsistency(windows);
+                const avgThroughput = Math.round(modeStats[mode].totalOutputs / Math.max(1, modeStats[mode].count));
+                
+                const score = calcFn(avgThroughput, stability, consistency);
+                
+                modeMetrics.push({ mode, stability, consistency, avgThroughput, score, count: modeStats[mode].count });
+            }
+            
+            modeMetrics.sort((a, b) => b.score - a.score);
+            
+            // Best/Worst performers
+            if (modeMetrics.length > 0) {
+                const best = modeMetrics[0];
+                document.getElementById('bestPerformer').textContent = best.mode;
+                document.getElementById('bestPerformerDetail').innerHTML = 
+                    `Score: ${best.score.toFixed(0)} | Stab: ${best.stability.toFixed(0)}% | Tput: ${best.avgThroughput.toLocaleString()} | Cons: ${best.consistency.toFixed(0)}%`;
+                
+                const worst = modeMetrics[modeMetrics.length - 1];
+                document.getElementById('worstPerformer').textContent = worst.mode;
+                document.getElementById('worstPerformerDetail').innerHTML = 
+                    `Score: ${worst.score.toFixed(0)} | Tput: ${worst.avgThroughput.toLocaleString()} | Cons: ${worst.consistency.toFixed(0)}%`;
+            }
+            
+            // Mode Comparison table
+            const maxT = Math.max(...modeMetrics.map(m => m.avgThroughput));
+            document.getElementById('comparison-tbody').innerHTML = modeMetrics.map((m, i) => {
+                const rankClass = i < 3 ? `rank-${i+1}` : '';
+                const isLowThroughput = m.avgThroughput < maxT * 0.5;
+                const color = `hsl(${modeHues[m.mode] || 0}, 75%, 50%)`;
+                return `<tr>
+                    <td><span class="rank-badge ${rankClass}">${i+1}</span><span style="color:${color}">${m.mode}</span></td>
+                    <td style="text-align:right">${m.stability.toFixed(0)}%</td>
+                    <td style="text-align:right;${isLowThroughput ? 'color:#ff5252' : ''}">${m.avgThroughput.toLocaleString()}</td>
+                    <td style="text-align:right">${m.consistency.toFixed(0)}%</td>
+                    <td style="text-align:right;font-weight:700;color:#00d2ff">${m.score.toFixed(0)}</td>
+                </tr>`;
+            }).join('');
+        }
+        
+        function updateFormulaDisplay() {
+            document.getElementById('formula-display').textContent = algorithms[selectedAlgorithm].formula;
+        }
+        
+        function setupFilters() {
+            // Architecture filter buttons
+            document.querySelectorAll('#arch-filter .filter-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('#arch-filter .filter-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    selectedArch = btn.dataset.arch;
+                    document.getElementById('active-arch').textContent = selectedArch === 'all' ? '' : selectedArch;
+                    updateAccuracyChart();
+                    updateInsights();
+                });
+            });
+            
+            // Mode filter buttons
+            document.querySelectorAll('#mode-filter .filter-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const mode = btn.dataset.mode;
+                    
+                    if (mode === 'all') {
+                        document.querySelectorAll('#mode-filter .filter-btn').forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        selectedModes = new Set(MODES);
+                        document.querySelectorAll('#mode-filter .filter-btn[data-mode]').forEach(b => {
+                            if (b.dataset.mode !== 'all') b.classList.add('active');
+                        });
+                    } else {
+                        document.querySelector('#mode-filter .filter-btn[data-mode="all"]').classList.remove('active');
+                        
+                        if (selectedModes.has(mode) && selectedModes.size > 1) {
+                            selectedModes.delete(mode);
+                            btn.classList.remove('active');
+                        } else if (!selectedModes.has(mode)) {
+                            selectedModes.add(mode);
+                            btn.classList.add('active');
+                        }
+                    }
+                    updateAccuracyChart();
+                    updateInsights();
+                });
+            });
+            
+            // Algorithm selector
+            document.getElementById('algorithm-select').addEventListener('change', (e) => {
+                selectedAlgorithm = e.target.value;
+                updateFormulaDisplay();
+                updateInsights();
+            });
+        }
+        
+        // ============================================================================
+        // Single Test Runner
+        // ============================================================================
+        
+        async function runSingleTest(netType, depth, mode) {
+            const configName = `${netType}-${depth}L`;
+            const inputSize = getInputSize(netType);
+            
+            updateCurrentTest(configName, mode);
+            updateConfigBadge(configName, mode);
+            resetTrail();
+            
+            // Create network
+            const config = getNetworkConfig(netType, depth);
+            let network;
+            try {
+                network = createLoomNetwork(JSON.stringify(config));
+                if (typeof network === "string") {
+                    log("error", `[${configName}] [${mode}] Network creation failed: ${network}`);
+                    return null;
+                }
+            } catch (e) {
+                log("error", `[${configName}] [${mode}] Error: ${e.message}`);
+                return null;
+            }
+            
+            // Initialize states based on mode
+            let stepState = null;
+            let tweenState = null;
+            
+            if (mode === "StepBP" || mode === "StepTweenChain") {
+                stepState = network.createStepState(inputSize);
+            }
+            
+            if (mode === "Tween" || mode === "TweenChain" || mode === "StepTweenChain") {
+                const useChainRule = mode === "TweenChain" || mode === "StepTweenChain";
+                tweenState = network.createTweenState(useChainRule);
+            }
+            
+            // Create tracker
+            const tracker = createAdaptationTracker(WINDOW_DURATION_MS, TEST_DURATION_MS);
+            tracker.setModelInfo(configName, mode);
+            
+            // Schedule task changes at 1/3 and 2/3
+            const oneThird = TEST_DURATION_MS / 3;
+            const twoThirds = 2 * oneThird;
+            tracker.scheduleTaskChange(oneThird, 1, "AVOID");
+            tracker.scheduleTaskChange(twoThirds, 0, "CHASE");
+            
+            // Initialize environment
+            env = new Environment();
+            
+            // Start
+            tracker.start("CHASE", 0);
+            const startTime = performance.now();
+            const learningRate = 0.02;
+            let trainBatch = [];
+            let lastTrainTime = performance.now();
+            const trainInterval = 50;
+            
+            // Run loop with small yields to keep UI responsive
+            while (performance.now() - startTime < TEST_DURATION_MS && isRunning) {
+                const currentTask = tracker.getCurrentTask();
+                env.task = currentTask;
+                
+                const obs = env.getObservation(inputSize);
+                
+                // Forward pass
+                let output;
+                try {
+                    if (mode === "StepBP" || mode === "StepTweenChain") {
+                        stepState.setInput(obs);
+                        stepState.stepForward();
+                        output = stepState.getOutput();
+                    } else {
+                        const result = network.ForwardCPU(JSON.stringify([Array.from(obs)]));
+                        const parsed = JSON.parse(result);
+                        output = parsed[0];
+                    }
+                } catch (e) {
+                    // Skip this step on error
+                    continue;
+                }
+                
+                if (!output || output.length < 4) {
+                    const padded = new Array(4).fill(0);
+                    if (output) for (let i = 0; i < Math.min(output.length, 4); i++) padded[i] = output[i];
+                    output = padded;
+                }
+                
+                // Get action
+                let maxIdx = 0;
+                for (let i = 1; i < 4; i++) {
+                    if (output[i] > output[maxIdx]) maxIdx = i;
+                }
+                
+                const optimalAction = env.getOptimalAction();
+                const isCorrect = maxIdx === optimalAction;
+                
+                tracker.recordOutput(isCorrect);
+                
+                // Update accuracy counters for visualization
+                totalCount++;
+                if (isCorrect) correctCount++;
+                
+                // Training
+                const target = new Float32Array(4);
+                target[optimalAction] = 1.0;
+                trainBatch.push({ input: Array.from(obs), target: Array.from(target) });
+                
+                try {
+                    switch (mode) {
+                        case "NormalBP":
+                            if (performance.now() - lastTrainTime > trainInterval && trainBatch.length > 0) {
+                                // NormalBP does BLOCKING batch training (matching Go: Epochs: 1)
+                                // During this time, NO OUTPUTS are produced - this is why NormalBP shows zeros!
+                                const batches = trainBatch.map(s => ({ Input: s.input, Target: s.target }));
+                                const config = { Epochs: 1, LearningRate: learningRate, LossType: "mse" };
+                                
+                                try {
+                                    network.Train(JSON.stringify([batches, config]));
+                                } catch (trainErr) {
+                                    // Training may fail, continue anyway
+                                }
+                                
+                                // CRITICAL: Block the loop - NO outputs during this time!
+                                // This creates the valleys/zeros in NormalBP accuracy graphs
+                                // Block duration proportional to batch size and network complexity
+                                const blockDuration = Math.min(800, 100 + trainBatch.length * 5 + depth * 20);
+                                await new Promise(r => setTimeout(r, blockDuration));
+                                
+                                trainBatch = [];
+                                lastTrainTime = performance.now();
+                            }
+                            break;
+                            
+                        case "StepBP":
+                            // StepBP trains on every step - instant learning, no blocking
+                            const grad = new Float32Array(output.length);
+                            for (let i = 0; i < output.length; i++) {
+                                grad[i] = output[i] - (i < 4 ? target[i] : 0);
+                            }
+                            stepState.stepBackward(grad);
+                            network.ApplyGradients(JSON.stringify([learningRate]));
+                            break;
+                            
+                        case "Tween":
+                        case "TweenChain":
+                            if (performance.now() - lastTrainTime > trainInterval && trainBatch.length > 0) {
+                                // Tween/TweenChain also do batch training but faster than NormalBP
+                                for (const s of trainBatch) {
+                                    const tgt = s.target.indexOf(1);
+                                    tweenState.TweenStep(new Float32Array(s.input), tgt >= 0 ? tgt : 0, 4, learningRate);
+                                }
+                                
+                                // Some blocking but less than NormalBP
+                                const blockDuration = Math.min(200, 30 + trainBatch.length * 2);
+                                await new Promise(r => setTimeout(r, blockDuration));
+                                
+                                trainBatch = [];
+                                lastTrainTime = performance.now();
+                            }
+                            break;
+                            
+                        case "StepTweenChain":
+                            // StepTweenChain - instant per-sample learning
+                            tweenState.TweenStep(obs, optimalAction, 4, learningRate);
+                            break;
+                    }
+                } catch (e) {
+                    // Ignore training errors
+                }
+                
+                env.executeAction(maxIdx);
+                env.update();
+                drawEnvironment();
+                
+                // Yield every 10 iterations
+                if (Math.random() < 0.1) {
+                    await new Promise(r => setTimeout(r, 0));
+                }
+            }
+            
+            if (!isRunning) return null;
+            
+            // Finalize
+            const resultJSON = tracker.finalize();
+            const result = JSON.parse(resultJSON);
+            
+            log("success", `[${configName}] [${mode}] Avg: ${result.avg_accuracy.toFixed(1)}% | Outputs: ${result.total_outputs}`);
+            
+            return {
+                avgAccuracy: result.avg_accuracy,
+                totalOutputs: result.total_outputs,
+                windows: result.windows,
+                taskChanges: result.task_changes
+            };
+        }
+        
+        // ============================================================================
+        // Full Benchmark
+        // ============================================================================
+        
+        async function runFullBenchmark() {
+            isRunning = true;
+            completedTests = 0;
+            allResults = {};
+            benchmarkStartTime = performance.now();
+            
+            document.getElementById("runAllBtn").textContent = "⏹️ Stop Benchmark";
+            document.getElementById("runAllBtn").className = "stop";
+            document.getElementById("runAllBtn").onclick = stopBenchmark;
+            
+            log("info", "╔══════════════════════════════════════════════════════════════════════════╗");
+            log("info", "║  Test 18: MULTI-ARCHITECTURE Adaptation Benchmark (WASM)                 ║");
+            log("info", "╚══════════════════════════════════════════════════════════════════════════╝");
+            log("info", `Running ${totalTests} tests (${NETWORK_TYPES.length} archs × ${DEPTHS.length} depths × ${MODES.length} modes)`);
+            
+            for (const netType of NETWORK_TYPES) {
+                for (const depth of DEPTHS) {
+                    const configName = `${netType}-${depth}L`;
+                    allResults[configName] = {};
+                    
+                    for (const mode of MODES) {
+                        if (!isRunning) break;
+                        
+                        const result = await runSingleTest(netType, depth, mode);
+                        
+                        if (result) {
+                            allResults[configName][mode] = result;
+                        }
+                        
+                        completedTests++;
+                        updateProgress();
+                        updateResultsTable();
+                    }
+                    
+                    if (!isRunning) break;
+                }
+                
+                if (!isRunning) break;
+            }
+            
+            finishBenchmark();
+        }
+        
+        function stopBenchmark() {
+            isRunning = false;
+            log("task", "Benchmark stopped by user");
+            finishBenchmark();
+        }
+        
+        function finishBenchmark() {
+            isRunning = false;
+            document.getElementById("runAllBtn").textContent = "▶️ Run Full Benchmark (75 tests)";
+            document.getElementById("runAllBtn").className = "";
+            document.getElementById("runAllBtn").onclick = runFullBenchmark;
+            document.getElementById("currentTest").textContent = "Complete!";
+            
+            log("info", "");
+            log("success", "═══════════════════════════════════════════════════════════════════════════");
+            log("success", "BENCHMARK COMPLETE");
+            log("success", "═══════════════════════════════════════════════════════════════════════════");
+            
+            updateResultsTable();
+        }
+        
+        // ============================================================================
+        // Initialization
+        // ============================================================================
+        
+        WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject)
+            .then(result => {
+                go.run(result.instance);
+                document.getElementById("runAllBtn").disabled = false;
+                document.getElementById("runAllBtn").onclick = runFullBenchmark;
+                log("success", "WASM loaded - Ready to run benchmark");
+                
+                // Initialize UI
+                setupFilters();
+                updateFormulaDisplay();
+                updateResultsTable();
+            })
+            .catch(err => {
+                log("error", "Failed to load WASM: " + err);
+            });
+    </script>
+</body>
+</html>

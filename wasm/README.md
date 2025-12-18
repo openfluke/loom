@@ -175,6 +175,79 @@ for (let step = 0; step < 100000; step++) {
 
 See `step_example.html` for a complete interactive example achieving 100% accuracy.
 
+### 🧬 Neural Tweening API - Gradient-Free Learning
+
+**NEW:** Use Neural Tweening for adaptive learning without explicit backpropagation:
+
+```javascript
+// Create network from JSON config
+const config = { batch_size: 1, layers: [
+  { type: "dense", input_size: 8, output_size: 32, activation: "leaky_relu" },
+  { type: "dense", input_size: 32, output_size: 4, activation: "sigmoid" }
+]};
+const network = createLoomNetwork(JSON.stringify(config));
+
+// Create tween state (true = use chain rule for better gradients)
+const tweenState = network.createTweenState(true);
+
+// Training loop
+for (let step = 0; step < 10000; step++) {
+  const input = new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]);
+  const targetClass = 2;  // Target output neuron
+  const outputSize = 4;
+  const learningRate = 0.02;
+  
+  // Single call does forward, backward, and weight update
+  const loss = tweenState.TweenStep(input, targetClass, outputSize, learningRate);
+}
+```
+
+**Tweening API:**
+- `network.createTweenState(useChainRule)` - Create tween state (chainRule=true recommended)
+- `tweenState.TweenStep(input, targetClass, outputSize, lr)` - Complete learning step, returns loss
+- `tweenState.setChainRule(enabled)` - Enable/disable chain rule mode
+- `tweenState.getChainRule()` - Check current chain rule setting
+- `tweenState.getTweenSteps()` - Get number of tween steps performed
+
+### 📊 Adaptation Tracker API - Benchmark Mid-Stream Task Changes
+
+Track accuracy over time with scheduled task changes (like Test 18):
+
+```javascript
+// Create tracker: 1-second windows, 10-second total duration
+const tracker = createAdaptationTracker(1000, 10000);
+tracker.setModelInfo("Dense-5L", "TweenChain");
+
+// Schedule task changes at 1/3 and 2/3 of duration
+tracker.scheduleTaskChange(3333, 1, "AVOID");   // Switch to task 1 at 3.3s
+tracker.scheduleTaskChange(6666, 0, "CHASE");   // Switch back to task 0 at 6.6s
+
+// Start tracking
+tracker.start("CHASE", 0);
+
+// During training loop
+const currentTask = tracker.getCurrentTask();  // Returns 0 or 1
+// ... do inference and training ...
+tracker.recordOutput(isCorrect);  // Record each prediction
+
+// Get results
+const resultsJSON = tracker.finalize();
+const results = JSON.parse(resultsJSON);
+console.log(`Avg Accuracy: ${results.avg_accuracy}%`);
+console.log(`Task Changes:`, results.task_changes);
+```
+
+**Tracker API:**
+- `createAdaptationTracker(windowMs, totalMs)` - Create tracker
+- `tracker.setModelInfo(modelName, modeName)` - Set descriptive names
+- `tracker.scheduleTaskChange(atMs, taskID, taskName)` - Schedule task switch
+- `tracker.start(initialTask, initialTaskID)` - Begin tracking
+- `tracker.getCurrentTask()` - Get current task ID (handles scheduled changes)
+- `tracker.recordOutput(isCorrect)` - Record prediction result
+- `tracker.finalize()` - Get JSON results with windows and task change metrics
+
+See `adaptation_demo.html` for a complete architecture adaptation benchmark.
+
 
 ## 🚀 What's New: Dynamic Method Exposure
 

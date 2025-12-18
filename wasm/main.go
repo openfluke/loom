@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"syscall/js"
+	"time"
 
 	"github.com/openfluke/loom/nn"
 )
@@ -258,6 +259,25 @@ func createNetworkFromJSON(this js.Value, args []js.Value) interface{} {
 		return createStepStateWrapper(state, network)
 	}))
 
+	// Add createTweenState method for neural tweening
+	obj.Set("createTweenState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		useChainRule := false
+		if len(args) >= 1 {
+			useChainRule = args[0].Bool()
+		}
+
+		config := nn.DefaultTweenConfig(network.TotalLayers())
+		config.UseChainRule = useChainRule
+
+		ts := nn.NewTweenState(network, config)
+		return createTweenStateWrapper(ts, network)
+	}))
+
+	// Add getInputSize for convenience
+	obj.Set("getInputSize", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		return network.InputSize
+	}))
+
 	return obj
 }
 
@@ -386,19 +406,199 @@ func loadNetworkFromString(this js.Value, args []js.Value) interface{} {
 		}
 	}
 
+	// Add createStepState method
+	obj.Set("createStepState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return "Expected 1 argument: inputSize"
+		}
+		inputSize := args[0].Int()
+		state := network.InitStepState(inputSize)
+		return createStepStateWrapper(state, network)
+	}))
+
+	// Add createTweenState method for neural tweening
+	obj.Set("createTweenState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		useChainRule := false
+		if len(args) >= 1 {
+			useChainRule = args[0].Bool()
+		}
+
+		config := nn.DefaultTweenConfig(network.TotalLayers())
+		config.UseChainRule = useChainRule
+
+		ts := nn.NewTweenState(network, config)
+		return createTweenStateWrapper(ts, network)
+	}))
+
+	// Add getInputSize for convenience
+	obj.Set("getInputSize", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		return network.InputSize
+	}))
+
 	return obj
+}
+
+// ============================================================================
+// TweenState Wrapper - Exposes neural tweening to JavaScript
+// ============================================================================
+
+// createTweenStateWrapper creates a JS object for a TweenState
+func createTweenStateWrapper(ts *nn.TweenState, network *nn.Network) js.Value {
+	obj := js.Global().Get("Object").New()
+
+	// TweenStep(input, targetClass, outputSize, learningRate) -> loss
+	obj.Set("TweenStep", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 4 {
+			return "Expected 4 arguments: input, targetClass, outputSize, learningRate"
+		}
+
+		// Parse input array
+		jsInput := args[0]
+		inputLen := jsInput.Get("length").Int()
+		input := make([]float32, inputLen)
+		for i := 0; i < inputLen; i++ {
+			input[i] = float32(jsInput.Index(i).Float())
+		}
+
+		targetClass := args[1].Int()
+		outputSize := args[2].Int()
+		learningRate := float32(args[3].Float())
+
+		loss := ts.TweenStep(network, input, targetClass, outputSize, learningRate)
+		return float64(loss)
+	}))
+
+	// setChainRule(enabled) - Enable/disable chain rule mode
+	obj.Set("setChainRule", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return "Expected 1 argument: enabled (bool)"
+		}
+		ts.Config.UseChainRule = args[0].Bool()
+		return nil
+	}))
+
+	// getChainRule() -> bool
+	obj.Set("getChainRule", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		return ts.Config.UseChainRule
+	}))
+
+	// getTweenSteps() -> number of tween steps performed
+	obj.Set("getTweenSteps", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		return ts.TweenSteps
+	}))
+
+	return obj
+}
+
+// createTweenState creates a TweenState for a network
+func createTweenStateFromNetwork(this js.Value, args []js.Value) interface{} {
+	// This function expects the network object to be passed
+	// args[0] = network pointer (stored in closure)
+	// args[1] = useChainRule (optional bool)
+
+	return "Use network.createTweenState(useChainRule) instead"
+}
+
+// ============================================================================
+// AdaptationTracker Wrapper - Tracks accuracy with task changes
+// ============================================================================
+
+// createAdaptationTrackerWrapper creates a JS object for an AdaptationTracker
+func createAdaptationTrackerWrapper(tracker *nn.AdaptationTracker) js.Value {
+	obj := js.Global().Get("Object").New()
+
+	// setModelInfo(modelName, modeName)
+	obj.Set("setModelInfo", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 2 {
+			return "Expected 2 arguments: modelName, modeName"
+		}
+		tracker.SetModelInfo(args[0].String(), args[1].String())
+		return nil
+	}))
+
+	// scheduleTaskChange(atOffsetMs, taskID, taskName)
+	obj.Set("scheduleTaskChange", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 3 {
+			return "Expected 3 arguments: atOffsetMs, taskID, taskName"
+		}
+		offsetMs := args[0].Int()
+		taskID := args[1].Int()
+		taskName := args[2].String()
+		tracker.ScheduleTaskChange(time.Duration(offsetMs)*time.Millisecond, taskID, taskName)
+		return nil
+	}))
+
+	// start(initialTask, initialTaskID)
+	obj.Set("start", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 2 {
+			return "Expected 2 arguments: initialTask, initialTaskID"
+		}
+		tracker.Start(args[0].String(), args[1].Int())
+		return nil
+	}))
+
+	// recordOutput(isCorrect)
+	obj.Set("recordOutput", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return "Expected 1 argument: isCorrect"
+		}
+		tracker.RecordOutput(args[0].Bool())
+		return nil
+	}))
+
+	// getCurrentTask() -> taskID
+	obj.Set("getCurrentTask", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		return tracker.GetCurrentTask()
+	}))
+
+	// finalize() -> JSON result
+	obj.Set("finalize", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		result := tracker.Finalize()
+		jsonBytes, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Sprintf("Error marshaling result: %v", err)
+		}
+		return string(jsonBytes)
+	}))
+
+	return obj
+}
+
+// createAdaptationTracker creates an AdaptationTracker
+func createAdaptationTracker(this js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return "Expected 2 arguments: windowDurationMs, totalDurationMs"
+	}
+
+	windowMs := args[0].Int()
+	totalMs := args[1].Int()
+
+	tracker := nn.NewAdaptationTracker(
+		time.Duration(windowMs)*time.Millisecond,
+		time.Duration(totalMs)*time.Millisecond,
+	)
+
+	return createAdaptationTrackerWrapper(tracker)
 }
 
 func main() {
 	fmt.Println("Loom WASM Framework Initialized")
 
-	// Register the network creation function
+	// Register the network creation functions
 	js.Global().Set("createLoomNetwork", js.FuncOf(createNetworkFromJSON))
 	js.Global().Set("loadLoomNetwork", js.FuncOf(loadNetworkFromString))
 
+	// Register AdaptationTracker for adaptation benchmarks
+	js.Global().Set("createAdaptationTracker", js.FuncOf(createAdaptationTracker))
+
 	fmt.Println("Available functions:")
-	fmt.Println("  - createLoomNetwork(jsonConfig) - Create network from JSON and get object with all methods")
-	fmt.Println("  - loadLoomNetwork(jsonString, modelID) - Load network from saved JSON string")
+	fmt.Println("  - createLoomNetwork(jsonConfig) - Create network from JSON")
+	fmt.Println("  - loadLoomNetwork(jsonString, modelID) - Load network from saved JSON")
+	fmt.Println("  - createAdaptationTracker(windowMs, totalMs) - Create tracker")
+	fmt.Println("")
+	fmt.Println("Network methods:")
+	fmt.Println("  - network.createStepState(inputSize) - For stepping API")
+	fmt.Println("  - network.createTweenState(useChainRule) - For tween learning")
 
 	// Keep the program running
 	select {}
