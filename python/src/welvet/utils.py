@@ -258,6 +258,78 @@ _FreeLoomString = _sym("FreeLoomString")
 if _FreeLoomString:
     _FreeLoomString.argtypes = [ctypes.c_char_p]
 
+# ---- TweenState API ----
+
+# LoomCreateTweenState: create a tween state
+_LoomCreateTweenState = _sym("LoomCreateTweenState")
+if _LoomCreateTweenState:
+    _LoomCreateTweenState.restype = ctypes.c_longlong
+    _LoomCreateTweenState.argtypes = [ctypes.c_int]
+
+# LoomTweenStep: apply a tween step
+_LoomTweenStep = _sym("LoomTweenStep")
+if _LoomTweenStep:
+    _LoomTweenStep.restype = ctypes.c_float
+    _LoomTweenStep.argtypes = [
+        ctypes.c_longlong,  # handle
+        ctypes.POINTER(ctypes.c_float),  # input
+        ctypes.c_int,  # inputLen
+        ctypes.c_int,  # targetClass
+        ctypes.c_int,  # outputSize
+        ctypes.c_float  # learningRate
+    ]
+
+# LoomFreeTweenState: free tween state
+_LoomFreeTweenState = _sym("LoomFreeTweenState")
+if _LoomFreeTweenState:
+    _LoomFreeTweenState.argtypes = [ctypes.c_longlong]
+
+# ---- AdaptationTracker API ----
+
+# LoomCreateAdaptationTracker: create tracker
+_LoomCreateAdaptationTracker = _sym("LoomCreateAdaptationTracker")
+if _LoomCreateAdaptationTracker:
+    _LoomCreateAdaptationTracker.restype = ctypes.c_longlong
+    _LoomCreateAdaptationTracker.argtypes = [ctypes.c_int, ctypes.c_int]
+
+# LoomTrackerSetModelInfo: set model info
+_LoomTrackerSetModelInfo = _sym("LoomTrackerSetModelInfo")
+if _LoomTrackerSetModelInfo:
+    _LoomTrackerSetModelInfo.argtypes = [ctypes.c_longlong, ctypes.c_char_p, ctypes.c_char_p]
+
+# LoomTrackerScheduleTaskChange: schedule task change
+_LoomTrackerScheduleTaskChange = _sym("LoomTrackerScheduleTaskChange")
+if _LoomTrackerScheduleTaskChange:
+    _LoomTrackerScheduleTaskChange.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_char_p]
+
+# LoomTrackerStart: start tracking
+_LoomTrackerStart = _sym("LoomTrackerStart")
+if _LoomTrackerStart:
+    _LoomTrackerStart.argtypes = [ctypes.c_longlong, ctypes.c_char_p, ctypes.c_int]
+
+# LoomTrackerRecordOutput: record an output
+_LoomTrackerRecordOutput = _sym("LoomTrackerRecordOutput")
+if _LoomTrackerRecordOutput:
+    _LoomTrackerRecordOutput.restype = ctypes.c_int
+    _LoomTrackerRecordOutput.argtypes = [ctypes.c_longlong, ctypes.c_int]
+
+# LoomTrackerGetCurrentTask: get current task
+_LoomTrackerGetCurrentTask = _sym("LoomTrackerGetCurrentTask")
+if _LoomTrackerGetCurrentTask:
+    _LoomTrackerGetCurrentTask.restype = ctypes.c_int
+    _LoomTrackerGetCurrentTask.argtypes = [ctypes.c_longlong]
+
+# LoomTrackerFinalize: finalize and get results
+_LoomTrackerFinalize = _sym("LoomTrackerFinalize")
+if _LoomTrackerFinalize:
+    _LoomTrackerFinalize.restype = ctypes.c_char_p
+    _LoomTrackerFinalize.argtypes = [ctypes.c_longlong]
+
+# LoomFreeTracker: free tracker
+_LoomFreeTracker = _sym("LoomFreeTracker")
+if _LoomFreeTracker:
+    _LoomFreeTracker.argtypes = [ctypes.c_longlong]
+
 
 # ---- Activation Types ----
 class Activation:
@@ -1694,3 +1766,236 @@ def apply_gradients_sgd_momentum(
         float(dampening),
         int(nesterov)
     )
+
+
+# ---- TweenState Wrapper Class ----
+
+class TweenState:
+    """
+    Wrapper for LOOM TweenState - enables neural tweening for real-time learning.
+    
+    Neural tweening allows networks to adapt to new targets without full backpropagation,
+    making it suitable for real-time applications.
+    
+    Example:
+        # Create network first
+        create_network_from_json(config)
+        
+        # Create tween state with chain rule
+        tween = TweenState(use_chain_rule=True)
+        
+        # Apply tween steps
+        for obs, target in observations:
+            gap = tween.step(obs, target_class=target, output_size=4, learning_rate=0.02)
+            print(f"Gap: {gap}")
+        
+        # Cleanup
+        tween.close()
+        
+        # Or use context manager:
+        with TweenState(use_chain_rule=True) as tween:
+            tween.step(obs, target_class=0, output_size=4)
+    """
+    
+    def __init__(self, use_chain_rule: bool = False):
+        """
+        Create a new TweenState.
+        
+        Args:
+            use_chain_rule: If True, use chain rule for tween (TweenChain mode)
+        """
+        if not _LoomCreateTweenState:
+            raise RuntimeError("LoomCreateTweenState not available in library")
+        
+        self._handle = _LoomCreateTweenState(1 if use_chain_rule else 0)
+        if self._handle < 0:
+            raise RuntimeError("Failed to create TweenState - ensure network is created first")
+    
+    def step(self, input_data: List[float], target_class: int, output_size: int, 
+             learning_rate: float = 0.02) -> float:
+        """
+        Apply one tween step.
+        
+        Args:
+            input_data: Input vector
+            target_class: Target class index (0-based)
+            output_size: Number of output classes
+            learning_rate: Learning rate for weight updates
+        
+        Returns:
+            Gap value (distance to target)
+        """
+        if not _LoomTweenStep:
+            raise RuntimeError("LoomTweenStep not available")
+        
+        # Convert to C array
+        c_input = (ctypes.c_float * len(input_data))(*input_data)
+        
+        return _LoomTweenStep(
+            self._handle,
+            c_input,
+            len(input_data),
+            target_class,
+            output_size,
+            learning_rate
+        )
+    
+    def close(self):
+        """Free the TweenState resources."""
+        if self._handle >= 0 and _LoomFreeTweenState:
+            _LoomFreeTweenState(self._handle)
+            self._handle = -1
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+
+# ---- AdaptationTracker Wrapper Class ----
+
+class AdaptationTracker:
+    """
+    Wrapper for LOOM AdaptationTracker - measures accuracy across task changes.
+    
+    The tracker divides the test duration into windows and records accuracy
+    in each window. It also supports scheduling task changes at specific times.
+    
+    Example:
+        tracker = AdaptationTracker(window_duration_ms=1000, total_duration_ms=10000)
+        tracker.set_model_info("Dense-5L", "StepTweenChain")
+        
+        # Schedule task changes at 1/3 and 2/3 of test
+        tracker.schedule_task_change(3333, task_id=1, task_name="AVOID")
+        tracker.schedule_task_change(6666, task_id=0, task_name="CHASE")
+        
+        tracker.start("CHASE", task_id=0)
+        
+        while running:
+            current_task = tracker.get_current_task()
+            # ... run network ...
+            tracker.record_output(is_correct=True)
+        
+        results = tracker.finalize()
+        print(f"Avg accuracy: {results['avg_accuracy']}")
+    """
+    
+    def __init__(self, window_duration_ms: int = 1000, total_duration_ms: int = 10000):
+        """
+        Create a new AdaptationTracker.
+        
+        Args:
+            window_duration_ms: Duration of each accuracy window in milliseconds
+            total_duration_ms: Total test duration in milliseconds
+        """
+        if not _LoomCreateAdaptationTracker:
+            raise RuntimeError("LoomCreateAdaptationTracker not available in library")
+        
+        self._handle = _LoomCreateAdaptationTracker(window_duration_ms, total_duration_ms)
+        if self._handle < 0:
+            raise RuntimeError("Failed to create AdaptationTracker")
+    
+    def set_model_info(self, model_name: str, mode_name: str):
+        """
+        Set model information for the tracker.
+        
+        Args:
+            model_name: Name of the model (e.g., "Dense-5L")
+            mode_name: Training mode name (e.g., "StepTweenChain")
+        """
+        if _LoomTrackerSetModelInfo:
+            _LoomTrackerSetModelInfo(
+                self._handle,
+                model_name.encode('utf-8'),
+                mode_name.encode('utf-8')
+            )
+    
+    def schedule_task_change(self, at_offset_ms: int, task_id: int, task_name: str):
+        """
+        Schedule a task change at a specific offset from start.
+        
+        Args:
+            at_offset_ms: Milliseconds from start when task should change
+            task_id: New task ID
+            task_name: New task name
+        """
+        if _LoomTrackerScheduleTaskChange:
+            _LoomTrackerScheduleTaskChange(
+                self._handle,
+                at_offset_ms,
+                task_id,
+                task_name.encode('utf-8')
+            )
+    
+    def start(self, task_name: str, task_id: int = 0):
+        """
+        Start the tracker with an initial task.
+        
+        Args:
+            task_name: Initial task name
+            task_id: Initial task ID
+        """
+        if _LoomTrackerStart:
+            _LoomTrackerStart(self._handle, task_name.encode('utf-8'), task_id)
+    
+    def record_output(self, is_correct: bool) -> int:
+        """
+        Record an output and whether it was correct.
+        
+        Args:
+            is_correct: Whether the network output was correct
+        
+        Returns:
+            Previous task ID (for detecting task changes)
+        """
+        if not _LoomTrackerRecordOutput:
+            return -1
+        return _LoomTrackerRecordOutput(self._handle, 1 if is_correct else 0)
+    
+    def get_current_task(self) -> int:
+        """
+        Get the current task ID.
+        
+        Returns:
+            Current task ID
+        """
+        if not _LoomTrackerGetCurrentTask:
+            return 0
+        return _LoomTrackerGetCurrentTask(self._handle)
+    
+    def finalize(self) -> dict:
+        """
+        Finalize tracking and get results.
+        
+        Returns:
+            Dict with results including:
+            - model_name: str
+            - mode_name: str
+            - avg_accuracy: float
+            - total_outputs: int
+            - window_accuracies: List[float]
+        """
+        if not _LoomTrackerFinalize:
+            return {"error": "LoomTrackerFinalize not available"}
+        
+        result_json = _LoomTrackerFinalize(self._handle)
+        if not result_json:
+            return {"error": "No result from tracker"}
+        
+        return json.loads(result_json.decode('utf-8'))
+    
+    def close(self):
+        """Free the tracker resources."""
+        if self._handle >= 0 and _LoomFreeTracker:
+            _LoomFreeTracker(self._handle)
+            self._handle = -1
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+

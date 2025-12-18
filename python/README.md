@@ -157,6 +157,79 @@ for step in range(100000):
 
 See `examples/step_train_v3.py` for a complete example achieving 100% accuracy.
 
+### 🧬 Neural Tweening API - Real-Time Adaptation
+
+**NEW:** Neural tweening enables networks to adapt to changing goals in real-time without full backpropagation:
+
+```python
+import welvet
+
+# Create network
+config = '''{"batch_size": 1, "layers": [
+    {"type": "dense", "input_size": 8, "output_size": 32, "activation": "leaky_relu"},
+    {"type": "dense", "input_size": 32, "output_size": 16, "activation": "leaky_relu"},
+    {"type": "dense", "input_size": 16, "output_size": 4, "activation": "sigmoid"}
+]}'''
+welvet.create_network_from_json(config)
+
+# Create TweenState with chain rule (StepTweenChain mode)
+tween = welvet.TweenState(use_chain_rule=True)
+
+# Continuously adapt to targets
+for observation, target_class in training_stream:
+    gap = tween.step(observation, target_class=target_class, output_size=4, learning_rate=0.02)
+    print(f"Adaptation gap: {gap:.4f}")
+
+tween.close()
+```
+
+**TweenState Class:**
+- `TweenState(use_chain_rule=False)` - Create tween state (chain rule = TweenChain mode)
+- `tween.step(input, target_class, output_size, learning_rate)` - Apply one tween step
+- `tween.close()` - Free resources
+
+### 📊 AdaptationTracker - Benchmark Task Switching
+
+Track accuracy across task changes for benchmarking real-time adaptation:
+
+```python
+import welvet
+
+# Create tracker with 1s windows over 10s test
+tracker = welvet.AdaptationTracker(window_duration_ms=1000, total_duration_ms=10000)
+tracker.set_model_info("Dense-5L", "StepTweenChain")
+
+# Schedule task changes at 1/3 and 2/3 of test
+tracker.schedule_task_change(3333, task_id=1, task_name="AVOID")
+tracker.schedule_task_change(6666, task_id=0, task_name="CHASE")
+
+tracker.start("CHASE", task_id=0)
+
+# Run test loop
+while time_elapsed < 10000:
+    current_task = tracker.get_current_task()
+    # ... run network ...
+    tracker.record_output(is_correct=True)
+
+# Get results
+results = tracker.finalize()
+print(f"Avg accuracy: {results['avg_accuracy']:.1f}%")
+print(f"Window accuracies: {results['window_accuracies']}")
+
+tracker.close()
+```
+
+**AdaptationTracker Class:**
+- `AdaptationTracker(window_duration_ms, total_duration_ms)` - Create tracker
+- `tracker.set_model_info(model_name, mode_name)` - Set model info
+- `tracker.schedule_task_change(at_offset_ms, task_id, task_name)` - Schedule task change
+- `tracker.start(task_name, task_id)` - Start tracking
+- `tracker.get_current_task()` - Get current task ID
+- `tracker.record_output(is_correct)` - Record output
+- `tracker.finalize()` - Get results JSON
+- `tracker.close()` - Free resources
+
+See `examples/test18_adaptation.py` for a complete multi-architecture benchmark comparing 5 training modes across Dense, Conv2D, RNN, LSTM, and Attention networks.
 
 ### 🚀 Transformer Inference (LLMs)
 

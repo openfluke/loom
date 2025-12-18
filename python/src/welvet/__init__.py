@@ -49,6 +49,9 @@ from .utils import (
     apply_gradients_adamw,
     apply_gradients_rmsprop,
     apply_gradients_sgd_momentum,
+    # Tween and Adaptation API
+    TweenState,
+    AdaptationTracker,
 )
 
 __version__ = "0.0.1"
@@ -100,4 +103,8 @@ __all__ = [
     "apply_gradients_adamw",
     "apply_gradients_rmsprop",
     "apply_gradients_sgd_momentum",
+    # Tween and Adaptation API
+    "TweenState",
+    "AdaptationTracker",
 ]
+
