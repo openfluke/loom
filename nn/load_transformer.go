@@ -37,6 +37,11 @@ func LoadTransformerFromSafetensors(modelDir string) (*Network, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
+	// Validate model architecture
+	if err := validateArchitecture(config); err != nil {
+		return nil, err
+	}
+
 	fmt.Printf("Loading transformer model:\n")
 	fmt.Printf("  Model type: %s\n", config.ModelType)
 	if len(config.Architectures) > 0 {
@@ -166,6 +171,11 @@ func LoadTransformerFromBytes(configData []byte, weightsData []byte) (*Network, 
 	var config TransformerConfig
 	if err := json.Unmarshal(configData, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Validate model architecture
+	if err := validateArchitecture(config); err != nil {
+		return nil, err
 	}
 
 	fmt.Printf("Loading transformer model from bytes:\n")
@@ -350,4 +360,25 @@ func getTensor(tensors map[string][]float32, name string) []float32 {
 	// Return empty tensor if not found (with warning)
 	fmt.Printf("⚠️  Warning: tensor '%s' not found\n", name)
 	return []float32{}
+}
+
+// validateArchitecture checks if the model architecture is supported
+func validateArchitecture(config TransformerConfig) error {
+	unsupportedTypes := []string{"t5", "mt5", "bart", "bert", "roberta", "encoder-decoder", "marian"}
+	modelType := strings.ToLower(config.ModelType)
+
+	for _, unsup := range unsupportedTypes {
+		if strings.Contains(modelType, unsup) {
+			return fmt.Errorf("unsupported model type '%s': framework only supports Decoder-only models (Llama, Qwen, Mistral, GPT-NeoX, etc.)", config.ModelType)
+		}
+	}
+
+	for _, arch := range config.Architectures {
+		archLower := strings.ToLower(arch)
+		if strings.Contains(archLower, "conditionalgeneration") || strings.Contains(archLower, "encoderdecoder") {
+			return fmt.Errorf("unsupported architecture '%s': framework only supports CausalLM models", arch)
+		}
+	}
+
+	return nil
 }

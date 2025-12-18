@@ -116,7 +116,7 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 				var err error
 
 				// Delegate to parallelBackwardCPU (handles all combine modes)
-				gradInput, nestedKernelGrads, nestedBiasGrads, err = parallelBackwardCPU(input, grad, branchPreActs, config, n.BatchSize)
+				gradInput, nestedKernelGrads, nestedBiasGrads, err = parallelBackwardCPU(input, grad, branchPreActs, config, n.BatchSize, "step")
 
 				if err != nil {
 					fmt.Printf("Parallel Backward Error: %v\n", err)
@@ -201,6 +201,11 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 		if len(biasGrads) > 0 {
 			applySoftmaxGradientScaling(biasGrads)
 			n.biasGradients[layerIdx] = biasGrads
+		}
+
+		// Notify observer if present (step mode)
+		if config.Observer != nil {
+			notifyObserver(config, "step", "backward", layerIdx, nil, gradInput, state.stepCount)
 		}
 
 		// Pass gradient to next layer

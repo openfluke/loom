@@ -1,8 +1,12 @@
 # Neural Network Package
 
-A high-performance grid neural network implementation in Go with **full CPU support for all 7 layer types**, optional GPU acceleration, automatic differentiation, WebAssembly export, and C ABI for FFI.
+A high-performance **CPU-first** grid neural network implementation in Go with full CPU support for all 7 layer types, automatic differentiation, WebAssembly export, and C ABI for FFI. **WebGPU GPU acceleration is experimental and in development** — only select layers (Dense, Conv2D, MHA) have GPU code, and it may not work reliably.
 
 > 🤯 **BREAKTHROUGH:** The Softmax layer includes **native Mixture of Experts (MoE)** via Grid Softmax. Mathematically proven equivalent to traditional MoE with 97.1% loss reduction and perfect gradient matching. See `../examples/moe_proof_demo.go`!
+
+> 🧠 **NEW:** **Neural Tweening (StepTweenChain)** - Bidirectional "meet in the middle" training with proper chain rule gradient propagation. Achieves **100% accuracy** on shallow networks, **never crashes to 0%** during task changes, and maintains **40-80% stability** while adapting. See [`../docs/step_tween_assessment.md`](../docs/step_tween_assessment.md) for comprehensive benchmarks!
+
+> 📊 **NEW:** **Neural Telemetry** - Extract network blueprints and layer metadata for visualization. Supports real-time neural activity recording and caching for replay. See `telemetry.go` and `examples/step_example/visualization_demo.go`!
 
 ## Features
 
@@ -114,6 +118,10 @@ nn/
 ├── softmax.go            # Softmax layer (10 variants including native MoE)
 ├── forward.go            # Forward propagation (CPU/GPU)
 ├── backward.go           # Backward propagation (CPU/GPU) with softmax Jacobian
+├── step_forward.go       # Step-based forward for all layer types
+├── step_backward.go      # Step-based backward for all layer types
+├── tween.go              # Neural Tweening (bidirectional training)
+├── telemetry.go          # Network blueprint extraction & neural activity
 ├── gpu.go                # WebGPU initialization and shader generation
 ├── utils.go              # Utility functions (MaxAbsDiff, Min, Max, Mean)
 ├── cnn.go                # Conv2D implementation (forward/backward)

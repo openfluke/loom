@@ -31,13 +31,42 @@ func getLayerOutputSize(config *LayerConfig, batchSize int) int {
 	} else if config.Type == LayerDense {
 		return config.OutputHeight
 	} else if config.Type == LayerRNN || config.Type == LayerLSTM {
-		return batchSize * config.SeqLength * config.HiddenSize
+		seqLen := config.SeqLength
+		if seqLen <= 0 {
+			seqLen = 1 // Default to 1 if not set
+		}
+		return batchSize * seqLen * config.HiddenSize
 	} else if config.Type == LayerMultiHeadAttention {
-		return batchSize * config.SeqLength * config.DModel
+		// MHA: prefer DModel with SeqLength, fallback to DModel alone, then OutputHeight
+		if config.DModel > 0 {
+			seqLen := config.SeqLength
+			if seqLen <= 0 {
+				seqLen = 1 // Default to 1 if not set
+			}
+			return batchSize * seqLen * config.DModel
+		}
+		if config.OutputHeight > 0 {
+			return config.OutputHeight
+		}
+		return -1
 	} else if config.Type == LayerSwiGLU {
-		return config.InputHeight // SwiGLU projects back to hidden size (InputHeight)
+		// SwiGLU: prefer OutputHeight, fallback to InputHeight
+		if config.OutputHeight > 0 {
+			return config.OutputHeight
+		}
+		return config.InputHeight
 	} else if config.Type == LayerNorm || config.Type == LayerRMSNorm {
-		return config.NormSize
+		// Norm layers: prefer NormSize, fallback to OutputHeight, then InputHeight
+		if config.NormSize > 0 {
+			return config.NormSize
+		}
+		if config.OutputHeight > 0 {
+			return config.OutputHeight
+		}
+		if config.InputHeight > 0 {
+			return config.InputHeight
+		}
+		return -1
 	} else if config.Type == LayerParallel {
 		// Calculate based on combine mode
 		totalSize := 0
@@ -56,7 +85,15 @@ func getLayerOutputSize(config *LayerConfig, batchSize int) int {
 		return totalSize
 	}
 
-	// Default/Unknown (should be handled by caller using input size)
+	// Default: Try to use OutputHeight if available
+	if config.OutputHeight > 0 {
+		return config.OutputHeight
+	}
+	if config.InputHeight > 0 {
+		return config.InputHeight
+	}
+
+	// Unknown (should be handled by caller using input size)
 	return -1
 }
 
@@ -260,7 +297,7 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 					copy(state.residuals[layerIdx], input)
 
 				case LayerParallel:
-					output, branchPreActs, err := parallelForwardCPU(input, config, n.BatchSize)
+					output, branchPreActs, err := parallelForwardCPU(input, config, n.BatchSize, "step")
 					if err != nil {
 						fmt.Printf("Parallel layer error: %v\n", err)
 						output = input
@@ -294,6 +331,11 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 					for i := 0; i < len(input); i++ {
 						postAct[i] = activateCPU(input[i], config.Activation)
 					}
+				}
+
+				// Notify observer if present (step mode)
+				if config.Observer != nil {
+					notifyObserver(config, "step", "forward", layerIdx, input, postAct, state.stepCount)
 				}
 
 				// Store results
@@ -363,6 +405,11 @@ func (n *Network) StepForwardSingle(state *StepState, layerIdx int) time.Duratio
 		for i := 0; i < len(input); i++ {
 			postAct[i] = activateCPU(input[i], config.Activation)
 		}
+	}
+
+	// Notify observer if present (step mode)
+	if config.Observer != nil {
+		notifyObserver(config, "step", "forward", layerIdx, input, postAct, state.stepCount)
 	}
 
 	// Update this layer's state

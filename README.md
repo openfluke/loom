@@ -1,12 +1,14 @@
 # LOOM - Layered Omni-architecture Openfluke Machine
 
-A high-performance GPU-accelerated neural network framework written in Go, featuring WebGPU compute shaders for parallel execution and WebAssembly export for browser deployment. **Now with transformer inference support!**
+A high-performance **CPU-first** neural network framework written in Go, with **experimental** WebGPU compute shaders for GPU acceleration (in development, only select layers supported). Features WebAssembly export for browser deployment. **Now with transformer inference support!**
 
 > 🎉 **NEW:** Full transformer inference in browser WASM! SmolLM2-135M-Instruct successfully generates coherent text entirely in the browser with pure Go implementation.
 
 > 🤯 **BREAKTHROUGH:** LOOM's Softmax layer includes **native Mixture of Experts (MoE)** via Grid Softmax - the same architecture used in GPT-4, Switch Transformer, and Mixtral. **Mathematically proven** equivalent with 97.1% loss reduction and perfect gradient matching. See `examples/moe_proof_demo.go` for rigorous proof!
 
 > ⚡ **NEW:** **Grid Scatter Mode** - Place parallel branch outputs at **specific 2D/3D grid positions** instead of concatenating! Build multi-agent systems with heterogeneous architectures (LSTM + MHA + RNN + Dense in same layer), hierarchical RL with spatial decomposition, and ensemble methods with explicit topology. **Impossible in traditional neural networks!** See `examples/json_grid_scatter_demo.go` and `examples/json_grid_scatter_agents.go` for mind-bending examples.
+
+> 🧠 **NEW:** **Neural Tweening (StepTweenChain)** - A paradigm shift for **real-time embodied AI**. Train and run simultaneously with all layers processing in parallel. Achieves **100% accuracy** on shallow networks, **never crashes to 0%** during task changes (maintains 40-80% while adapting), and provides **minimal decision latency**. Statistically validated with 100 runs per config showing **0.8-1.9% StdDev** (vs 4-10% for traditional methods). See [`docs/step_tween_assessment.md`](docs/step_tween_assessment.md) for comprehensive benchmarks across 19 tests!
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
@@ -289,6 +291,10 @@ loom/
 │   ├── registry.go      # Layer initialization function registry
 │   ├── forward.go       # Forward propagation (CPU/GPU)
 │   ├── backward.go      # Backward propagation (CPU/GPU)
+│   ├── step_forward.go  # Step-based forward for all layer types
+│   ├── step_backward.go # Step-based backward for all layer types
+│   ├── tween.go         # Neural Tweening (bidirectional training)
+│   ├── telemetry.go     # Network blueprint & neural activity
 │   ├── gpu.go           # WebGPU initialization and shaders
 │   ├── attention.go     # Multi-Head Attention implementation
 │   ├── attention_gpu.go # MHA GPU kernels
@@ -302,6 +308,10 @@ loom/
 │   ├── serialization.go # Model save/load
 │   ├── transformer.go   # Transformer model loading and inference
 │   └── README.md        # Detailed package documentation
+│
+├── docs/                # Documentation
+│   ├── README.md        # Documentation hub
+│   └── step_tween_assessment.md  # Neural Tweening benchmarks (19 tests)
 │
 ├── tokenizer/           # Pure Go BPE tokenizer
 │   ├── bpe.go           # Byte Pair Encoding implementation
@@ -1258,6 +1268,7 @@ Loom uses WGSL (WebGPU Shading Language) for GPU compute:
 ## Documentation
 
 - [Neural Network Package](nn/README.md) - Detailed API documentation
+- [Neural Tween Assessment](docs/step_tween_assessment.md) - Comprehensive benchmarks for Neural Tweening (19 tests)
 - [Evaluation System](nn/EVALUATION_README.md) - DeviationMetrics comprehensive guide
 - [Examples](fabric/examples/) - Code examples and benchmarks
 - [Demos](fabric/demos/) - Interactive demonstrations
@@ -1307,6 +1318,9 @@ go build
 
 ### Completed ✅
 
+- [x] **Neural Tweening (StepTweenChain)**: Bidirectional training for real-time embodied AI (validated across 19 tests)
+- [x] **Neural Telemetry**: Network blueprint extraction and activity visualization
+- [x] **Step Forward/Backward**: All layer types now support stepping (Dense, Conv2D, RNN, LSTM, Attention, Norm, SwiGLU)
 - [x] **Training Loop**: Built-in `Train()` method with gradient clipping and loss tracking
 - [x] **DeviationMetrics Evaluation**: 7-bucket accuracy tracking with sample-level analysis
 - [x] **Validation Integration**: Automatic periodic evaluation during training

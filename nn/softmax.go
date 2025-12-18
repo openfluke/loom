@@ -129,7 +129,8 @@ func ForwardSoftmaxCPU(input []float32, config *LayerConfig) ([]float32, error) 
 		return softmaxSparse(input), nil
 
 	case SoftmaxEntmax:
-		return softmaxEntmax(input, config.EntmaxAlpha), nil
+		result := softmaxEntmax(input, config.EntmaxAlpha)
+		return result, nil
 
 	default:
 		return softmaxStandard(input, 1.0), nil
