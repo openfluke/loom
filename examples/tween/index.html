@@ -235,17 +235,7 @@
             <button class="arch-btn" data-mode="StepTweenChain" style="border-left:4px solid hsl(270,80%,50%)">StepTweenChain</button>
         </div>
 
-        <!-- Algorithm Selector -->
-        <div style="display:flex;justify-content:center;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
-            <span style="font-size:0.8rem;color:var(--secondary-text)">Scoring Algorithm:</span>
-            <select id="algorithm-select" style="background:var(--surface-color);color:var(--text-color);border:1px solid var(--border-color);padding:0.5rem 1rem;border-radius:8px;font-family:inherit;cursor:pointer">
-                <option value="balanced">Balanced (T×S×C) - default</option>
-                <option value="throughput-stability">Throughput × Stability</option>
-                <option value="consistency-first">Consistency First</option>
-                <option value="throughput-first">Throughput First</option>
-            </select>
-            <span id="formula-display" style="font-size:0.75rem;color:var(--accent-color);font-family:monospace"></span>
-        </div>
+
 
         <!-- Full Width Chart -->
         <div class="chart-section">
@@ -267,26 +257,37 @@
 
         <!-- Insights Grid -->
         <div class="insights-grid">
-            <div class="insight-card highlight-card">
-                <div style="display:flex;gap:1.5rem;flex-wrap:wrap">
-                    <div style="flex:1;min-width:200px">
-                        <h4 style="margin-bottom:0.4rem">🚀 Winner</h4>
-                        <div class="insight-value success" id="overall-winner" style="font-size:1.3rem">—</div>
-                        <div class="insight-detail" id="overall-winner-detail"></div>
-                    </div>
-                    <div style="flex:1;min-width:200px;border-left:1px solid var(--border-color);padding-left:1.5rem">
-                        <h4 style="margin-bottom:0.4rem">⚠️ Worst</h4>
-                        <div class="insight-value danger" id="worst-mode" style="font-size:1.3rem">—</div>
-                        <div class="insight-detail" id="worst-mode-detail"></div>
-                    </div>
+            <!-- Winner/Worst stacked -->
+            <div class="insight-card">
+                <h4 style="margin-bottom:0.4rem">🚀 Winner</h4>
+                <div class="insight-value success" id="overall-winner" style="font-size:1.3rem">—</div>
+                <div class="insight-detail" id="overall-winner-detail"></div>
+                <div style="border-top:1px solid var(--border-color);margin:0.75rem 0;padding-top:0.75rem">
+                    <h4 style="margin-bottom:0.4rem">⚠️ Worst</h4>
+                    <div class="insight-value danger" id="worst-mode" style="font-size:1.2rem">—</div>
+                    <div class="insight-detail" id="worst-mode-detail"></div>
                 </div>
             </div>
 
-            <div class="insight-card" style="grid-column: span 2;">
-                <h4>📊 Mode Comparison (All Metrics)</h4>
-                <div style="font-size:0.7rem;color:var(--secondary-text);margin-bottom:0.5rem">
-                    <span id="comparison-formula" style="color:var(--accent-color);font-family:monospace"></span> | Higher is better
+            <!-- Algorithm Selector -->
+            <div class="insight-card">
+                <h4 style="margin-bottom:0.5rem">⚙️ Scoring Algorithm</h4>
+                <select id="algorithm-select" style="width:100%;background:var(--surface-color);color:var(--text-color);border:1px solid var(--border-color);padding:0.5rem;border-radius:6px;font-family:inherit;cursor:pointer;margin-bottom:0.5rem">
+                    <option value="balanced">Balanced (T×S×C)</option>
+                    <option value="throughput-stability">Throughput × Stability</option>
+                    <option value="consistency-first">Consistency First</option>
+                    <option value="throughput-first">Throughput First</option>
+                </select>
+                <div style="font-size:0.75rem;color:var(--secondary-text)">Formula:</div>
+                <div id="formula-display" style="font-size:0.8rem;color:var(--accent-color);font-family:monospace;padding:0.4rem;background:var(--surface-hover);border-radius:4px;margin-top:0.25rem"></div>
+                <div style="font-size:0.65rem;color:var(--secondary-text);margin-top:0.5rem;line-height:1.4">
+                    <b>S</b>=Stability | <b>T</b>=Throughput | <b>C</b>=Consistency
                 </div>
+            </div>
+
+            <!-- Mode Comparison -->
+            <div class="insight-card">
+                <h4 style="margin-bottom:0.5rem">📊 Mode Comparison</h4>
                 <table class="rankings-table" id="comparison-table">
                     <thead>
                         <tr>
@@ -300,8 +301,6 @@
                     <tbody id="comparison-tbody"></tbody>
                 </table>
             </div>
-
-
         </div>
     </div>
 
@@ -354,9 +353,7 @@
         }
 
         function updateFormulaDisplay() {
-            const formula = algorithms[selectedAlgorithm].formula;
-            document.getElementById('formula-display').innerText = formula;
-            document.getElementById('comparison-formula').innerText = formula;
+            document.getElementById('formula-display').innerText = algorithms[selectedAlgorithm].formula;
         }
 
         async function init() {
