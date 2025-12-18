@@ -594,4 +594,101 @@ internal static class NativeMethods
             FreeLoomString(ptr);
         }
     }
+
+    // ====================================================================
+    // TweenState API (Neural Tweening)
+    // ====================================================================
+
+    /// <summary>
+    /// Creates a new TweenState for neural tweening.
+    /// </summary>
+    /// <param name="useChainRule">If 1, use chain rule (TweenChain mode)</param>
+    /// <returns>TweenState handle, or -1 on error</returns>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern long LoomCreateTweenState(int useChainRule);
+
+    /// <summary>
+    /// Applies one tween step.
+    /// </summary>
+    /// <returns>Gap value (distance to target)</returns>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern float LoomTweenStep(
+        long handle,
+        [MarshalAs(UnmanagedType.LPArray)] float[] input,
+        int inputLen,
+        int targetClass,
+        int outputSize,
+        float learningRate);
+
+    /// <summary>
+    /// Frees a TweenState.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void LoomFreeTweenState(long handle);
+
+    // ====================================================================
+    // AdaptationTracker API (Benchmark Task Switching)
+    // ====================================================================
+
+    /// <summary>
+    /// Creates a new AdaptationTracker.
+    /// </summary>
+    /// <param name="windowDurationMs">Duration of each accuracy window in milliseconds</param>
+    /// <param name="totalDurationMs">Total test duration in milliseconds</param>
+    /// <returns>Tracker handle, or -1 on error</returns>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern long LoomCreateAdaptationTracker(int windowDurationMs, int totalDurationMs);
+
+    /// <summary>
+    /// Sets model information for the tracker.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern void LoomTrackerSetModelInfo(
+        long handle,
+        [MarshalAs(UnmanagedType.LPStr)] string modelName,
+        [MarshalAs(UnmanagedType.LPStr)] string modeName);
+
+    /// <summary>
+    /// Schedules a task change at a specific offset from start.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern void LoomTrackerScheduleTaskChange(
+        long handle,
+        int atOffsetMs,
+        int taskId,
+        [MarshalAs(UnmanagedType.LPStr)] string taskName);
+
+    /// <summary>
+    /// Starts the tracker with an initial task.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    internal static extern void LoomTrackerStart(
+        long handle,
+        [MarshalAs(UnmanagedType.LPStr)] string taskName,
+        int taskId);
+
+    /// <summary>
+    /// Records an output and whether it was correct.
+    /// </summary>
+    /// <returns>Previous task ID (for detecting task changes)</returns>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int LoomTrackerRecordOutput(long handle, int isCorrect);
+
+    /// <summary>
+    /// Gets the current task ID.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int LoomTrackerGetCurrentTask(long handle);
+
+    /// <summary>
+    /// Finalizes tracking and returns results as JSON.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr LoomTrackerFinalize(long handle);
+
+    /// <summary>
+    /// Frees an AdaptationTracker.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void LoomFreeTracker(long handle);
 }

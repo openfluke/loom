@@ -209,6 +209,80 @@ for (int step = 0; step < 100000; step++)
 
 See `examples/StepTrainV3.cs` for a complete example achieving 100% accuracy.
 
+### 🧬 Neural Tweening API - Real-Time Adaptation
+
+**NEW:** Neural tweening enables networks to adapt to changing goals in real-time without full backpropagation:
+
+```csharp
+using Welvet;
+
+// Create network
+var config = @"{""batch_size"": 1, ""layers"": [
+    {""type"": ""dense"", ""input_size"": 8, ""output_size"": 32, ""activation"": ""leaky_relu""},
+    {""type"": ""dense"", ""input_size"": 32, ""output_size"": 16, ""activation"": ""leaky_relu""},
+    {""type"": ""dense"", ""input_size"": 16, ""output_size"": 4, ""activation"": ""sigmoid""}
+]}";
+Network.CreateFromJson(config);
+
+// Create TweenState with chain rule (StepTweenChain mode)
+using var tween = new TweenState(useChainRule: true);
+
+// Continuously adapt to targets
+foreach (var (observation, targetClass) in trainingStream)
+{
+    float gap = tween.Step(observation, targetClass, outputSize: 4, learningRate: 0.02f);
+    Console.WriteLine($"Adaptation gap: {gap:F4}");
+}
+```
+
+**TweenState Class:**
+- `TweenState(bool useChainRule = false)` - Create tween state (chain rule = TweenChain mode)
+- `tween.Step(input, targetClass, outputSize, learningRate)` - Apply one tween step
+- `tween.Dispose()` - Free resources (use `using` statement)
+
+### 📊 AdaptationTracker - Benchmark Task Switching
+
+Track accuracy across task changes for benchmarking real-time adaptation:
+
+```csharp
+using Welvet;
+
+// Create tracker with 1s windows over 10s test
+using var tracker = new AdaptationTracker(windowDurationMs: 1000, totalDurationMs: 10000);
+tracker.SetModelInfo("Dense-5L", "StepTweenChain");
+
+// Schedule task changes at 1/3 and 2/3 of test
+tracker.ScheduleTaskChange(3333, taskId: 1, taskName: "AVOID");
+tracker.ScheduleTaskChange(6666, taskId: 0, taskName: "CHASE");
+
+tracker.Start("CHASE", taskId: 0);
+
+// Run test loop
+while (timeElapsed < 10000)
+{
+    int currentTask = tracker.GetCurrentTask();
+    // ... run network ...
+    tracker.RecordOutput(isCorrect: true);
+}
+
+// Get results
+var results = tracker.FinalizeResult();
+Console.WriteLine($"Avg accuracy: {results.AvgAccuracy:F1}%");
+```
+
+**AdaptationTracker Class:**
+- `AdaptationTracker(int windowDurationMs, int totalDurationMs)` - Create tracker
+- `tracker.SetModelInfo(modelName, modeName)` - Set model info
+- `tracker.ScheduleTaskChange(atOffsetMs, taskId, taskName)` - Schedule task change
+- `tracker.Start(taskName, taskId)` - Start tracking
+- `tracker.GetCurrentTask()` - Get current task ID
+- `tracker.RecordOutput(isCorrect)` - Record output
+- `tracker.GetResults()` - Get raw `JsonDocument` results
+- `tracker.FinalizeResult()` - Get `AdaptationResult` with parsed fields
+- `tracker.Dispose()` - Free resources (use `using` statement)
+
+See `examples/Test18Adaptation.cs` for a complete multi-architecture benchmark comparing 5 training modes across Dense, Conv2D, RNN, LSTM, and Attention networks.
+
 
 ## 📚 API Reference
 
