@@ -16,6 +16,16 @@ rm -rf dist/
 echo "Building TypeScript..."
 npx tsc
 
+# Copy assets (wasm_exec.js, main.wasm)
+echo "Copying assets..."
+cp -r assets/* dist/
+
+# Also ensure main.wasm is copied from wasm/ if not in assets
+if [ -f "../wasm/main.wasm" ] && [ ! -f "dist/main.wasm" ]; then
+    echo "Copying main.wasm from wasm/..."
+    cp ../wasm/main.wasm dist/
+fi
+
 echo ""
 echo "✓ Build complete!"
 echo ""

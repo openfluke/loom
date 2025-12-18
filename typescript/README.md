@@ -201,54 +201,56 @@ for (let step = 0; step < 100000; step++) {
 
 See `example/step_train_v3.ts` for a complete example achieving 100% accuracy.
 
+### 🧠 Neural Tweening API - Gradient-Free Learning
 
-{
-type: "parallel",
-combine_mode: "add",
-branches: [
-{
-type: "dense",
-input_size: 16,
-output_size: 8,
-activation: "relu",
-},
-{
-type: "dense",
-input_size: 16,
-output_size: 8,
-activation: "gelu",
-},
-],
-},
-{ type: "lstm", input_size: 16, hidden_size: 8, seq_length: 1 },
-{ type: "rnn", input_size: 16, hidden_size: 8, seq_length: 1 },
-],
-},
-{
-type: "dense",
-input_size: 24,
-output_size: 2,
-activation: "sigmoid",
-},
-],
-});
+**NEW:** Direct weight adjustment without backpropagation:
 
-// Train multi-agent network
-const batches: TrainingBatch[] = [
-{ Input: [0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8], Target: [1.0, 0.0] },
-{ Input: [0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1, 0.1], Target: [0.0, 1.0] },
-];
+```typescript
+import { init, createNetwork, TweenState } from "@openfluke/welvet";
 
-const config: TrainingConfig = {
-Epochs: 800,
-LearningRate: 0.15,
-LossType: "mse",
-Verbose: false,
-};
+await init();
 
-const result = agentNetwork.Train(JSON.stringify([batches, config]));
+const network = createNetwork(config);
 
-````
+// Create tween state (with optional chain rule)
+const tweenState: TweenState = network.createTweenState(true); // useChainRule=true
+
+// Training loop - direct weight updates
+for (let step = 0; step < 10000; step++) {
+  const input = new Float32Array([0.1, 0.2, 0.3, 0.4]);
+  const targetClass = 1; // Target output class
+  
+  // Single-step tween learning
+  const loss = tweenState.TweenStep(input, targetClass, 4, 0.02);
+}
+```
+
+**Tweening API:**
+- `network.createTweenState(useChainRule)` - Initialize tween state
+- `tweenState.TweenStep(input, targetClass, outputSize, lr)` - Train step
+- `tweenState.setChainRule(enabled)` - Toggle chain rule
+- `tweenState.getChainRule()` - Get chain rule status
+- `tweenState.getTweenSteps()` - Get total steps performed
+
+### 📊 Adaptation Benchmark - Multi-Architecture Testing
+
+**NEW:** Run the full Test 18 Multi-Architecture Adaptation Benchmark:
+
+```bash
+cd example
+bun run test18_adaptation.ts
+```
+
+Tests 5 architectures × 3 depths × 5 training modes (75 tests total):
+- **Architectures:** Dense, Conv2D, RNN, LSTM, Attention
+- **Depths:** 3, 5, 9 layers
+- **Modes:** NormalBP, StepBP, Tween, TweenChain, StepTweenChain
+
+Measures adaptation speed when tasks change mid-stream (chase→avoid→chase).
+
+See `example/test18_adaptation.ts` for the full implementation.
+
+```
 
 ## API Reference
 
@@ -374,9 +376,9 @@ interface TrainingConfig {
 }
 ```
 
-## Example
+## Examples
 
-See `example/grid-scatter.ts` for a complete multi-agent training demo:
+### Grid Scatter Multi-Agent
 
 ```bash
 cd example
@@ -384,19 +386,19 @@ bun install
 bun run grid-scatter.ts
 ```
 
-Expected output:
+### Stepping Training (LSTM)
 
+```bash
+bun run step_train_v3.ts
 ```
-🤖 Running Grid Scatter Multi-Agent Training...
-✅ Agent network created!
-Training for 800 epochs with learning rate 0.150
-✅ Training complete!
-Training time: 0.47 seconds
-Initial Loss: 0.252249
-Final Loss: 0.001374
-Improvement: 99.46%
-Total Epochs: 800
+
+### Adaptation Benchmark (75 tests)
+
+```bash
+bun run test18_adaptation.ts
 ```
+
+> **Note:** Full benchmark takes ~12.5 minutes (10 seconds per test)
 
 ## Layer Types
 

@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "bun run grid-scatter.ts"
+    "dev": "bun run grid-scatter.ts",
+    "adaptation": "bun run test18_adaptation.ts"
   },
   "dependencies": {
     "@openfluke/welvet": "link:.."

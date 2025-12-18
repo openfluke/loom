@@ -129,6 +129,7 @@ export interface Network {
   ApplyGradientsSGDMomentum(paramsJSON: string): string; // [learningRate, momentum, dampening, nesterov]
   
   createStepState(inputSize: number): StepState;
+  createTweenState(useChainRule?: boolean): TweenState;
 }
 
 /**
@@ -142,10 +143,52 @@ export interface StepState {
 }
 
 /**
+ * TweenState interface for neural tweening execution
+ */
+export interface TweenState {
+  /**
+   * Perform a tween training step
+   * @param input - Input data
+   * @param targetClass - Target class index
+   * @param outputSize - Size of output layer
+   * @param learningRate - Learning rate for this step
+   * @returns Loss value
+   */
+  TweenStep(
+    input: Float32Array | number[],
+    targetClass: number,
+    outputSize: number,
+    learningRate: number
+  ): number;
+
+  /** Enable/disable chain rule mode */
+  setChainRule(enabled: boolean): void;
+
+  /** Get current chain rule setting */
+  getChainRule(): boolean;
+
+  /** Get number of tween steps performed */
+  getTweenSteps(): number;
+}
+
+/**
  * Global WASM functions exposed by main.go
  * Only createLoomNetwork is exposed - use network.SaveModelToString() for saving
  */
 declare global {
   function createLoomNetwork(jsonConfig: string): Network;
+  function createAdaptationTracker(windowMs: number, totalMs: number): AdaptationTracker;
+}
+
+/**
+ * AdaptationTracker interface for tracking accuracy during task changes
+ */
+export interface AdaptationTracker {
+  setModelInfo(modelName: string, modeName: string): void;
+  scheduleTaskChange(atOffsetMs: number, taskID: number, taskName: string): void;
+  start(initialTask: string, initialTaskID: number): void;
+  recordOutput(isCorrect: boolean): void;
+  getCurrentTask(): number;
+  finalize(): string; // Returns JSON result
 }
 
