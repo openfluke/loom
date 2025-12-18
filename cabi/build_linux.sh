@@ -59,6 +59,12 @@ echo "Building simple_bench..."
 gcc -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,'$ORIGIN' -lm
 
 echo "✓ Benchmark compiled: $OUTPUT_DIR/simple_bench"
+
+# Build test18_adaptation
+echo "Building test18_adaptation..."
+gcc -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/test18_adaptation" test18_adaptation.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,'$ORIGIN' -lm
+
+echo "✓ Test18 compiled: $OUTPUT_DIR/test18_adaptation"
 echo ""
 
 # Show files
@@ -67,3 +73,5 @@ ls -lh "$OUTPUT_DIR"
 echo ""
 echo "=== Build Complete ==="
 echo "Run with: cd $OUTPUT_DIR && ./simple_bench"
+echo "   or:    cd $OUTPUT_DIR && ./test18_adaptation"
+

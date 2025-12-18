@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/openfluke/loom/nn"
@@ -346,6 +347,179 @@ func LoomFreeStepState(handle C.longlong) {
 	stepStateMu.Lock()
 	delete(stepStates, int64(handle))
 	stepStateMu.Unlock()
+}
+
+// ============================================================================
+// TweenState C-ABI Exports
+// ============================================================================
+
+// Global map to store tween states
+var tweenStates = make(map[int64]*nn.TweenState)
+var tweenStateNextID int64 = 1
+var tweenStateMu sync.RWMutex
+
+//export LoomCreateTweenState
+func LoomCreateTweenState(useChainRule C.int) C.longlong {
+	if currentNetwork == nil {
+		return -1
+	}
+
+	ts := nn.NewTweenState(currentNetwork, nil)
+	if useChainRule != 0 {
+		ts.Config.UseChainRule = true
+	}
+
+	tweenStateMu.Lock()
+	id := tweenStateNextID
+	tweenStateNextID++
+	tweenStates[id] = ts
+	tweenStateMu.Unlock()
+
+	return C.longlong(id)
+}
+
+//export LoomTweenStep
+func LoomTweenStep(handle C.longlong, input *C.float, inputLen C.int, targetClass C.int, outputSize C.int, learningRate C.float) C.float {
+	tweenStateMu.RLock()
+	ts, ok := tweenStates[int64(handle)]
+	tweenStateMu.RUnlock()
+
+	if !ok || currentNetwork == nil {
+		return -1.0
+	}
+
+	// Convert C array to Go slice
+	inputSlice := (*[1 << 30]float32)(unsafe.Pointer(input))[:inputLen:inputLen]
+	goInput := make([]float32, inputLen)
+	copy(goInput, inputSlice)
+
+	gap := ts.TweenStep(currentNetwork, goInput, int(targetClass), int(outputSize), float32(learningRate))
+	return C.float(gap)
+}
+
+//export LoomFreeTweenState
+func LoomFreeTweenState(handle C.longlong) {
+	tweenStateMu.Lock()
+	delete(tweenStates, int64(handle))
+	tweenStateMu.Unlock()
+}
+
+// ============================================================================
+// AdaptationTracker C-ABI Exports
+// ============================================================================
+
+// Global map to store adaptation trackers
+var adaptationTrackers = make(map[int64]*nn.AdaptationTracker)
+var adaptationTrackerNextID int64 = 1
+var adaptationTrackerMu sync.RWMutex
+
+//export LoomCreateAdaptationTracker
+func LoomCreateAdaptationTracker(windowDurationMs C.int, totalDurationMs C.int) C.longlong {
+	windowDur := time.Duration(windowDurationMs) * time.Millisecond
+	totalDur := time.Duration(totalDurationMs) * time.Millisecond
+
+	tracker := nn.NewAdaptationTracker(windowDur, totalDur)
+
+	adaptationTrackerMu.Lock()
+	id := adaptationTrackerNextID
+	adaptationTrackerNextID++
+	adaptationTrackers[id] = tracker
+	adaptationTrackerMu.Unlock()
+
+	return C.longlong(id)
+}
+
+//export LoomTrackerSetModelInfo
+func LoomTrackerSetModelInfo(handle C.longlong, modelName *C.char, modeName *C.char) {
+	adaptationTrackerMu.RLock()
+	tracker, ok := adaptationTrackers[int64(handle)]
+	adaptationTrackerMu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	tracker.SetModelInfo(C.GoString(modelName), C.GoString(modeName))
+}
+
+//export LoomTrackerScheduleTaskChange
+func LoomTrackerScheduleTaskChange(handle C.longlong, atOffsetMs C.int, taskID C.int, taskName *C.char) {
+	adaptationTrackerMu.RLock()
+	tracker, ok := adaptationTrackers[int64(handle)]
+	adaptationTrackerMu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	offset := time.Duration(atOffsetMs) * time.Millisecond
+	tracker.ScheduleTaskChange(offset, int(taskID), C.GoString(taskName))
+}
+
+//export LoomTrackerStart
+func LoomTrackerStart(handle C.longlong, taskName *C.char, taskID C.int) {
+	adaptationTrackerMu.RLock()
+	tracker, ok := adaptationTrackers[int64(handle)]
+	adaptationTrackerMu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	tracker.Start(C.GoString(taskName), int(taskID))
+}
+
+//export LoomTrackerRecordOutput
+func LoomTrackerRecordOutput(handle C.longlong, isCorrect C.int) C.int {
+	adaptationTrackerMu.RLock()
+	tracker, ok := adaptationTrackers[int64(handle)]
+	adaptationTrackerMu.RUnlock()
+
+	if !ok {
+		return -1
+	}
+
+	prevTask := tracker.RecordOutput(isCorrect != 0)
+	return C.int(prevTask)
+}
+
+//export LoomTrackerGetCurrentTask
+func LoomTrackerGetCurrentTask(handle C.longlong) C.int {
+	adaptationTrackerMu.RLock()
+	tracker, ok := adaptationTrackers[int64(handle)]
+	adaptationTrackerMu.RUnlock()
+
+	if !ok {
+		return -1
+	}
+
+	return C.int(tracker.GetCurrentTask())
+}
+
+//export LoomTrackerFinalize
+func LoomTrackerFinalize(handle C.longlong) *C.char {
+	adaptationTrackerMu.RLock()
+	tracker, ok := adaptationTrackers[int64(handle)]
+	adaptationTrackerMu.RUnlock()
+
+	if !ok {
+		return C.CString(`{"error": "invalid tracker handle"}`)
+	}
+
+	result := tracker.Finalize()
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	return C.CString(string(resultJSON))
+}
+
+//export LoomFreeTracker
+func LoomFreeTracker(handle C.longlong) {
+	adaptationTrackerMu.Lock()
+	delete(adaptationTrackers, int64(handle))
+	adaptationTrackerMu.Unlock()
 }
 
 func main() {}

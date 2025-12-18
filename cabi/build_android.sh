@@ -109,6 +109,12 @@ echo "Building simple_bench..."
 $CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -lm -pie
 
 echo "✓ Benchmark compiled: $OUTPUT_DIR/simple_bench"
+
+# Build test18_adaptation
+echo "Building test18_adaptation..."
+$CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/test18_adaptation" test18_adaptation.c -L"$OUTPUT_DIR" -lloom -lm -pie
+
+echo "✓ Test18 compiled: $OUTPUT_DIR/test18_adaptation"
 echo ""
 
 # Show files
@@ -119,4 +125,7 @@ echo "=== Build Complete ==="
 echo "Deploy to Android device:"
 echo "  adb push $OUTPUT_DIR/libloom.so /data/local/tmp/"
 echo "  adb push $OUTPUT_DIR/simple_bench /data/local/tmp/"
+echo "  adb push $OUTPUT_DIR/test18_adaptation /data/local/tmp/"
 echo "  adb shell 'cd /data/local/tmp && chmod +x simple_bench && ./simple_bench'"
+echo "  adb shell 'cd /data/local/tmp && chmod +x test18_adaptation && ./test18_adaptation'"
+

@@ -131,9 +131,10 @@ GOOS=ios GOARCH=$GOARCH CGO_ENABLED=1 CC="$CC" go build -buildmode=c-shared -o "
 
 echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
 
-# Note: simple_bench can't run on iOS directly (needs to be in an app bundle)
+# Note: simple_bench and test18_adaptation can't run on iOS directly (needs to be in an app bundle)
 echo ""
-echo "NOTE: iOS libraries must be embedded in an app. Benchmark skipped."
+echo "NOTE: iOS libraries must be embedded in an app. Benchmarks skipped."
+echo "C test files available: simple_bench.c, test18_adaptation.c"
 echo "Use the XCFramework build (ARCH=universal) for Xcode integration."
 
 # Show files
@@ -142,3 +143,4 @@ ls -lh "$OUTPUT_DIR"
 echo ""
 echo "=== Build Complete ==="
 echo "Integrate into Xcode project or build XCFramework with: ARCH=universal ./build_ios.sh"
+

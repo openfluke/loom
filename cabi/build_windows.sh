@@ -79,6 +79,12 @@ echo "Building simple_bench.exe..."
 $CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench.exe" simple_bench.c -L"$OUTPUT_DIR" -lloom -lm
 
 echo "✓ Benchmark compiled: $OUTPUT_DIR/simple_bench.exe"
+
+# Build test18_adaptation
+echo "Building test18_adaptation.exe..."
+$CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/test18_adaptation.exe" test18_adaptation.c -L"$OUTPUT_DIR" -lloom -lm
+
+echo "✓ Test18 compiled: $OUTPUT_DIR/test18_adaptation.exe"
 echo ""
 
 # Show files
@@ -87,3 +93,5 @@ ls -lh "$OUTPUT_DIR"
 echo ""
 echo "=== Build Complete ==="
 echo "Run on Windows: cd $OUTPUT_DIR && simple_bench.exe"
+echo "            or: cd $OUTPUT_DIR && test18_adaptation.exe"
+

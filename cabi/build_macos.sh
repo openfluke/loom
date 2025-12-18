@@ -48,8 +48,9 @@ case "$ARCH" in
         # Copy header from one of the builds
         cp "$OUTPUT_DIR_ARM/libloom.h" "$OUTPUT_DIR/libloom.h"
         
-        # Build benchmark (will run on current arch)
+        # Build benchmarks (will run on current arch)
         clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
+        clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/test18_adaptation" test18_adaptation.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
         
         ls -lh "$OUTPUT_DIR"
         echo "Build complete: $OUTPUT_DIR"
@@ -82,6 +83,12 @@ echo "Building simple_bench..."
 clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
 
 echo "✓ Benchmark compiled: $OUTPUT_DIR/simple_bench"
+
+# Build test18_adaptation
+echo "Building test18_adaptation..."
+clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/test18_adaptation" test18_adaptation.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
+
+echo "✓ Test18 compiled: $OUTPUT_DIR/test18_adaptation"
 echo ""
 
 # Show files
@@ -90,3 +97,5 @@ ls -lh "$OUTPUT_DIR"
 echo ""
 echo "=== Build Complete ==="
 echo "Run with: cd $OUTPUT_DIR && ./simple_bench"
+echo "   or:    cd $OUTPUT_DIR && ./test18_adaptation"
+
