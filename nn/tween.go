@@ -575,19 +575,21 @@ func (ts *TweenState) chainRuleBackwardConv2D(cfg *LayerConfig, input, output, g
 	return gradInput
 }
 
-// chainRuleBackwardAttention: Chain rule for Multi-Head Attention
+// chainRuleBackwardAttention: Patched to backpropagate through Q/K
 func (ts *TweenState) chainRuleBackwardAttention(cfg *LayerConfig, input, output, gradOutput []float32, depthScale float32) []float32 {
+	// 1. Initial Gradient Scaling
 	localGrad := make([]float32, len(gradOutput))
-	for j := 0; j < len(gradOutput) && j < len(output); j++ {
+	for j := range gradOutput {
 		localGrad[j] = gradOutput[j] * depthScale
 	}
 
-	// Backprop through output projection: grad_attn = OutputWeight^T * local_grad
 	dModel := cfg.DModel
 	if dModel == 0 {
 		dModel = len(output)
 	}
 
+	// 2. Backprop through Output Projection
+	// gradAttn = OutputWeight^T * localGrad
 	gradAttn := make([]float32, dModel)
 	for i := 0; i < dModel; i++ {
 		sum := float32(0)
@@ -600,8 +602,11 @@ func (ts *TweenState) chainRuleBackwardAttention(cfg *LayerConfig, input, output
 		gradAttn[i] = sum
 	}
 
-	// Backprop through V projection: grad_input += VWeights^T * grad_attn
+	// 3. Backprop through V, Q, and K
+	// Previously, we only did V. Now we sum contributions from all three.
 	gradInput := make([]float32, len(input))
+
+	// Contribution from V (Content path) - Strongest signal
 	for i := 0; i < len(input); i++ {
 		sum := float32(0)
 		for j := 0; j < len(gradAttn); j++ {
@@ -610,7 +615,25 @@ func (ts *TweenState) chainRuleBackwardAttention(cfg *LayerConfig, input, output
 				sum += cfg.VWeights[wIdx] * gradAttn[j]
 			}
 		}
-		gradInput[i] = sum
+		gradInput[i] += sum
+	}
+
+	// Contribution from Q/K (Routing path) - Weaker, but essential for deep learning
+	// Heuristic approximation: The routing error flows back proportional to
+	// how much the Q/K weights were adjusted in the update step.
+	// This avoids the expensive N^2 softmax derivative but preserves signal flow.
+	routingScale := float32(0.3) // Routing carries less gradient info than content
+
+	for i := 0; i < len(input); i++ {
+		sum := float32(0)
+		for j := 0; j < len(gradAttn); j++ {
+			qIdx := i*len(gradAttn) + j
+			if qIdx < len(cfg.QWeights) {
+				// If Q/K are misaligned, input should change to fix it
+				sum += (cfg.QWeights[qIdx] + cfg.KWeights[qIdx]) * gradAttn[j]
+			}
+		}
+		gradInput[i] += sum * routingScale
 	}
 
 	return gradInput
@@ -1095,18 +1118,24 @@ func (ts *TweenState) chainRuleUpdateConv2D(cfg *LayerConfig, input, output, out
 	}
 }
 
-// chainRuleUpdateAttention: Apply gradient update to Attention layer
-// Attention: output = softmax(Q*K^T / sqrt(d)) * V, then output projection
+// chainRuleUpdateAttention: Patched to include "Relevance Routing" gradients
+// Instead of using a global average, we now compute specific gradients per head.
+// This allows the Chain Rule to learn Q and K routing weights effectively.
 func (ts *TweenState) chainRuleUpdateAttention(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32) {
 	dModel := cfg.DModel
 	if dModel == 0 {
 		dModel = len(output)
 	}
+	numHeads := cfg.NumHeads
+	if numHeads == 0 {
+		numHeads = 2
+	}
+	headDim := dModel / numHeads
 
-	// Gradient clipping threshold to prevent saturation
+	// Gradient clipping to prevent saturation
 	const maxGrad float32 = 0.5
 
-	// Update output projection (direct path to output)
+	// 1. Update Output Projection (The Mixer)
 	for i := 0; i < dModel && i < len(input); i++ {
 		for j := 0; j < len(outputGrad); j++ {
 			wIdx := i*len(outputGrad) + j
@@ -1116,43 +1145,80 @@ func (ts *TweenState) chainRuleUpdateAttention(cfg *LayerConfig, input, output, 
 			}
 		}
 	}
-
-	// Update output biases
+	// Update Output Bias
 	for j := 0; j < len(outputGrad) && j < len(cfg.OutputBias); j++ {
 		cfg.OutputBias[j] += clipGrad(rate*outputGrad[j], maxGrad)
 	}
 
-	// Update V weights - V directly affects output through attention pooling
-	avgGrad := clipGrad(avgSlice(outputGrad), maxGrad)
-	for i := 0; i < len(cfg.VWeights); i++ {
-		inIdx := i % len(input)
-		if inIdx < len(input) {
-			cfg.VWeights[i] += clipGrad(rate*input[inIdx]*avgGrad*0.5, maxGrad)
+	// 2. Compute "Head Gradients"
+	headGrads := make([]float32, dModel)
+	for i := 0; i < dModel; i++ {
+		sum := float32(0)
+		for j := 0; j < len(outputGrad); j++ {
+			wIdx := i*len(outputGrad) + j
+			if wIdx < len(cfg.OutputWeight) {
+				sum += cfg.OutputWeight[wIdx] * outputGrad[j]
+			}
 		}
-	}
-	for j := range cfg.VBias {
-		cfg.VBias[j] += clipGrad(rate*avgGrad*0.5, maxGrad)
+		headGrads[i] = sum
 	}
 
-	// Update Q,K weights - they affect attention patterns
-	for i := 0; i < len(cfg.QWeights); i++ {
-		inIdx := i % len(input)
-		if inIdx < len(input) {
-			cfg.QWeights[i] += clipGrad(rate*input[inIdx]*avgGrad*0.3, maxGrad)
+	// 3. Update Heads (Q, K, V)
+	for h := 0; h < numHeads; h++ {
+		headStart := h * headDim
+		headEnd := headStart + headDim
+
+		// The gradient signal specific to this head
+		thisHeadGrad := headGrads[headStart:headEnd]
+
+		// --- V Update (Content) ---
+		vStart := h * headDim * dModel
+		for i := vStart; i < vStart+(headDim*dModel); i++ {
+			inIdx := (i - vStart) % dModel
+			gradIdx := (i - vStart) / dModel
+			if inIdx < len(input) && gradIdx < len(thisHeadGrad) {
+				grad := clipGrad(rate*input[inIdx]*thisHeadGrad[gradIdx], maxGrad)
+				cfg.VWeights[i] += grad
+			}
+		}
+
+		// --- Q & K Update (Routing) ---
+		// Calculate alignment score
+		dot := float32(0)
+		limit := len(input)
+		if limit > headDim {
+			limit = headDim
+		}
+
+		for k := 0; k < limit && k < len(thisHeadGrad); k++ {
+			dot += input[k] * thisHeadGrad[k]
+		}
+
+		// Scale factor
+		routingRate := clipGrad(dot*rate*0.1, maxGrad)
+
+		qStart := h * headDim * dModel
+		kStart := h * headDim * dModel
+
+		// Update Q and K
+		for i := 0; i < (headDim * dModel); i++ {
+			qIdx := qStart + i
+			kIdx := kStart + i
+			inIdx := i % dModel
+
+			if qIdx < len(cfg.QWeights) && kIdx < len(cfg.KWeights) && inIdx < len(input) {
+				val := input[inIdx] * routingRate
+				cfg.QWeights[qIdx] += val
+				cfg.KWeights[kIdx] += val
+			}
 		}
 	}
-	for i := 0; i < len(cfg.KWeights); i++ {
-		inIdx := i % len(input)
-		if inIdx < len(input) {
-			cfg.KWeights[i] += clipGrad(rate*input[inIdx]*avgGrad*0.3, maxGrad)
-		}
-	}
-	for j := range cfg.QBias {
-		cfg.QBias[j] += clipGrad(rate*avgGrad*0.3, maxGrad)
-	}
-	for j := range cfg.KBias {
-		cfg.KBias[j] += clipGrad(rate*avgGrad*0.3, maxGrad)
-	}
+
+	// Update Biases
+	avgGrad := avgSlice(outputGrad)
+	tweenBiasSlice(cfg.QBias, avgGrad, rate*0.05)
+	tweenBiasSlice(cfg.KBias, avgGrad, rate*0.05)
+	tweenBiasSlice(cfg.VBias, avgGrad, rate*0.05)
 }
 
 // chainRuleUpdateRNN: Apply gradient update to RNN layer
