@@ -17,6 +17,9 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "libloom.h"
 
 // ============================================================================
@@ -297,9 +300,21 @@ int argmax(float* arr, int len) {
 }
 
 long long get_time_ms() {
+#ifdef _WIN32
+    static LARGE_INTEGER freq = {0};
+    static int freq_initialized = 0;
+    if (!freq_initialized) {
+        QueryPerformanceFrequency(&freq);
+        freq_initialized = 1;
+    }
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    return (long long)(counter.QuadPart * 1000 / freq.QuadPart);
+#else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
 }
 
 // ============================================================================
