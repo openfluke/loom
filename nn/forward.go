@@ -8,6 +8,139 @@ import (
 	"github.com/openfluke/webgpu/wgpu"
 )
 
+// =============================================================================
+// Generic Forward Pass Implementation
+// =============================================================================
+
+// GenericForwardPass executes network forward pass for any numeric type.
+// Uses the Backend interface for computation.
+func GenericForwardPass[T Numeric](
+	n *Network,
+	input *Tensor[T],
+	backend Backend[T],
+) (*Tensor[T], []*Tensor[T], time.Duration) {
+	start := time.Now()
+
+	totalLayers := n.TotalLayers()
+	activations := make([]*Tensor[T], totalLayers+1)
+
+	// Store input
+	activations[0] = input.Clone()
+	data := input.Clone()
+
+	layerIdx := 0
+
+	// Forward through grid
+	for row := 0; row < n.GridRows; row++ {
+		for col := 0; col < n.GridCols; col++ {
+			for layer := 0; layer < n.LayersPerCell; layer++ {
+				config := n.GetLayer(row, col, layer)
+
+				if config.IsDisabled {
+					// Pass through
+					activations[layerIdx+1] = data.Clone()
+				} else {
+					switch config.Type {
+					case LayerDense:
+						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
+						_, post := DenseForward(data, weights, bias, config.InputHeight, config.OutputHeight, n.BatchSize, config.Activation)
+						data = post
+						activations[layerIdx+1] = post
+
+					case LayerConv2D:
+						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
+						_, post := Conv2DForward(data, weights, bias,
+							config.InputHeight, config.InputWidth, config.InputChannels,
+							config.KernelSize, config.Stride, config.Padding, config.Filters,
+							config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
+						data = post
+						activations[layerIdx+1] = post
+
+					case LayerRNN:
+						wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
+						wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
+						biasH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH, len(config.BiasH)))
+						output, _ := RNNForward(data, wIH, wHH, biasH, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+						data = output
+						activations[layerIdx+1] = output
+
+					case LayerLSTM:
+						weights := &LSTMWeights[T]{
+							WeightIH_i: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_i, len(config.WeightIH_i))),
+							WeightHH_i: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_i, len(config.WeightHH_i))),
+							BiasH_i:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_i, len(config.BiasH_i))),
+							WeightIH_f: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_f, len(config.WeightIH_f))),
+							WeightHH_f: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_f, len(config.WeightHH_f))),
+							BiasH_f:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_f, len(config.BiasH_f))),
+							WeightIH_g: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_g, len(config.WeightIH_g))),
+							WeightHH_g: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_g, len(config.WeightHH_g))),
+							BiasH_g:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_g, len(config.BiasH_g))),
+							WeightIH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_o, len(config.WeightIH_o))),
+							WeightHH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_o, len(config.WeightHH_o))),
+							BiasH_o:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_o, len(config.BiasH_o))),
+						}
+						output, _, _ := LSTMForward(data, weights, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+						data = output
+						activations[layerIdx+1] = output
+
+					case LayerSoftmax:
+						output := ApplySoftmax(data, float64(config.Temperature))
+						data = output
+						activations[layerIdx+1] = output
+
+					case LayerNorm:
+						gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
+						beta := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Beta, len(config.Beta)))
+						normSize := config.NormSize
+						if normSize <= 0 {
+							normSize = len(data.Data)
+						}
+						output := LayerNormForward(data, nil, gamma, beta, normSize, n.BatchSize, float64(config.Epsilon))
+						data = output
+						activations[layerIdx+1] = output
+
+					case LayerRMSNorm:
+						gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
+						normSize := config.NormSize
+						if normSize <= 0 {
+							normSize = len(data.Data)
+						}
+						output := RMSNormForward(data, nil, gamma, normSize, float64(config.Epsilon))
+						data = output
+						activations[layerIdx+1] = output
+
+					case LayerSwiGLU:
+						gateW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateWeights, len(config.GateWeights)))
+						upW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpWeights, len(config.UpWeights)))
+						downW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownWeights, len(config.DownWeights)))
+						gateBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateBias, len(config.GateBias)))
+						upBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpBias, len(config.UpBias)))
+						downBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownBias, len(config.DownBias)))
+						output := SwiGLUForward(data, gateW, upW, downW, gateBias, upBias, downBias, config.InputHeight, config.OutputHeight, n.BatchSize)
+						data = output
+						activations[layerIdx+1] = output
+
+					default:
+						// Apply activation using backend
+						data = backend.Activate(data, config.Activation)
+						activations[layerIdx+1] = data.Clone()
+					}
+				}
+				layerIdx++
+			}
+		}
+	}
+
+	return data, activations, time.Since(start)
+}
+
+// =============================================================================
+// Original float32 Implementation
+// =============================================================================
+
+
 // ForwardCPU executes the grid network on CPU and stores intermediate activations for backprop
 func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 	start := time.Now()

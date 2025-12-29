@@ -89,6 +89,102 @@ func (state *GenericStepState[T]) GetLayerOutput(layerIdx int) *Tensor[T] {
 	return state.LayerData[layerIdx].Clone()
 }
 
+// StepForwardGeneric executes one step for ALL layers using generic tensors.
+// Network weights are converted from float32 to T during execution.
+func StepForwardGeneric[T Numeric](
+	n *Network,
+	state *GenericStepState[T],
+	backend Backend[T],
+) time.Duration {
+	start := time.Now()
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	totalLayers := n.TotalLayers()
+
+	// Create temporary storage for new outputs (double buffering)
+	newOutputs := make([]*Tensor[T], totalLayers+1)
+	newOutputs[0] = state.LayerData[0] // Input stays the same
+
+	// Process each layer
+	layerIdx := 0
+	for row := 0; row < n.GridRows; row++ {
+		for col := 0; col < n.GridCols; col++ {
+			for layer := 0; layer < n.LayersPerCell; layer++ {
+				config := n.GetLayer(row, col, layer)
+				input := state.LayerData[layerIdx]
+
+				if input == nil {
+					input = NewTensor[T](1)
+				}
+
+				var postAct *Tensor[T]
+
+				switch config.Type {
+				case LayerDense:
+					weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+					bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
+					_, postAct = DenseForward(input, weights, bias, config.InputHeight, config.OutputHeight, n.BatchSize, config.Activation)
+
+				case LayerConv2D:
+					weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+					bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
+					_, postAct = Conv2DForward(input, weights, bias,
+						config.InputHeight, config.InputWidth, config.InputChannels,
+						config.KernelSize, config.Stride, config.Padding, config.Filters,
+						config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
+
+				case LayerRNN:
+					wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
+					wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
+					biasH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH, len(config.BiasH)))
+					postAct, _ = RNNForward(input, wIH, wHH, biasH, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+
+				case LayerSoftmax:
+					postAct = ApplySoftmax(input, float64(config.Temperature))
+
+				case LayerNorm:
+					gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
+					beta := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Beta, len(config.Beta)))
+					var residual *Tensor[T]
+					if state.Residuals[layerIdx] != nil {
+						residual = state.Residuals[layerIdx]
+					}
+					normSize := config.NormSize
+					if normSize <= 0 {
+						normSize = len(input.Data)
+					}
+					postAct = LayerNormForward(input, residual, gamma, beta, normSize, n.BatchSize, float64(config.Epsilon))
+
+				case LayerRMSNorm:
+					gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
+					normSize := config.NormSize
+					if normSize <= 0 {
+						normSize = len(input.Data)
+					}
+					postAct = RMSNormForward(input, nil, gamma, normSize, float64(config.Epsilon))
+
+				default:
+					// Apply activation using backend
+					postAct = backend.Activate(input, config.Activation)
+				}
+
+				newOutputs[layerIdx+1] = postAct
+				layerIdx++
+			}
+		}
+	}
+
+	// Swap buffers
+	for i := 1; i < len(state.LayerData); i++ {
+		state.LayerData[i] = newOutputs[i]
+	}
+
+	state.StepCount++
+	return time.Since(start)
+}
+
 // =============================================================================
 // Original float32 Implementation
 // =============================================================================
