@@ -39,3 +39,5 @@ docs/readmes
 
 *.wasm
 
+all_layers_all_modes_results.json
+all_layers_all_modes_all_numerical

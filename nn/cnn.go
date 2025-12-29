@@ -60,6 +60,18 @@ func Conv2DForward[T Numeric](
 	preAct = NewTensor[T](outputSize)
 	postAct = NewTensor[T](outputSize)
 
+	// Safety checks
+	if input == nil || len(input.Data) == 0 || kernel == nil || len(kernel.Data) == 0 {
+		return preAct, postAct
+	}
+
+	inputLen := len(input.Data)
+	kernelLen := len(kernel.Data)
+	biasLen := 0
+	if bias != nil {
+		biasLen = len(bias.Data)
+	}
+
 	// For each batch
 	for b := 0; b < batchSize; b++ {
 		// For each output filter
@@ -67,7 +79,10 @@ func Conv2DForward[T Numeric](
 			// For each output position
 			for oh := 0; oh < outH; oh++ {
 				for ow := 0; ow < outW; ow++ {
-					sum := bias.Data[f]
+					var sum T
+					if f < biasLen {
+						sum = bias.Data[f]
+					}
 
 					// Convolve over input channels
 					for ic := 0; ic < inC; ic++ {
@@ -79,15 +94,19 @@ func Conv2DForward[T Numeric](
 								if ih >= 0 && ih < inH && iw >= 0 && iw < inW {
 									inputIdx := b*inC*inH*inW + ic*inH*inW + ih*inW + iw
 									kernelIdx := f*inC*kSize*kSize + ic*kSize*kSize + kh*kSize + kw
-									sum += input.Data[inputIdx] * kernel.Data[kernelIdx]
+									if inputIdx < inputLen && kernelIdx < kernelLen {
+										sum += input.Data[inputIdx] * kernel.Data[kernelIdx]
+									}
 								}
 							}
 						}
 					}
 
 					outputIdx := b*filters*outH*outW + f*outH*outW + oh*outW + ow
-					preAct.Data[outputIdx] = sum
-					postAct.Data[outputIdx] = Activate(sum, activation)
+					if outputIdx < outputSize {
+						preAct.Data[outputIdx] = sum
+						postAct.Data[outputIdx] = Activate(sum, activation)
+					}
 				}
 			}
 		}
