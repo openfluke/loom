@@ -6,6 +6,40 @@ import (
 	"time"
 )
 
+// =============================================================================
+// Generic Backward Pass Support
+// =============================================================================
+
+// GenericBackwardResult holds the results of a generic backward pass.
+type GenericBackwardResult[T Numeric] struct {
+	GradInput     *Tensor[T]
+	KernelGrads   *Tensor[T]
+	BiasGrads     *Tensor[T]
+}
+
+// StepBackwardGeneric executes backward pass for GenericStepState.
+// This is a placeholder for the generic backward pass implementation.
+func StepBackwardGeneric[T Numeric](
+	state *GenericStepState[T],
+	gradOutput *Tensor[T],
+) (*Tensor[T], time.Duration) {
+	start := time.Now()
+	
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	
+	// Simplified: just pass gradient through for now
+	// Full implementation would route through each layer's generic backward
+	grad := gradOutput.Clone()
+	
+	state.StepCount++
+	return grad, time.Since(start)
+}
+
+// =============================================================================
+// Original float32 Implementation
+// =============================================================================
+
 // StepBackward executes one backward step for ALL layers simultaneously
 // It applies a "Softmax Variation" to the weight gradients to balance updates
 func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float32, time.Duration) {

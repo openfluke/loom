@@ -141,8 +141,8 @@ func ForwardSoftmaxCPU(input []float32, config *LayerConfig) ([]float32, error) 
 // Generic Softmax Implementation
 // =============================================================================
 
-// SoftmaxStandard applies standard softmax for any numeric type.
-func SoftmaxStandard[T Numeric](logits *Tensor[T], temperature float64) *Tensor[T] {
+// ApplySoftmax applies standard softmax for any numeric type.
+func ApplySoftmax[T Numeric](logits *Tensor[T], temperature float64) *Tensor[T] {
 	if temperature == 0 {
 		temperature = 1.0
 	}
@@ -175,15 +175,15 @@ func SoftmaxStandard[T Numeric](logits *Tensor[T], temperature float64) *Tensor[
 	return result
 }
 
-// SoftmaxGrid applies independent softmax to each row.
-func SoftmaxGrid[T Numeric](logits *Tensor[T], rows, cols int, temperature float64) *Tensor[T] {
+// ApplySoftmaxGrid applies independent softmax to each row.
+func ApplySoftmaxGrid[T Numeric](logits *Tensor[T], rows, cols int, temperature float64) *Tensor[T] {
 	result := NewTensor[T](len(logits.Data))
 
 	for r := 0; r < rows; r++ {
 		rowStart := r * cols
 		rowEnd := rowStart + cols
 		rowSlice := NewTensorFromSlice(logits.Data[rowStart:rowEnd], cols)
-		rowProbs := SoftmaxStandard(rowSlice, temperature)
+		rowProbs := ApplySoftmax(rowSlice, temperature)
 		copy(result.Data[rowStart:rowEnd], rowProbs.Data)
 	}
 
@@ -197,14 +197,14 @@ func SoftmaxGrid[T Numeric](logits *Tensor[T], rows, cols int, temperature float
 // softmaxStandard applies standard softmax with optional temperature scaling
 func softmaxStandard(logits []float32, temperature float32) []float32 {
 	inputT := NewTensorFromSlice(logits, len(logits))
-	result := SoftmaxStandard(inputT, float64(temperature))
+	result := ApplySoftmax(inputT, float64(temperature))
 	return result.Data
 }
 
 // softmaxGrid applies independent softmax to each row
 func softmaxGrid(logits []float32, rows, cols int, temperature float32) []float32 {
 	inputT := NewTensorFromSlice(logits, len(logits))
-	result := SoftmaxGrid(inputT, rows, cols, float64(temperature))
+	result := ApplySoftmaxGrid(inputT, rows, cols, float64(temperature))
 	return result.Data
 }
 

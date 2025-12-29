@@ -76,6 +76,95 @@ func InitLSTMLayer(inputSize, hiddenSize, batchSize, seqLength int) LayerConfig 
 	return config
 }
 
+// =============================================================================
+// Generic LSTM Implementation
+// =============================================================================
+
+// LSTMWeights holds all LSTM gate weights for type-generic operations.
+type LSTMWeights[T Numeric] struct {
+	WeightIH_i, WeightHH_i, BiasH_i *Tensor[T] // Input gate
+	WeightIH_f, WeightHH_f, BiasH_f *Tensor[T] // Forget gate
+	WeightIH_g, WeightHH_g, BiasH_g *Tensor[T] // Cell candidate gate
+	WeightIH_o, WeightHH_o, BiasH_o *Tensor[T] // Output gate
+}
+
+// LSTMForward performs LSTM forward pass for any numeric type.
+// Input shape: [batchSize, seqLength, inputSize]
+// Output shape: [batchSize, seqLength, hiddenSize]
+func LSTMForward[T Numeric](
+	input *Tensor[T],
+	weights *LSTMWeights[T],
+	batchSize, seqLength, inputSize, hiddenSize int,
+) (output *Tensor[T], hidden, cell *Tensor[T]) {
+	output = NewTensor[T](batchSize * seqLength * hiddenSize)
+	hidden = NewTensor[T](batchSize * (seqLength + 1) * hiddenSize)
+	cell = NewTensor[T](batchSize * (seqLength + 1) * hiddenSize)
+
+	for t := 0; t < seqLength; t++ {
+		for b := 0; b < batchSize; b++ {
+			prevHiddenIdx := b*(seqLength+1)*hiddenSize + t*hiddenSize
+			prevCellIdx := b*(seqLength+1)*hiddenSize + t*hiddenSize
+			currHiddenIdx := b*(seqLength+1)*hiddenSize + (t+1)*hiddenSize
+			currCellIdx := b*(seqLength+1)*hiddenSize + (t+1)*hiddenSize
+			inputIdx := b*seqLength*inputSize + t*inputSize
+
+			for h := 0; h < hiddenSize; h++ {
+				// Input gate
+				i_sum := float64(weights.BiasH_i.Data[h])
+				// Forget gate
+				f_sum := float64(weights.BiasH_f.Data[h])
+				// Cell candidate gate
+				g_sum := float64(weights.BiasH_g.Data[h])
+				// Output gate
+				o_sum := float64(weights.BiasH_o.Data[h])
+
+				for i := 0; i < inputSize; i++ {
+					x := float64(input.Data[inputIdx+i])
+					i_sum += float64(weights.WeightIH_i.Data[h*inputSize+i]) * x
+					f_sum += float64(weights.WeightIH_f.Data[h*inputSize+i]) * x
+					g_sum += float64(weights.WeightIH_g.Data[h*inputSize+i]) * x
+					o_sum += float64(weights.WeightIH_o.Data[h*inputSize+i]) * x
+				}
+
+				for hPrev := 0; hPrev < hiddenSize; hPrev++ {
+					hVal := float64(hidden.Data[prevHiddenIdx+hPrev])
+					i_sum += float64(weights.WeightHH_i.Data[h*hiddenSize+hPrev]) * hVal
+					f_sum += float64(weights.WeightHH_f.Data[h*hiddenSize+hPrev]) * hVal
+					g_sum += float64(weights.WeightHH_g.Data[h*hiddenSize+hPrev]) * hVal
+					o_sum += float64(weights.WeightHH_o.Data[h*hiddenSize+hPrev]) * hVal
+				}
+
+				// Apply activations
+				i_gate := 1.0 / (1.0 + math.Exp(-i_sum)) // sigmoid
+				f_gate := 1.0 / (1.0 + math.Exp(-f_sum)) // sigmoid
+				g_gate := math.Tanh(g_sum)               // tanh
+				o_gate := 1.0 / (1.0 + math.Exp(-o_sum)) // sigmoid
+
+				// Cell state: c_t = f_t * c_{t-1} + i_t * g_t
+				prevC := float64(cell.Data[prevCellIdx+h])
+				newC := f_gate*prevC + i_gate*g_gate
+				cell.Data[currCellIdx+h] = T(newC)
+
+				// Hidden state: h_t = o_t * tanh(c_t)
+				newH := o_gate * math.Tanh(newC)
+				hidden.Data[currHiddenIdx+h] = T(newH)
+			}
+
+			// Copy to output
+			outputIdx := b*seqLength*hiddenSize + t*hiddenSize
+			for h := 0; h < hiddenSize; h++ {
+				output.Data[outputIdx+h] = hidden.Data[currHiddenIdx+h]
+			}
+		}
+	}
+
+	return output, hidden, cell
+}
+
+// =============================================================================
+// Backward-compatible float32 functions
+// =============================================================================
+
 // sigmoid implements the sigmoid activation function
 func sigmoid(x float32) float32 {
 	return float32(1.0 / (1.0 + math.Exp(float64(-x))))

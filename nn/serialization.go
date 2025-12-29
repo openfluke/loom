@@ -102,14 +102,20 @@ type EncodedWeights struct {
 }
 
 // WeightsData represents the actual weight values
+// Type field indicates the numeric type used for weights
 type WeightsData struct {
-	Type   string         `json:"type"`
+	Type   string         `json:"type"`   // "float32", "float64", etc.
+	DType  string         `json:"dtype"`  // DType enum value as string (for multi-type support)
 	Layers []LayerWeights `json:"layers"`
 }
 
 // LayerWeights stores weights for a single layer
+// Note: Currently serialized as float32, but generic tensors can be converted on load
 type LayerWeights struct {
-	// Dense weights (stored as bias per neuron)
+	// Data type for this layer (optional, defaults to float32)
+	DType string `json:"dtype,omitempty"`
+
+	// Dense weights
 	Biases []float32 `json:"biases,omitempty"`
 
 	// Conv2D weights

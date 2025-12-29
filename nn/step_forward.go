@@ -24,6 +24,76 @@ type StepState struct {
 	stepCount uint64
 }
 
+// =============================================================================
+// Generic StepState Implementation
+// =============================================================================
+
+// GenericStepState holds the current state of each layer for any numeric type.
+type GenericStepState[T Numeric] struct {
+	// Current data at each layer (input/output buffers)
+	LayerData []*Tensor[T]
+
+	// Pre-activation values for each layer (for backprop)
+	LayerPreAct []*Tensor[T]
+
+	// Residual connections tracking
+	Residuals []*Tensor[T]
+
+	// Lock for thread-safe stepping
+	mu sync.RWMutex
+
+	// Step counter
+	StepCount uint64
+}
+
+// NewGenericStepState creates a new generic step state for the given network.
+func NewGenericStepState[T Numeric](totalLayers, inputSize int) *GenericStepState[T] {
+	state := &GenericStepState[T]{
+		LayerData:   make([]*Tensor[T], totalLayers+1),
+		LayerPreAct: make([]*Tensor[T], totalLayers),
+		Residuals:   make([]*Tensor[T], totalLayers),
+		StepCount:   0,
+	}
+
+	// Initialize layer 0 (input) with zeros
+	state.LayerData[0] = NewTensor[T](inputSize)
+
+	return state
+}
+
+// SetInput sets the input data for the network (layer 0)
+func (state *GenericStepState[T]) SetInput(input *Tensor[T]) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.LayerData[0] = input.Clone()
+}
+
+// GetOutput retrieves the output from the final layer
+func (state *GenericStepState[T]) GetOutput() *Tensor[T] {
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	finalLayer := len(state.LayerData) - 1
+	if state.LayerData[finalLayer] == nil {
+		return nil
+	}
+	return state.LayerData[finalLayer].Clone()
+}
+
+// GetLayerOutput retrieves the current output of a specific layer
+func (state *GenericStepState[T]) GetLayerOutput(layerIdx int) *Tensor[T] {
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	if layerIdx < 0 || layerIdx >= len(state.LayerData) || state.LayerData[layerIdx] == nil {
+		return nil
+	}
+	return state.LayerData[layerIdx].Clone()
+}
+
+// =============================================================================
+// Original float32 Implementation
+// =============================================================================
+
+
 // Helper to calculate output size recursively
 func getLayerOutputSize(config *LayerConfig, batchSize int) int {
 	if config.Type == LayerConv2D {

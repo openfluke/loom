@@ -6,6 +6,95 @@ import (
 	"math/rand"
 )
 
+// =============================================================================
+// Generic TweenState Implementation
+// =============================================================================
+
+// GenericTweenState holds bidirectional analysis state for any numeric type.
+type GenericTweenState[T Numeric] struct {
+	// Forward pass: what each layer ACTUALLY produces (top-down)
+	ForwardActs []*Tensor[T]
+
+	// Backward pass: what each layer SHOULD produce (bottom-up from expected)
+	BackwardTargets []*Tensor[T]
+
+	// Link budget per layer: how much information is preserved (0-1)
+	LinkBudgets []float32
+
+	// Gap at each layer: magnitude of difference between forward and backward
+	Gaps []float32
+
+	// Momentum for stable updates
+	WeightVel []*Tensor[T]
+	BiasVel   []*Tensor[T]
+
+	// Config holds all tunable parameters
+	Config *TweenConfig
+
+	TotalLayers int
+	TweenSteps  int
+}
+
+// NewGenericTweenState creates a generic tween state.
+func NewGenericTweenState[T Numeric](totalLayers int, config *TweenConfig) *GenericTweenState[T] {
+	if config == nil {
+		config = DefaultTweenConfig(totalLayers)
+	}
+	return &GenericTweenState[T]{
+		ForwardActs:     make([]*Tensor[T], totalLayers+1),
+		BackwardTargets: make([]*Tensor[T], totalLayers+1),
+		LinkBudgets:     make([]float32, totalLayers),
+		Gaps:            make([]float32, totalLayers),
+		WeightVel:       make([]*Tensor[T], totalLayers),
+		BiasVel:         make([]*Tensor[T], totalLayers),
+		Config:          config,
+		TotalLayers:     totalLayers,
+		TweenSteps:      0,
+	}
+}
+
+// SetForwardActivation sets the forward activation for a layer.
+func (ts *GenericTweenState[T]) SetForwardActivation(layerIdx int, activation *Tensor[T]) {
+	if layerIdx >= 0 && layerIdx < len(ts.ForwardActs) {
+		ts.ForwardActs[layerIdx] = activation.Clone()
+	}
+}
+
+// GetGap returns the gap at a specific layer.
+func (ts *GenericTweenState[T]) GetGap(layerIdx int) float32 {
+	if layerIdx >= 0 && layerIdx < len(ts.Gaps) {
+		return ts.Gaps[layerIdx]
+	}
+	return 0
+}
+
+// ComputeGaps calculates the gap between forward and backward targets for each layer.
+func (ts *GenericTweenState[T]) ComputeGaps() {
+	for i := 0; i < ts.TotalLayers; i++ {
+		if ts.ForwardActs[i] == nil || ts.BackwardTargets[i] == nil {
+			continue
+		}
+		fwd := ts.ForwardActs[i]
+		tgt := ts.BackwardTargets[i]
+		minLen := len(fwd.Data)
+		if len(tgt.Data) < minLen {
+			minLen = len(tgt.Data)
+		}
+
+		sumSq := 0.0
+		for j := 0; j < minLen; j++ {
+			diff := float64(fwd.Data[j]) - float64(tgt.Data[j])
+			sumSq += diff * diff
+		}
+		ts.Gaps[i] = float32(math.Sqrt(sumSq / float64(minLen+1)))
+	}
+}
+
+// =============================================================================
+// Original float32 Implementation
+// =============================================================================
+
+
 // NeuralTween - True Bidirectional Approach
 //
 // Concept:

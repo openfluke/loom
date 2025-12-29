@@ -2,6 +2,99 @@ package nn
 
 import "fmt"
 
+// =============================================================================
+// Generic Parallel Layer Implementation
+// =============================================================================
+
+// ParallelForward executes multiple sub-layers in parallel for any numeric type.
+// This is the generic version that can work with any Numeric type.
+func ParallelForward[T Numeric](
+	input *Tensor[T],
+	branches []*LayerConfig,
+	batchSize int,
+	combineMode string,
+) (*Tensor[T], error) {
+	if len(branches) == 0 {
+		return nil, fmt.Errorf("parallel layer has no branches defined")
+	}
+
+	// For each branch, we would call the appropriate generic layer forward
+	// This is a simplified version - full implementation would route to each layer type
+	branchOutputs := make([]*Tensor[T], len(branches))
+	totalOutputSize := 0
+
+	for i, branchCfg := range branches {
+		// Route to appropriate generic layer forward based on type
+		switch branchCfg.Type {
+		case LayerDense:
+			inputSlice := input.Data
+			weights := NewTensorFromSlice(convertFloat32ToT[T](branchCfg.Kernel), len(branchCfg.Kernel))
+			bias := NewTensorFromSlice(convertFloat32ToT[T](branchCfg.Bias), len(branchCfg.Bias))
+			_, post := DenseForward(input, weights, bias, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize, branchCfg.Activation)
+			branchOutputs[i] = post
+			_ = inputSlice
+		default:
+			// For unsupported types, pass through
+			branchOutputs[i] = input.Clone()
+		}
+
+		if combineMode == "concat" || combineMode == "" {
+			totalOutputSize += len(branchOutputs[i].Data)
+		} else {
+			if i == 0 {
+				totalOutputSize = len(branchOutputs[i].Data)
+			}
+		}
+	}
+
+	// Combine outputs
+	var combined *Tensor[T]
+	switch combineMode {
+	case "concat", "":
+		combined = NewTensor[T](totalOutputSize)
+		offset := 0
+		for _, branchOut := range branchOutputs {
+			copy(combined.Data[offset:], branchOut.Data)
+			offset += len(branchOut.Data)
+		}
+	case "add":
+		combined = NewTensor[T](totalOutputSize)
+		for _, branchOut := range branchOutputs {
+			for j := range branchOut.Data {
+				combined.Data[j] = T(float64(combined.Data[j]) + float64(branchOut.Data[j]))
+			}
+		}
+	case "avg", "average":
+		combined = NewTensor[T](totalOutputSize)
+		for _, branchOut := range branchOutputs {
+			for j := range branchOut.Data {
+				combined.Data[j] = T(float64(combined.Data[j]) + float64(branchOut.Data[j]))
+			}
+		}
+		scale := 1.0 / float64(len(branches))
+		for j := range combined.Data {
+			combined.Data[j] = T(float64(combined.Data[j]) * scale)
+		}
+	default:
+		return nil, fmt.Errorf("unknown combine mode: %s", combineMode)
+	}
+
+	return combined, nil
+}
+
+// convertFloat32ToT converts a float32 slice to a generic type slice.
+func convertFloat32ToT[T Numeric](data []float32) []T {
+	result := make([]T, len(data))
+	for i, v := range data {
+		result[i] = T(v)
+	}
+	return result
+}
+
+// =============================================================================
+// Original float32 Implementation
+// =============================================================================
+
 // parallelForwardCPU executes multiple sub-layers in parallel and combines their outputs
 // Returns: combined output, pre-activations for all branches (for backward pass), error
 func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode string) ([]float32, [][]float32, error) {
