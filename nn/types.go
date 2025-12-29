@@ -4,6 +4,155 @@ import (
 	"github.com/openfluke/webgpu/wgpu"
 )
 
+// DType defines the numerical type stored in a Tensor
+type DType int
+
+const (
+	DTypeFloat32 DType = 0 // Standard 32-bit float (default)
+	DTypeFloat64 DType = 1 // 64-bit float (high precision)
+	DTypeFloat16 DType = 2 // 16-bit float storage (computation upcasts to F32)
+	DTypeInt8    DType = 3 // 8-bit int (quantized, requires scale factor)
+	DTypeInt16   DType = 4 // 16-bit int
+	DTypeInt32   DType = 5 // 32-bit int
+	DTypeInt64   DType = 6 // 64-bit int
+	DTypeUint8   DType = 7 // 8-bit unsigned int
+	DTypeUint16  DType = 8 // 16-bit unsigned int
+	DTypeUint32  DType = 9 // 32-bit unsigned int
+	DTypeUint64  DType = 10 // 64-bit unsigned int
+)
+
+// Numeric is a type constraint for all numeric types that Tensors can hold.
+// This enables generic tensor operations across int and float types.
+type Numeric interface {
+	~int | ~int8 | ~int16 | ~int32 | ~int64 |
+		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
+		~float32 | ~float64
+}
+
+// Tensor wraps numerical data with metadata for type-agnostic operations.
+// It replaces raw []float32 slices to enable multi-precision training.
+type Tensor[T Numeric] struct {
+	Data    []T     // Underlying data storage
+	DType   DType   // Type identifier for runtime checks
+	Shape   []int   // Dimensions (e.g., [batch, channels, height, width])
+	Strides []int   // Step sizes for each dimension
+	Scale   float32 // Quantization scale factor (used only for Int8)
+	Offset  int     // Offset into Data for views/slices
+}
+
+// NewTensor creates a new tensor with the given shape.
+// Data is allocated but not initialized.
+func NewTensor[T Numeric](shape ...int) *Tensor[T] {
+	size := 1
+	for _, dim := range shape {
+		size *= dim
+	}
+
+	// Compute strides (row-major order)
+	strides := make([]int, len(shape))
+	stride := 1
+	for i := len(shape) - 1; i >= 0; i-- {
+		strides[i] = stride
+		stride *= shape[i]
+	}
+
+	return &Tensor[T]{
+		Data:    make([]T, size),
+		Shape:   shape,
+		Strides: strides,
+		Scale:   1.0,
+	}
+}
+
+// NewTensorFromSlice creates a tensor from existing data.
+// The slice is used directly (not copied) for efficiency.
+func NewTensorFromSlice[T Numeric](data []T, shape ...int) *Tensor[T] {
+	// Validate size matches
+	size := 1
+	for _, dim := range shape {
+		size *= dim
+	}
+	if len(data) < size {
+		// Extend data if needed
+		extended := make([]T, size)
+		copy(extended, data)
+		data = extended
+	}
+
+	// Compute strides
+	strides := make([]int, len(shape))
+	stride := 1
+	for i := len(shape) - 1; i >= 0; i-- {
+		strides[i] = stride
+		stride *= shape[i]
+	}
+
+	return &Tensor[T]{
+		Data:    data,
+		Shape:   shape,
+		Strides: strides,
+		Scale:   1.0,
+	}
+}
+
+// Size returns the total number of elements in the tensor.
+func (t *Tensor[T]) Size() int {
+	size := 1
+	for _, dim := range t.Shape {
+		size *= dim
+	}
+	return size
+}
+
+// Clone creates a deep copy of the tensor.
+func (t *Tensor[T]) Clone() *Tensor[T] {
+	dataCopy := make([]T, len(t.Data))
+	copy(dataCopy, t.Data)
+
+	shapeCopy := make([]int, len(t.Shape))
+	copy(shapeCopy, t.Shape)
+
+	stridesCopy := make([]int, len(t.Strides))
+	copy(stridesCopy, t.Strides)
+
+	return &Tensor[T]{
+		Data:    dataCopy,
+		DType:   t.DType,
+		Shape:   shapeCopy,
+		Strides: stridesCopy,
+		Scale:   t.Scale,
+		Offset:  t.Offset,
+	}
+}
+
+// Reshape returns a new tensor with a different shape but same data.
+// The total size must remain the same.
+func (t *Tensor[T]) Reshape(shape ...int) *Tensor[T] {
+	newSize := 1
+	for _, dim := range shape {
+		newSize *= dim
+	}
+	if newSize != t.Size() {
+		return nil // Invalid reshape
+	}
+
+	strides := make([]int, len(shape))
+	stride := 1
+	for i := len(shape) - 1; i >= 0; i-- {
+		strides[i] = stride
+		stride *= shape[i]
+	}
+
+	return &Tensor[T]{
+		Data:    t.Data,
+		DType:   t.DType,
+		Shape:   shape,
+		Strides: strides,
+		Scale:   t.Scale,
+		Offset:  t.Offset,
+	}
+}
+
 // ActivationType defines the activation function used in a layer
 type ActivationType int
 

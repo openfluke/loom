@@ -41,61 +41,67 @@ func InitRNNLayer(inputSize, hiddenSize, batchSize, seqLength int) LayerConfig {
 	return config
 }
 
-// rnnForwardCPU performs forward pass for RNN layer
+// =============================================================================
+// Generic RNN Implementation
+// =============================================================================
+
+// RNNForward performs forward pass for RNN layer with any numeric type.
 // Input shape: [batchSize, seqLength, inputSize]
 // Output shape: [batchSize, seqLength, hiddenSize]
-// Returns: (output, hidden_states_all_timesteps) for backward pass
-func rnnForwardCPU(config *LayerConfig, input []float32, batchSize, seqLength, inputSize, hiddenSize int) ([]float32, []float32) {
-	// Output: [batchSize, seqLength, hiddenSize]
-	output := make([]float32, batchSize*seqLength*hiddenSize)
+func RNNForward[T Numeric](
+	input, weightIH, weightHH, biasH *Tensor[T],
+	batchSize, seqLength, inputSize, hiddenSize int,
+) (output, hiddenStates *Tensor[T]) {
+	output = NewTensor[T](batchSize * seqLength * hiddenSize)
+	hiddenStates = NewTensor[T](batchSize * (seqLength + 1) * hiddenSize)
 
-	// Store all hidden states (including initial h_0=0) for backward pass
-	// [batchSize, seqLength+1, hiddenSize]
-	hiddenStates := make([]float32, batchSize*(seqLength+1)*hiddenSize)
-	// h_0 is already zeros (implicit initialization)
-
-	// Process each timestep
 	for t := 0; t < seqLength; t++ {
 		for b := 0; b < batchSize; b++ {
-			// Get previous hidden state h_{t-1}
 			prevHiddenIdx := b*(seqLength+1)*hiddenSize + t*hiddenSize
-
-			// Current hidden state h_t
 			currHiddenIdx := b*(seqLength+1)*hiddenSize + (t+1)*hiddenSize
-
-			// Input at timestep t: x_t
 			inputIdx := b*seqLength*inputSize + t*inputSize
 
-			// Compute h_t = tanh(W_ih @ x_t + W_hh @ h_{t-1} + b_h)
 			for h := 0; h < hiddenSize; h++ {
-				sum := config.BiasH[h]
+				sum := float64(biasH.Data[h])
 
 				// W_ih @ x_t
 				for i := 0; i < inputSize; i++ {
-					sum += config.WeightIH[h*inputSize+i] * input[inputIdx+i]
+					sum += float64(weightIH.Data[h*inputSize+i]) * float64(input.Data[inputIdx+i])
 				}
 
 				// W_hh @ h_{t-1}
 				for hPrev := 0; hPrev < hiddenSize; hPrev++ {
-					sum += config.WeightHH[h*hiddenSize+hPrev] * hiddenStates[prevHiddenIdx+hPrev]
+					sum += float64(weightHH.Data[h*hiddenSize+hPrev]) * float64(hiddenStates.Data[prevHiddenIdx+hPrev])
 				}
 
-				// Store pre-activation (will be used for backward)
-				preActivation := sum
-
 				// Apply tanh activation
-				hiddenStates[currHiddenIdx+h] = float32(math.Tanh(float64(preActivation)))
+				hiddenStates.Data[currHiddenIdx+h] = T(math.Tanh(sum))
 			}
 
-			// Copy current hidden state to output
+			// Copy to output
 			outputIdx := b*seqLength*hiddenSize + t*hiddenSize
 			for h := 0; h < hiddenSize; h++ {
-				output[outputIdx+h] = hiddenStates[currHiddenIdx+h]
+				output.Data[outputIdx+h] = hiddenStates.Data[currHiddenIdx+h]
 			}
 		}
 	}
 
 	return output, hiddenStates
+}
+
+// =============================================================================
+// Backward-compatible float32 functions
+// =============================================================================
+
+// rnnForwardCPU performs forward pass for RNN layer
+func rnnForwardCPU(config *LayerConfig, input []float32, batchSize, seqLength, inputSize, hiddenSize int) ([]float32, []float32) {
+	inputT := NewTensorFromSlice(input, len(input))
+	weightIHT := NewTensorFromSlice(config.WeightIH, len(config.WeightIH))
+	weightHHT := NewTensorFromSlice(config.WeightHH, len(config.WeightHH))
+	biasHT := NewTensorFromSlice(config.BiasH, len(config.BiasH))
+
+	output, hiddenStates := RNNForward(inputT, weightIHT, weightHHT, biasHT, batchSize, seqLength, inputSize, hiddenSize)
+	return output.Data, hiddenStates.Data
 }
 
 // rnnBackwardCPU performs backward pass for RNN layer using BPTT

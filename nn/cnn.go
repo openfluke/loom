@@ -44,25 +44,21 @@ func InitConv2DLayer(
 	}
 }
 
-// conv2DForwardCPU performs 2D convolution on CPU
+// =============================================================================
+// Generic Conv2D Implementation
+// =============================================================================
+
+// Conv2DForward performs 2D convolution for any numeric type.
 // input shape: [batch][inChannels][height][width] (flattened)
 // output shape: [batch][filters][outHeight][outWidth] (flattened)
-// Returns: preActivation (before activation), postActivation (after activation)
-func conv2DForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]float32, []float32) {
-	inH := config.InputHeight
-	inW := config.InputWidth
-	inC := config.InputChannels
-	kSize := config.KernelSize
-	stride := config.Stride
-	padding := config.Padding
-	filters := config.Filters
-	outH := config.OutputHeight
-	outW := config.OutputWidth
-
-	// Output size: batch * filters * outH * outW
+func Conv2DForward[T Numeric](
+	input, kernel, bias *Tensor[T],
+	inH, inW, inC, kSize, stride, padding, filters, outH, outW, batchSize int,
+	activation ActivationType,
+) (preAct, postAct *Tensor[T]) {
 	outputSize := batchSize * filters * outH * outW
-	preActivation := make([]float32, outputSize)
-	postActivation := make([]float32, outputSize)
+	preAct = NewTensor[T](outputSize)
+	postAct = NewTensor[T](outputSize)
 
 	// For each batch
 	for b := 0; b < batchSize; b++ {
@@ -71,84 +67,55 @@ func conv2DForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]fl
 			// For each output position
 			for oh := 0; oh < outH; oh++ {
 				for ow := 0; ow < outW; ow++ {
-					sum := config.Bias[f]
+					sum := bias.Data[f]
 
 					// Convolve over input channels
 					for ic := 0; ic < inC; ic++ {
 						for kh := 0; kh < kSize; kh++ {
 							for kw := 0; kw < kSize; kw++ {
-								// Calculate input position
 								ih := oh*stride + kh - padding
 								iw := ow*stride + kw - padding
 
-								// Check bounds
 								if ih >= 0 && ih < inH && iw >= 0 && iw < inW {
 									inputIdx := b*inC*inH*inW + ic*inH*inW + ih*inW + iw
 									kernelIdx := f*inC*kSize*kSize + ic*kSize*kSize + kh*kSize + kw
-									sum += input[inputIdx] * config.Kernel[kernelIdx]
+									sum += input.Data[inputIdx] * kernel.Data[kernelIdx]
 								}
 							}
 						}
 					}
 
-					// Store pre-activation (before activation function)
 					outputIdx := b*filters*outH*outW + f*outH*outW + oh*outW + ow
-					preActivation[outputIdx] = sum
-
-					// Apply activation and store post-activation
-					postActivation[outputIdx] = activateCPU(sum, config.Activation)
+					preAct.Data[outputIdx] = sum
+					postAct.Data[outputIdx] = Activate(sum, activation)
 				}
 			}
 		}
 	}
 
-	return preActivation, postActivation
+	return preAct, postAct
 }
 
-// conv2DBackwardCPU computes gradients for 2D convolution on CPU
-// gradOutput: gradient flowing back from next layer
-// input: input from forward pass
-// Returns: gradInput (gradient w.r.t. input), gradKernel, gradBias
-func conv2DBackwardCPU(
-	gradOutput []float32,
-	input []float32,
-	preActivation []float32,
-	config *LayerConfig,
-	batchSize int,
-) (gradInput []float32, gradKernel []float32, gradBias []float32) {
-	inH := config.InputHeight
-	inW := config.InputWidth
-	inC := config.InputChannels
-	kSize := config.KernelSize
-	stride := config.Stride
-	padding := config.Padding
-	filters := config.Filters
-	outH := config.OutputHeight
-	outW := config.OutputWidth
+// Conv2DBackward computes gradients for 2D convolution with any numeric type.
+func Conv2DBackward[T Numeric](
+	gradOutput, input, preActivation, kernel *Tensor[T],
+	inH, inW, inC, kSize, stride, padding, filters, outH, outW, batchSize int,
+	activation ActivationType,
+) (gradInput, gradKernel, gradBias *Tensor[T]) {
+	gradInput = NewTensor[T](batchSize * inC * inH * inW)
+	gradKernel = NewTensor[T](filters * inC * kSize * kSize)
+	gradBias = NewTensor[T](filters)
 
-	// Initialize gradients
-	gradInput = make([]float32, batchSize*inC*inH*inW)
-	gradKernel = make([]float32, filters*inC*kSize*kSize)
-	gradBias = make([]float32, filters)
-
-	// For each batch
 	for b := 0; b < batchSize; b++ {
-		// For each output filter
 		for f := 0; f < filters; f++ {
-			// For each output position
 			for oh := 0; oh < outH; oh++ {
 				for ow := 0; ow < outW; ow++ {
 					outputIdx := b*filters*outH*outW + f*outH*outW + oh*outW + ow
+					derivative := ActivateDerivative(preActivation.Data[outputIdx], activation)
+					gradOut := gradOutput.Data[outputIdx] * derivative
 
-					// Apply activation derivative
-					preActIdx := outputIdx
-					derivative := activateDerivativeCPU(preActivation[preActIdx], config.Activation)
-					gradOut := gradOutput[outputIdx] * derivative
+					gradBias.Data[f] += gradOut
 
-					// Accumulate bias gradient
-					gradBias[f] += gradOut
-
-					// Backprop through convolution
 					for ic := 0; ic < inC; ic++ {
 						for kh := 0; kh < kSize; kh++ {
 							for kw := 0; kw < kSize; kw++ {
@@ -159,11 +126,8 @@ func conv2DBackwardCPU(
 									inputIdx := b*inC*inH*inW + ic*inH*inW + ih*inW + iw
 									kernelIdx := f*inC*kSize*kSize + ic*kSize*kSize + kh*kSize + kw
 
-									// Gradient w.r.t. input
-									gradInput[inputIdx] += gradOut * config.Kernel[kernelIdx]
-
-									// Gradient w.r.t. kernel
-									gradKernel[kernelIdx] += gradOut * input[inputIdx]
+									gradInput.Data[inputIdx] += gradOut * kernel.Data[kernelIdx]
+									gradKernel.Data[kernelIdx] += gradOut * input.Data[inputIdx]
 								}
 							}
 						}
@@ -176,17 +140,58 @@ func conv2DBackwardCPU(
 	return gradInput, gradKernel, gradBias
 }
 
+// =============================================================================
+// Backward-compatible float32 functions
+// =============================================================================
+
+// conv2DForwardCPU performs 2D convolution on CPU
+func conv2DForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]float32, []float32) {
+	inputT := NewTensorFromSlice(input, len(input))
+	kernelT := NewTensorFromSlice(config.Kernel, len(config.Kernel))
+	biasT := NewTensorFromSlice(config.Bias, len(config.Bias))
+
+	preAct, postAct := Conv2DForward(
+		inputT, kernelT, biasT,
+		config.InputHeight, config.InputWidth, config.InputChannels,
+		config.KernelSize, config.Stride, config.Padding,
+		config.Filters, config.OutputHeight, config.OutputWidth,
+		batchSize, config.Activation,
+	)
+
+	return preAct.Data, postAct.Data
+}
+
+// conv2DBackwardCPU computes gradients for 2D convolution on CPU
+func conv2DBackwardCPU(
+	gradOutput []float32,
+	input []float32,
+	preActivation []float32,
+	config *LayerConfig,
+	batchSize int,
+) (gradInput []float32, gradKernel []float32, gradBias []float32) {
+	gradOutputT := NewTensorFromSlice(gradOutput, len(gradOutput))
+	inputT := NewTensorFromSlice(input, len(input))
+	preActT := NewTensorFromSlice(preActivation, len(preActivation))
+	kernelT := NewTensorFromSlice(config.Kernel, len(config.Kernel))
+
+	gradInputT, gradKernelT, gradBiasT := Conv2DBackward(
+		gradOutputT, inputT, preActT, kernelT,
+		config.InputHeight, config.InputWidth, config.InputChannels,
+		config.KernelSize, config.Stride, config.Padding,
+		config.Filters, config.OutputHeight, config.OutputWidth,
+		batchSize, config.Activation,
+	)
+
+	return gradInputT.Data, gradKernelT.Data, gradBiasT.Data
+}
+
 // ReshapeTo2D converts flattened 1D data to 2D shape for convolution
-// Assumes input is [batch][features] and converts to [batch][1][sqrt(features)][sqrt(features)]
 func ReshapeTo2D(input []float32, batchSize int) ([]float32, int, int, int) {
 	featuresPerBatch := len(input) / batchSize
-	// Assume square images with 1 channel
 	size := int(math.Sqrt(float64(featuresPerBatch)))
 	channels := 1
 
 	if size*size != featuresPerBatch {
-		// Not a perfect square, try to find best dimensions
-		// For now, just use the input as-is with 1x1 "images"
 		size = featuresPerBatch
 		channels = 1
 	}
@@ -196,6 +201,6 @@ func ReshapeTo2D(input []float32, batchSize int) ([]float32, int, int, int) {
 
 // FlattenFrom2D converts 2D conv output back to 1D for dense layers
 func FlattenFrom2D(input []float32, batchSize, channels, height, width int) []float32 {
-	// Already flattened in our representation
 	return input
 }
+

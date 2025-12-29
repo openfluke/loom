@@ -137,52 +137,75 @@ func ForwardSoftmaxCPU(input []float32, config *LayerConfig) ([]float32, error) 
 	}
 }
 
-// softmaxStandard applies standard softmax with optional temperature scaling
-func softmaxStandard(logits []float32, temperature float32) []float32 {
+// =============================================================================
+// Generic Softmax Implementation
+// =============================================================================
+
+// SoftmaxStandard applies standard softmax for any numeric type.
+func SoftmaxStandard[T Numeric](logits *Tensor[T], temperature float64) *Tensor[T] {
 	if temperature == 0 {
 		temperature = 1.0
 	}
 
-	// Scale by temperature
-	scaled := make([]float32, len(logits))
-	maxLogit := logits[0] / temperature
-	for i, v := range logits {
-		scaled[i] = v / temperature
-		if scaled[i] > maxLogit {
-			maxLogit = scaled[i]
+	n := len(logits.Data)
+	result := NewTensor[T](n)
+
+	// Find max for numerical stability
+	maxLogit := float64(logits.Data[0]) / temperature
+	for _, v := range logits.Data {
+		scaled := float64(v) / temperature
+		if scaled > maxLogit {
+			maxLogit = scaled
 		}
 	}
 
-	// Numerical stability: subtract max
-	exps := make([]float32, len(scaled))
-	sum := float32(0.0)
-	for i, v := range scaled {
-		exps[i] = float32(math.Exp(float64(v - maxLogit)))
+	// Compute exp and sum
+	exps := make([]float64, n)
+	sum := 0.0
+	for i, v := range logits.Data {
+		exps[i] = math.Exp(float64(v)/temperature - maxLogit)
 		sum += exps[i]
 	}
 
 	// Normalize
-	probs := make([]float32, len(logits))
 	for i := range exps {
-		probs[i] = exps[i] / sum
+		result.Data[i] = T(exps[i] / sum)
 	}
 
-	return probs
+	return result
 }
 
-// softmaxGrid applies independent softmax to each row
-func softmaxGrid(logits []float32, rows, cols int, temperature float32) []float32 {
-	result := make([]float32, len(logits))
+// SoftmaxGrid applies independent softmax to each row.
+func SoftmaxGrid[T Numeric](logits *Tensor[T], rows, cols int, temperature float64) *Tensor[T] {
+	result := NewTensor[T](len(logits.Data))
 
 	for r := 0; r < rows; r++ {
 		rowStart := r * cols
 		rowEnd := rowStart + cols
-		rowSlice := logits[rowStart:rowEnd]
-		rowProbs := softmaxStandard(rowSlice, temperature)
-		copy(result[rowStart:rowEnd], rowProbs)
+		rowSlice := NewTensorFromSlice(logits.Data[rowStart:rowEnd], cols)
+		rowProbs := SoftmaxStandard(rowSlice, temperature)
+		copy(result.Data[rowStart:rowEnd], rowProbs.Data)
 	}
 
 	return result
+}
+
+// =============================================================================
+// Backward-compatible float32 functions
+// =============================================================================
+
+// softmaxStandard applies standard softmax with optional temperature scaling
+func softmaxStandard(logits []float32, temperature float32) []float32 {
+	inputT := NewTensorFromSlice(logits, len(logits))
+	result := SoftmaxStandard(inputT, float64(temperature))
+	return result.Data
+}
+
+// softmaxGrid applies independent softmax to each row
+func softmaxGrid(logits []float32, rows, cols int, temperature float32) []float32 {
+	inputT := NewTensorFromSlice(logits, len(logits))
+	result := SoftmaxGrid(inputT, rows, cols, float64(temperature))
+	return result.Data
 }
 
 // softmaxHierarchical applies softmax at each level of hierarchy

@@ -4,74 +4,94 @@ import (
 	"math"
 )
 
-// layerNormForwardCPU performs layer normalization on CPU
+// =============================================================================
+// Generic LayerNorm Implementation
+// =============================================================================
+
+// LayerNormForward performs layer normalization for any numeric type.
 // input shape: [batchSize][normSize] (flattened)
 // residual: optional residual connection to add before normalization
-// Returns: normalized output
-func layerNormForwardCPU(input []float32, residual []float32, config *LayerConfig, batchSize int) []float32 {
-	normSize := config.NormSize
-	gamma := config.Gamma
-	beta := config.Beta
-	epsilon := config.Epsilon
-
+func LayerNormForward[T Numeric](input, residual, gamma, beta *Tensor[T], normSize, batchSize int, epsilon float64) *Tensor[T] {
 	if epsilon == 0 {
-		epsilon = 1e-5 // Default value
+		epsilon = 1e-5
 	}
 
 	// Add residual if provided
-	inputWithResidual := make([]float32, len(input))
-	if len(residual) == len(input) {
-		for i := range input {
-			inputWithResidual[i] = input[i] + residual[i]
+	inputWithResidual := input.Clone()
+	if residual != nil && len(residual.Data) == len(input.Data) {
+		for i := range inputWithResidual.Data {
+			inputWithResidual.Data[i] += residual.Data[i]
 		}
-	} else {
-		copy(inputWithResidual, input)
 	}
 
-	output := make([]float32, len(inputWithResidual))
+	output := NewTensor[T](len(inputWithResidual.Data))
 
 	// Normalize each sample in the batch
 	for b := 0; b < batchSize; b++ {
 		start := b * normSize
 		end := start + normSize
 
-		if end > len(inputWithResidual) {
+		if end > len(inputWithResidual.Data) {
 			break
 		}
 
 		// Calculate mean
-		var sum float32
+		var sum float64
 		for i := start; i < end; i++ {
-			sum += inputWithResidual[i]
+			sum += float64(inputWithResidual.Data[i])
 		}
-		mean := sum / float32(normSize)
+		mean := sum / float64(normSize)
 
 		// Calculate variance
-		var variance float32
+		var variance float64
 		for i := start; i < end; i++ {
-			diff := inputWithResidual[i] - mean
+			diff := float64(inputWithResidual.Data[i]) - mean
 			variance += diff * diff
 		}
-		variance /= float32(normSize)
+		variance /= float64(normSize)
 
 		// Normalize and apply affine transformation
-		std := float32(math.Sqrt(float64(variance + epsilon)))
+		std := math.Sqrt(variance + epsilon)
 
 		for i := 0; i < normSize; i++ {
 			idx := start + i
-			normalized := (inputWithResidual[idx] - mean) / std
+			normalized := (float64(inputWithResidual.Data[idx]) - mean) / std
 
 			// Apply learned scale and shift
-			if len(gamma) > i {
-				normalized *= gamma[i]
+			if gamma != nil && len(gamma.Data) > i {
+				normalized *= float64(gamma.Data[i])
 			}
-			if len(beta) > i {
-				normalized += beta[i]
+			if beta != nil && len(beta.Data) > i {
+				normalized += float64(beta.Data[i])
 			}
 
-			output[idx] = normalized
+			output.Data[idx] = T(normalized)
 		}
 	}
 
 	return output
 }
+
+// =============================================================================
+// Backward-compatible float32 function
+// =============================================================================
+
+// layerNormForwardCPU performs layer normalization on CPU
+func layerNormForwardCPU(input []float32, residual []float32, config *LayerConfig, batchSize int) []float32 {
+	inputT := NewTensorFromSlice(input, len(input))
+	var residualT *Tensor[float32]
+	if len(residual) > 0 {
+		residualT = NewTensorFromSlice(residual, len(residual))
+	}
+	var gammaT, betaT *Tensor[float32]
+	if len(config.Gamma) > 0 {
+		gammaT = NewTensorFromSlice(config.Gamma, len(config.Gamma))
+	}
+	if len(config.Beta) > 0 {
+		betaT = NewTensorFromSlice(config.Beta, len(config.Beta))
+	}
+
+	result := LayerNormForward(inputT, residualT, gammaT, betaT, config.NormSize, batchSize, float64(config.Epsilon))
+	return result.Data
+}
+
