@@ -226,12 +226,8 @@ func main() {
 					if !result.Passed {
 						status = "❌"
 					}
-					errMsg := ""
-					if result.Error != "" {
-						errMsg = fmt.Sprintf(" | ERR: %s", result.Error)
-					}
-					fmt.Printf("%s [%3d/%d] %s + %s + %s | Acc: %.1f%% | Tput: %.0f%s\n",
-						status, num, totalTests, layerName, modeName, typeName, result.AvgAccuracy, result.Throughput, errMsg)
+					fmt.Printf("%s [%3d/%d] %s + %s + %s | Acc: %.1f%% | Tput: %.0f\n",
+						status, num, totalTests, layerName, modeName, typeName, result.AvgAccuracy, result.Throughput)
 				}(layer, mode, numType, testNum)
 			}
 		}
@@ -279,14 +275,14 @@ func createNetworkForLayerType(layerType LayerTestType) *nn.Network {
 
 	case TestLayerConv2D:
 		// Conv2D requires 2D input - use 4x4x1 image
-		// Conv: 4x4 input, 2x2 kernel, stride 2, pad 0, 2 filters
-		// Output: (4+0-2)/2+1 = 2, so 2x2x2 = 8 elements
 		net = nn.NewNetwork(16, 1, 1, 2) // 16 = 4x4x1
 		net.BatchSize = 1
-		conv := nn.InitConv2DLayer(4, 4, 1, 2, 2, 1, 0, nn.ActivationLeakyReLU)
+		// 4x4 input, 2x2 kernel, stride 2, padding 1, filters 2
+		// Output: (4+2*1-2)/2+1 = 3 -> 3x3x2 = 18
+		conv := nn.InitConv2DLayer(4, 4, 1, 2, 2, 1, 2, nn.ActivationLeakyReLU)
 		net.SetLayer(0, 0, 0, conv)
-		// Output is 2x2x2 = 8, need dense to OutputSizeTest
-		net.SetLayer(0, 0, 1, nn.InitDenseLayer(8, OutputSizeTest, nn.ActivationSigmoid))
+		// Output is 3x3x2 = 18, need dense to OutputSizeTest
+		net.SetLayer(0, 0, 1, nn.InitDenseLayer(18, OutputSizeTest, nn.ActivationSigmoid))
 
 	case TestLayerMultiHeadAttention:
 		// Attention layer - use dense layers to simulate since InitMultiHeadAttentionLayer needs pre-loaded weights
@@ -439,16 +435,12 @@ func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets
 
 	defer func() {
 		if r := recover(); r != nil {
-			result.Error = fmt.Sprintf("panic in %s: %v", layerNames[layer], r)
+			result.Error = fmt.Sprintf("panic: %v", r)
 			result.Passed = false
 		}
 	}()
 
 	net := createNetworkForLayerType(layer)
-	if net == nil {
-		result.Error = "failed to create network"
-		return result
-	}
 	backend := nn.NewCPUBackend[T]()
 
 	start := time.Now()
