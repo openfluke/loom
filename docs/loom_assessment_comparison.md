@@ -7,17 +7,18 @@
 ### Key Strengths
 *   **True Embeddability**: Compiles into a single binary. **Zero external dependencies**.
 *   **"Run Anywhere" (Polyglot)**: First-class **C ABI** and **WebAssembly (WASM)** support allows Loom to run (and train!) in browsers, Python, C#, Rust, and Node.js with identical behavior.
-*   **Native Mixture of Experts (MoE)**: unique "Grid Softmax" layer implements efficient Mixture of Experts routing out-of-the-box.
-*   **Universal Tokenizer**: Pure Go implementation of BPE (compatible with HuggingFace `tokenizer.json`) means no `tokenizers` C++ lib dependency.
-*   **Neural Tweening**: A novel, non-gradient-descent training paradigm for bidirectional state solving.
+*   **Hybrid Gradient/Geometric Engine**: "Neural Tweening" is not just gradient-free; it is a **Hybrid Engine** combining geometric gap-closing with **backpropagation-guided momentum**. Features "Link Budget" telemetry and "Explosion Detection" for self-healing training.
+*   **Structural Parallelism**: Beyond simple MoE, the `LayerParallel` system supports arbitrary branching (Concat, Add, Average, Grid Scatter), enabling native **Inception**, **ResNeXt**, and **Siamese** architectures.
+*   **Native Mixed-Precision**: The generic tensor backend supports `int8`, `uint16`, and `float32` natively, offering a path to quantization-aware training without post-processing.
+*   **Universal Tokenizer**: Pure Go implementation of BPE (compatible with HuggingFace `tokenizer.json`).
 *   **Generic Model Loading**: "Shape-sniffing" `safetensors` loader that infers architectures (Llama, GPT) automatically.
 *   **Telemetry & Introspection**: Built-in runtime reflection to discover methods and visualize network blueprints.
 
 ### Key Limitations
-*   **Ecosystem Maturity**: No central "Model Zoo" (though it loads HF models).
-*   **GPU Support**: **WebGPU** acceleration exists for Dense/Conv2D/MHA but is marked experimental/beta.
-*   **Math Backend**: Custom explicit forward/backward passes (harder to add new operators than a generic autograd graph).
-
+*   **Ecosystem Maturity**: No central "Model Zoo" or pip-installable convenience; relies on loading external checkpoints.
+*   **GPU Support**: **WebGPU** acceleration is implemented (Dense, Conv2D, MHA) but is **beta/experimental** and less stable than CuDNN/CUDA.
+*   **Operator Coverage**: while "Deep" support is good (MHA, LSTM), "Broad" support (e.g., 3D Conv, Deformable Attn, FFTs) is missing compared to SciPy/JAX.
+*   **Math Backend**: Relies on custom explicit forward/backward passes rather than a general-purpose symbolic autograd graph, making research into *new* layer types harder.
 ---
 
 ## 2. The Global AI Framework Landscape
@@ -78,14 +79,14 @@ The following table compares **Loom** against major industry leaders and special
 | | **ONNX Support** | ❌ | ✅ (Export) | ✅ | ⚠️ | ❌ | ✅ (Import) | ✅ | ⚠️ |
 | | **Structure Inference** | ✅ **Auto-Detect** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Training** | **Gradient Descent** | ✅ Manual Chain | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ✅ (On-device) | ✅ Standard | ✅ Standard |
-| | **Neural Tweening** | ✅ **Exclusive** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Neural Tweening** | ✅ **Hybrid Engine** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Layer Support** | **Dense (MLP)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | | **Conv2D** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | | **Conv1D** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | | **Pooling (Max/Avg)** | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | | **RNN / LSTM** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | | **Transformer (MHA)** | ✅ (Explicit) | ✅ | ✅ | ✅ | ✅ (BERT) | ✅ | ✅ | ✅ |
-| | **Native MoE** | ✅ **Grid Softmax** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Embeddings** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | | **Tokenizer** | ✅ **Pure Go** | ❌ (Rust/C++) | ❌ (C++) | ❌ | ❌ | ✅ | ❌ | ✅ |
 | **Platform** | **WASM Training** | ✅ **Full** | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (Slow) | ✅ |
@@ -130,10 +131,10 @@ The Go AI landscape is fragmented. Most "serious" frameworks are wrappers around
 | | **Transformer (MHA)** | ✅ **Explicit** | ✅ | ⚠️ Hard | ✅ (BERT) | ❌ | ❌ |
 | | **SwiGLU** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | | **Embeddings** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| | **Native MoE** | ✅ **Grid Softmax** | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ |
+| | **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ |
 | | **Tokenizer** | ✅ **Pure Go** | ❌ (Deps) | ❌ | ✅ (WordPiece) | ❌ | ❌ |
 | **Training** | **Gradient Descent** | ✅ Manual | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ❌ |
-| | **Neural Tweening** | ✅ **Exclusive** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Hybrid Tweening** | ✅ **Structure** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Platform** | **C-ABI (Polyglot)** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **WASM Training** | ✅ **Full** | ❌ (XLA) | ❌ | ❌ | ❌ | ❌ |
 | **Ecosystem** | **HuggingFace** | ⚠️ (Load) | ❌ | ❌ | ✅ (Load) | ❌ | ❌ |
@@ -145,6 +146,22 @@ The Go AI landscape is fragmented. Most "serious" frameworks are wrappers around
 *   **GoMLX** is the speed king but requires the heavy XLA C++ runtime.
 *   **Spago** was promising for NLP but is currently paused; Loom picks up the torch for pure Go NLP/LLM inference.
 *   **Gorgonia** is powerful but complex (graph building) and shows its age.
+
+### 5. Native Numerical Type & Precision Support
+This table compares framework support for different numerical types across major layer categories. "Mixed" indicates that support varies by backend or requires quantization wrappers.
+
+| **Layer Type** | **Numerical Type** | **Loom** | **GoMLX** | **Gorgonia** | **Spago** | **PyTorch** |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **All Layers** | **Float32** | ✅ | ✅ | ✅ | ✅ (Float64) | ✅ |
+| (Dense, Conv, | **Float64 (High Prec)** | ✅ **Native** | ✅ | ✅ | ✅ | ✅ |
+| RNN, Attn) | **Float16 / BF16** | ✅ | ✅ (XLA) | ❌ | ❌ | ✅ |
+| | **Int8 (Training)** | ✅ **Native** | ❌ | ❌ | ❌ | ⚠️ (QAT Wrapper) |
+| | **Int8 (Inference)** | ✅ | ❌ | ❌ | ❌ | ✅ (Quant) |
+| | **Int16, Int32, Int64** | ✅ **Native** | ✅ (XLA) | ⚠️ (Tensor) | ❌ | ❌ (Tensor Only) |
+| | **Uint8, Uint16, Uint32** | ✅ **Native** | ✅ (XLA) | ⚠️ (Tensor) | ❌ | ✅ (Uint8 Only) |
+
+> [!NOTE]
+> **Complete Type System**: Unlike frameworks that treat integers primarily as storage formats for quantization, Loom's Generics allow **native training and inference** on exotic types like `uint16` (common in medical imaging), `int32`, or `float64` (scientific sim) across **every layer type** without changes to the model code.
 
 ### Summary Verdict
 
