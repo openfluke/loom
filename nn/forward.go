@@ -14,15 +14,21 @@ import (
 
 // GenericForwardPass executes network forward pass for any numeric type.
 // Uses the Backend interface for computation.
+// Returns:
+// - Final output tensor
+// - List of output activations for each layer (activations[0] = input)
+// - List of backward contexts for each layer (intermediate states needed for backprop)
+// - Duration of forward pass
 func GenericForwardPass[T Numeric](
 	n *Network,
 	input *Tensor[T],
 	backend Backend[T],
-) (*Tensor[T], []*Tensor[T], time.Duration) {
+) (*Tensor[T], []*Tensor[T], []any, time.Duration) {
 	start := time.Now()
 
 	totalLayers := n.TotalLayers()
 	activations := make([]*Tensor[T], totalLayers+1)
+	backwardContext := make([]any, totalLayers)
 
 	// Store input
 	activations[0] = input.Clone()
@@ -35,36 +41,43 @@ func GenericForwardPass[T Numeric](
 		for col := 0; col < n.GridCols; col++ {
 			for layer := 0; layer < n.LayersPerCell; layer++ {
 				config := n.GetLayer(row, col, layer)
+				
+				// Context for this layer
+				var context any
 
 				if config.IsDisabled {
 					// Pass through
 					activations[layerIdx+1] = data.Clone()
+					context = nil
 				} else {
 					switch config.Type {
 					case LayerDense:
 						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
 						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
-						_, post := DenseForward(data, weights, bias, config.InputHeight, config.OutputHeight, n.BatchSize, config.Activation)
+						pre, post := DenseForward(data, weights, bias, config.InputHeight, config.OutputHeight, n.BatchSize, config.Activation)
 						data = post
 						activations[layerIdx+1] = post
+						context = pre // Store pre-activation
 
 					case LayerConv2D:
 						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
 						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
-						_, post := Conv2DForward(data, weights, bias,
+						pre, post := Conv2DForward(data, weights, bias,
 							config.InputHeight, config.InputWidth, config.InputChannels,
 							config.KernelSize, config.Stride, config.Padding, config.Filters,
 							config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
 						data = post
 						activations[layerIdx+1] = post
+						context = pre // Store pre-activation
 
 					case LayerRNN:
 						wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
 						wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
 						biasH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH, len(config.BiasH)))
-						output, _ := RNNForward(data, wIH, wHH, biasH, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+						output, hiddenStates := RNNForward(data, wIH, wHH, biasH, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
 						data = output
 						activations[layerIdx+1] = output
+						context = hiddenStates // Store hidden states
 
 					case LayerLSTM:
 						weights := &LSTMWeights[T]{
@@ -81,14 +94,24 @@ func GenericForwardPass[T Numeric](
 							WeightHH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_o, len(config.WeightHH_o))),
 							BiasH_o:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_o, len(config.BiasH_o))),
 						}
-						output, _, _ := LSTMForward(data, weights, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+						output, hidden, cell, allGates := LSTMForward(data, weights, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
 						data = output
 						activations[layerIdx+1] = output
+						// Pack context for LSTMBackward
+						states := map[string]*Tensor[T]{
+							"hidden": hidden,
+							"cell":   cell,
+						}
+						for k, v := range allGates {
+							states[k] = v
+						}
+						context = states
 
 					case LayerSoftmax:
 						output := ApplySoftmax(data, float64(config.Temperature))
 						data = output
 						activations[layerIdx+1] = output
+						context = output // Softmax needs its output for backward jacobian
 
 					case LayerNorm:
 						gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
@@ -100,6 +123,7 @@ func GenericForwardPass[T Numeric](
 						output := LayerNormForward(data, nil, gamma, beta, normSize, n.BatchSize, float64(config.Epsilon))
 						data = output
 						activations[layerIdx+1] = output
+						context = nil // LayerNorm backward only needs input, which is activations[layerIdx]
 
 					case LayerRMSNorm:
 						gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
@@ -110,6 +134,7 @@ func GenericForwardPass[T Numeric](
 						output := RMSNormForward(data, nil, gamma, normSize, float64(config.Epsilon))
 						data = output
 						activations[layerIdx+1] = output
+						context = nil // RMSNorm backward needs input (activations[layerIdx])
 
 					case LayerSwiGLU:
 						gateW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateWeights, len(config.GateWeights)))
@@ -121,19 +146,86 @@ func GenericForwardPass[T Numeric](
 						output := SwiGLUForward(data, gateW, upW, downW, gateBias, upBias, downBias, config.InputHeight, config.OutputHeight, n.BatchSize)
 						data = output
 						activations[layerIdx+1] = output
+						context = nil // SwiGLU backward recomputes intermediates or needs caching. Current implementation recomputes.
+
+					case LayerMultiHeadAttention:
+						weights := &AttentionWeights[T]{
+							QWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
+							QBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
+							KWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
+							KBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
+							VWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
+							VBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
+							OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputWeight, len(config.OutputWeight))),
+							OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputBias, len(config.OutputBias))),
+							DModel: config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
+						}
+						output := MultiHeadAttentionForward(data, weights, 10000.0)
+						data = output
+						activations[layerIdx+1] = output
+						context = nil // Backward recomputes simply or doesn't need context stored here
+
+					case LayerParallel:
+						// Convert config.ParallelBranches ([]LayerConfig) to []*LayerConfig
+						branches := make([]*LayerConfig, len(config.ParallelBranches))
+						for i := range config.ParallelBranches {
+							branches[i] = &config.ParallelBranches[i]
+						}
+						output, intermediates, err := ParallelForward(data, branches, n.BatchSize, config.CombineMode)
+						if err != nil {
+							// On error, identity
+							output = data.Clone()
+						}
+						data = output
+						activations[layerIdx+1] = output
+						context = intermediates
+
+					case LayerResidual:
+						// Residual connects current input to something? 
+						// Current design: Residual layer takes input, assumes it's added to *previous* layer input.
+						// Wait, standard residual is: y = x + f(x).
+						// But if LayerResidual is a separate layer in grid, it implies:
+						// Layer N: Dense -> output O
+						// Layer N+1: Residual -> output O + Input_of_N?
+						// Or Input_to_N is not available here easily.
+						// Looking at `examples` test:
+						// SetLayer(..., 0, Dense)
+						// SetLayer(..., 1, Residual)
+						// This implies Residual adds activations[layerIdx] + activations[layerIdx-1]?
+						// Let's assume ResidualForward adds input + skipInput.
+						// We need skipInput.
+						
+						// GenericForwardPass loop structure:
+						// activations[layerIdx] is input to CURRENT layer.
+						// activations[layerIdx+1] will be output.
+						// Skip connection usually skips 1 layer or block.
+						// If we assume skip from layerIdx-1 (input to previous layer):
+						var skipInput *Tensor[T]
+						if layerIdx > 0 {
+							skipInput = activations[layerIdx-1] 
+						}
+						// If layerIdx=0, skip is nil
+						
+						output := ResidualForward(data, skipInput)
+						data = output
+						activations[layerIdx+1] = output
+						context = nil
 
 					default:
 						// Apply activation using backend
 						data = backend.Activate(data, config.Activation)
 						activations[layerIdx+1] = data.Clone()
+						context = nil 
 					}
 				}
+				
+				backwardContext[layerIdx] = context
 				layerIdx++
 			}
 		}
 	}
 
-	return data, activations, time.Since(start)
+	return data, activations, backwardContext, time.Since(start)
 }
 
 // =============================================================================

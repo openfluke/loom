@@ -407,30 +407,30 @@ func runLayerTest(layer LayerTestType, mode TrainingModeTest, numType NumericTyp
 func runGenericTest(layer LayerTestType, mode TrainingModeTest, numType NumericType, inputs [][]float64, targets [][]float64) TestResult {
 	switch numType {
 	case TypeInt8:
-		return runTypedTest[int8](layer, inputs, targets)
+		return runTypedTest[int8](layer, inputs, targets, mode)
 	case TypeInt16:
-		return runTypedTest[int16](layer, inputs, targets)
+		return runTypedTest[int16](layer, inputs, targets, mode)
 	case TypeInt32:
-		return runTypedTest[int32](layer, inputs, targets)
+		return runTypedTest[int32](layer, inputs, targets, mode)
 	case TypeInt64:
-		return runTypedTest[int64](layer, inputs, targets)
+		return runTypedTest[int64](layer, inputs, targets, mode)
 	case TypeUint8:
-		return runTypedTest[uint8](layer, inputs, targets)
+		return runTypedTest[uint8](layer, inputs, targets, mode)
 	case TypeUint16:
-		return runTypedTest[uint16](layer, inputs, targets)
+		return runTypedTest[uint16](layer, inputs, targets, mode)
 	case TypeUint32:
-		return runTypedTest[uint32](layer, inputs, targets)
+		return runTypedTest[uint32](layer, inputs, targets, mode)
 	case TypeUint64:
-		return runTypedTest[uint64](layer, inputs, targets)
+		return runTypedTest[uint64](layer, inputs, targets, mode)
 	case TypeFloat64:
-		return runTypedTest[float64](layer, inputs, targets)
+		return runTypedTest[float64](layer, inputs, targets, mode)
 	default:
 		return TestResult{Passed: false, Error: "unknown type"}
 	}
 }
 
 // runTypedTest runs test with specific numeric type
-func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets [][]float64) TestResult {
+func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets [][]float64, mode TrainingModeTest) TestResult {
 	result := TestResult{}
 
 	defer func() {
@@ -473,8 +473,28 @@ func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets
 		}
 		inputTensor := nn.NewTensorFromSlice(inputData, len(inputData))
 
-		// Run generic forward pass
-		output, _, _ := nn.GenericForwardPass(net, inputTensor, backend)
+
+		var output *nn.Tensor[T]
+		if mode == ModeNormalBPTest {
+			// Training Step (verifies backprop)
+			targetData := make([]T, len(target))
+			for i, v := range target {
+				if isIntegerType[T]() {
+					targetData[i] = T(v * 100)
+				} else {
+					targetData[i] = T(v)
+				}
+			}
+			targetTensor := nn.NewTensorFromSlice(targetData, len(targetData))
+			
+			// Generic Train Step (Forward + Backward + Update)
+			// lr is passed as float64 now to allow uniform training params across types
+			lr := float64(LearningRateTest)
+			output, _, _ = nn.GenericTrainStep(net, inputTensor, targetTensor, lr, backend)
+		} else {
+			// Just forward (Step/Tween generic not yet implemented)
+			output, _, _, _ = nn.GenericForwardPass(net, inputTensor, backend)
+		}
 
 		// Check accuracy
 		if len(output.Data) > 0 && len(target) > 0 {

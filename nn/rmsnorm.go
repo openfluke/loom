@@ -60,7 +60,7 @@ func RMSNormForward[T Numeric](input, residual, gamma *Tensor[T], normSize int, 
 }
 
 // RMSNormBackward computes gradients for RMS normalization.
-func RMSNormBackward[T Numeric](input, residual, gradOutput, gamma *Tensor[T], normSize, batchSize int, epsilon float64) *Tensor[T] {
+func RMSNormBackward[T Numeric](input, residual, gradOutput, gamma *Tensor[T], normSize, batchSize int, epsilon float64) (gradInput, gradGamma *Tensor[T]) {
 	if epsilon == 0 {
 		epsilon = 1e-6
 	}
@@ -72,7 +72,8 @@ func RMSNormBackward[T Numeric](input, residual, gradOutput, gamma *Tensor[T], n
 		}
 	}
 
-	gradInput := NewTensor[T](len(inputWithResidual.Data))
+	gradInput = NewTensor[T](len(inputWithResidual.Data))
+	gradGamma = NewTensor[T](normSize)
 
 	for b := 0; b < batchSize; b++ {
 		start := b * normSize
@@ -90,30 +91,55 @@ func RMSNormBackward[T Numeric](input, residual, gradOutput, gamma *Tensor[T], n
 		}
 		meanSquare := sumSquares / float64(normSize)
 		rms := math.Sqrt(meanSquare + epsilon)
+		invRMS := 1.0 / rms
+		invRMS3 := 1.0 / (rms * rms * rms) // for gradient math
 
-		// Compute gradient
-		var gradScale float64
+		// Compute gradients
+		var sum_dxhat_x float64
+		
 		for i := start; i < end; i++ {
-			gammaIdx := i - start
-			if gamma != nil && gammaIdx < len(gamma.Data) {
-				gradScale += float64(gradOutput.Data[i]) * float64(gamma.Data[gammaIdx]) * float64(inputWithResidual.Data[i])
-			}
-		}
-		gradScale /= float64(normSize) * rms * rms
-
-		// Apply chain rule
-		for i := start; i < end; i++ {
-			gammaIdx := i - start
+			idx := i
+			localIdx := i - start
+			
+			dL_dy := float64(gradOutput.Data[idx])
+			val := float64(inputWithResidual.Data[idx])
+			
+			// Accumulate Gamma grad
+			// y = x_hat * gamma
+			x_hat := val * invRMS
+			gradGamma.Data[localIdx] += T(dL_dy * x_hat)
+			
+			// Part of input gradient calc
 			g := 1.0
-			if gamma != nil && gammaIdx < len(gamma.Data) {
-				g = float64(gamma.Data[gammaIdx])
+			if gamma != nil && localIdx < len(gamma.Data) {
+				g = float64(gamma.Data[localIdx])
 			}
+			
+			sum_dxhat_x += dL_dy * g * val
+		}
 
-			gradInput.Data[i] = T(float64(gradOutput.Data[i])*g/rms - gradScale*float64(inputWithResidual.Data[i]))
+		// Apply final formula for dL/dx
+		// dL/dx_i = (gamma_i * dL/dy_i / rms) - (x_i / rms^3) * (1/N) * sum(dL/dy_k * gamma_k * x_k)
+		
+		term2 := sum_dxhat_x * invRMS3 / float64(normSize)
+		
+		for i := start; i < end; i++ {
+			localIdx := i - start
+			
+			dL_dy := float64(gradOutput.Data[i])
+			val := float64(inputWithResidual.Data[i])
+			
+			g := 1.0
+			if gamma != nil && localIdx < len(gamma.Data) {
+				g = float64(gamma.Data[localIdx])
+			}
+			
+			dx := (dL_dy * g * invRMS) - (val * term2)
+			gradInput.Data[i] = T(dx)
 		}
 	}
 
-	return gradInput
+	return gradInput, gradGamma
 }
 
 // =============================================================================
@@ -154,7 +180,7 @@ func rmsNormBackwardCPU(input []float32, residual []float32, gradOutput []float3
 		gammaT = NewTensorFromSlice(config.Gamma, len(config.Gamma))
 	}
 
-	result := RMSNormBackward(inputT, residualT, gradOutputT, gammaT, config.NormSize, batchSize, float64(config.Epsilon))
-	return result.Data
+	gradInputT, _ := RMSNormBackward(inputT, residualT, gradOutputT, gammaT, config.NormSize, batchSize, float64(config.Epsilon))
+	return gradInputT.Data
 }
 

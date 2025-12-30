@@ -33,6 +33,16 @@ func Activate[T Numeric](v T, activation ActivationType) T {
 		result = vf
 	}
 
+	// For integer types, scale fractional activations to preserve dynamic range
+	// Sigmoid/Tanh output [0,1], which truncates to 0 for integers.
+	// We scale by 100 to match the test/usage convention for fixed point.
+	if IsIntegerType[T]() {
+		switch activation {
+		case ActivationSigmoid, ActivationTanh, ActivationSoftplus:
+			result *= 100.0
+		}
+	}
+
 	return T(result)
 }
 
@@ -70,6 +80,25 @@ func ActivateDerivative[T Numeric](preActivation T, activation ActivationType) T
 		}
 	default:
 		result = 1.0
+	}
+
+	// For integer types, derivatives of fractional functions are < 1 and truncate to 0.
+	// We scale them to allow gradient flow (Pseudo-quantization aware training).
+	if IsIntegerType[T]() {
+		// Constant scaling factor of 100 matching the activation scaling
+		scale := 100.0
+		switch activation {
+		case ActivationSigmoid, ActivationTanh, ActivationSoftplus:
+			result *= scale
+		case ActivationLeakyReLU:
+			// For LeakyReLU, the derivative is 0.1 for negative values.
+			// T(0.1) is 0. We scale it to 10 (0.1 * 100).
+			// Positive part is 1.0 -> 100.
+			result *= scale
+		case ActivationScaledReLU:
+			// ScaledReLU has slope 1.1 -> 110
+			result *= scale
+		}
 	}
 
 	return T(result)

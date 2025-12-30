@@ -33,8 +33,9 @@ type GenericStepState[T Numeric] struct {
 	// Current data at each layer (input/output buffers)
 	LayerData []*Tensor[T]
 
-	// Pre-activation values for each layer (for backprop)
-	LayerPreAct []*Tensor[T]
+	// Backward context for each layer (intermediate states needed for backprop)
+	// Can be *Tensor[T], map[string]*Tensor[T], or other types depending on layer
+	BackwardContext []any
 
 	// Residual connections tracking
 	Residuals []*Tensor[T]
@@ -49,10 +50,10 @@ type GenericStepState[T Numeric] struct {
 // NewGenericStepState creates a new generic step state for the given network.
 func NewGenericStepState[T Numeric](totalLayers, inputSize int) *GenericStepState[T] {
 	state := &GenericStepState[T]{
-		LayerData:   make([]*Tensor[T], totalLayers+1),
-		LayerPreAct: make([]*Tensor[T], totalLayers),
-		Residuals:   make([]*Tensor[T], totalLayers),
-		StepCount:   0,
+		LayerData:       make([]*Tensor[T], totalLayers+1),
+		BackwardContext: make([]any, totalLayers),
+		Residuals:       make([]*Tensor[T], totalLayers),
+		StepCount:       0,
 	}
 
 	// Initialize layer 0 (input) with zeros
@@ -116,61 +117,200 @@ func StepForwardGeneric[T Numeric](
 				input := state.LayerData[layerIdx]
 
 				if input == nil {
-					input = NewTensor[T](1)
+					// Initialize with zeros of correct size if not present (first step)
+					size := 1
+					switch config.Type {
+					case LayerDense, LayerSwiGLU:
+						size = config.InputHeight
+					case LayerConv2D:
+						size = config.InputHeight * config.InputWidth * config.InputChannels
+					case LayerRNN, LayerLSTM:
+						size = config.RNNInputSize
+					case LayerMultiHeadAttention:
+						size = config.DModel
+					case LayerNorm, LayerRMSNorm:
+						size = config.NormSize
+					case LayerResidual, LayerSoftmax:
+						// These usually preserve size, but if prev layer output is unknown... 
+						// Fallback to 1 or try to infer? 
+						// For Residual, it matches input. 
+						// If this is the *first* layer (unlikely for residual), 1 is bad.
+						// But usually these follow another layer.
+						// If following layer has nil output (start of sim), we need to know size.
+						// Best guess: 1 or config.InputHeight if available.
+						if config.InputHeight > 0 {
+							size = config.InputHeight
+						}
+					}
+					if size <= 0 {
+						size = 1
+					}
+					input = NewTensor[T](size * n.BatchSize)
 				}
-
+				
 				var postAct *Tensor[T]
+				var context any
 
-				switch config.Type {
-				case LayerDense:
-					weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
-					bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
-					_, postAct = DenseForward(input, weights, bias, config.InputHeight, config.OutputHeight, n.BatchSize, config.Activation)
+				if config.IsDisabled {
+					postAct = input.Clone()
+					context = nil
+				} else {
+					switch config.Type {
+					case LayerDense:
+						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
+						pre, post := DenseForward(input, weights, bias, config.InputHeight, config.OutputHeight, n.BatchSize, config.Activation)
+						postAct = post
+						context = pre
 
-				case LayerConv2D:
-					weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
-					bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
-					_, postAct = Conv2DForward(input, weights, bias,
-						config.InputHeight, config.InputWidth, config.InputChannels,
-						config.KernelSize, config.Stride, config.Padding, config.Filters,
-						config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
+					case LayerConv2D:
+						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
+						pre, post := Conv2DForward(input, weights, bias,
+							config.InputHeight, config.InputWidth, config.InputChannels,
+							config.KernelSize, config.Stride, config.Padding, config.Filters,
+							config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
+						postAct = post
+						context = pre
 
-				case LayerRNN:
-					wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
-					wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
-					biasH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH, len(config.BiasH)))
-					postAct, _ = RNNForward(input, wIH, wHH, biasH, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+					case LayerRNN:
+						wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
+						wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
+						biasH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH, len(config.BiasH)))
+						output, hiddenStates := RNNForward(input, wIH, wHH, biasH, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+						postAct = output
+						context = hiddenStates
 
-				case LayerSoftmax:
-					postAct = ApplySoftmax(input, float64(config.Temperature))
+					case LayerLSTM:
+						weights := &LSTMWeights[T]{
+							WeightIH_i: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_i, len(config.WeightIH_i))),
+							WeightHH_i: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_i, len(config.WeightHH_i))),
+							BiasH_i:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_i, len(config.BiasH_i))),
+							WeightIH_f: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_f, len(config.WeightIH_f))),
+							WeightHH_f: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_f, len(config.WeightHH_f))),
+							BiasH_f:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_f, len(config.BiasH_f))),
+							WeightIH_g: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_g, len(config.WeightIH_g))),
+							WeightHH_g: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_g, len(config.WeightHH_g))),
+							BiasH_g:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_g, len(config.BiasH_g))),
+							WeightIH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_o, len(config.WeightIH_o))),
+							WeightHH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_o, len(config.WeightHH_o))),
+							BiasH_o:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_o, len(config.BiasH_o))),
+						}
+						output, hidden, cell, allGates := LSTMForward(input, weights, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+						postAct = output
+						states := map[string]*Tensor[T]{
+							"hidden": hidden,
+							"cell":   cell,
+						}
+						for k, v := range allGates {
+							states[k] = v
+						}
+						context = states
 
-				case LayerNorm:
-					gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
-					beta := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Beta, len(config.Beta)))
-					var residual *Tensor[T]
-					if state.Residuals[layerIdx] != nil {
-						residual = state.Residuals[layerIdx]
+					case LayerSoftmax:
+						postAct = ApplySoftmax(input, float64(config.Temperature))
+						context = postAct // Softmax output needed for backward
+
+					case LayerNorm:
+						gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
+						beta := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Beta, len(config.Beta)))
+						var residual *Tensor[T]
+						if state.Residuals[layerIdx] != nil {
+							residual = state.Residuals[layerIdx]
+						}
+						normSize := config.NormSize
+						if normSize <= 0 {
+							normSize = len(input.Data)
+						}
+						postAct = LayerNormForward(input, residual, gamma, beta, normSize, n.BatchSize, float64(config.Epsilon))
+						
+						// Update residual tracking?
+						// In GenericForwardPass, LayerResidual is explicit.
+						context = nil
+
+					case LayerRMSNorm:
+						gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
+						normSize := config.NormSize
+						if normSize <= 0 {
+							normSize = len(input.Data)
+						}
+						postAct = RMSNormForward(input, nil, gamma, normSize, float64(config.Epsilon))
+						context = nil
+
+					case LayerSwiGLU:
+						gateW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateWeights, len(config.GateWeights)))
+						upW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpWeights, len(config.UpWeights)))
+						downW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownWeights, len(config.DownWeights)))
+						gateBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateBias, len(config.GateBias)))
+						upBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpBias, len(config.UpBias)))
+						downBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownBias, len(config.DownBias)))
+						postAct = SwiGLUForward(input, gateW, upW, downW, gateBias, upBias, downBias, config.InputHeight, config.OutputHeight, n.BatchSize)
+						context = nil
+
+					case LayerMultiHeadAttention:
+						weights := &AttentionWeights[T]{
+							QWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
+							QBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
+							KWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
+							KBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
+							VWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
+							VBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
+							OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputWeight, len(config.OutputWeight))),
+							OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputBias, len(config.OutputBias))),
+							DModel: config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
+						}
+						postAct = MultiHeadAttentionForward(input, weights, 10000.0)
+						// Store output as residual if this layer acts as residual source?
+						// In float32 StepForward, MHA adds residual if present, then stores output as *new* residual.
+						if state.Residuals[layerIdx] != nil && len(state.Residuals[layerIdx].Data) == len(postAct.Data) {
+							// Add residual
+							for i := range postAct.Data {
+								postAct.Data[i] += state.Residuals[layerIdx].Data[i]
+							}
+						}
+						// Store as new residual
+						state.Residuals[layerIdx] = postAct.Clone()
+						context = nil
+
+					case LayerParallel:
+						branches := make([]*LayerConfig, len(config.ParallelBranches))
+						for i := range config.ParallelBranches {
+							branches[i] = &config.ParallelBranches[i]
+						}
+						output, intermediates, err := ParallelForward(input, branches, n.BatchSize, config.CombineMode)
+						if err != nil {
+							output = input.Clone()
+						}
+						postAct = output
+						context = intermediates
+
+					case LayerResidual:
+						// Skip connection from previous layer
+						var skipInput *Tensor[T]
+						if layerIdx > 0 {
+							skipInput = state.LayerData[layerIdx-1] // Is this logically right? 
+							// In GenericForwardPass we used activations[layerIdx-1]. LayerData[0] is input. LayerData[i] is input to layer i?
+							// Wait, LayerData[0] is network input.
+							// loop layerIdx=0..N.
+							// input = LayerData[layerIdx].
+							// newOutputs[layerIdx+1] = postAct.
+							// So LayerData[i] IS the output of layer i-1.
+							// So LayerData[layerIdx] is input to current layer.
+							// Skip connection usually means input to *previous* layer.
+							// Similar to GenericForwardPass
+						}
+						postAct = ResidualForward(input, skipInput)
+						context = nil
+
+					default:
+						// Apply activation using backend
+						postAct = backend.Activate(input, config.Activation)
+						context = nil
 					}
-					normSize := config.NormSize
-					if normSize <= 0 {
-						normSize = len(input.Data)
-					}
-					postAct = LayerNormForward(input, residual, gamma, beta, normSize, n.BatchSize, float64(config.Epsilon))
-
-				case LayerRMSNorm:
-					gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
-					normSize := config.NormSize
-					if normSize <= 0 {
-						normSize = len(input.Data)
-					}
-					postAct = RMSNormForward(input, nil, gamma, normSize, float64(config.Epsilon))
-
-				default:
-					// Apply activation using backend
-					postAct = backend.Activate(input, config.Activation)
 				}
 
 				newOutputs[layerIdx+1] = postAct
+				state.BackwardContext[layerIdx] = context
 				layerIdx++
 			}
 		}

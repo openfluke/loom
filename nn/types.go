@@ -29,6 +29,16 @@ type Numeric interface {
 		~float32 | ~float64
 }
 
+// IsIntegerType checks if T is an integer type
+func IsIntegerType[T Numeric]() bool {
+	var z T
+	switch any(z).(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	}
+	return false
+}
+
 // Tensor wraps numerical data with metadata for type-agnostic operations.
 // It replaces raw []float32 slices to enable multi-precision training.
 type Tensor[T Numeric] struct {

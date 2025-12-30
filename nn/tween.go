@@ -25,8 +25,8 @@ type GenericTweenState[T Numeric] struct {
 	Gaps []float32
 
 	// Momentum for stable updates
-	WeightVel []*Tensor[T]
-	BiasVel   []*Tensor[T]
+	WeightVel []any
+	BiasVel   []any
 
 	// Config holds all tunable parameters
 	Config *TweenConfig
@@ -45,8 +45,8 @@ func NewGenericTweenState[T Numeric](totalLayers int, config *TweenConfig) *Gene
 		BackwardTargets: make([]*Tensor[T], totalLayers+1),
 		LinkBudgets:     make([]float32, totalLayers),
 		Gaps:            make([]float32, totalLayers),
-		WeightVel:       make([]*Tensor[T], totalLayers),
-		BiasVel:         make([]*Tensor[T], totalLayers),
+		WeightVel:       make([]any, totalLayers),
+		BiasVel:         make([]any, totalLayers),
 		Config:          config,
 		TotalLayers:     totalLayers,
 		TweenSteps:      0,
@@ -83,10 +83,125 @@ func (ts *GenericTweenState[T]) ComputeGaps() {
 
 		sumSq := 0.0
 		for j := 0; j < minLen; j++ {
-			diff := float64(fwd.Data[j]) - float64(tgt.Data[j])
+			fVal := float64(fwd.Data[j])
+			tVal := float64(tgt.Data[j])
+			diff := fVal - tVal
 			sumSq += diff * diff
 		}
 		ts.Gaps[i] = float32(math.Sqrt(sumSq / float64(minLen+1)))
+	}
+}
+
+// ForwardPass executes the network forward pass and captures activations.
+func (ts *GenericTweenState[T]) ForwardPass(n *Network, input *Tensor[T], backend Backend[T]) *Tensor[T] {
+	output, acts, _, _ := GenericForwardPass(n, input, backend)
+	
+	// Copy activations to state
+	// Note: GenericForwardPass returns activations for all layers [0..TotalLayers]
+	for i, act := range acts {
+		if i < len(ts.ForwardActs) {
+			ts.ForwardActs[i] = act.Clone()
+		}
+	}
+	
+	return output
+}
+
+// BackwardPass estimates targets using heuristic inversion (no gradients).
+func (ts *GenericTweenState[T]) BackwardPass(n *Network, target *Tensor[T]) {
+	totalLayers := n.TotalLayers()
+	
+	// Start at output
+	ts.BackwardTargets[totalLayers] = target.Clone()
+	
+	currentTarget := target.Clone()
+	
+	// Propagate upward
+	for i := totalLayers - 1; i >= 0; i-- {
+		// Calculate grid position
+		row := i / (n.GridCols * n.LayersPerCell)
+		col := (i / n.LayersPerCell) % n.GridCols
+		layer := i % n.LayersPerCell
+		
+		cfg := n.GetLayer(row, col, layer)
+		
+		if cfg.IsDisabled {
+			ts.BackwardTargets[i] = currentTarget.Clone()
+			continue
+		}
+		
+		// Specialized logic for Dense layers to estimate input from target output
+		if cfg.Type == LayerDense {
+			inputSize := cfg.InputHeight
+			if inputSize <= 0 && ts.ForwardActs[i] != nil {
+				inputSize = len(ts.ForwardActs[i].Data)
+			}
+			if inputSize <= 0 { inputSize = 1 } // Fallback
+			
+			estimated := NewTensor[T](inputSize)
+			
+			// Heuristic: weighted average of targets connected to this input
+			// Need access to weights
+			weights := cfg.Kernel // float32 slice
+			outSize := cfg.OutputHeight
+			
+			totalWeightThresh := float64(ts.Config.TotalWeightThreshold)
+			
+			for in := 0; in < inputSize; in++ {
+				importance := 0.0
+				totalWeight := 0.0
+				
+				for out := 0; out < outSize && out < len(currentTarget.Data); out++ {
+					wIdx := in*outSize + out
+					if wIdx < len(weights) {
+						w := float64(weights[wIdx])
+						tgtVal := float64(currentTarget.Data[out])
+						importance += w * tgtVal
+						totalWeight += math.Abs(w)
+					}
+				}
+				
+				var val float64
+				if totalWeight > totalWeightThresh {
+					val = importance / totalWeight
+				}
+				
+				// Clamp based on activation
+				if cfg.Activation == ActivationTanh {
+					if val > float64(ts.Config.TanhClampMax) { val = float64(ts.Config.TanhClampMax) }
+					if val < float64(ts.Config.TanhClampMin) { val = float64(ts.Config.TanhClampMin) }
+				} else if cfg.Activation == ActivationSigmoid {
+					if val > float64(ts.Config.SigmoidClampMax) { val = float64(ts.Config.SigmoidClampMax) }
+					if val < float64(ts.Config.SigmoidClampMin) { val = float64(ts.Config.SigmoidClampMin) }
+				} else if cfg.Activation == ActivationScaledReLU || cfg.Activation == ActivationLeakyReLU {
+					if val > float64(ts.Config.ReLUClampMax) { val = float64(ts.Config.ReLUClampMax) }
+				}
+				
+				estimated.Data[in] = T(val)
+			}
+			
+			ts.BackwardTargets[i] = estimated
+			currentTarget = estimated
+		} else {
+			// For other layers, pass target through (Identity approximation)
+			// Ideally we'd have specialized inversion for Conv2D etc.
+			// But for now, we just assume Input ~ Output for target estimation
+			// unless we implement heuristic inversion for all types.
+			// Just copy current target if sizes match, else create zero tensor
+			
+			// Check size mismatch
+			fwdInput := ts.ForwardActs[i]
+			if fwdInput != nil && len(fwdInput.Data) != len(currentTarget.Data) {
+				// Size changed (e.g. Conv2D changing dims, or pooling)
+				// Create new tensor of input size
+				ts.BackwardTargets[i] = NewTensor[T](len(fwdInput.Data))
+				// Simple resize/copy? No, meaningless. Leave as zeros or copy what fits.
+				// Heuristic: just leave as zeros (unknown target implication)
+				currentTarget = ts.BackwardTargets[i]
+			} else {
+				ts.BackwardTargets[i] = currentTarget.Clone()
+			}
+		}
 	}
 }
 
