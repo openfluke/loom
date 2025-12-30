@@ -120,6 +120,7 @@ type TestResult struct {
 	LayerType    string    `json:"layerType"`
 	TrainingMode string    `json:"trainingMode"`
 	NumericType  string    `json:"numericType"`
+	Depth        string    `json:"depth"` // "shallow" (3 layers) or "deep" (15 layers)
 	AvgAccuracy  float64   `json:"avgAccuracy"`
 	Stability    float64   `json:"stability"`
 	Throughput   float64   `json:"throughput"`
@@ -127,6 +128,8 @@ type TestResult struct {
 	Passed       bool      `json:"passed"`
 	Error        string    `json:"error,omitempty"`
 	History      []float64 `json:"history"` // Accuracy per window
+	// New: Rich adaptation metrics from framework
+	Adaptation   *nn.AdaptationResult `json:"adaptation,omitempty"`
 }
 
 // FullBenchmarkResults is the complete output
@@ -143,9 +146,10 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	fmt.Println("╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║   🧪 COMPREHENSIVE TEST: ALL 11 LAYERS × ALL 6 MODES × ALL 10 NUMERICAL TYPES                                                 ║")
+	fmt.Println("║   🧪 COMPREHENSIVE TEST: SHALLOW vs DEEP NETWORKS × ALL 6 MODES × ALL 10 NUMERICAL TYPES                                      ║")
 	fmt.Println("║                                                                                                                               ║")
-	fmt.Println("║   LAYERS: Dense, Conv2D, Attention, RNN, LSTM, Softmax, LayerNorm, Residual, RMSNorm, SwiGLU, Parallel                        ║")
+	fmt.Println("║   SHALLOW (3 layers): All 11 layer types                                                                                      ║")
+	fmt.Println("║   DEEP (15 layers):   Dense, Softmax, LayerNorm, RMSNorm, Residual                                                            ║")
 	fmt.Println("║   MODES:  NormalBP, StepBP, Tween, TweenChain, StepTween, StepTweenChain                                                      ║")
 	fmt.Println("║   TYPES:  int8 - int64, uint8 - uint64, float32, float64                                                                      ║")
 	fmt.Println("╚═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
@@ -153,11 +157,16 @@ func main() {
 	// Generate test data
 	testInputs, testTargets := generateTestData()
 
-	// All layer types
-	layers := []LayerTestType{
+	// All layer types for shallow networks
+	shallowLayers := []LayerTestType{
 		TestLayerDense, TestLayerConv2D, TestLayerMultiHeadAttention,
 		TestLayerRNN, TestLayerLSTM, TestLayerSoftmax, TestLayerNorm,
 		TestLayerResidual, TestLayerRMSNorm, TestLayerSwiGLU, TestLayerParallel,
+	}
+
+	// Subset of layers for deep networks (ones that make sense at 15 layers)
+	deepLayers := []LayerTestType{
+		TestLayerDense, TestLayerSoftmax, TestLayerNorm, TestLayerRMSNorm, TestLayerResidual,
 	}
 
 	modes := []TrainingModeTest{
@@ -171,8 +180,12 @@ func main() {
 		TypeFloat32, TypeFloat64,
 	}
 
-	totalTests := len(layers) * len(modes) * len(types)
-	fmt.Printf("\n📊 Running %d total tests (%d layers × %d modes × %d types)\n\n", totalTests, len(layers), len(modes), len(types))
+	// Calculate total tests
+	shallowTotal := len(shallowLayers) * len(modes) * len(types)
+	deepTotal := len(deepLayers) * len(modes) * len(types)
+	totalTests := shallowTotal + deepTotal
+
+	fmt.Printf("\n📊 Running %d total tests (%d shallow + %d deep)\n\n", totalTests, shallowTotal, deepTotal)
 
 	results := &FullBenchmarkResults{
 		Results:    make([]TestResult, 0, totalTests),
@@ -185,8 +198,13 @@ func main() {
 	var mu sync.Mutex
 	sem := make(chan struct{}, 8) // 8 concurrent tests
 
+	// === SHALLOW TESTS ===
+	fmt.Println("═══════════════════════════════════════════════════════════════════════════")
+	fmt.Println("                           🔹 SHALLOW NETWORKS (3 layers)")
+	fmt.Println("═══════════════════════════════════════════════════════════════════════════")
+
 	testNum := 0
-	for _, layer := range layers {
+	for _, layer := range shallowLayers {
 		for _, mode := range modes {
 			for _, numType := range types {
 				wg.Add(1)
@@ -201,13 +219,11 @@ func main() {
 					modeName := modeNamesTest[m]
 					typeName := typeNames[t]
 
-					// Print generic progress line to not clutter
-					// fmt.Printf("🔄 [%3d/%d] %s + %s + %s...\n", num, totalTests, layerName, modeName, typeName)
-
 					result := runLayerTest(l, m, t, testInputs, testTargets)
 					result.LayerType = layerName
 					result.TrainingMode = modeName
 					result.NumericType = typeName
+					result.Depth = "shallow"
 
 					mu.Lock()
 					results.Results = append(results.Results, result)
@@ -222,8 +238,55 @@ func main() {
 					if !result.Passed {
 						status = "❌"
 					}
-					// Only print simple status per line
-					fmt.Printf("%s [%3d/%d] %-10s %-15s %-8s | Acc: %5.1f%% | Sc: %.0f\n",
+					fmt.Printf("%s [%3d/%d] SHALLOW %-10s %-15s %-8s | Acc: %5.1f%% | Sc: %.0f\n",
+						status, num, totalTests, layerName, modeName, typeName, result.AvgAccuracy, result.Score)
+				}(layer, mode, numType, testNum)
+			}
+		}
+	}
+
+	wg.Wait()
+
+	// === DEEP TESTS ===
+	fmt.Println("\n═══════════════════════════════════════════════════════════════════════════")
+	fmt.Println("                           🔸 DEEP NETWORKS (15 layers)")
+	fmt.Println("═══════════════════════════════════════════════════════════════════════════")
+
+	for _, layer := range deepLayers {
+		for _, mode := range modes {
+			for _, numType := range types {
+				wg.Add(1)
+				testNum++
+
+				go func(l LayerTestType, m TrainingModeTest, t NumericType, num int) {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+
+					layerName := layerNames[l]
+					modeName := modeNamesTest[m]
+					typeName := typeNames[t]
+
+					result := runLayerTestDeep(l, m, t, testInputs, testTargets)
+					result.LayerType = layerName
+					result.TrainingMode = modeName
+					result.NumericType = typeName
+					result.Depth = "deep"
+
+					mu.Lock()
+					results.Results = append(results.Results, result)
+					if result.Passed {
+						results.Passed++
+					} else {
+						results.Failed++
+					}
+					mu.Unlock()
+
+					status := "✅"
+					if !result.Passed {
+						status = "❌"
+					}
+					fmt.Printf("%s [%3d/%d] DEEP    %-10s %-15s %-8s | Acc: %5.1f%% | Sc: %.0f\n",
 						status, num, totalTests, layerName, modeName, typeName, result.AvgAccuracy, result.Score)
 				}(layer, mode, numType, testNum)
 			}
@@ -234,7 +297,7 @@ func main() {
 	fmt.Println("\n✅ All tests complete!")
 
 	saveResults(results)
-	printComparisonTable(results) // <--- NEW FANCY PRINT
+	printComparisonTableByDepth(results) // Print separate tables for shallow vs deep
 }
 
 // generateTestData creates random input/target pairs
@@ -333,44 +396,120 @@ func createNetworkForLayerType(layerType LayerTestType) *nn.Network {
 	return net
 }
 
-// runLayerTest runs a test for a specific layer, mode, and numeric type
+// createDeepNetworkForLayerType creates a DEEP network (15 layers) with the specified layer type
+// This tests if StepTweenChain helps with gradient propagation in deep networks
+func createDeepNetworkForLayerType(layerType LayerTestType) *nn.Network {
+	const deepLayers = 15
+	net := nn.NewNetwork(InputSizeTest, 1, 1, deepLayers)
+	net.BatchSize = 1
+
+	// For most layer types: Input → 13 hidden layers → Output
+	// Middle layers are Dense with LeakyReLU
+	switch layerType {
+	case TestLayerDense, TestLayerSoftmax, TestLayerNorm, TestLayerRMSNorm, TestLayerResidual:
+		// Input layer
+		net.SetLayer(0, 0, 0, nn.InitDenseLayer(InputSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
+		// 13 hidden layers
+		for i := 1; i < deepLayers-1; i++ {
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(HiddenSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
+		}
+		// Output layer
+		net.SetLayer(0, 0, deepLayers-1, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationSigmoid))
+
+		// For Softmax, replace last layer
+		if layerType == TestLayerSoftmax {
+			softmax := nn.LayerConfig{Type: nn.LayerSoftmax, SoftmaxVariant: nn.SoftmaxStandard, Temperature: 1.0}
+			net.SetLayer(0, 0, deepLayers-1, softmax)
+		}
+		// For LayerNorm, add norm after each dense
+		if layerType == TestLayerNorm {
+			// Replace every other layer with LayerNorm
+			for i := 2; i < deepLayers-1; i += 2 {
+				layerNorm := nn.LayerConfig{Type: nn.LayerNorm, NormSize: HiddenSizeTest, Gamma: make([]float32, HiddenSizeTest), Beta: make([]float32, HiddenSizeTest), Epsilon: 1e-5}
+				for j := range layerNorm.Gamma {
+					layerNorm.Gamma[j] = 1.0
+				}
+				net.SetLayer(0, 0, i, layerNorm)
+			}
+		}
+		// For RMSNorm, add norm after each dense
+		if layerType == TestLayerRMSNorm {
+			for i := 2; i < deepLayers-1; i += 2 {
+				rmsNorm := nn.LayerConfig{Type: nn.LayerRMSNorm, NormSize: HiddenSizeTest, Gamma: make([]float32, HiddenSizeTest), Epsilon: 1e-6}
+				for j := range rmsNorm.Gamma {
+					rmsNorm.Gamma[j] = 1.0
+				}
+				net.SetLayer(0, 0, i, rmsNorm)
+			}
+		}
+		// For Residual, add residual connections
+		if layerType == TestLayerResidual {
+			for i := 3; i < deepLayers-1; i += 3 {
+				residual := nn.LayerConfig{Type: nn.LayerResidual}
+				net.SetLayer(0, 0, i, residual)
+			}
+		}
+
+	default:
+		// For complex layers, fall back to Dense-based deep network
+		net.SetLayer(0, 0, 0, nn.InitDenseLayer(InputSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
+		for i := 1; i < deepLayers-1; i++ {
+			net.SetLayer(0, 0, i, nn.InitDenseLayer(HiddenSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
+		}
+		net.SetLayer(0, 0, deepLayers-1, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationSigmoid))
+	}
+	return net
+}
+
+// runLayerTest runs a test for a specific layer, mode, and numeric type (SHALLOW - 3 layers)
 func runLayerTest(layer LayerTestType, mode TrainingModeTest, numType NumericType, inputs [][]float64, targets [][]float64) TestResult {
 	switch numType {
 	case TypeFloat32:
-		return runFloat32Test(layer, mode, inputs, targets)
+		return runFloat32Test(layer, mode, inputs, targets, false)
 	default:
-		return runGenericTest(layer, mode, numType, inputs, targets)
+		return runGenericTest(layer, mode, numType, inputs, targets, false)
+	}
+}
+
+// runLayerTestDeep runs a test for a specific layer, mode, and numeric type (DEEP - 15 layers)
+func runLayerTestDeep(layer LayerTestType, mode TrainingModeTest, numType NumericType, inputs [][]float64, targets [][]float64) TestResult {
+	switch numType {
+	case TypeFloat32:
+		return runFloat32Test(layer, mode, inputs, targets, true)
+	default:
+		return runGenericTest(layer, mode, numType, inputs, targets, true)
 	}
 }
 
 // runGenericTest tests generic tensor forward pass
-func runGenericTest(layer LayerTestType, mode TrainingModeTest, numType NumericType, inputs [][]float64, targets [][]float64) TestResult {
+func runGenericTest(layer LayerTestType, mode TrainingModeTest, numType NumericType, inputs [][]float64, targets [][]float64, deep bool) TestResult {
 	switch numType {
 	case TypeInt8:
-		return runTypedTest[int8](layer, inputs, targets, mode)
+		return runTypedTest[int8](layer, inputs, targets, mode, deep)
 	case TypeInt16:
-		return runTypedTest[int16](layer, inputs, targets, mode)
+		return runTypedTest[int16](layer, inputs, targets, mode, deep)
 	case TypeInt32:
-		return runTypedTest[int32](layer, inputs, targets, mode)
+		return runTypedTest[int32](layer, inputs, targets, mode, deep)
 	case TypeInt64:
-		return runTypedTest[int64](layer, inputs, targets, mode)
+		return runTypedTest[int64](layer, inputs, targets, mode, deep)
 	case TypeUint8:
-		return runTypedTest[uint8](layer, inputs, targets, mode)
+		return runTypedTest[uint8](layer, inputs, targets, mode, deep)
 	case TypeUint16:
-		return runTypedTest[uint16](layer, inputs, targets, mode)
+		return runTypedTest[uint16](layer, inputs, targets, mode, deep)
 	case TypeUint32:
-		return runTypedTest[uint32](layer, inputs, targets, mode)
+		return runTypedTest[uint32](layer, inputs, targets, mode, deep)
 	case TypeUint64:
-		return runTypedTest[uint64](layer, inputs, targets, mode)
+		return runTypedTest[uint64](layer, inputs, targets, mode, deep)
 	case TypeFloat64:
-		return runTypedTest[float64](layer, inputs, targets, mode)
+		return runTypedTest[float64](layer, inputs, targets, mode, deep)
 	default:
 		return TestResult{Passed: false, Error: "unknown type"}
 	}
 }
 
-// runTypedTest runs test with specific numeric type
-func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets [][]float64, mode TrainingModeTest) TestResult {
+// runTypedTest runs test with specific numeric type using AdaptationTracker
+// Properly wires up ALL training modes for generic types
+func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets [][]float64, mode TrainingModeTest, deep bool) TestResult {
 	result := TestResult{}
 
 	defer func() {
@@ -380,23 +519,41 @@ func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets
 		}
 	}()
 
-	net := createNetworkForLayerType(layer)
+	// Choose shallow or deep network
+	var net *nn.Network
+	if deep {
+		net = createDeepNetworkForLayerType(layer)
+	} else {
+		net = createNetworkForLayerType(layer)
+	}
 	backend := nn.NewCPUBackend[T]()
+	numLayers := net.TotalLayers()
 
-	start := time.Now()
-	totalOutputs := 0
-	numWindows := int(TestDurationTest / WindowDurationTest)
-	windowAccs := make([]float64, numWindows)
-	windowCounts := make([]int, numWindows)
+	// Initialize GenericStepState for step-based modes
+	var stepState *nn.GenericStepState[T]
+	if mode == ModeStepBPTest || mode == ModeStepTweenTest || mode == ModeStepTweenChainTest {
+		stepState = nn.NewGenericStepState[T](numLayers, InputSizeTest)
+	}
+
+	// Initialize GenericTweenState for tween-based modes
+	var tweenState *nn.GenericTweenState[T]
+	if mode == ModeTweenTest || mode == ModeTweenChainTest || mode == ModeStepTweenTest || mode == ModeStepTweenChainTest {
+		config := nn.DefaultTweenConfig(numLayers)
+		if mode == ModeTweenChainTest || mode == ModeStepTweenChainTest {
+			config.UseChainRule = true
+		}
+		config.LinkBudgetScale = 0.8
+		tweenState = nn.NewGenericTweenState[T](net, config)
+	}
+
+	// Use framework's AdaptationTracker for richer metrics
+	tracker := nn.NewAdaptationTracker(WindowDurationTest, TestDurationTest)
+	tracker.SetModelInfo(layerNames[layer], modeNamesTest[mode])
+	tracker.Start("training", 0)
 
 	sampleIdx := 0
+	start := time.Now()
 	for time.Since(start) < TestDurationTest {
-		elapsed := time.Since(start)
-		currentWindow := int(elapsed / WindowDurationTest)
-		if currentWindow >= numWindows {
-			currentWindow = numWindows - 1
-		}
-
 		input := inputs[sampleIdx%len(inputs)]
 		target := targets[sampleIdx%len(targets)]
 		sampleIdx++
@@ -412,8 +569,21 @@ func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets
 		}
 		inputTensor := nn.NewTensorFromSlice(inputData, len(inputData))
 
+		// Convert target for classification (find target class)
+		targetClass := 0
+		maxTarget := target[0]
+		for i, v := range target {
+			if v > maxTarget {
+				maxTarget = v
+				targetClass = i
+			}
+		}
+
 		var output *nn.Tensor[T]
-		if mode == ModeNormalBPTest {
+
+		switch mode {
+		case ModeNormalBPTest:
+			// Standard backprop with GenericTrainStep
 			targetData := make([]T, len(target))
 			for i, v := range target {
 				if isIntegerType[T]() {
@@ -425,57 +595,69 @@ func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets
 			targetTensor := nn.NewTensorFromSlice(targetData, len(targetData))
 			lr := float64(LearningRateTest)
 			output, _, _ = nn.GenericTrainStep(net, inputTensor, targetTensor, lr, backend)
-		} else {
-			output, _, _, _ = nn.GenericForwardPass(net, inputTensor, backend)
+
+		case ModeStepBPTest:
+			// Step-by-step forward (StepForwardGeneric does all layers in one call)
+			stepState.SetInput(inputTensor)
+			nn.StepForwardGeneric(net, stepState, backend)
+			output = stepState.GetOutput()
+			// Note: Generic backward pass not fully implemented yet
+			// For now, this mode only does forward stepping
+
+		case ModeTweenTest, ModeTweenChainTest:
+			// Tween-based training (full pass)
+			output = tweenState.ForwardPass(net, inputTensor, backend)
+			// TweenStep handles backward + weight update
+			tweenState.TweenStep(net, inputTensor, targetClass, OutputSizeTest, LearningRateTest, backend)
+
+		case ModeStepTweenTest, ModeStepTweenChainTest:
+			// Step + Tween combined: use TweenState forward + TweenStep
+			output = tweenState.ForwardPass(net, inputTensor, backend)
+			tweenState.TweenStep(net, inputTensor, targetClass, OutputSizeTest, LearningRateTest, backend)
 		}
 
-		if len(output.Data) > 0 && len(target) > 0 {
+		// Check accuracy and record to tracker
+		correct := false
+		if output != nil && len(output.Data) > 0 && len(target) > 0 {
 			var pred float64
 			if isIntegerType[T]() {
 				pred = float64(output.Data[0]) / 100.0
 			} else {
 				pred = float64(output.Data[0])
 			}
-			if math.Abs(pred-target[0]) < AccuracyThresholdTest {
-				windowAccs[currentWindow] += 100.0
-			}
-			windowCounts[currentWindow]++
+			correct = math.Abs(pred-target[0]) < AccuracyThresholdTest
 		}
-		totalOutputs++
+		tracker.RecordOutput(correct)
 	}
 
-	for i := 0; i < numWindows; i++ {
-		if windowCounts[i] > 0 {
-			windowAccs[i] /= float64(windowCounts[i])
-		}
-	}
-	result.History = windowAccs // Store history
+	// Finalize and get rich adaptation results
+	adaptation := tracker.Finalize()
+	result.Adaptation = adaptation
 
-	avgAcc := 0.0
-	for _, acc := range windowAccs {
-		avgAcc += acc
-	}
-	if numWindows > 0 {
-		result.AvgAccuracy = avgAcc / float64(numWindows)
+	// Extract summary metrics from adaptation result
+	result.AvgAccuracy = adaptation.AvgAccuracy
+	result.Throughput = float64(adaptation.TotalOutputs) / adaptation.Duration.Seconds()
+
+	// Build history from windows
+	windows := adaptation.Windows
+	result.History = make([]float64, len(windows))
+	for i, w := range windows {
+		result.History[i] = w.Accuracy
 	}
 
+	// Calculate stability from window variance
 	variance := 0.0
-	for _, acc := range windowAccs {
+	for _, acc := range result.History {
 		diff := acc - result.AvgAccuracy
 		variance += diff * diff
 	}
-	if numWindows > 0 {
-		variance /= float64(numWindows)
+	if len(result.History) > 0 {
+		variance /= float64(len(result.History))
 	}
 	result.Stability = math.Max(0, 100-math.Sqrt(variance))
 
-	duration := time.Since(start).Seconds()
-	if duration > 0 {
-		result.Throughput = float64(totalOutputs) / duration
-	}
-
 	result.Score = (result.Throughput * result.Stability * (result.AvgAccuracy / 100)) / 10000
-	result.Passed = totalOutputs > 0 && !math.IsNaN(result.Score) && !math.IsInf(result.Score, 0)
+	result.Passed = adaptation.TotalOutputs > 0 && !math.IsNaN(result.Score) && !math.IsInf(result.Score, 0)
 
 	return result
 }
@@ -490,8 +672,8 @@ func isIntegerType[T nn.Numeric]() bool {
 	}
 }
 
-// runFloat32Test runs test with float32 (uses full training API)
-func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float64, targets [][]float64) TestResult {
+// runFloat32Test runs test with float32 (uses full training API) with AdaptationTracker
+func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float64, targets [][]float64, deep bool) TestResult {
 	result := TestResult{}
 
 	defer func() {
@@ -501,7 +683,13 @@ func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float
 		}
 	}()
 
-	net := createNetworkForLayerType(layer)
+	// Choose shallow or deep network
+	var net *nn.Network
+	if deep {
+		net = createDeepNetworkForLayerType(layer)
+	} else {
+		net = createNetworkForLayerType(layer)
+	}
 	numLayers := net.TotalLayers()
 
 	var state *nn.StepState
@@ -525,20 +713,14 @@ func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float
 	trainBatch := make([]Sample, 0, 20)
 	lastTrainTime := time.Now()
 
-	start := time.Now()
-	totalOutputs := 0
-	numWindows := int(TestDurationTest / WindowDurationTest)
-	windowAccs := make([]float64, numWindows)
-	windowCounts := make([]int, numWindows)
+	// Use framework's AdaptationTracker for richer metrics
+	tracker := nn.NewAdaptationTracker(WindowDurationTest, TestDurationTest)
+	tracker.SetModelInfo(layerNames[layer], modeNamesTest[mode])
+	tracker.Start("training", 0)
 
 	sampleIdx := 0
+	start := time.Now()
 	for time.Since(start) < TestDurationTest {
-		elapsed := time.Since(start)
-		currentWindow := int(elapsed / WindowDurationTest)
-		if currentWindow >= numWindows {
-			currentWindow = numWindows - 1
-		}
-
 		inputF64 := inputs[sampleIdx%len(inputs)]
 		targetF64 := targets[sampleIdx%len(targets)]
 		sampleIdx++
@@ -566,14 +748,14 @@ func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float
 			output = ts.ForwardPass(net, input)
 		}
 
+		// Check accuracy and record to tracker
+		correct := false
 		if len(output) > 0 && len(target) > 0 {
-			if math.Abs(float64(output[0]-target[0])) < AccuracyThresholdTest {
-				windowAccs[currentWindow] += 100.0
-			}
-			windowCounts[currentWindow]++
+			correct = math.Abs(float64(output[0]-target[0])) < AccuracyThresholdTest
 		}
-		totalOutputs++
+		tracker.RecordOutput(correct)
 
+		// Apply training updates
 		switch mode {
 		case ModeNormalBPTest:
 			trainBatch = append(trainBatch, Sample{Input: input, Target: target})
@@ -628,38 +810,34 @@ func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float
 		}
 	}
 
-	for i := 0; i < numWindows; i++ {
-		if windowCounts[i] > 0 {
-			windowAccs[i] /= float64(windowCounts[i])
-		}
-	}
-	result.History = windowAccs // Store history
+	// Finalize and get rich adaptation results
+	adaptation := tracker.Finalize()
+	result.Adaptation = adaptation
 
-	avgAcc := 0.0
-	for _, acc := range windowAccs {
-		avgAcc += acc
-	}
-	if numWindows > 0 {
-		result.AvgAccuracy = avgAcc / float64(numWindows)
+	// Extract summary metrics from adaptation result
+	result.AvgAccuracy = adaptation.AvgAccuracy
+	result.Throughput = float64(adaptation.TotalOutputs) / adaptation.Duration.Seconds()
+
+	// Build history from windows
+	windows := adaptation.Windows
+	result.History = make([]float64, len(windows))
+	for i, w := range windows {
+		result.History[i] = w.Accuracy
 	}
 
+	// Calculate stability from window variance
 	variance := 0.0
-	for _, acc := range windowAccs {
+	for _, acc := range result.History {
 		diff := acc - result.AvgAccuracy
 		variance += diff * diff
 	}
-	if numWindows > 0 {
-		variance /= float64(numWindows)
+	if len(result.History) > 0 {
+		variance /= float64(len(result.History))
 	}
 	result.Stability = math.Max(0, 100-math.Sqrt(variance))
 
-	duration := time.Since(start).Seconds()
-	if duration > 0 {
-		result.Throughput = float64(totalOutputs) / duration
-	}
-
 	result.Score = (result.Throughput * result.Stability * (result.AvgAccuracy / 100)) / 10000
-	result.Passed = totalOutputs > 0 && !math.IsNaN(result.Score) && !math.IsInf(result.Score, 0)
+	result.Passed = adaptation.TotalOutputs > 0 && !math.IsNaN(result.Score) && !math.IsInf(result.Score, 0)
 
 	return result
 }
@@ -836,4 +1014,328 @@ func printComparisonTable(results *FullBenchmarkResults) {
 	fmt.Printf("║  🏆 WINNER: %-20s with Score: %.0f                                                       ║\n", bestGlobalModeStr, bestGlobalScore)
 	fmt.Println("║                                                                                                                ║")
 	fmt.Println("╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
+}
+
+// printComparisonTableByDepth prints separate tables for shallow and deep networks
+func printComparisonTableByDepth(results *FullBenchmarkResults) {
+	// Split results by depth
+	shallowResults := &FullBenchmarkResults{Results: make([]TestResult, 0)}
+	deepResults := &FullBenchmarkResults{Results: make([]TestResult, 0)}
+
+	for _, r := range results.Results {
+		if r.Depth == "deep" {
+			deepResults.Results = append(deepResults.Results, r)
+		} else {
+			shallowResults.Results = append(shallowResults.Results, r)
+		}
+	}
+
+	fmt.Println("\n\n")
+	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                                    🔹 SHALLOW NETWORKS (3 LAYERS) 🔹                                             ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
+	printComparisonTable(shallowResults)
+
+	fmt.Println("\n\n")
+	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                                    🔸 DEEP NETWORKS (15 LAYERS) 🔸                                               ║")
+	fmt.Println("║            StepTweenChain should show advantage here due to chain rule gradient propagation                      ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
+	printComparisonTable(deepResults)
+
+	// Print depth comparison summary
+	fmt.Println("\n\n")
+	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                                    📊 SHALLOW vs DEEP COMPARISON 📊                                              ║")
+	fmt.Println("╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣")
+	
+	// Calculate average accuracy per mode for each depth
+	modesOrdered := []string{"NormalBP", "StepBP", "Tween", "TweenChain", "StepTween", "StepTweenChain"}
+	
+	fmt.Println("║  Mode                │ Shallow Acc │ Deep Acc │ Shallow Score │ Deep Score │ Chain Helps Deep?              ║")
+	fmt.Println("║  ────────────────────┼─────────────┼──────────┼───────────────┼────────────┼────────────────────────────────║")
+	
+	for _, mode := range modesOrdered {
+		shallowAcc, shallowScore := avgForModeDepth(shallowResults, mode)
+		deepAcc, deepScore := avgForModeDepth(deepResults, mode)
+		
+		chainHelps := "—"
+		if strings.Contains(mode, "Chain") && deepScore > shallowScore*0.5 {
+			chainHelps = "✓ Maintained"
+			if deepAcc > shallowAcc*0.95 {
+				chainHelps = "✓ Excellent!"
+			}
+		} else if deepScore < shallowScore*0.3 {
+			chainHelps = "✗ Degraded"
+		}
+		
+		fmt.Printf("║  %-20s │    %5.1f%%   │  %5.1f%%  │     %7.0f   │   %7.0f  │  %-30s║\n",
+			mode, shallowAcc, deepAcc, shallowScore, deepScore, chainHelps)
+	}
+	
+	
+	fmt.Println("║                                                                                                                  ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
+	
+	// Print per-layer breakdown
+	printPerLayerBenchmark(results)
+	
+	// Print head-to-head fair comparisons
+	printHeadToHeadTable(results)
+}
+
+// printPerLayerBenchmark prints benchmark summary for each layer type
+func printPerLayerBenchmark(results *FullBenchmarkResults) {
+	layers := []string{"Dense", "Conv2D", "Attention", "RNN", "LSTM", "Softmax", "LayerNorm", "Residual", "RMSNorm", "SwiGLU", "Parallel"}
+	modes := []string{"NormalBP", "StepBP", "Tween", "TweenChain", "StepTween", "StepTweenChain"}
+	
+	fmt.Println("\n")
+	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                            📊 PER-LAYER BREAKDOWN: All Modes × All Types (Shallow) 📊                           ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
+	
+	for _, layer := range layers {
+		fmt.Printf("\n┌────────────────────────────────────────────────────────────────────────────────────────────────┐\n")
+		fmt.Printf("│  📊 %s LAYER - Which Mode+Type Wins?                                                         │\n", strings.ToUpper(layer))
+		fmt.Printf("├────────────────────────────────────────────────────────────────────────────────────────────────┤\n")
+		fmt.Printf("│  Mode              │ Best Type  │ Accuracy │ Stability │ Throughput │ Score  │ ★ Winner?     │\n")
+		fmt.Printf("├────────────────────┼────────────┼──────────┼───────────┼────────────┼────────┼───────────────┤\n")
+		
+		var bestGlobalScore float64
+		var bestGlobalMode string
+		
+		for _, mode := range modes {
+			// Find best type for this mode+layer combo
+			var bestResult *TestResult
+			var bestScore float64
+			
+			for i := range results.Results {
+				r := &results.Results[i]
+				if r.LayerType == layer && r.TrainingMode == mode && r.Depth == "shallow" && r.Passed {
+					if r.Score > bestScore {
+						bestScore = r.Score
+						bestResult = r
+					}
+				}
+			}
+			
+			if bestResult != nil {
+				winner := "  "
+				if bestResult.Score > bestGlobalScore {
+					bestGlobalScore = bestResult.Score
+					bestGlobalMode = mode
+				}
+				if mode == bestGlobalMode {
+					winner = "🏆"
+				}
+				
+				fmt.Printf("│  %-17s │ %-10s │  %5.1f%%  │   %5.1f%%  │   %7.0f  │  %5.0f  │ %s            │\n",
+					mode, bestResult.NumericType, bestResult.AvgAccuracy, bestResult.Stability, 
+					bestResult.Throughput, bestResult.Score, winner)
+			} else {
+				fmt.Printf("│  %-17s │    FAIL    │   FAIL   │    FAIL   │      FAIL  │   FAIL │               │\n", mode)
+			}
+		}
+		
+		fmt.Printf("├────────────────────────────────────────────────────────────────────────────────────────────────┤\n")
+		fmt.Printf("│  🏆 WINNER: %-20s                                                             │\n", bestGlobalMode)
+		fmt.Printf("└────────────────────────────────────────────────────────────────────────────────────────────────┘\n")
+	}
+	
+	// Deep Networks Section
+	fmt.Println("\n")
+	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                            📊 PER-LAYER BREAKDOWN: All Modes × All Types (Deep) 📊                              ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
+	
+	deepLayers := []string{"Dense", "Softmax", "LayerNorm", "Residual", "RMSNorm"}
+	
+	for _, layer := range deepLayers {
+		fmt.Printf("\n┌────────────────────────────────────────────────────────────────────────────────────────────────┐\n")
+		fmt.Printf("│  📊 %s LAYER - Which Mode+Type Wins?                                                         │\n", strings.ToUpper(layer))
+		fmt.Printf("├────────────────────────────────────────────────────────────────────────────────────────────────┤\n")
+		fmt.Printf("│  Mode              │ Best Type  │ Accuracy │ Stability │ Throughput │ Score  │ ★ Winner?     │\n")
+		fmt.Printf("├────────────────────┼────────────┼──────────┼───────────┼────────────┼────────┼───────────────┤\n")
+		
+		var bestGlobalScore float64
+		var bestGlobalMode string
+		
+		for _, mode := range modes {
+			// Find best type for this mode+layer combo
+			var bestResult *TestResult
+			var bestScore float64
+			
+			for i := range results.Results {
+				r := &results.Results[i]
+				if r.LayerType == layer && r.TrainingMode == mode && r.Depth == "deep" && r.Passed {
+					if r.Score > bestScore {
+						bestScore = r.Score
+						bestResult = r
+					}
+				}
+			}
+			
+			if bestResult != nil {
+				winner := "  "
+				if bestResult.Score > bestGlobalScore {
+					bestGlobalScore = bestResult.Score
+					bestGlobalMode = mode
+				}
+				if mode == bestGlobalMode {
+					winner = "🏆"
+				}
+				
+				fmt.Printf("│  %-17s │ %-10s │  %5.1f%%  │   %5.1f%%  │   %7.0f  │  %5.0f  │ %s            │\n",
+					mode, bestResult.NumericType, bestResult.AvgAccuracy, bestResult.Stability, 
+					bestResult.Throughput, bestResult.Score, winner)
+			} else {
+				fmt.Printf("│  %-17s │    FAIL    │   FAIL   │    FAIL   │      FAIL  │   FAIL │               │\n", mode)
+			}
+		}
+		
+		fmt.Printf("├────────────────────────────────────────────────────────────────────────────────────────────────┤\n")
+		fmt.Printf("│  🏆 WINNER: %-20s                                                             │\n", bestGlobalMode)
+		fmt.Printf("└────────────────────────────────────────────────────────────────────────────────────────────────┘\n")
+	}
+}
+
+// avgForModeDepth calculates average accuracy and score for a specific mode
+func avgForModeDepth(results *FullBenchmarkResults, mode string) (avgAcc, avgScore float64) {
+	count := 0
+	for _, r := range results.Results {
+		if r.TrainingMode == mode && r.Passed {
+			avgAcc += r.AvgAccuracy
+			avgScore += r.Score
+			count++
+		}
+	}
+	if count > 0 {
+		avgAcc /= float64(count)
+		avgScore /= float64(count)
+	}
+	return
+}
+
+// printHeadToHeadTable shows best mode+type combo for each layer
+func printHeadToHeadTable(results *FullBenchmarkResults) {
+	fmt.Println("\n\n")
+	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                                    🥊 LAYER CHAMPIONS: Best Mode + Type for Each Layer 🥊                                                                            ║")
+	fmt.Println("║                                    For each layer, which mode+type combo scores highest?                                                                             ║")
+	fmt.Println("╠══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣")
+	
+	layers := []string{"Dense", "Conv2D", "Attention", "RNN", "LSTM", "Softmax", "LayerNorm", "Residual", "RMSNorm", "SwiGLU", "Parallel"}
+	
+	fmt.Println("║  🔹 SHALLOW NETWORKS (3 layers) - Best Mode+Type per Layer                                                                                                           ║")
+	fmt.Println("║  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────║")
+	fmt.Println("║  Layer      │ 🏆 Best Mode       │ Best Type  │ Accuracy │ Stability │ Throughput │ Score  │ 2nd Best                                                                ║")
+	fmt.Println("║  ───────────┼────────────────────┼────────────┼──────────┼───────────┼────────────┼────────┼─────────────────────────────────────────────────────────────────────────║")
+	
+	modeWinCounts := make(map[string]int)
+	typeWinCounts := make(map[string]int)
+	
+	for _, layer := range layers {
+		var bestResult *TestResult
+		var secondBest *TestResult
+		var bestScore float64
+		var secondScore float64
+		
+		for i := range results.Results {
+			r := &results.Results[i]
+			if r.LayerType == layer && r.Depth == "shallow" && r.Passed {
+				if r.Score > bestScore {
+					secondScore = bestScore
+					secondBest = bestResult
+					bestScore = r.Score
+					bestResult = r
+				} else if r.Score > secondScore {
+					secondScore = r.Score
+					secondBest = r
+				}
+			}
+		}
+		
+		if bestResult != nil {
+			modeWinCounts[bestResult.TrainingMode]++
+			typeWinCounts[bestResult.NumericType]++
+			
+			secondStr := "-"
+			if secondBest != nil {
+				secondStr = fmt.Sprintf("%s+%s (%.0f)", secondBest.TrainingMode, secondBest.NumericType, secondBest.Score)
+			}
+			
+			fmt.Printf("║  %-10s │ %-18s │ %-10s │  %5.1f%%  │   %5.1f%%  │   %7.0f  │  %5.0f  │ %-68s ║\n",
+				layer, bestResult.TrainingMode, bestResult.NumericType, 
+				bestResult.AvgAccuracy, bestResult.Stability, bestResult.Throughput, bestResult.Score, secondStr)
+		}
+	}
+	
+	fmt.Println("║                                                                                                                                                                      ║")
+	
+	// Deep networks
+	fmt.Println("║  🔸 DEEP NETWORKS (15 layers) - Best Mode+Type per Layer                                                                                                            ║")
+	fmt.Println("║  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────║")
+	fmt.Println("║  Layer      │ 🏆 Best Mode       │ Best Type  │ Accuracy │ Stability │ Throughput │ Score  │ 2nd Best                                                                ║")
+	fmt.Println("║  ───────────┼────────────────────┼────────────┼──────────┼───────────┼────────────┼────────┼─────────────────────────────────────────────────────────────────────────║")
+	
+	deepLayers := []string{"Dense", "Softmax", "LayerNorm", "RMSNorm", "Residual"}
+	for _, layer := range deepLayers {
+		var bestResult *TestResult
+		var secondBest *TestResult
+		var bestScore float64
+		var secondScore float64
+		
+		for i := range results.Results {
+			r := &results.Results[i]
+			if r.LayerType == layer && r.Depth == "deep" && r.Passed {
+				if r.Score > bestScore {
+					secondScore = bestScore
+					secondBest = bestResult
+					bestScore = r.Score
+					bestResult = r
+				} else if r.Score > secondScore {
+					secondScore = r.Score
+					secondBest = r
+				}
+			}
+		}
+		
+		if bestResult != nil {
+			secondStr := "-"
+			if secondBest != nil {
+				secondStr = fmt.Sprintf("%s+%s (%.0f)", secondBest.TrainingMode, secondBest.NumericType, secondBest.Score)
+			}
+			
+			fmt.Printf("║  %-10s │ %-18s │ %-10s │  %5.1f%%  │   %5.1f%%  │   %7.0f  │  %5.0f  │ %-68s ║\n",
+				layer, bestResult.TrainingMode, bestResult.NumericType, 
+				bestResult.AvgAccuracy, bestResult.Stability, bestResult.Throughput, bestResult.Score, secondStr)
+		}
+	}
+	
+	fmt.Println("║                                                                                                                                                                      ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
+	
+	// Summary: Mode wins
+	fmt.Println("\n╔════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║           🏆 MODE WIN COUNT (which mode won most layers in shallow)                ║")
+	fmt.Println("╠════════════════════════════════════════════════════════════════════════════════════╣")
+	
+	modesOrdered := []string{"NormalBP", "StepBP", "Tween", "TweenChain", "StepTween", "StepTweenChain"}
+	for _, mode := range modesOrdered {
+		bar := strings.Repeat("█", modeWinCounts[mode]*4)
+		fmt.Printf("║  %-14s │ %2d wins │ %-45s   ║\n", mode, modeWinCounts[mode], bar)
+	}
+	fmt.Println("╚════════════════════════════════════════════════════════════════════════════════════╝")
+	
+	// Summary: Type wins  
+	fmt.Println("\n╔════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║           🏆 TYPE WIN COUNT (which numeric type won most layers)                   ║")
+	fmt.Println("╠════════════════════════════════════════════════════════════════════════════════════╣")
+	
+	typesOrdered := []string{"int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32", "float64"}
+	for _, t := range typesOrdered {
+		bar := strings.Repeat("█", typeWinCounts[t]*4)
+		fmt.Printf("║  %-10s │ %2d wins │ %-49s   ║\n", t, typeWinCounts[t], bar)
+	}
+	fmt.Println("╚════════════════════════════════════════════════════════════════════════════════════╝")
 }
