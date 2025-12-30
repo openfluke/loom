@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,13 +16,6 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMPREHENSIVE TEST: ALL LAYERS × ALL MODES × ALL NUMERICAL TYPES
 // ═══════════════════════════════════════════════════════════════════════════════
-//
-// Tests the complete multi-type tensor architecture:
-//   - ALL 11 LAYER TYPES from types.go: Dense, Conv2D, MultiHeadAttention, RNN,
-//     LSTM, Softmax, LayerNorm, Residual, RMSNorm, SwiGLU, Parallel
-//   - ALL 6 TRAINING MODES: NormalBP, StepBP, Tween, TweenChain, StepTween, StepTweenChain
-//   - ALL 10 NUMERICAL TYPES: int8-64, uint8-64, float32, float64
-//
 
 const (
 	// Network architecture
@@ -34,7 +28,7 @@ const (
 	InitScaleTest         = float32(0.5)
 	AccuracyThresholdTest = 0.15
 
-	// Timing - 1 second run per test (fast for 660 tests)
+	// Timing - 1 second run per test (10 windows of 100ms)
 	TestDurationTest   = 1 * time.Second
 	WindowDurationTest = 100 * time.Millisecond
 	TrainIntervalTest  = 50 * time.Millisecond
@@ -58,17 +52,17 @@ const (
 )
 
 var layerNames = map[LayerTestType]string{
-	TestLayerDense:              "Dense",
-	TestLayerConv2D:             "Conv2D",
+	TestLayerDense:          "Dense",
+	TestLayerConv2D:         "Conv2D",
 	TestLayerMultiHeadAttention: "Attention",
-	TestLayerRNN:                "RNN",
-	TestLayerLSTM:               "LSTM",
-	TestLayerSoftmax:            "Softmax",
-	TestLayerNorm:               "LayerNorm",
-	TestLayerResidual:           "Residual",
-	TestLayerRMSNorm:            "RMSNorm",
-	TestLayerSwiGLU:             "SwiGLU",
-	TestLayerParallel:           "Parallel",
+	TestLayerRNN:            "RNN",
+	TestLayerLSTM:           "LSTM",
+	TestLayerSoftmax:        "Softmax",
+	TestLayerNorm:           "LayerNorm",
+	TestLayerResidual:       "Residual",
+	TestLayerRMSNorm:        "RMSNorm",
+	TestLayerSwiGLU:         "SwiGLU",
+	TestLayerParallel:       "Parallel",
 }
 
 // TrainingModeTest enum
@@ -123,15 +117,16 @@ var typeNames = map[NumericType]string{
 
 // TestResult holds result for one combination
 type TestResult struct {
-	LayerType    string  `json:"layerType"`
-	TrainingMode string  `json:"trainingMode"`
-	NumericType  string  `json:"numericType"`
-	AvgAccuracy  float64 `json:"avgAccuracy"`
-	Stability    float64 `json:"stability"`
-	Throughput   float64 `json:"throughput"`
-	Score        float64 `json:"score"`
-	Passed       bool    `json:"passed"`
-	Error        string  `json:"error,omitempty"`
+	LayerType    string    `json:"layerType"`
+	TrainingMode string    `json:"trainingMode"`
+	NumericType  string    `json:"numericType"`
+	AvgAccuracy  float64   `json:"avgAccuracy"`
+	Stability    float64   `json:"stability"`
+	Throughput   float64   `json:"throughput"`
+	Score        float64   `json:"score"`
+	Passed       bool      `json:"passed"`
+	Error        string    `json:"error,omitempty"`
+	History      []float64 `json:"history"` // Accuracy per window
 }
 
 // FullBenchmarkResults is the complete output
@@ -152,7 +147,7 @@ func main() {
 	fmt.Println("║                                                                                                                               ║")
 	fmt.Println("║   LAYERS: Dense, Conv2D, Attention, RNN, LSTM, Softmax, LayerNorm, Residual, RMSNorm, SwiGLU, Parallel                        ║")
 	fmt.Println("║   MODES:  NormalBP, StepBP, Tween, TweenChain, StepTween, StepTweenChain                                                      ║")
-	fmt.Println("║   TYPES:  int8, int16, int32, int64, uint8, uint16, uint32, uint64, float32, float64                                          ║")
+	fmt.Println("║   TYPES:  int8 - int64, uint8 - uint64, float32, float64                                                                      ║")
 	fmt.Println("╚═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
 
 	// Generate test data
@@ -206,7 +201,8 @@ func main() {
 					modeName := modeNamesTest[m]
 					typeName := typeNames[t]
 
-					fmt.Printf("🔄 [%3d/%d] %s + %s + %s...\n", num, totalTests, layerName, modeName, typeName)
+					// Print generic progress line to not clutter
+					// fmt.Printf("🔄 [%3d/%d] %s + %s + %s...\n", num, totalTests, layerName, modeName, typeName)
 
 					result := runLayerTest(l, m, t, testInputs, testTargets)
 					result.LayerType = layerName
@@ -226,8 +222,9 @@ func main() {
 					if !result.Passed {
 						status = "❌"
 					}
-					fmt.Printf("%s [%3d/%d] %s + %s + %s | Acc: %.1f%% | Tput: %.0f\n",
-						status, num, totalTests, layerName, modeName, typeName, result.AvgAccuracy, result.Throughput)
+					// Only print simple status per line
+					fmt.Printf("%s [%3d/%d] %-10s %-15s %-8s | Acc: %5.1f%% | Sc: %.0f\n",
+						status, num, totalTests, layerName, modeName, typeName, result.AvgAccuracy, result.Score)
 				}(layer, mode, numType, testNum)
 			}
 		}
@@ -237,8 +234,7 @@ func main() {
 	fmt.Println("\n✅ All tests complete!")
 
 	saveResults(results)
-	printSummaryByLayer(results)
-	printSummaryByType(results)
+	printComparisonTable(results) // <--- NEW FANCY PRINT
 }
 
 // generateTestData creates random input/target pairs
@@ -268,128 +264,72 @@ func createNetworkForLayerType(layerType LayerTestType) *nn.Network {
 
 	switch layerType {
 	case TestLayerDense:
-		// Pure dense layers
 		net.SetLayer(0, 0, 0, nn.InitDenseLayer(InputSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
 		net.SetLayer(0, 0, 1, nn.InitDenseLayer(HiddenSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
 		net.SetLayer(0, 0, 2, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationSigmoid))
-
 	case TestLayerConv2D:
-		// Conv2D requires 2D input - use 4x4x1 image
-		net = nn.NewNetwork(16, 1, 1, 2) // 16 = 4x4x1
+		net = nn.NewNetwork(16, 1, 1, 2)
 		net.BatchSize = 1
-		// 4x4 input, 2x2 kernel, stride 2, padding 1, filters 2
-		// Output: (4+2*1-2)/2+1 = 3 -> 3x3x2 = 18
 		conv := nn.InitConv2DLayer(4, 4, 1, 2, 2, 1, 2, nn.ActivationLeakyReLU)
 		net.SetLayer(0, 0, 0, conv)
-		// Output is 3x3x2 = 18, need dense to OutputSizeTest
 		net.SetLayer(0, 0, 1, nn.InitDenseLayer(18, OutputSizeTest, nn.ActivationSigmoid))
-
 	case TestLayerMultiHeadAttention:
-		// Attention layer - use dense layers to simulate since InitMultiHeadAttentionLayer needs pre-loaded weights
 		net.SetLayer(0, 0, 0, nn.InitDenseLayer(InputSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
 		net.SetLayer(0, 0, 1, nn.InitDenseLayer(HiddenSizeTest, HiddenSizeTest, nn.ActivationTanh))
 		net.SetLayer(0, 0, 2, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationSigmoid))
-
 	case TestLayerRNN:
-		// RNN layer - needs inputSize, hiddenSize, batchSize, seqLength
 		rnn := nn.InitRNNLayer(InputSizeTest, HiddenSizeTest, 1, 1)
 		net.SetLayer(0, 0, 0, rnn)
 		net.SetLayer(0, 0, 1, nn.InitDenseLayer(HiddenSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
 		net.SetLayer(0, 0, 2, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationSigmoid))
-
 	case TestLayerLSTM:
-		// LSTM layer - needs inputSize, hiddenSize, batchSize, seqLength
 		lstm := nn.InitLSTMLayer(InputSizeTest, HiddenSizeTest, 1, 1)
 		net.SetLayer(0, 0, 0, lstm)
 		net.SetLayer(0, 0, 1, nn.InitDenseLayer(HiddenSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
 		net.SetLayer(0, 0, 2, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationSigmoid))
-
 	case TestLayerSoftmax:
-		// Dense + Softmax
 		net.SetLayer(0, 0, 0, nn.InitDenseLayer(InputSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
 		net.SetLayer(0, 0, 1, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationScaledReLU))
 		softmax := nn.LayerConfig{Type: nn.LayerSoftmax, SoftmaxVariant: nn.SoftmaxStandard, Temperature: 1.0}
 		net.SetLayer(0, 0, 2, softmax)
-
 	case TestLayerNorm:
-		// Dense + LayerNorm + Dense - create LayerNorm manually
 		net.SetLayer(0, 0, 0, nn.InitDenseLayer(InputSizeTest, HiddenSizeTest, nn.ActivationScaledReLU))
-		layerNorm := nn.LayerConfig{
-			Type:     nn.LayerNorm,
-			NormSize: HiddenSizeTest,
-			Gamma:    make([]float32, HiddenSizeTest),
-			Beta:     make([]float32, HiddenSizeTest),
-			Epsilon:  1e-5,
-		}
+		layerNorm := nn.LayerConfig{Type: nn.LayerNorm, NormSize: HiddenSizeTest, Gamma: make([]float32, HiddenSizeTest), Beta: make([]float32, HiddenSizeTest), Epsilon: 1e-5}
 		for i := range layerNorm.Gamma {
 			layerNorm.Gamma[i] = 1.0
 		}
 		net.SetLayer(0, 0, 1, layerNorm)
 		net.SetLayer(0, 0, 2, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationSigmoid))
-
 	case TestLayerResidual:
-		// Dense + Residual connection
 		net.SetLayer(0, 0, 0, nn.InitDenseLayer(InputSizeTest, InputSizeTest, nn.ActivationLeakyReLU))
 		residual := nn.LayerConfig{Type: nn.LayerResidual}
 		net.SetLayer(0, 0, 1, residual)
 		net.SetLayer(0, 0, 2, nn.InitDenseLayer(InputSizeTest, OutputSizeTest, nn.ActivationSigmoid))
-
 	case TestLayerRMSNorm:
-		// Dense + RMSNorm + Dense - create RMSNorm manually
 		net.SetLayer(0, 0, 0, nn.InitDenseLayer(InputSizeTest, HiddenSizeTest, nn.ActivationScaledReLU))
-		rmsNorm := nn.LayerConfig{
-			Type:     nn.LayerRMSNorm,
-			NormSize: HiddenSizeTest,
-			Gamma:    make([]float32, HiddenSizeTest),
-			Epsilon:  1e-6,
-		}
+		rmsNorm := nn.LayerConfig{Type: nn.LayerRMSNorm, NormSize: HiddenSizeTest, Gamma: make([]float32, HiddenSizeTest), Epsilon: 1e-6}
 		for i := range rmsNorm.Gamma {
 			rmsNorm.Gamma[i] = 1.0
 		}
 		net.SetLayer(0, 0, 1, rmsNorm)
 		net.SetLayer(0, 0, 2, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationSigmoid))
-
 	case TestLayerSwiGLU:
-		// SwiGLU layer - create manually
 		intermediateSize := HiddenSizeTest * 2
-		swiglu := nn.LayerConfig{
-			Type:         nn.LayerSwiGLU,
-			InputHeight:  InputSizeTest,
-			OutputHeight: InputSizeTest,
-			GateWeights:  make([]float32, InputSizeTest*intermediateSize),
-			UpWeights:    make([]float32, InputSizeTest*intermediateSize),
-			DownWeights:  make([]float32, intermediateSize*InputSizeTest),
-			GateBias:     make([]float32, intermediateSize),
-			UpBias:       make([]float32, intermediateSize),
-			DownBias:     make([]float32, InputSizeTest),
-		}
-		// Xavier init
+		swiglu := nn.LayerConfig{Type: nn.LayerSwiGLU, InputHeight: InputSizeTest, OutputHeight: InputSizeTest, GateWeights: make([]float32, InputSizeTest*intermediateSize), UpWeights: make([]float32, InputSizeTest*intermediateSize), DownWeights: make([]float32, intermediateSize*InputSizeTest), GateBias: make([]float32, intermediateSize), UpBias: make([]float32, intermediateSize), DownBias: make([]float32, InputSizeTest)}
 		for i := range swiglu.GateWeights {
 			swiglu.GateWeights[i] = float32(rand.NormFloat64()) * 0.1
-		}
-		for i := range swiglu.UpWeights {
-			swiglu.UpWeights[i] = float32(rand.NormFloat64()) * 0.1
-		}
-		for i := range swiglu.DownWeights {
-			swiglu.DownWeights[i] = float32(rand.NormFloat64()) * 0.1
 		}
 		net.SetLayer(0, 0, 0, swiglu)
 		net.SetLayer(0, 0, 1, nn.InitDenseLayer(InputSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
 		net.SetLayer(0, 0, 2, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationSigmoid))
-
 	case TestLayerParallel:
-		// Parallel branches
 		branch1 := nn.InitDenseLayer(InputSizeTest, HiddenSizeTest/2, nn.ActivationLeakyReLU)
 		branch2 := nn.InitDenseLayer(InputSizeTest, HiddenSizeTest/2, nn.ActivationTanh)
-		parallel := nn.LayerConfig{
-			Type:             nn.LayerParallel,
-			ParallelBranches: []nn.LayerConfig{branch1, branch2},
-		}
+		parallel := nn.LayerConfig{Type: nn.LayerParallel, ParallelBranches: []nn.LayerConfig{branch1, branch2}}
 		net.SetLayer(0, 0, 0, parallel)
 		net.SetLayer(0, 0, 1, nn.InitDenseLayer(HiddenSizeTest, HiddenSizeTest, nn.ActivationLeakyReLU))
 		net.SetLayer(0, 0, 2, nn.InitDenseLayer(HiddenSizeTest, OutputSizeTest, nn.ActivationSigmoid))
 	}
-
 	return net
 }
 
@@ -445,7 +385,6 @@ func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets
 
 	start := time.Now()
 	totalOutputs := 0
-	correctPreds := 0
 	numWindows := int(TestDurationTest / WindowDurationTest)
 	windowAccs := make([]float64, numWindows)
 	windowCounts := make([]int, numWindows)
@@ -473,10 +412,8 @@ func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets
 		}
 		inputTensor := nn.NewTensorFromSlice(inputData, len(inputData))
 
-
 		var output *nn.Tensor[T]
 		if mode == ModeNormalBPTest {
-			// Training Step (verifies backprop)
 			targetData := make([]T, len(target))
 			for i, v := range target {
 				if isIntegerType[T]() {
@@ -486,17 +423,12 @@ func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets
 				}
 			}
 			targetTensor := nn.NewTensorFromSlice(targetData, len(targetData))
-			
-			// Generic Train Step (Forward + Backward + Update)
-			// lr is passed as float64 now to allow uniform training params across types
 			lr := float64(LearningRateTest)
 			output, _, _ = nn.GenericTrainStep(net, inputTensor, targetTensor, lr, backend)
 		} else {
-			// Just forward (Step/Tween generic not yet implemented)
 			output, _, _, _ = nn.GenericForwardPass(net, inputTensor, backend)
 		}
 
-		// Check accuracy
 		if len(output.Data) > 0 && len(target) > 0 {
 			var pred float64
 			if isIntegerType[T]() {
@@ -505,7 +437,6 @@ func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets
 				pred = float64(output.Data[0])
 			}
 			if math.Abs(pred-target[0]) < AccuracyThresholdTest {
-				correctPreds++
 				windowAccs[currentWindow] += 100.0
 			}
 			windowCounts[currentWindow]++
@@ -513,12 +444,12 @@ func runTypedTest[T nn.Numeric](layer LayerTestType, inputs [][]float64, targets
 		totalOutputs++
 	}
 
-	// Calculate metrics
 	for i := 0; i < numWindows; i++ {
 		if windowCounts[i] > 0 {
 			windowAccs[i] /= float64(windowCounts[i])
 		}
 	}
+	result.History = windowAccs // Store history
 
 	avgAcc := 0.0
 	for _, acc := range windowAccs {
@@ -635,7 +566,6 @@ func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float
 			output = ts.ForwardPass(net, input)
 		}
 
-		// Check accuracy
 		if len(output) > 0 && len(target) > 0 {
 			if math.Abs(float64(output[0]-target[0])) < AccuracyThresholdTest {
 				windowAccs[currentWindow] += 100.0
@@ -644,7 +574,6 @@ func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float
 		}
 		totalOutputs++
 
-		// Training
 		switch mode {
 		case ModeNormalBPTest:
 			trainBatch = append(trainBatch, Sample{Input: input, Target: target})
@@ -657,7 +586,6 @@ func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float
 				trainBatch = trainBatch[:0]
 				lastTrainTime = time.Now()
 			}
-
 		case ModeStepBPTest:
 			grad := make([]float32, len(output))
 			for i := range grad {
@@ -667,7 +595,6 @@ func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float
 			}
 			net.StepBackward(state, grad)
 			net.ApplyGradients(LearningRateTest)
-
 		case ModeTweenTest, ModeTweenChainTest:
 			trainBatch = append(trainBatch, Sample{Input: input, Target: target})
 			if time.Since(lastTrainTime) > TrainIntervalTest && len(trainBatch) > 0 {
@@ -687,7 +614,6 @@ func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float
 				trainBatch = trainBatch[:0]
 				lastTrainTime = time.Now()
 			}
-
 		case ModeStepTweenTest, ModeStepTweenChainTest:
 			outputGrad := make([]float32, len(output))
 			for i := range outputGrad {
@@ -702,12 +628,12 @@ func runFloat32Test(layer LayerTestType, mode TrainingModeTest, inputs [][]float
 		}
 	}
 
-	// Calculate metrics
 	for i := 0; i < numWindows; i++ {
 		if windowCounts[i] > 0 {
 			windowAccs[i] /= float64(windowCounts[i])
 		}
 	}
+	result.History = windowAccs // Store history
 
 	avgAcc := 0.0
 	for _, acc := range windowAccs {
@@ -744,95 +670,170 @@ func saveResults(results *FullBenchmarkResults) {
 	fmt.Println("\n✅ Results saved to all_layers_all_modes_results.json")
 }
 
-func printSummaryByLayer(results *FullBenchmarkResults) {
-	fmt.Println("\n╔═══════════════════════════════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                              📊 SUMMARY BY LAYER TYPE                                             ║")
-	fmt.Println("╠═══════════════════════════════════════════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  Layer Type       │ Total │ Passed │ Failed │ Avg Throughput │ Avg Accuracy                      ║")
-	fmt.Println("║  ─────────────────┼───────┼────────┼────────┼────────────────┼───────────────────────────────────║")
+// NEW FUNCTION: Aggregates results to find best Type per Mode and prints fancy table
+func printComparisonTable(results *FullBenchmarkResults) {
+	// 1. Group results by (Mode, Type) and calculate average stats across all layers
+	type GroupKey struct {
+		Mode string
+		Type string
+	}
+	type GroupStats struct {
+		count          int
+		sumScore       float64
+		sumAcc         float64
+		sumStab        float64
+		sumTput        float64
+		historySum     []float64
+		historySamples []int
+	}
 
-	layerStats := make(map[string]struct {
-		total, passed, failed int
-		totalThroughput       float64
-		totalAccuracy         float64
-	})
+	stats := make(map[GroupKey]*GroupStats)
+
+	// Mode order for printing
+	modesOrdered := []string{"NormalBP", "StepBP", "Tween", "TweenChain", "StepTween", "StepTweenChain"}
 
 	for _, r := range results.Results {
-		s := layerStats[r.LayerType]
-		s.total++
-		if r.Passed {
-			s.passed++
-		} else {
-			s.failed++
+		if !r.Passed {
+			continue
 		}
-		s.totalThroughput += r.Throughput
-		s.totalAccuracy += r.AvgAccuracy
-		layerStats[r.LayerType] = s
+		key := GroupKey{Mode: r.TrainingMode, Type: r.NumericType}
+		if stats[key] == nil {
+			stats[key] = &GroupStats{
+				historySum:     make([]float64, 10), // 10 windows
+				historySamples: make([]int, 10),
+			}
+		}
+		s := stats[key]
+		s.count++
+		s.sumScore += r.Score
+		s.sumAcc += r.AvgAccuracy
+		s.sumStab += r.Stability
+		s.sumTput += r.Throughput
+		for i, h := range r.History {
+			if i < len(s.historySum) {
+				s.historySum[i] += h
+				s.historySamples[i]++
+			}
+		}
 	}
 
-	for _, name := range []string{"Dense", "Conv2D", "Attention", "RNN", "LSTM", "Softmax", "LayerNorm", "Residual", "RMSNorm", "SwiGLU", "Parallel"} {
-		s := layerStats[name]
-		avgTput := 0.0
-		avgAcc := 0.0
-		if s.total > 0 {
-			avgTput = s.totalThroughput / float64(s.total)
-			avgAcc = s.totalAccuracy / float64(s.total)
-		}
-		status := "✅"
-		if s.failed > 0 {
-			status = "⚠️"
-		}
-		fmt.Printf("║  %-16s │ %5d │ %6d │ %6d │ %14.0f │ %6.1f%% %s                        ║\n",
-			name, s.total, s.passed, s.failed, avgTput, avgAcc, status)
-	}
-	fmt.Println("╚═══════════════════════════════════════════════════════════════════════════════════════════════════╝")
-}
+	// 2. For each Mode, find the Type with the highest Average Score
+	bestTypeForMode := make(map[string]string) // Mode -> Type
+	bestStatsForMode := make(map[string]*GroupStats)
 
-func printSummaryByType(results *FullBenchmarkResults) {
-	fmt.Println("\n╔═══════════════════════════════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                              📊 SUMMARY BY NUMERIC TYPE                                           ║")
-	fmt.Println("╠═══════════════════════════════════════════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  Numeric Type     │ Total │ Passed │ Failed │ Avg Throughput │ Avg Accuracy                      ║")
-	fmt.Println("║  ─────────────────┼───────┼────────┼────────┼────────────────┼───────────────────────────────────║")
+	for _, mode := range modesOrdered {
+		var bestType string
+		var maxAvgScore float64 = -1.0
 
-	typeStats := make(map[string]struct {
-		total, passed, failed int
-		totalThroughput       float64
-		totalAccuracy         float64
-	})
-
-	for _, r := range results.Results {
-		s := typeStats[r.NumericType]
-		s.total++
-		if r.Passed {
-			s.passed++
-		} else {
-			s.failed++
+		// Iterate all types to find best for this mode
+		for _, t := range typeNames { // typeNames map values
+			// We need to iterate the values of the map, or just hardcode checking standard ones
+			key := GroupKey{Mode: mode, Type: t}
+			if s, ok := stats[key]; ok {
+				avgScore := s.sumScore / float64(s.count)
+				if avgScore > maxAvgScore {
+					maxAvgScore = avgScore
+					bestType = t
+				}
+			}
 		}
-		s.totalThroughput += r.Throughput
-		s.totalAccuracy += r.AvgAccuracy
-		typeStats[r.NumericType] = s
+		if bestType != "" {
+			bestTypeForMode[mode] = bestType
+			bestStatsForMode[mode] = stats[GroupKey{Mode: mode, Type: bestType}]
+		}
 	}
 
-	for _, name := range []string{"int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32", "float64"} {
-		s := typeStats[name]
-		avgTput := 0.0
-		avgAcc := 0.0
-		if s.total > 0 {
-			avgTput = s.totalThroughput / float64(s.total)
-			avgAcc = s.totalAccuracy / float64(s.total)
+	// 3. Print Timeline Table
+	fmt.Println("\n╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║           PREDICTION ACCURACY % (Avg across layers) — Best Numeric Type per Mode selected                                                    ║")
+	fmt.Println("║           Timeline represents 1.0s duration broken into 100ms windows                                                                        ║")
+	fmt.Println("╠════════════════════════════╦═══════════════════════════════════════════════════════════════════════════════════════════════╦═══════╦════════════╣")
+	fmt.Println("║ Mode (Best Type)           ║ .1s .2s .3s .4s .5s .6s .7s .8s .9s 1.0s                                                    ║ Avg   ║ Score      ║")
+	fmt.Println("╠════════════════════════════╬═══════════════════════════════════════════════════════════════════════════════════════════════╬═══════╬════════════╣")
+
+	var bestGlobalScore float64
+	var bestGlobalModeStr string
+
+	for _, mode := range modesOrdered {
+		bestType := bestTypeForMode[mode]
+		if bestType == "" {
+			continue // No results for this mode
 		}
-		status := "✅"
-		if s.failed > 0 {
-			status = "⚠️"
+		s := bestStatsForMode[mode]
+
+		// Format Label: "NormalBP (f32)"
+		shortType := bestType
+		if strings.HasPrefix(shortType, "float") {
+			shortType = "f" + shortType[5:]
 		}
-		fmt.Printf("║  %-16s │ %5d │ %6d │ %6d │ %14.0f │ %6.1f%% %s                        ║\n",
-			name, s.total, s.passed, s.failed, avgTput, avgAcc, status)
+		label := fmt.Sprintf("%s (%s)", mode, shortType)
+		fmt.Printf("║ %-26s ║", label)
+
+		// Print History
+		for i := 0; i < 10; i++ {
+			val := 0.0
+			if s.historySamples[i] > 0 {
+				val = s.historySum[i] / float64(s.historySamples[i])
+			}
+			fmt.Printf(" %3.0f%%", val)
+		}
+
+		avgAcc := s.sumAcc / float64(s.count)
+		avgScore := s.sumScore / float64(s.count)
+
+		if avgScore > bestGlobalScore {
+			bestGlobalScore = avgScore
+			bestGlobalModeStr = label
+		}
+
+		fmt.Printf(" ║ %3.0f%% ║ %10.0f ║\n", avgAcc, avgScore)
 	}
 
-	fmt.Println("╚═══════════════════════════════════════════════════════════════════════════════════════════════════╝")
+	fmt.Println("╚════════════════════════════╩═══════════════════════════════════════════════════════════════════════════════════════════════╩═══════╩════════════╝")
 
-	fmt.Printf("\n🎯 TOTAL: %d tests | ✅ %d passed | ❌ %d failed | Pass rate: %.1f%%\n",
-		results.TotalTests, results.Passed, results.Failed,
-		float64(results.Passed)/float64(results.TotalTests)*100)
+	// 4. Print Summary Table
+	fmt.Println("\n╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                                  📊 COMPREHENSIVE BENCHMARK SUMMARY 📊                                         ║")
+	fmt.Println("╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣")
+	fmt.Println("║                                                                                                                ║")
+	fmt.Println("║  Mode (Best Type)     │ Avg Accuracy │ Stability │ Throughput  │ Score       │ Best Layer for Mode           ║")
+	fmt.Println("║  ─────────────────────┼──────────────┼───────────┼─────────────┼─────────────┼───────────────────────────────║")
+
+	for _, mode := range modesOrdered {
+		bestType := bestTypeForMode[mode]
+		if bestType == "" {
+			continue
+		}
+		s := bestStatsForMode[mode]
+
+		avgAcc := s.sumAcc / float64(s.count)
+		avgStab := s.sumStab / float64(s.count)
+		avgTput := s.sumTput / float64(s.count)
+		avgScore := s.sumScore / float64(s.count)
+
+		shortType := bestType
+		if strings.HasPrefix(shortType, "float") {
+			shortType = "f" + shortType[5:]
+		}
+		label := fmt.Sprintf("%s (%s)", mode, shortType)
+
+		// Find the single best layer for this Mode+Type combo to list as "Best Layer"
+		bestLayerName := "-"
+		bestLayerScore := -1.0
+		for _, r := range results.Results {
+			if r.TrainingMode == mode && r.NumericType == bestType && r.Score > bestLayerScore {
+				bestLayerScore = r.Score
+				bestLayerName = r.LayerType
+			}
+		}
+
+		fmt.Printf("║  %-20s │  %7.1f%%    │  %6.1f%%  │  %9.0f  │  %9.0f  │  %-29s║\n",
+			label, avgAcc, avgStab, avgTput, avgScore, bestLayerName)
+	}
+
+	fmt.Println("║                                                                                                                ║")
+	fmt.Println("╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣")
+	fmt.Printf("║  🏆 WINNER: %-20s with Score: %.0f                                                       ║\n", bestGlobalModeStr, bestGlobalScore)
+	fmt.Println("║                                                                                                                ║")
+	fmt.Println("╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝")
 }
