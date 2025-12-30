@@ -122,27 +122,9 @@ func main() {
 	}
 	fmt.Printf("✓ EOS tokens: %v\n", eosTokens)
 
-	// Auto-detect Chat Template
-	if hasToken(tk, "<|im_start|>") {
-		templateType = "chatml"
-		fmt.Println("✓ Detected ChatML support: Auto-wrapping prompts in <|im_start|>...")
-	} else if hasToken(tk, "<start_of_turn>") {
-		templateType = "gemma"
-		fmt.Println("✓ Detected Gemma support: Auto-wrapping prompts in <start_of_turn>...")
-	} else if hasToken(tk, "[INST]") { // Some fine-tunes add this as a token
-		templateType = "llama"
-		fmt.Println("✓ Detected Llama support: Auto-wrapping prompts in [INST]...")
-	} else {
-		// Fallback detection by model name
-		lowerName := strings.ToLower(modelName)
-		if strings.Contains(lowerName, "llama-2") || strings.Contains(lowerName, "llama-3") || strings.Contains(lowerName, "mistral") {
-			templateType = "llama"
-			fmt.Println("✓ Detected Llama identity: Auto-wrapping prompts in [INST]...")
-		} else {
-			templateType = "raw"
-			fmt.Println("ℹ️  No specific chat template detected: Using raw prompts")
-		}
-	}
+	// Force raw mode - no chat template wrapping
+	templateType = "raw"
+	fmt.Println("ℹ️  Using raw mode: prompts passed directly to model")
 
 	// Load model
 	network, err = nn.LoadTransformerFromSafetensors(snapshotDir)
