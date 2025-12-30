@@ -5,15 +5,18 @@
 **Loom** is a specialized, lightweight, embeddable AI framework written in Go. Unlike general-purpose research frameworks, it is designed for **native embedding** into Go applications, targeting edge devices, CLIs, and backend microservices where hefty Python runtimes are undesirable.
 
 ### Key Strengths
-*   **Embeddability**: Compiles into a single binary with your application. Zero external dependencies (unlike Python environment hell).
-*   **Generic Model Loading**: Unique "shape-sniffing" capability that can infer complex architectures (like Llama MHA blocks) from raw `safetensors` files without requiring model-specific code classes.
-*   **Neural Tweening**: A novel, non-gradient-descent training paradigm that visualizes "gaps" between forward and backward states.
-*   **Grid Architecture**: Fixed spatial grid topology for layers, offering a simplified mental model for state and potentially novel parallelization strategies.
+*   **True Embeddability**: Compiles into a single binary. **Zero external dependencies**.
+*   **"Run Anywhere" (Polyglot)**: First-class **C ABI** and **WebAssembly (WASM)** support allows Loom to run (and train!) in browsers, Python, C#, Rust, and Node.js with identical behavior.
+*   **Native Mixture of Experts (MoE)**: unique "Grid Softmax" layer implements efficient Mixture of Experts routing out-of-the-box.
+*   **Universal Tokenizer**: Pure Go implementation of BPE (compatible with HuggingFace `tokenizer.json`) means no `tokenizers` C++ lib dependency.
+*   **Neural Tweening**: A novel, non-gradient-descent training paradigm for bidirectional state solving.
+*   **Generic Model Loading**: "Shape-sniffing" `safetensors` loader that infers architectures (Llama, GPT) automatically.
+*   **Telemetry & Introspection**: Built-in runtime reflection to discover methods and visualize network blueprints.
 
 ### Key Limitations
-*   **Ecosystem**: No model zoo, optimizers, or pre-trained weights compared to PyTorch/HuggingFace.
-*   **Layer Specialization**: capabilities are focused (Dense, Conv, RNN, simple Transformers), lacking the vast operator coverage of JAX or TF (e.g., advanced pooling, deformable convs, 3D operations).
-*   **Math Backend**: Currently relies on explicit forward/backward implementations rather than a general-purpose autograd graph.
+*   **Ecosystem Maturity**: No central "Model Zoo" (though it loads HF models).
+*   **GPU Support**: **WebGPU** acceleration exists for Dense/Conv2D/MHA but is marked experimental/beta.
+*   **Math Backend**: Custom explicit forward/backward passes (harder to add new operators than a generic autograd graph).
 
 ---
 
@@ -82,10 +85,14 @@ The following table compares **Loom** against major industry leaders and special
 | | **Pooling (Max/Avg)** | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | | **RNN / LSTM** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | | **Transformer (MHA)** | ✅ (Explicit) | ✅ | ✅ | ✅ | ✅ (BERT) | ✅ | ✅ | ✅ |
+| | **Native MoE** | ✅ **Grid Softmax** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Embeddings** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **Tokenizer** | ✅ **Pure Go** | ❌ (Rust/C++) | ❌ (C++) | ❌ | ❌ | ✅ | ❌ | ✅ |
+| **Platform** | **WASM Training** | ✅ **Full** | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (Slow) | ✅ |
+| | **Cross-Lang ABI** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ⚠️ |
 | **Ecosystem** | **HuggingFace Hub** | ⚠️ (Read/Inspect) | ✅ Native | ✅ Native | ❌ | ✅ | ❌ | ✅ | ✅ |
 | | **Pre-trained Zoo** | ❌ | ✅ Massive | ✅ Massive | ❌ | ✅ (Small) | ✅ (Apple) | ✅ Large | ⚠️ Growing |
-| | **Mobile/Web** | ⚠️ (WASM/Bind) | ✅ (Mobile) | ✅ **King** | ❌ | ❌ | ✅ **King (iOS)** | ✅ **King (Web)** | ✅ (WASM) |
+| | **Mobile/Web** | ✅ **WASM / C-ABI** | ✅ (Mobile) | ✅ **King** | ❌ | ❌ | ✅ **King (iOS)** | ✅ **King (Web)** | ✅ (WASM) |
 
 ### Detailed Analysis of Go & Specialized Frameworks
 
@@ -123,8 +130,12 @@ The Go AI landscape is fragmented. Most "serious" frameworks are wrappers around
 | | **Transformer (MHA)** | ✅ **Explicit** | ✅ | ⚠️ Hard | ✅ (BERT) | ❌ | ❌ |
 | | **SwiGLU** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | | **Embeddings** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| | **Native MoE** | ✅ **Grid Softmax** | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ |
+| | **Tokenizer** | ✅ **Pure Go** | ❌ (Deps) | ❌ | ✅ (WordPiece) | ❌ | ❌ |
 | **Training** | **Gradient Descent** | ✅ Manual | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ❌ |
 | | **Neural Tweening** | ✅ **Exclusive** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Platform** | **C-ABI (Polyglot)** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **WASM Training** | ✅ **Full** | ❌ (XLA) | ❌ | ❌ | ❌ | ❌ |
 | **Ecosystem** | **HuggingFace** | ⚠️ (Load) | ❌ | ❌ | ✅ (Load) | ❌ | ❌ |
 | | **Documentation** | ⚠️ Growing | ✅ Good | ✅ Good | ✅ Good | ⚠️ Minimal | ✅ Excellent |
 | | **Maintenance** | 🔥 Active | 🔥 Active | ⚠️ Slow | ⏸️ Paused | ⚠️ Slow | 🔥 Active |
