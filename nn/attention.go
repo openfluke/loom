@@ -70,7 +70,12 @@ func MultiHeadAttentionForward[T Numeric](
 	}
 
 	// Step 2-9: Attention computation (simplified - uses float64 internally)
-	scale := 1.0 / math.Sqrt(float64(headDim))
+	var scale float64
+	if IsIntegerType[T]() {
+		scale = 1.0 // No scaling for integers to avoid underflow
+	} else {
+		scale = 1.0 / math.Sqrt(float64(headDim))
+	}
 
 	// Compute attention scores and output (simplified single-head approximation for generic path)
 	// Full multi-head with RoPE uses the float32-optimized path
@@ -125,7 +130,12 @@ func MultiHeadAttentionBackward[T Numeric](
 	seqLen := len(input.Data) / dModel
 	kvDim := numKVHeads * headDim
 	
-	scale := 1.0 / math.Sqrt(float64(headDim))
+	var scale float64
+	if IsIntegerType[T]() {
+		scale = 1.0
+	} else {
+		scale = 1.0 / math.Sqrt(float64(headDim))
+	}
 	
 	// Initialize gradients
 	gradInput = NewTensor[T](len(input.Data))

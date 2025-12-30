@@ -151,9 +151,18 @@ func ApplySoftmax[T Numeric](logits *Tensor[T], temperature float64) *Tensor[T] 
 	result := NewTensor[T](n)
 
 	// Find max for numerical stability
-	maxLogit := float64(logits.Data[0]) / temperature
+	maxLogit := float64(logits.Data[0])
+	if IsIntegerType[T]() {
+		maxLogit /= 10000.0
+	}
+	maxLogit /= temperature
+
 	for _, v := range logits.Data {
-		scaled := float64(v) / temperature
+		scaled := float64(v)
+		if IsIntegerType[T]() {
+			scaled /= 10000.0
+		}
+		scaled /= temperature
 		if scaled > maxLogit {
 			maxLogit = scaled
 		}
@@ -163,13 +172,22 @@ func ApplySoftmax[T Numeric](logits *Tensor[T], temperature float64) *Tensor[T] 
 	exps := make([]float64, n)
 	sum := 0.0
 	for i, v := range logits.Data {
-		exps[i] = math.Exp(float64(v)/temperature - maxLogit)
+		val := float64(v)
+		if IsIntegerType[T]() {
+			val /= 10000.0
+		}
+		exps[i] = math.Exp(val/temperature - maxLogit)
 		sum += exps[i]
 	}
 
 	// Normalize
 	for i := range exps {
-		result.Data[i] = T(exps[i] / sum)
+		val := exps[i] / sum
+		if IsIntegerType[T]() {
+			result.Data[i] = T(val * 100.0)
+		} else {
+			result.Data[i] = T(val)
+		}
 	}
 
 	return result
@@ -211,11 +229,19 @@ func SoftmaxBackward[T Numeric](gradOutput, output *Tensor[T], softmaxRows, soft
 			// Jacobian-vector product: dL/dx_i = sum_j (dL/dx_j * dy_j/dx_i)
 			// dy_j/dx_i = y_i * (delta_ij - y_j)
 			
+			// For integer types, the output values are scaled by 100.
+			// We need to unscale them to get probabilities [0, 1] for the Jacobian.
 			y_i := float64(output.Data[i])
+			if IsIntegerType[T]() {
+				y_i /= 100.0
+			}
 			
 			for j := start; j < end; j++ {
 				grad_j := float64(gradOutput.Data[j])
 				y_j := float64(output.Data[j])
+				if IsIntegerType[T]() {
+					y_j /= 100.0
+				}
 				
 				delta := 0.0
 				if i == j {
@@ -225,6 +251,12 @@ func SoftmaxBackward[T Numeric](gradOutput, output *Tensor[T], softmaxRows, soft
 				jacobian := y_i * (delta - y_j)
 				gradSum += grad_j * jacobian
 			}
+			
+			// For integer types, we scale the gradient by 100 to match activation scaling
+			if IsIntegerType[T]() {
+				gradSum *= 100.0
+			}
+
 			gradInput.Data[i] = T(gradSum)
 		}
 	}

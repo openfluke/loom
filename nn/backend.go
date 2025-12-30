@@ -207,8 +207,14 @@ func ConvertTensorFloat32ToT[T Numeric](src *Tensor[float32]) *Tensor[T] {
 	result := NewTensor[T](len(src.Data))
 	result.Shape = src.Shape
 	result.Strides = src.Strides
+	
+	scale := float32(1.0)
+	if IsIntegerType[T]() {
+		scale = 100.0 // Quantization-aware scaling
+	}
+
 	for i, v := range src.Data {
-		result.Data[i] = T(v)
+		result.Data[i] = T(v * scale)
 	}
 	return result
 }
@@ -218,8 +224,14 @@ func ConvertTensorTToFloat32[T Numeric](src *Tensor[T]) *Tensor[float32] {
 	result := NewTensor[float32](len(src.Data))
 	result.Shape = src.Shape
 	result.Strides = src.Strides
+	
+	scale := float32(1.0)
+	if IsIntegerType[T]() {
+		scale = 0.01 // Reverse scaling
+	}
+
 	for i, v := range src.Data {
-		result.Data[i] = float32(v)
+		result.Data[i] = float32(v) * scale
 	}
 	return result
 }
@@ -227,8 +239,12 @@ func ConvertTensorTToFloat32[T Numeric](src *Tensor[T]) *Tensor[float32] {
 // ConvertSliceFloat32ToT converts a float32 slice to any Numeric type.
 func ConvertSliceFloat32ToT[T Numeric](src []float32) []T {
 	result := make([]T, len(src))
+	scale := float32(1.0)
+	if IsIntegerType[T]() {
+		scale = 100.0
+	}
 	for i, v := range src {
-		result[i] = T(v)
+		result[i] = T(v * scale)
 	}
 	return result
 }
@@ -236,8 +252,12 @@ func ConvertSliceFloat32ToT[T Numeric](src []float32) []T {
 // ConvertSliceTToFloat32 converts any Numeric slice to float32.
 func ConvertSliceTToFloat32[T Numeric](src []T) []float32 {
 	result := make([]float32, len(src))
+	scale := float32(1.0)
+	if IsIntegerType[T]() {
+		scale = 0.01
+	}
 	for i, v := range src {
-		result[i] = float32(v)
+		result[i] = float32(v) * scale
 	}
 	return result
 }

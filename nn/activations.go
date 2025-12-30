@@ -9,6 +9,13 @@ import (
 func Activate[T Numeric](v T, activation ActivationType) T {
 	// Convert to float64 for math operations, then back to T
 	vf := float64(v)
+	
+	// For integer types, we assume input is scaled by 100*100=10000 (from MatMul)
+	// We need to normalize it back to ~1.0 range for activation functions
+	if IsIntegerType[T]() {
+		vf /= 10000.0
+	}
+
 	var result float64
 
 	switch activation {
@@ -26,21 +33,19 @@ func Activate[T Numeric](v T, activation ActivationType) T {
 		result = math.Log(1.0 + math.Exp(vf))
 	case ActivationLeakyReLU: // case 4
 		if vf < 0 {
-			vf = vf * 0.1
+			result = 0.1 * vf
+		} else {
+			result = vf
 		}
-		result = vf
-	default:
+	default: // Linear / Unknown
 		result = vf
 	}
 
-	// For integer types, scale fractional activations to preserve dynamic range
-	// Sigmoid/Tanh output [0,1], which truncates to 0 for integers.
-	// We scale by 100 to match the test/usage convention for fixed point.
+	// For integer types, rescale output to x100 range
 	if IsIntegerType[T]() {
-		switch activation {
-		case ActivationSigmoid, ActivationTanh, ActivationSoftplus:
-			result *= 100.0
-		}
+		// Target range x100
+		scale := 100.0
+		result *= scale
 	}
 
 	return T(result)
@@ -50,6 +55,12 @@ func Activate[T Numeric](v T, activation ActivationType) T {
 // Note: This computes the derivative with respect to the PRE-activation value.
 func ActivateDerivative[T Numeric](preActivation T, activation ActivationType) T {
 	vf := float64(preActivation)
+	
+	// For integer types, normalize pre-activation input (x10000 -> x1)
+	if IsIntegerType[T]() {
+		vf /= 10000.0
+	}
+
 	var result float64
 
 	switch activation {
@@ -82,23 +93,9 @@ func ActivateDerivative[T Numeric](preActivation T, activation ActivationType) T
 		result = 1.0
 	}
 
-	// For integer types, derivatives of fractional functions are < 1 and truncate to 0.
-	// We scale them to allow gradient flow (Pseudo-quantization aware training).
+	// For integer types, scale derivative by 100 to propagate gradients
 	if IsIntegerType[T]() {
-		// Constant scaling factor of 100 matching the activation scaling
-		scale := 100.0
-		switch activation {
-		case ActivationSigmoid, ActivationTanh, ActivationSoftplus:
-			result *= scale
-		case ActivationLeakyReLU:
-			// For LeakyReLU, the derivative is 0.1 for negative values.
-			// T(0.1) is 0. We scale it to 10 (0.1 * 100).
-			// Positive part is 1.0 -> 100.
-			result *= scale
-		case ActivationScaledReLU:
-			// ScaledReLU has slope 1.1 -> 110
-			result *= scale
-		}
+		result *= 100.0
 	}
 
 	return T(result)
@@ -138,4 +135,3 @@ func activateCPU(v float32, activation ActivationType) float32 {
 func activateDerivativeCPU(preActivation float32, activation ActivationType) float32 {
 	return ActivateDerivative(preActivation, activation)
 }
-
