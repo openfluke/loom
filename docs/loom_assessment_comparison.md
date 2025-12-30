@@ -23,12 +23,17 @@ Artificial intelligence frameworks vary significantly depending on their purpose
 
 ### Python (The Gold Standard)
 *   **PyTorch**: The favorite for research and rapid prototyping due to its dynamic computation graph.
-*   **TensorFlow**: Google’s end-to-end platform; excellent for large-scale production and mobile/edge deployment via **TensorFlow Lite**.
+*   **TensorFlow**: Google’s end-to-end platform; excellent for large-scale production.
 *   **Scikit-learn**: The go-to library for "classical" machine learning (regression, classification, clustering) on tabular data.
 *   **JAX**: A high-performance library for numerical computing and machine learning research, often used for scientific tasks.
 *   **Keras**: A high-level API that can run on top of TensorFlow, PyTorch, or JAX, designed for quick experimentation.
 *   **Hugging Face Transformers**: The leading library for NLP and large language models (LLMs).
 *   **XGBoost / LightGBM**: Highly optimized libraries for gradient-boosted decision trees.
+
+### Mobile & Edge Deployment
+*   **TensorFlow Lite (TFLite)**: Highly optimized framework for on-device inference (Mobile/IoT).
+*   **Core ML**: Apple's framework for optimizing and running models on iOS/macOS devices, leveraging the Neural Engine.
+*   **TensorFlow.js**: Allows you to train and run models directly in the browser or in Node.js.
 
 ### C++ (High-Performance & Robotics)
 *   **Caffe**: Known for speed and modularity, specifically in image processing and computer vision.
@@ -41,82 +46,99 @@ Artificial intelligence frameworks vary significantly depending on their purpose
 *   **Apache Mahout**: Built for creating scalable machine learning applications, often running on **Apache Spark**.
 *   **DeepNetts**: A pure Java deep learning library for developers who don't want to use C++ bridges.
 
-### JavaScript / TypeScript (Web & Browser)
-*   **TensorFlow.js**: Allows you to train and run models directly in the browser or in Node.js.
-*   **Brain.js**: A simple library for neural networks in JavaScript.
-*   **Synaptic**: Architecture-free neural network library for Node.js and the browser.
-
 ### Go (Scaling & Cloud Native)
-*   **Gorgonia**: A library that helps facilitate machine learning in Go, similar in concept to TensorFlow (graph-based).
+*   **Gorgonia**: A graph-based library for machine learning in Go, similar to Theano/TensorFlow.
+*   **GoMLX**: An accelerated ML framework for Go using JAX/XLA (via C++ bindings).
+*   **Spago**: A lightweight, pure Go machine learning library supporting NLP and neural networks.
+*   **Go-Deep**: A simple, easily extensible deep learning library written in Go.
+*   **Gonum**: The foundational library for numerical computing in Go (matrices, linear algebra, statistics), widely used by other frameworks.
 *   **GoLearn**: The general machine learning library for Go, similar to Scikit-learn.
 *   **Loom**: **(Your Framework)** A cross-platform AI runtime/framework focusing on efficiency, single-binary deployment, and "Tweening" training.
-*   **GOMeta**: A library for evolutionary algorithms and optimization.
 
-### Julia (Scientific Computing)
-*   **Flux.jl**: A elegant, 100% Julia-native deep learning library.
-*   **Knet.jl**: The Koç University deep learning framework.
-
-### Rust (Safety & Speed)
-*   **Burn**: A new, high-performance deep learning framework focusing on flexibility and safety.
-*   **Candle**: A minimalist ML framework for Rust, optimized for serverless and edge computing.
-*   **Tch-rs**: Rust bindings for the C++ PyTorch library (Libtorch).
+### Julia & Rust (Scientific & Systems)
+*   **Flux.jl** (Julia): A elegant, 100% Julia-native deep learning library.
+*   **Burn** (Rust): A new, high-performance deep learning framework focusing on flexibility and safety.
+*   **Candle** (Rust): A minimalist ML framework for Rust, optimized for serverless and edge computing.
 
 ---
 
 ## 3. Massive Capabilities Comparison Matrix
 
-The following table compares **Loom** against the heavyweights (PyTorch, TF) and its direct "compiled language" competitors (DL4J, Gorgonia, Candle).
+The following table compares **Loom** against major industry leaders and specialized Go/Edge frameworks.
 
-| Feature Category | Feature | **Loom** (Go) | **PyTorch** (Python) | **TensorFlow** (Python) | **JAX** (Python) | **Gorgonia** (Go) | **DL4J** (Java) | **Candle** (Rust) |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Core** | **Primary Language** | Go | Python | Python | Python | Go | Java | Rust |
-| | **Runtime Dependency** | **None** (Binary) | Heavy (Pip/Conda) | Heavy (Pip/Conda) | Heavy | None (Binary) | JVM | None (Binary) |
-| | **Execution Graph** | Static Grid | Dynamic (Eager) | Static/Dynamic | Functional (JIT) | Static Symbol Graph | Dynamic | Static/Dynamic |
-| | **Auto-Differentiation** | ⚠️ Hybrid/Manual | ✅ Full Autograd | ✅ Full Autograd | ✅ Full Autograd | ✅ Symbol Diff | ✅ AutoDiff | ✅ AutoDiff |
-| **Loading** | **Safetensors** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ (Manual) | ⚠️ Partial | ✅ |
-| | **ONNX Support** | ❌ | ✅ (Export) | ✅ | Experimental | ✅ | ✅ | ⚠️ |
-| | **Structure Inference** | ✅ **Auto-Detect** | ❌ (Requires Code) | ❌ (Requires Code) | ❌ | ❌ | ❌ | ❌ |
-| **Training** | **Gradient Descent** | ✅ Manual Chain | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard |
-| | **Neural Tweening** | ✅ **Exclusive** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Layer Support** | **Dense (MLP)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | **Conv2D** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | **Conv1D** | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ |
-| | **Pooling (Max/Avg)** | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | **RNN / LSTM** | ✅ | ✅ | ✅ | ✅ | ⚠️ Basic | ✅ | ✅ |
-| | **Transformer (MHA)** | ✅ (Explicit) | ✅ | ✅ | ✅ | ❌ Manual | ✅ | ✅ |
-| | **SwiGLU** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
-| | **RMSNorm** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| | **Embeddings** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| | **RoPE** | ❌ | ✅ | ✅ | ✅ | ❌ | ⚠️ | ✅ |
-| **Ecosystem** | **HuggingFace Hub** | ⚠️ (Read-only) | ✅ Native | ✅ Native | ✅ Native | ❌ | ❌ | ✅ |
-| | **Pre-trained Zoo** | ❌ | ✅ Massive | ✅ Massive | ✅ Large | ❌ | ⚠️ Small | ⚠️ Growing |
-| | **Edge Deployment** | ✅ **Excellent** | ⚠️ (Heavy) | ✅ (TF Lite) | ❌ | ✅ | ⚠️ (Android) | ✅ |
+| Feature Category | Feature | **Loom** (Go) | **PyTorch** (Py) | **TF / TFLite** | **GoMLX** (Go) | **Spago** (Go) | **Core ML** (Swift/ObjC) | **TF.js** (JS) | **Candle** (Rust) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Core** | **Primary Language** | Go | Python | Python / C++ | Go | Go | Swift / ObjC | JS / TS | Rust |
+| | **Runtime Dependency** | **None** (Binary) | Heavy (Pip) | Binary (Edge) | CGo / XLA | None | OS-Native | Browser | None |
+| | **Auto-Differentiation** | ⚠️ Hybrid/Manual | ✅ Full | ✅ Full | ✅ Full (XLA) | ✅ Manual | ❌ (Inference) | ✅ Full | ✅ Full |
+| **Loading** | **Safetensors** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| | **ONNX Support** | ❌ | ✅ (Export) | ✅ | ⚠️ | ❌ | ✅ (Import) | ✅ | ⚠️ |
+| | **Structure Inference** | ✅ **Auto-Detect** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Training** | **Gradient Descent** | ✅ Manual Chain | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ✅ (On-device) | ✅ Standard | ✅ Standard |
+| | **Neural Tweening** | ✅ **Exclusive** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Layer Support** | **Dense (MLP)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **Conv2D** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
+| | **Conv1D** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
+| | **Pooling (Max/Avg)** | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
+| | **RNN / LSTM** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **Transformer (MHA)** | ✅ (Explicit) | ✅ | ✅ | ✅ | ✅ (BERT) | ✅ | ✅ | ✅ |
+| | **Embeddings** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Ecosystem** | **HuggingFace Hub** | ⚠️ (Read/Inspect) | ✅ Native | ✅ Native | ❌ | ✅ | ❌ | ✅ | ✅ |
+| | **Pre-trained Zoo** | ❌ | ✅ Massive | ✅ Massive | ❌ | ✅ (Small) | ✅ (Apple) | ✅ Large | ⚠️ Growing |
+| | **Mobile/Web** | ⚠️ (WASM/Bind) | ✅ (Mobile) | ✅ **King** | ❌ | ❌ | ✅ **King (iOS)** | ✅ **King (Web)** | ✅ (WASM) |
 
-### Detailed Layer Capability Analysis
+### Detailed Analysis of Go & Specialized Frameworks
 
-1.  **Dense / Linear**: Supported by all. Loom implements optimized forward/backward CPU passes.
-2.  **convolution**:
-    *   **PyTorch/TF/JAX**: Extensive support (1D/2D/3D, Transposed, Deformable, Dilated).
-    *   **Loom**: Supports standard Conv2D and Conv1D. Missing 3D, Transposed (for GANs/UNets), and Dilation.
-    *   **Gorgonia/DL4J**: Good 2D support, varying support for 1D/3D.
-3.  **Recurrent (RNN/LSTM/GRU)**:
-    *   **Loom**: Exceptionally strong explicit LSTM/RNN implementation with full gate access.
-    *   **PyTorch**: Highly optimized CuDNN implementations.
-    *   **JAX**: Often requires manual loop implementation (scan), less "out of the box" than PyTorch.
-4.  **Transformers / Attention**:
-    *   **PyTorch/TF**: `MultiheadAttention` is a standard module. FlashAttention built-in.
-    *   **Loom**: `LayerMultiHeadAttention` is a first-class citizen, optimized for loading Llama tensors. Lacks FlashAttention optimizations and RoPE.
-    *   **Gorgonia**: Hard to build complex transformers due to graph complexity.
-    *   **Candle**: Very strong transformer support (Rust equivalent of PyTorch).
-5.  **Normalization**:
-    *   **Loom**: Supports both `LayerNorm` (BERT style) and `RMSNorm` (Llama style).
-    *   **DL4J**: Historical focus on Batch Normalization (CNNs).
-6.  **Activation Functions**:
-    *   **Loom**: Covers the basics (Relu, Leaky, Sigmoid, Tanh) plus implicit Swish/Silu via SwiGLU. Missing GELU (exact) and Mish.
+1.  **GoMLX vs. Loom**:
+    *   **GoMLX** is a wrapper around XLA (Google's Accelerated Linear Algebra), making it incredibly fast for training on TPUs/GPUs, but it requires CGo and the XLA C++ library.
+    *   **Loom** is pure Go (no CGo required for core CPU logic), making it easier to cross-compile and deploy, though likely slower for massive training jobs.
+
+2.  **Spago vs. Loom**:
+    *   **Spago** is lightweight and pure Go like Loom but focuses heavily on NLP (BERT, NER). It has a defined graph but lacks Loom's broader "generic tensor sniffing" for arbitrary architectures.
+    *   **Loom**'s "Tweening" offers a unique training capability Spago lacks.
+
+3.  **Gonum & Go-Deep**:
+    *   **Gonum** is a matrix library, not a deep learning framework. Loom could theoretically use Gonum for backend math but rolls its own tensor types for flexibility.
+    *   **Go-Deep** is very simple (mostly MLPs). Loom is significantly more advanced with support for MHA, Llama-architectures, and complex loading.
+
+4.  **TFLite / Core ML / TF.js**:
+    *   These are **Inference-First** engines.
+    *   **Loom** is distinct because it is *both* a training (via Tweening) and inference engine that runs *natively* in the backend service code, whereas TFLite/CoreML generally run client-side (mobile/IoT) or require specific runtime exports.
+
+### 4. Go Ecosystem Showdown: Detailed Feature Matrix
+
+The Go AI landscape is fragmented. Most "serious" frameworks are wrappers around C++ libraries (TensorFlow/XLA), while pure Go libraries often struggle with performance or scope to match Python. Loom aims to fill the "Middle Ground": Pure Go (easy deploy) but with advanced features (Llama/Tweening).
+
+| **Category** | **Feature** | **Loom** | **GoMLX** | **Gorgonia** | **Spago** | **Go-Deep** | **Gonum** |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Foundation** | **Primary implementation** | Pure Go | CGo (XLA) | Pure Go + CGo | Pure Go | Pure Go | Pure Go |
+| | **Tensor Backend** | Custom (Generic) | XLA (C++) | Custom | Custom (Dense) | Custom | Dense Matrix |
+| | **Autograd** | ⚠️ Hybrid | ✅ Full | ✅ Symbolic | ✅ Dynamic | ✅ Backprop | ❌ |
+| **Model** | **Load Safetensors** | ✅ **Native** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| | **Model Export** | binary/json | XLA format | Onnx (Import) | Gob | Json | ❌ |
+| **Architecture** | **Dense (MLP)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (Matrix Mul) |
+| | **Conv2D** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| | **Conv1D** | ✅ | ✅ | ⚠️ (via 2D) | ⚠️ (via 2D) | ❌ | ❌ |
+| | **RNN / LSTM** | ✅ **Full Gate** | ✅ | ⚠️ Basic | ✅ BiLSTM | ❌ | ❌ |
+| | **Transformer (MHA)** | ✅ **Explicit** | ✅ | ⚠️ Hard | ✅ (BERT) | ❌ | ❌ |
+| | **SwiGLU** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| | **Embeddings** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Training** | **Gradient Descent** | ✅ Manual | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ❌ |
+| | **Neural Tweening** | ✅ **Exclusive** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Ecosystem** | **HuggingFace** | ⚠️ (Load) | ❌ | ❌ | ✅ (Load) | ❌ | ❌ |
+| | **Documentation** | ⚠️ Growing | ✅ Good | ✅ Good | ✅ Good | ⚠️ Minimal | ✅ Excellent |
+| | **Maintenance** | 🔥 Active | 🔥 Active | ⚠️ Slow | ⏸️ Paused | ⚠️ Slow | 🔥 Active |
+
+**Verdict**:
+*   **Loom** is the only Pure Go framework capable of loading and running modern **Llama-style LLMs** (Safetensors + SwiGLU + MHA) without CGo.
+*   **GoMLX** is the speed king but requires the heavy XLA C++ runtime.
+*   **Spago** was promising for NLP but is currently paused; Loom picks up the torch for pure Go NLP/LLM inference.
+*   **Gorgonia** is powerful but complex (graph building) and shows its age.
 
 ### Summary Verdict
 
 *   **Choose PyTorch** if you are doing **Research**, need the latest SOTA models, or rely on complex dynamic architectures.
-*   **Choose TensorFlow** if you need robust **Production Serving** (TFX) or mobile deployment (TF Lite) and prefer static graphs.
-*   **Choose JAX** if you are doing **Scientific Computing** or massive-scale parallel training (TPUs).
-*   **Choose Loom** if you need **Go-Native Embedding**, want to distribute a single binary AI application, or want to experiment with the **Neural Tweening** training paradigm. It is the best choice for "Drop-in AI for Go Apps" without CGo headaches.
+*   **Choose TensorFlow / TFLite** if you need robust **Mobile/Edge Deployment**.
+*   **Choose GoMLX** if you need **High-Performance Training in Go** and can tolerate CGo/C++ dependencies.
+*   **Choose Core ML** if you are targeting **iOS/macOS** exclusively.
+*   **Choose Loom** if you need **Pure Go-Native Embedding** (Cloud/CLI/Server), want a single binary with zero dependencies, or want to experiment with the **Neural Tweening** training paradigm.
