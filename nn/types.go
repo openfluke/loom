@@ -189,6 +189,8 @@ const (
 	LayerRMSNorm            LayerType = 8  // RMS Normalization (Llama-style, no beta)
 	LayerSwiGLU             LayerType = 9  // SwiGLU gated activation (gate_proj * silu(up_proj))
 	LayerParallel           LayerType = 10 // Parallel layer (runs multiple sub-layers and concatenates outputs)
+	LayerEmbedding          LayerType = 11 // Embedding lookup table (token/position -> vector)
+	LayerConv1D             LayerType = 12 // 1D Convolutional layer (for audio/sequence data)
 )
 
 // SoftmaxType defines the variant of softmax to use
@@ -294,6 +296,20 @@ type LayerConfig struct {
 
 	// Residual connection
 	ResidualSkip int // How many layers back to skip for residual (0 = no residual)
+
+	// Embedding layer specific parameters
+	VocabSize        int       // Size of vocabulary (number of unique tokens)
+	EmbeddingDim     int       // Dimension of embedding vectors
+	EmbeddingWeights []float32 // Embedding lookup table [VocabSize * EmbeddingDim]
+
+	// Conv1D specific parameters (for audio/sequence data)
+	Conv1DFilters     int       // Number of output filters
+	Conv1DKernelSize  int       // Size of 1D kernel
+	Conv1DStride      int       // Stride for convolution
+	Conv1DPadding     int       // Padding for convolution
+	Conv1DKernel      []float32 // Kernel weights [filters][inChannels][kernelSize]
+	Conv1DBias        []float32 // Bias terms [filters]
+	Conv1DInChannels  int       // Input channels
 
 	// Parallel layer specific parameters
 	ParallelBranches []LayerConfig  // Sub-layers to run in parallel

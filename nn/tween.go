@@ -283,6 +283,10 @@ func (ts *GenericTweenState[T]) BackwardPassChainRule(n *Network, targetClass in
 			inputGrad = ts.chainRuleBackwardDenseGeneric(cfg, input, output, currentGrad, depthScale)
 		case LayerConv2D:
 			inputGrad = ts.chainRuleBackwardConv2DGeneric(cfg, input, output, currentGrad, depthScale)
+		case LayerEmbedding:
+			inputGrad = ts.chainRuleBackwardEmbeddingGeneric(cfg, input, output, currentGrad, depthScale)
+		case LayerConv1D:
+			inputGrad = ts.chainRuleBackwardConv1DGeneric(cfg, input, output, currentGrad, depthScale)
 		default:
 			// Pass-through for other layers
 			inputGrad = make([]float32, len(input.Data))
@@ -456,6 +460,42 @@ func (ts *GenericTweenState[T]) chainRuleBackwardSwiGLU(cfg *LayerConfig, input,
 	return gradInput
 }
 
+// chainRuleBackwardEmbeddingGeneric computes gradient for Embedding layer (generic)
+func (ts *GenericTweenState[T]) chainRuleBackwardEmbeddingGeneric(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	// Embedding layer has discrete int inputs (Input Size = seqLen)
+	// Output Size = seqLen * embeddingDim
+	// There is no gradient flow TO the discrete inputs.
+	// We return a zero gradient for inputs.
+	
+	gradInput := make([]float32, len(input.Data))
+	// Zeros
+	return gradInput
+}
+
+// chainRuleBackwardConv1DGeneric computes gradient for Conv1D layer (generic)
+func (ts *GenericTweenState[T]) chainRuleBackwardConv1DGeneric(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	gradInput := make([]float32, len(input.Data))
+
+	avgGrad := float32(0)
+	for j := 0; j < len(gradOutput) && j < len(output.Data); j++ {
+		outVal := float32(output.Data[j])
+		if IsIntegerType[T]() {
+			outVal /= 100.0
+		}
+		deriv := ts.activateDerivativeFromOutputGeneric(outVal, cfg.Activation)
+		avgGrad += gradOutput[j] * deriv
+	}
+	if len(gradOutput) > 0 {
+		avgGrad /= float32(len(gradOutput))
+	}
+	avgGrad *= depthScale
+
+	for i := range gradInput {
+		gradInput[i] = avgGrad
+	}
+	return gradInput
+}
+
 // TweenWeightsChainRule updates weights using chain rule gradients
 func (ts *GenericTweenState[T]) TweenWeightsChainRule(n *Network, rate float32) {
 	mom := ts.Config.Momentum
@@ -493,6 +533,10 @@ func (ts *GenericTweenState[T]) TweenWeightsChainRule(n *Network, rate float32) 
 			ts.chainRuleUpdateNormGeneric(cfg, outputGrad, rate*ts.Config.NormRate)
 		case LayerSwiGLU:
 			ts.chainRuleUpdateSwiGLUGeneric(cfg, outputGrad, rate*ts.Config.SwiGLURate)
+		case LayerEmbedding:
+			ts.chainRuleUpdateEmbeddingGeneric(cfg, outputGrad, rate*ts.Config.EmbeddingRate)
+		case LayerConv1D:
+			ts.chainRuleUpdateConv1DGeneric(cfg, input, outputGrad, rate*ts.Config.Conv1DRate, mom, i)
 		}
 
 		ts.setLayerCfgGeneric(n, i, *cfg)
@@ -702,6 +746,60 @@ func (ts *GenericTweenState[T]) chainRuleUpdateSwiGLUGeneric(cfg *LayerConfig, o
 	}
 }
 
+// chainRuleUpdateEmbeddingGeneric applies gradient update to Embedding layer
+func (ts *GenericTweenState[T]) chainRuleUpdateEmbeddingGeneric(cfg *LayerConfig, outputGrad []float32, rate float32) {
+	// Embedding update (simplified generic)
+	// Ideally we need the input tokens to know WHICH rows to update.
+	// But in this GenericTween pass, we are doing a simplified "gap-based" update 
+	// that smears the update across weights proportional to the gap.
+	
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+	delta := clipGradGeneric(rate*avgGrad, 0.05)
+
+	// In a real training loop we'd only update the specific tokens.
+	// Here we update all embeddings slightly to shift the manifold.
+	for i := range cfg.EmbeddingWeights {
+		cfg.EmbeddingWeights[i] += delta * 0.01 // Very small update per weight
+	}
+}
+
+// chainRuleUpdateConv1DGeneric applies gradient update to Conv1D layer
+func (ts *GenericTweenState[T]) chainRuleUpdateConv1DGeneric(cfg *LayerConfig, input *Tensor[T], outputGrad []float32, rate, mom float32, layerIdx int) {
+	avgInput := float32(0)
+	for _, v := range input.Data {
+		val := float32(v)
+		if IsIntegerType[T]() {
+			val /= 100.0
+		}
+		avgInput += val
+	}
+	if len(input.Data) > 0 {
+		avgInput /= float32(len(input.Data))
+	}
+
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+
+	delta := clipGradGeneric(rate*avgInput*avgGrad, 0.1)
+	for i := range cfg.Conv1DKernel {
+		cfg.Conv1DKernel[i] += delta
+	}
+	for i := range cfg.Conv1DBias {
+		cfg.Conv1DBias[i] += clipGradGeneric(rate*avgGrad, 0.1)
+	}
+}
+
 // activateDerivativeFromOutputGeneric computes activation derivative
 func (ts *GenericTweenState[T]) activateDerivativeFromOutputGeneric(output float32, activation ActivationType) float32 {
 	switch activation {
@@ -774,6 +872,8 @@ type TweenConfig struct {
 	NormRate        float32 // Default: 0.1
 	SwiGLURate      float32 // Default: 0.2
 	Conv2DRate      float32 // Default: 0.1
+	EmbeddingRate   float32 // Default: 0.1
+	Conv1DRate      float32 // Default: 0.1
 
 	// === MOMENTUM & UPDATE SCALING ===
 	Momentum             float32 // Default: 0.9
@@ -835,6 +935,8 @@ func DefaultTweenConfig(totalLayers int) *TweenConfig {
 		NormRate:             0.1,
 		SwiGLURate:           0.2,
 		Conv2DRate:           0.1,
+		EmbeddingRate:        0.1,
+		Conv1DRate:           0.1,
 		Momentum:             0.9,
 		BiasRateMultiplier:   0.1,
 		WeightRateMultiplier: 0.01,

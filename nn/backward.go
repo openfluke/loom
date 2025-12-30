@@ -230,6 +230,37 @@ func GenericBackwardPass[T Numeric](
 			kernelGrads[layerIdx] = nil
 			biasGrads[layerIdx] = nil
 
+		case LayerEmbedding:
+			// EmbeddingBackward
+			// context is nil for embedding backward (input activation used as tokens)
+			// Input has shape [seqLen] (token IDs)
+			// gradOut has shape [seqLen, embeddingDim]
+			gWeights := EmbeddingBackward(gradOut, input, config.VocabSize, config.EmbeddingDim)
+			
+			// No gradient w.r.t. input (discrete tokens)
+			accumulateGradient(grads, layerIdx, nil)
+			kernelGrads[layerIdx] = gWeights
+			biasGrads[layerIdx] = nil
+
+		case LayerConv1D:
+			// Conv1DBackward
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel)))
+			preAct, _ := context.(*Tensor[T])
+			
+			seqLen := config.InputHeight 
+			if seqLen <= 0 {
+				seqLen = len(input.Data) / (config.Conv1DInChannels * n.BatchSize)
+			}
+			
+			gInput, gKernel, gBias := Conv1DBackward(gradOut, input, preAct, weights,
+				seqLen, config.Conv1DInChannels,
+				config.Conv1DKernelSize, config.Conv1DStride, config.Conv1DPadding,
+				config.Conv1DFilters, n.BatchSize, config.Activation)
+				
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = gKernel
+			biasGrads[layerIdx] = gBias
+
 		default:
 			// Unsupported or activation only
 			accumulateGradient(grads, layerIdx, gradOut)
@@ -407,6 +438,35 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 					bOffset += len(biasGrads[i])
 				}
 			}
+		} else if config.Type == LayerEmbedding {
+			// EmbeddingBackward
+			// Input has shape [seqLen] (token IDs)
+			// grad has shape [seqLen, embeddingDim]
+			input := n.activations[layerIdx]
+			gWeights := embeddingBackwardCPU(grad, input, config)
+
+			// Store gradients
+			n.kernelGradients[layerIdx] = gWeights
+			n.biasGradients[layerIdx] = nil
+
+			// No gradient w.r.t. input (discrete tokens)
+			// But we need to maintain gradient size for previous layer if one exists
+			// Usually embedding is first layer, so grad is ignored
+			grad = make([]float32, len(input))
+
+		} else if config.Type == LayerConv1D {
+			// Conv1DBackward
+			input := n.activations[layerIdx]
+			
+			gradInput, gradKernel, gradBias := conv1DBackwardCPU(grad, input, preAct, config, n.BatchSize)
+
+			// Store gradients
+			n.kernelGradients[layerIdx] = gradKernel
+			n.biasGradients[layerIdx] = gradBias
+
+			// Update gradient for next layer
+			grad = gradInput
+
 		} else if config.Type == LayerSoftmax {
 			// Softmax layer backward - NOT element-wise!
 			// Get the softmax output (which is stored in activations)

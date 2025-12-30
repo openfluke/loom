@@ -165,7 +165,7 @@ func GenericForwardPass[T Numeric](
 						activations[layerIdx+1] = output
 						context = nil // Backward recomputes simply or doesn't need context stored here
 
-					case LayerParallel:
+				case LayerParallel:
 						// Convert config.ParallelBranches ([]LayerConfig) to []*LayerConfig
 						branches := make([]*LayerConfig, len(config.ParallelBranches))
 						for i := range config.ParallelBranches {
@@ -179,6 +179,28 @@ func GenericForwardPass[T Numeric](
 						data = output
 						activations[layerIdx+1] = output
 						context = intermediates
+
+					case LayerEmbedding:
+						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.EmbeddingWeights, len(config.EmbeddingWeights)))
+						output := EmbeddingForward(data, weights, config.VocabSize, config.EmbeddingDim)
+						data = output
+						activations[layerIdx+1] = output
+						context = nil // Embedding backward needs token IDs (stored in activations[layerIdx])
+
+					case LayerConv1D:
+						kernel := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DBias, len(config.Conv1DBias)))
+						seqLen := config.InputHeight // Using InputHeight for sequence length
+						if seqLen <= 0 {
+							seqLen = len(data.Data) / (config.Conv1DInChannels * n.BatchSize)
+						}
+						pre, post := Conv1DForward(data, kernel, bias,
+							seqLen, config.Conv1DInChannels,
+							config.Conv1DKernelSize, config.Conv1DStride, config.Conv1DPadding,
+							config.Conv1DFilters, n.BatchSize, config.Activation)
+						data = post
+						activations[layerIdx+1] = post
+						context = pre // Store pre-activation
 
 					case LayerResidual:
 						// Residual connects current input to something? 
@@ -437,6 +459,25 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					if config.Observer != nil {
 						notifyObserver(config, "normal", "forward", layerIdx, data, n.activations[layerIdx+1], 0)
 					}
+				} else if config.Type == LayerEmbedding {
+					// Embedding lookup layer
+					output := embeddingForwardCPU(data, config)
+
+					// Store token IDs as pre-activation (needed for backward)
+					n.preActivations[layerIdx] = make([]float32, len(data))
+					copy(n.preActivations[layerIdx], data)
+
+					// Use embedding output for next layer
+					data = output
+				} else if config.Type == LayerConv1D {
+					// Conv1D layer
+					preAct, postAct := conv1DForwardCPU(data, config, n.BatchSize)
+
+					// Store pre-activation values
+					n.preActivations[layerIdx] = preAct
+
+					// Use post-activation for next layer
+					data = postAct
 				} else {
 					// Default: element-wise activation only
 					// Store pre-activation values
