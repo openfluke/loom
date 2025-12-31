@@ -30,6 +30,15 @@ func InitDenseLayer(inputSize, outputSize int, activation ActivationType) LayerC
 	}
 }
 
+// InitStitchLayer creates a linear dense layer to project dimensionality.
+// It is effectively a Dense layer with linear activation.
+func InitStitchLayer(inputSize, outputSize int) LayerConfig {
+	cfg := InitDenseLayer(inputSize, outputSize, ActivationType(-1)) // Linear activation
+	// We might want to initialize valid weights, InitDenseLayer already does He init.
+	// That's fine for stitching.
+	return cfg
+}
+
 // =============================================================================
 // Generic Dense Layer Implementation
 // =============================================================================

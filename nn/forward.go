@@ -180,6 +180,23 @@ func GenericForwardPass[T Numeric](
 						activations[layerIdx+1] = output
 						context = intermediates
 
+						activations[layerIdx+1] = output
+						context = intermediates
+
+					case LayerSequential:
+						layers := make([]*LayerConfig, len(config.ParallelBranches))
+						for i := range config.ParallelBranches {
+							layers[i] = &config.ParallelBranches[i]
+						}
+						output, intermediates, err := SequentialForward[T](data, layers, n.BatchSize)
+						if err != nil {
+							// On error, identity
+							output = data.Clone()
+						}
+						data = output
+						activations[layerIdx+1] = output
+						context = intermediates
+
 					case LayerEmbedding:
 						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.EmbeddingWeights, len(config.EmbeddingWeights)))
 						output := EmbeddingForward(data, weights, config.VocabSize, config.EmbeddingDim)
@@ -459,6 +476,24 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					if config.Observer != nil {
 						notifyObserver(config, "normal", "forward", layerIdx, data, n.activations[layerIdx+1], 0)
 					}
+					if config.Observer != nil {
+						notifyObserver(config, "normal", "forward", layerIdx, data, n.activations[layerIdx+1], 0)
+					}
+				} else if config.Type == LayerSequential {
+					// Sequential layer
+					output, _, err := sequentialForwardCPU(data, config.ParallelBranches, n.BatchSize)
+					if err != nil {
+						fmt.Printf("Sequential layer error: %v\n", err)
+						output = data
+					}
+					
+					// Store intermediates (simplified)
+					// We can flatten intermediates similar to Parallel layer if we wanted,
+					// but for now let's just use the output as "pre-activation" effectively since we don't fully support backward yet.
+					n.preActivations[layerIdx] = make([]float32, 1) // Dummy
+					
+					data = output
+					
 				} else if config.Type == LayerEmbedding {
 					// Embedding lookup layer
 					output := embeddingForwardCPU(data, config)

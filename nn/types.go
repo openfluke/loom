@@ -191,6 +191,7 @@ const (
 	LayerParallel           LayerType = 10 // Parallel layer (runs multiple sub-layers and concatenates outputs)
 	LayerEmbedding          LayerType = 11 // Embedding lookup table (token/position -> vector)
 	LayerConv1D             LayerType = 12 // 1D Convolutional layer (for audio/sequence data)
+	LayerSequential         LayerType = 13 // Sequential layer (runs multiple sub-layers in sequence)
 )
 
 // SoftmaxType defines the variant of softmax to use

@@ -125,6 +125,18 @@ func ParallelForward[T Numeric](
 			}
 			preAct = input.Clone()
 
+		case LayerSequential:
+			nestedLayers := make([]*LayerConfig, len(branchCfg.ParallelBranches))
+			for j := range branchCfg.ParallelBranches {
+				nestedLayers[j] = &branchCfg.ParallelBranches[j]
+			}
+			var err error
+			postAct, _, err = SequentialForward[T](input, nestedLayers, batchSize)
+			if err != nil {
+				return nil, nil, fmt.Errorf("sequential branch %d failed: %w", i, err)
+			}
+			preAct = input.Clone() // Placeholder
+
 		default:
 			// For unsupported types, pass through
 			postAct = input.Clone()
@@ -383,6 +395,19 @@ func ParallelBackward[T Numeric](
 			}
 			subGradInput, _ = ParallelBackward(gradBranch, input, nestedBranches, branchIntermediates, branchCfg.CombineMode)
 
+		case LayerSequential:
+			nestedLayers := make([]*LayerConfig, len(branchCfg.ParallelBranches))
+			for j := range branchCfg.ParallelBranches {
+				nestedLayers[j] = &branchCfg.ParallelBranches[j]
+			}
+			// Note: We don't have individual layer intermediates here because ParallelForward
+			// only returns ONE intermediate tensor per branch.
+			// SequentialForward needs a list of intermediates.
+			// This confirms my suspicion that we need to pack/unpack intermediates.
+			// For now, we pass nil/empty, effectively disabling training through Sequential layers
+			// until a better state management is implemented.
+			subGradInput = SequentialBackward(gradBranch, input, nestedLayers, nil)
+
 		default:
 			if len(gradBranch.Data) == len(input.Data) {
 				subGradInput = gradBranch.Clone()
@@ -562,6 +587,29 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 				copy(preAct[offset:], pa)
 				offset += len(pa)
 			}
+		case LayerSequential:
+			// Sequential branch
+			var nestedPreActs [][]float32
+			var err error
+			postAct, nestedPreActs, err = sequentialForwardCPU(input, branchCfg.ParallelBranches, batchSize)
+			if err != nil {
+				return nil, nil, fmt.Errorf("sequential branch %d failed: %w", i, err)
+			}
+			// Flatten nested pre-activations similar to Parallel layer
+			totalSize := 1 // metadata: type/count
+			for _, pa := range nestedPreActs {
+				totalSize += 1 + len(pa) // size + data
+			}
+			preAct = make([]float32, totalSize)
+			preAct[0] = float32(len(nestedPreActs))
+			offset := 1
+			for _, pa := range nestedPreActs {
+				preAct[offset] = float32(len(pa))
+				offset++
+				copy(preAct[offset:], pa)
+				offset += len(pa)
+			}
+			
 		default:
 			return nil, nil, fmt.Errorf("unsupported layer type %d in parallel branch %d", branchCfg.Type, i)
 		}

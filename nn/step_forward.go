@@ -382,6 +382,11 @@ func getLayerOutputSize(config *LayerConfig, batchSize int) int {
 			if len(config.ParallelBranches) > 0 {
 				totalSize = getLayerOutputSize(&config.ParallelBranches[0], batchSize)
 			}
+		} else if config.CombineMode == "filter" {
+			// Filter mode: Output size is same as first branch (after stitching)
+			if len(config.ParallelBranches) > 0 {
+				totalSize = getLayerOutputSize(&config.ParallelBranches[0], batchSize)
+			}
 		} else {
 			// Concat or Grid Scatter: Sum of all branch outputs
 			for i := range config.ParallelBranches {
@@ -389,6 +394,12 @@ func getLayerOutputSize(config *LayerConfig, batchSize int) int {
 			}
 		}
 		return totalSize
+	} else if config.Type == LayerSequential {
+		if len(config.ParallelBranches) == 0 {
+			return -1
+		}
+		// Return size of the last layer in sequence
+		return getLayerOutputSize(&config.ParallelBranches[len(config.ParallelBranches)-1], batchSize)
 	}
 
 	// Default: Try to use OutputHeight if available
@@ -601,6 +612,17 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 					// Save as residual
 					state.residuals[layerIdx] = make([]float32, len(input))
 					copy(state.residuals[layerIdx], input)
+
+				case LayerSequential:
+					// Sequential layer
+					output, _, err := sequentialForwardCPU(input, config.ParallelBranches, n.BatchSize)
+					if err != nil {
+						fmt.Printf("Sequential layer error: %v\n", err)
+						output = input
+					}
+					// Store intermediates? (Limited support in StepForward for introspection inside Seq)
+					preAct = make([]float32, len(output)) // Dummy preAct
+					postAct = output
 
 				case LayerParallel:
 					output, branchPreActs, err := parallelForwardCPU(input, config, n.BatchSize, "step")
