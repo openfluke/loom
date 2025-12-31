@@ -8,11 +8,18 @@
 *   **True Embeddability**: Compiles into a single binary. **Zero external dependencies**.
 *   **"Run Anywhere" (Polyglot)**: First-class **C ABI** and **WebAssembly (WASM)** support allows Loom to run (and train!) in browsers, Python, C#, Rust, and Node.js with identical behavior.
 *   **Hybrid Gradient/Geometric Engine**: "Neural Tweening" is not just gradient-free; it is a **Hybrid Engine** combining geometric gap-closing with **backpropagation-guided momentum**. Features "Link Budget" telemetry and "Explosion Detection" for self-healing training.
-*   **Structural Parallelism**: Beyond simple MoE, the `LayerParallel` system supports arbitrary branching (Concat, Add, Average, Grid Scatter), enabling native **Inception**, **ResNeXt**, and **Siamese** architectures.
+*   **Structural Parallelism**: Beyond simple MoE, the `LayerParallel` system supports arbitrary branching (Concat, Add, Average, Grid Scatter, **Filter/Softmax-Gated MoE**), enabling native **Inception**, **ResNeXt**, **Siamese**, and **Mixture-of-Experts** architectures with learned routing.
 *   **Native Mixed-Precision**: The generic tensor backend supports `int8`, `uint16`, and `float32` natively, offering a path to quantization-aware training without post-processing.
 *   **Universal Tokenizer**: Pure Go implementation of BPE (compatible with HuggingFace `tokenizer.json`).
 *   **Generic Model Loading**: "Shape-sniffing" `safetensors` loader that infers architectures (Llama, GPT) automatically.
 *   **Telemetry & Introspection**: Built-in runtime reflection to discover methods and visualize network blueprints.
+*   **Complete Training Infrastructure**: 
+    *   **7 LR Schedulers**: Constant, Linear Decay, Cosine Annealing (with warm restarts), Exponential Decay, Warmup, Step Decay, Polynomial Decay.
+    *   **3 Optimizers**: SGD (with momentum/Nesterov), AdamW, RMSprop—all with state serialization.
+    *   **10 Softmax Variants**: Standard, Grid, Hierarchical, Temperature, Gumbel, Masked, Sparsemax, Entmax, Mixture—for classification, MoE routing, and exploration.
+*   **Residual Connections & Normalization**: Native `LayerResidual` with proper gradient flow, plus `LayerNorm` and `RMSNorm`.
+*   **RoPE (Rotary Position Embeddings)**: Built-in for transformer models with GQA (Grouped Query Attention) support.
+*   **Network Grafting**: Combine trained networks by grafting their layers into parallel super-networks for architecture search.
 
 ### Key Limitations
 *   **Ecosystem Maturity**: No central "Model Zoo" or pip-installable convenience; relies on loading external checkpoints.
@@ -80,6 +87,8 @@ The following table compares **Loom** against major industry leaders and special
 | | **Structure Inference** | ✅ **Auto-Detect** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Training** | **Gradient Descent** | ✅ Manual Chain | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ✅ (On-device) | ✅ Standard | ✅ Standard |
 | | **Neural Tweening** | ✅ **Hybrid Engine** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **LR Schedulers** | ✅ **7 Types** | ✅ | ✅ | ✅ | ⚠️ Basic | ✅ | ✅ | ✅ |
+| | **Optimizers** | ✅ **3 (SGD/AdamW/RMSprop)** | ✅ Many | ✅ Many | ✅ | ✅ | ⚠️ | ✅ | ✅ |
 | **Layer Support** | **Dense (MLP)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | | **Conv2D** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | | **Conv1D** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
@@ -134,7 +143,13 @@ The Go AI landscape is fragmented. Most "serious" frameworks are wrappers around
 | | **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ |
 | | **Tokenizer** | ✅ **Pure Go** | ❌ (Deps) | ❌ | ✅ (WordPiece) | ❌ | ❌ |
 | **Training** | **Gradient Descent** | ✅ Manual | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ❌ |
-| | **Hybrid Tweening** | ✅ **Structure** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Hybrid Tweening** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **LR Schedulers** | ✅ **7 Types** | ✅ | ✅ | ⚠️ Basic | ❌ | ❌ |
+| | **Optimizers** | ✅ **SGD/AdamW/RMSprop** | ✅ | ✅ | ✅ | ⚠️ SGD | ❌ |
+| | **Softmax Variants** | ✅ **10 Types** | ⚠️ Standard | ⚠️ Standard | ⚠️ Standard | ⚠️ Standard | ❌ |
+| **Architecture** | **Residual/Skip** | ✅ **Native** | ✅ | ✅ | ❌ | ❌ | ❌ |
+| | **RoPE Embeddings** | ✅ **GQA Support** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| | **Network Grafting** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Platform** | **C-ABI (Polyglot)** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **WASM Training** | ✅ **Full** | ❌ (XLA) | ❌ | ❌ | ❌ | ❌ |
 | **Ecosystem** | **HuggingFace** | ⚠️ (Load) | ❌ | ❌ | ✅ (Load) | ❌ | ❌ |
