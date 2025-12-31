@@ -91,6 +91,36 @@ func GraftNetworks(networks []*Network, combineMode string) (*LayerConfig, error
 			}
 		}
 	}
+
+	// SETUP THE SWITCHBOARD (Gating)
+	if combineMode == "filter" {
+		// 1. Determine input size for the Gate
+		// We assume the Gate sees the same input as the branches.
+		// Since branches might be diverse, we use the InputSize of the first branch
+		// (or the Adapter output size from the SuperModel)
+		gateInputSize := allBranches[0].InputHeight
+		if gateInputSize == 0 {
+			gateInputSize = allBranches[0].RNNInputSize // Fallback for RNNs
+		}
+		
+		// 2. Determine number of experts
+		numExperts := len(allBranches)
+		
+		// 3. Create the Router Brain (Dense: Input -> [Weight per Expert])
+		gateConfig := InitDenseLayer(gateInputSize, numExperts, ActivationScaledReLU)
+		
+		// 4. Attach to config
+		hiveCfg.FilterGateConfig = &gateConfig
+		hiveCfg.FilterSoftmax = SoftmaxStandard // Standard is safest for now
+		hiveCfg.FilterTemperature = 1.0
+	}
     
     return hiveCfg, nil
+}
+
+// ScaleWeights scales a float32 slice in place
+func ScaleWeights(weights []float32, scale float32) {
+	for i := range weights {
+		weights[i] *= scale
+	}
 }
