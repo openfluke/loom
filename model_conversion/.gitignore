@@ -1,6 +1,0 @@
-# Ignore all JSON files (converted models and test outputs)
-*.json
-
-# Allow requirements.txt and other non-JSON files
-!requirements.txt
-__pycache__
