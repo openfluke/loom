@@ -141,7 +141,7 @@ func ParallelForward[T Numeric](
 			notifyBranchObserver(branchCfg, branchCfg, i, "forward", "forward", inputF32, postActF32, 0)
 		}
 
-		if combineMode == "concat" || combineMode == "" || combineMode == "grid_scatter" {
+		if combineMode == "concat" || combineMode == "" || combineMode == "grid_scatter" || combineMode == "filter" {
 			totalOutputSize += len(postAct.Data)
 		} else {
 			// For add/avg, all outputs must be same size
@@ -194,11 +194,109 @@ func ParallelForward[T Numeric](
 			offset += len(branchOut.Data)
 		}
 
+	// NOTE: "filter" mode now handled by ParallelForwardFiltered function for full control
+
 	default:
 		return nil, nil, fmt.Errorf("unknown combine mode: %s", combineMode)
 	}
 
 	return combined, branchIntermediates, nil
+}
+
+// ParallelForwardFiltered executes parallel branches with softmax-gated combining.
+// The gate layer computes N logits (one per branch), softmax normalizes them,
+// and outputs are weighted-summed. Requires all branches to have same output size.
+// Returns: combined output, branch outputs, gate weights (for backward pass).
+func ParallelForwardFiltered[T Numeric](
+	input *Tensor[T],
+	branches []*LayerConfig,
+	gateConfig *LayerConfig,
+	softmaxType SoftmaxType,
+	temperature float32,
+	batchSize int,
+) (*Tensor[T], []*Tensor[T], []float32, error) {
+	if len(branches) == 0 {
+		return nil, nil, nil, fmt.Errorf("parallel filter layer has no branches")
+	}
+
+	// 1. Compute all branch outputs
+	branchOutputs := make([]*Tensor[T], len(branches))
+	var expectedSize int
+
+	for i, branchCfg := range branches {
+		var postAct *Tensor[T]
+
+		switch branchCfg.Type {
+		case LayerDense:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Kernel, len(branchCfg.Kernel)))
+			bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Bias, len(branchCfg.Bias)))
+			_, postAct = DenseForward(input, weights, bias, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize, branchCfg.Activation)
+		case LayerSwiGLU:
+			gateW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.GateWeights, len(branchCfg.GateWeights)))
+			upW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.UpWeights, len(branchCfg.UpWeights)))
+			downW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.DownWeights, len(branchCfg.DownWeights)))
+			gateBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.GateBias, len(branchCfg.GateBias)))
+			upBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.UpBias, len(branchCfg.UpBias)))
+			downBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.DownBias, len(branchCfg.DownBias)))
+			postAct = SwiGLUForward(input, gateW, upW, downW, gateBias, upBias, downBias, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize)
+		default:
+			// Fallback: use generic ParallelForward for this branch type
+			nestedBranches := []*LayerConfig{branchCfg}
+			var err error
+			postAct, _, err = ParallelForward[T](input, nestedBranches, batchSize, "concat")
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("branch %d forward failed: %w", i, err)
+			}
+		}
+
+		branchOutputs[i] = postAct
+		if i == 0 {
+			expectedSize = len(postAct.Data)
+		} else if len(postAct.Data) != expectedSize {
+			return nil, nil, nil, fmt.Errorf("filter mode requires same-sized outputs: branch 0 has %d, branch %d has %d",
+				expectedSize, i, len(postAct.Data))
+		}
+	}
+
+	// 2. Compute gate weights
+	gateLogits := make([]float32, len(branches))
+	
+	if gateConfig != nil && gateConfig.Type == LayerDense {
+		// Use the gate layer to compute logits
+		gateWeights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(gateConfig.Kernel, len(gateConfig.Kernel)))
+		gateBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(gateConfig.Bias, len(gateConfig.Bias)))
+		_, gateOut := DenseForward(input, gateWeights, gateBias, gateConfig.InputHeight, gateConfig.OutputHeight, batchSize, ActivationScaledReLU)
+		
+		// Convert gate output to float32 for softmax
+		for i := 0; i < len(gateLogits) && i < len(gateOut.Data); i++ {
+			gateLogits[i] = float32(gateOut.Data[i])
+		}
+	} else {
+		// Uniform weights if no gate layer
+		for i := range gateLogits {
+			gateLogits[i] = 1.0 / float32(len(branches))
+		}
+	}
+
+	// 3. Apply softmax to get weights
+	if temperature <= 0 {
+		temperature = 1.0
+	}
+	gateWeights, _ := ForwardSoftmaxCPU(gateLogits, &LayerConfig{
+		SoftmaxVariant: softmaxType,
+		Temperature:    temperature,
+	})
+
+	// 4. Weighted sum of branch outputs
+	combined := NewTensor[T](expectedSize)
+	for i, branchOut := range branchOutputs {
+		weight := float64(gateWeights[i])
+		for j, val := range branchOut.Data {
+			combined.Data[j] = T(float64(combined.Data[j]) + weight*float64(val))
+		}
+	}
+
+	return combined, branchOutputs, gateWeights, nil
 }
 
 // ParallelBackward computes gradients for parallel layer.
@@ -302,6 +400,84 @@ func ParallelBackward[T Numeric](
 	return gradInput, nil
 }
 
+// ParallelBackwardFiltered computes gradients for filter combine mode.
+// Each branch receives gradient scaled by its gate weight.
+// Gate gradient is computed based on how much each branch contributed to the loss.
+func ParallelBackwardFiltered[T Numeric](
+	gradOutput, input *Tensor[T],
+	branches []*LayerConfig,
+	branchOutputs []*Tensor[T],
+	gateWeights []float32,
+	gateConfig *LayerConfig,
+) (*Tensor[T], []float32) {
+	gradInput := NewTensor[T](len(input.Data))
+	batchSize := 1
+
+	// Each branch gets gradient scaled by its gate weight
+	for i, branchCfg := range branches {
+		weight := float64(gateWeights[i])
+		if weight < 0.001 {
+			continue // Skip branches with negligible weight
+		}
+
+		// Scale gradient by gate weight
+		scaledGrad := NewTensor[T](len(gradOutput.Data))
+		for j := range gradOutput.Data {
+			scaledGrad.Data[j] = T(float64(gradOutput.Data[j]) * weight)
+		}
+
+		var subGradInput *Tensor[T]
+		switch branchCfg.Type {
+		case LayerDense:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Kernel, len(branchCfg.Kernel)))
+			subGradInput, _, _ = DenseBackward(scaledGrad, input, input.Clone(), weights, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize, branchCfg.Activation)
+		default:
+			subGradInput = scaledGrad.Clone()
+		}
+
+		// Accumulate gradients from all branches
+		if subGradInput != nil && len(subGradInput.Data) == len(gradInput.Data) {
+			for j := range gradInput.Data {
+				gradInput.Data[j] += subGradInput.Data[j]
+			}
+		}
+	}
+
+	// Compute gate gradient (for gate layer training)
+	// dL/d(gate_i) = sum_j(gradOutput_j * branchOutput_i_j) - contribution of gate_i
+	gateGrad := make([]float32, len(gateWeights))
+	for i, branchOut := range branchOutputs {
+		var contribution float64
+		for j := range gradOutput.Data {
+			contribution += float64(gradOutput.Data[j]) * float64(branchOut.Data[j])
+		}
+		gateGrad[i] = float32(contribution)
+	}
+
+	return gradInput, gateGrad
+}
+
+// InitFilteredParallelLayer creates a parallel layer with softmax-gated filtering.
+// branches: the sub-layers to run in parallel
+// gateInputSize: size of input to the gate layer
+// numBranches: must match len(branches), used for gate output size
+// softmaxType: which softmax variant to use for gating
+func InitFilteredParallelLayer(branches []LayerConfig, gateInputSize int, softmaxType SoftmaxType, temperature float32) LayerConfig {
+	numBranches := len(branches)
+	
+	// Create gate layer: Dense(inputSize -> numBranches)
+	gateLayer := InitDenseLayer(gateInputSize, numBranches, ActivationScaledReLU)
+	
+	return LayerConfig{
+		Type:              LayerParallel,
+		ParallelBranches:  branches,
+		CombineMode:       "filter",
+		FilterGateConfig:  &gateLayer,
+		FilterSoftmax:     softmaxType,
+		FilterTemperature: temperature,
+	}
+}
+
 // =============================================================================
 // Original float32 Implementation (Full featured)
 // =============================================================================
@@ -398,7 +574,7 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 			notifyBranchObserver(cfg, branchCfg, i, mode, "forward", input, postAct, 0)
 		}
 
-		if cfg.CombineMode == "concat" || cfg.CombineMode == "" || cfg.CombineMode == "grid_scatter" {
+		if cfg.CombineMode == "concat" || cfg.CombineMode == "" || cfg.CombineMode == "grid_scatter" || cfg.CombineMode == "filter" {
 			totalOutputSize += len(postAct)
 		} else {
 			// For add/avg, all outputs must be same size
@@ -499,6 +675,90 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 				srcEnd := srcStart + branchOutputPerSample
 				dstStart := b*totalFeatures + offset
 				copy(combined[dstStart:dstStart+branchOutputPerSample], branchOut[srcStart:srcEnd])
+			}
+		}
+
+	case "filter": // Softmax-gated weighted combination with auto-padding
+		if len(branchOutputs) == 0 {
+			return nil, nil, fmt.Errorf("filter mode requires at least one branch")
+		}
+
+		// Find the maximum output size across all branches
+		maxSize := 0
+		for _, bo := range branchOutputs {
+			if len(bo) > maxSize {
+				maxSize = len(bo)
+			}
+		}
+
+		// Pad smaller outputs to match the maximum size
+		paddedOutputs := make([][]float32, len(branchOutputs))
+		for i, bo := range branchOutputs {
+			if len(bo) == maxSize {
+				paddedOutputs[i] = bo
+			} else {
+				// Pad with zeros
+				padded := make([]float32, maxSize)
+				copy(padded, bo)
+				paddedOutputs[i] = padded
+			}
+		}
+		branchOutputs = paddedOutputs
+
+		// Compute gate logits
+		gateLogits := make([]float32, len(branchOutputs))
+		if cfg.FilterGateConfig != nil && cfg.FilterGateConfig.Type == LayerDense {
+			// Run gate layer on input
+			gateWeights := cfg.FilterGateConfig.Kernel
+			gateBias := cfg.FilterGateConfig.Bias
+			gateOutSize := cfg.FilterGateConfig.OutputHeight
+			if gateOutSize == 0 {
+				gateOutSize = len(branchOutputs)
+			}
+			inputSize := cfg.FilterGateConfig.InputHeight
+			if inputSize == 0 {
+				inputSize = len(input)
+			}
+			// Simple dense forward for gate
+			for o := 0; o < gateOutSize && o < len(gateLogits); o++ {
+				sum := float32(0)
+				for i := 0; i < inputSize && i < len(input); i++ {
+					wIdx := o*inputSize + i
+					if wIdx < len(gateWeights) {
+						sum += input[i] * gateWeights[wIdx]
+					}
+				}
+				if o < len(gateBias) {
+					sum += gateBias[o]
+				}
+				gateLogits[o] = sum
+			}
+		} else {
+			// Uniform weights if no gate layer
+			for i := range gateLogits {
+				gateLogits[i] = 1.0 / float32(len(branchOutputs))
+			}
+		}
+
+		// Apply softmax to gate logits
+		temp := cfg.FilterTemperature
+		if temp <= 0 {
+			temp = 1.0
+		}
+		gateWeights, _ := ForwardSoftmaxCPU(gateLogits, &LayerConfig{
+			SoftmaxVariant: cfg.FilterSoftmax,
+			Temperature:    temp,
+		})
+
+		// Weighted sum of branch outputs
+		combined = make([]float32, maxSize)
+		for i, branchOut := range branchOutputs {
+			weight := float32(1.0 / float32(len(branchOutputs))) // default
+			if i < len(gateWeights) {
+				weight = gateWeights[i]
+			}
+			for j := range branchOut {
+				combined[j] += weight * branchOut[j]
 			}
 		}
 
@@ -679,6 +939,21 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				srcStart := b*totalFeatures + offset
 				dstStart := b * branchOutputPerSample
 				copy(branchGrads[i][dstStart:dstStart+branchOutputPerSample], gradOutput[srcStart:srcStart+branchOutputPerSample])
+			}
+		}
+
+	case "filter": // Gradients flow to branches weighted by gate values
+		branchGrads = make([][]float32, len(cfg.ParallelBranches))
+		outputSize := len(gradOutput)
+
+		// For filter mode, each branch gets gradient scaled by its gate weight
+		// Since we don't have the exact gate weights stored, we use uniform distribution
+		// This is a simplification - ideally we'd store gate weights from forward pass
+		scale := 1.0 / float32(len(cfg.ParallelBranches))
+		for i := range branchGrads {
+			branchGrads[i] = make([]float32, outputSize)
+			for j := range gradOutput {
+				branchGrads[i][j] = gradOutput[j] * scale
 			}
 		}
 

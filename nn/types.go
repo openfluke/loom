@@ -319,6 +319,11 @@ type LayerConfig struct {
 	GridOutputCols   int
 	GridOutputLayers int
 
+	// Filter combine mode (gated parallel / mixture of experts)
+	FilterGateConfig  *LayerConfig // Gate layer to compute routing weights (Dense, MHA, etc.)
+	FilterSoftmax     SoftmaxType  // Softmax variant for gating (default: SoftmaxStandard)
+	FilterTemperature float32      // Temperature for softmax (lower = sharper selection)
+
 	// Observer for debugging/recording (nil = no observation)
 	Observer LayerObserver
 
