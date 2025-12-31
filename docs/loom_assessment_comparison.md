@@ -9,17 +9,27 @@
 *   **"Run Anywhere" (Polyglot)**: First-class **C ABI** and **WebAssembly (WASM)** support allows Loom to run (and train!) in browsers, Python, C#, Rust, and Node.js with identical behavior.
 *   **Hybrid Gradient/Geometric Engine**: "Neural Tweening" is not just gradient-free; it is a **Hybrid Engine** combining geometric gap-closing with **backpropagation-guided momentum**. Features "Link Budget" telemetry and "Explosion Detection" for self-healing training.
 *   **Structural Parallelism**: Beyond simple MoE, the `LayerParallel` system supports arbitrary branching (Concat, Add, Average, Grid Scatter, **Filter/Softmax-Gated MoE**), enabling native **Inception**, **ResNeXt**, **Siamese**, and **Mixture-of-Experts** architectures with learned routing.
+*   **Sequential Layer Composition**: The `LayerSequential` system allows grouping multiple sub-layers (e.g., expert + stitch) into a single branch for modular network construction.
 *   **Native Mixed-Precision**: The generic tensor backend supports `int8`, `uint16`, and `float32` natively, offering a path to quantization-aware training without post-processing.
 *   **Universal Tokenizer**: Pure Go implementation of BPE (compatible with HuggingFace `tokenizer.json`).
 *   **Generic Model Loading**: "Shape-sniffing" `safetensors` loader that infers architectures (Llama, GPT) automatically.
-*   **Telemetry & Introspection**: Built-in runtime reflection to discover methods and visualize network blueprints.
+*   **Telemetry & Introspection**: Built-in runtime reflection to discover methods via `GetMethodsJSON()`, and `ExtractNetworkBlueprint()` for visualizing network structure with detailed parameter counts per layer.
+*   **Complete Evaluation Suite**:
+    *   **Deviation Metrics**: Prediction quality analysis with bucketed deviation distribution (0-10%, 10-20%, etc.) and Silhouette scoring.
+    *   **Training Metrics**: Comprehensive tracking with milestone recording (time to 10%, 20%, ... 100% accuracy).
+    *   **Adaptation Tracking**: Time-window based accuracy monitoring for task-switching scenarios with recovery time measurement.
 *   **Complete Training Infrastructure**: 
     *   **7 LR Schedulers**: Constant, Linear Decay, Cosine Annealing (with warm restarts), Exponential Decay, Warmup, Step Decay, Polynomial Decay.
     *   **3 Optimizers**: SGD (with momentum/Nesterov), AdamW, RMSprop—all with state serialization.
     *   **10 Softmax Variants**: Standard, Grid, Hierarchical, Temperature, Gumbel, Masked, Sparsemax, Entmax, Mixture—for classification, MoE routing, and exploration.
+    *   **5 Activation Functions**: Scaled ReLU, Sigmoid, Tanh, Softplus, Leaky ReLU—all with proper derivative implementations for backpropagation.
 *   **Residual Connections & Normalization**: Native `LayerResidual` with proper gradient flow, plus `LayerNorm` and `RMSNorm`.
 *   **RoPE (Rotary Position Embeddings)**: Built-in for transformer models with GQA (Grouped Query Attention) support.
 *   **Network Grafting**: Combine trained networks by grafting their layers into parallel super-networks for architecture search.
+*   **Stitch Layers**: Native dimensionality projection layers for connecting networks with different output sizes during model fusion.
+*   **Step-Based Forward Pass**: `StepForward` API allows layer-by-layer propagation for real-time/streaming inference and fine-grained control over network execution.
+*   **Dynamic Architecture Generation**: Built-in API for programmatically generating diverse network architectures with configurable brain types (MHA, LSTM, RNN, Dense, SwiGLU, NormDense), grid shapes, and combine modes.
+*   **K-Means Clustering**: Built-in parallel K-Means clustering with Silhouette scoring for unsupervised learning, ensemble analysis, and architecture grouping.
 
 ### Key Limitations
 *   **Ecosystem Maturity**: No central "Model Zoo" or pip-installable convenience; relies on loading external checkpoints.
@@ -91,13 +101,25 @@ The following table compares **Loom** against major industry leaders and special
 | | **Optimizers** | ✅ **3 (SGD/AdamW/RMSprop)** | ✅ Many | ✅ Many | ✅ | ✅ | ⚠️ | ✅ | ✅ |
 | **Layer Support** | **Dense (MLP)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | | **Conv2D** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
-| | **Conv1D** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
+| | **Conv1D** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | | **Pooling (Max/Avg)** | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
-| | **RNN / LSTM** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **RNN / LSTM** | ✅ **Full Gate** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | | **Transformer (MHA)** | ✅ (Explicit) | ✅ | ✅ | ✅ | ✅ (BERT) | ✅ | ✅ | ✅ |
+| | **SwiGLU** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
 | | **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Sequential Layers** | ✅ **Native** | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ✅ | ⚠️ |
 | | **Embeddings** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | | **Tokenizer** | ✅ **Pure Go** | ❌ (Rust/C++) | ❌ (C++) | ❌ | ❌ | ✅ | ❌ | ✅ |
+| **Normalization** | **LayerNorm** | ✅ **Native** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **RMSNorm** | ✅ **Native** | ⚠️ (Manual) | ⚠️ (Manual) | ✅ | ❌ | ❌ | ❌ | ✅ |
+| | **Residual/Skip** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
+| **Advanced** | **Stitch Layers** | ✅ **Native** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Dynamic Arch Gen** | ✅ **Built-in** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **K-Means Clustering** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Model Evaluation** | ✅ **Deviation/Metrics** | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| | **Network Telemetry** | ✅ **Blueprint API** | ❌ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | ❌ |
+| | **Runtime Introspection** | ✅ **Reflection** | ⚠️ (Python) | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | ❌ |
 | **Platform** | **WASM Training** | ✅ **Full** | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (Slow) | ✅ |
 | | **Cross-Lang ABI** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ⚠️ |
 | **Ecosystem** | **HuggingFace Hub** | ⚠️ (Read/Inspect) | ✅ Native | ✅ Native | ❌ | ✅ | ❌ | ✅ | ✅ |
@@ -135,21 +157,31 @@ The Go AI landscape is fragmented. Most "serious" frameworks are wrappers around
 | | **Model Export** | binary/json | XLA format | Onnx (Import) | Gob | Json | ❌ |
 | **Architecture** | **Dense (MLP)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (Matrix Mul) |
 | | **Conv2D** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| | **Conv1D** | ✅ | ✅ | ⚠️ (via 2D) | ⚠️ (via 2D) | ❌ | ❌ |
+| | **Conv1D** | ✅ **Native** | ✅ | ⚠️ (via 2D) | ⚠️ (via 2D) | ❌ | ❌ |
 | | **RNN / LSTM** | ✅ **Full Gate** | ✅ | ⚠️ Basic | ✅ BiLSTM | ❌ | ❌ |
 | | **Transformer (MHA)** | ✅ **Explicit** | ✅ | ⚠️ Hard | ✅ (BERT) | ❌ | ❌ |
 | | **SwiGLU** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | | **Embeddings** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | | **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ |
+| | **Sequential Layers** | ✅ **Native** | ⚠️ (Manual) | ⚠️ (Manual) | ⚠️ (Manual) | ❌ | ❌ |
 | | **Tokenizer** | ✅ **Pure Go** | ❌ (Deps) | ❌ | ✅ (WordPiece) | ❌ | ❌ |
 | **Training** | **Gradient Descent** | ✅ Manual | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ❌ |
 | | **Hybrid Tweening** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **LR Schedulers** | ✅ **7 Types** | ✅ | ✅ | ⚠️ Basic | ❌ | ❌ |
 | | **Optimizers** | ✅ **SGD/AdamW/RMSprop** | ✅ | ✅ | ✅ | ⚠️ SGD | ❌ |
 | | **Softmax Variants** | ✅ **10 Types** | ⚠️ Standard | ⚠️ Standard | ⚠️ Standard | ⚠️ Standard | ❌ |
-| **Architecture** | **Residual/Skip** | ✅ **Native** | ✅ | ✅ | ❌ | ❌ | ❌ |
-| | **RoPE Embeddings** | ✅ **GQA Support** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| | **Activation Functions** | ✅ **5 Types** | ✅ | ✅ | ✅ | ⚠️ Basic | ❌ |
+| **Normalization** | **LayerNorm** | ✅ **Native** | ✅ | ⚠️ Manual | ✅ | ❌ | ❌ |
+| | **RMSNorm** | ✅ **Native** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| | **Residual/Skip** | ✅ **Native** | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **Advanced** | **RoPE Embeddings** | ✅ **GQA Support** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | | **Network Grafting** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Dynamic Arch Gen** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **K-Means Clustering** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Model Evaluation** | ✅ **Full Suite** | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ |
+| | **Network Telemetry** | ✅ **Blueprint** | ❌ | ⚠️ | ❌ | ❌ | ❌ |
+| | **Runtime Introspection** | ✅ **Reflection** | ❌ | ⚠️ | ❌ | ❌ | ❌ |
 | **Platform** | **C-ABI (Polyglot)** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **WASM Training** | ✅ **Full** | ❌ (XLA) | ❌ | ❌ | ❌ | ❌ |
 | **Ecosystem** | **HuggingFace** | ⚠️ (Load) | ❌ | ❌ | ✅ (Load) | ❌ | ❌ |
@@ -184,4 +216,4 @@ This table compares framework support for different numerical types across major
 *   **Choose TensorFlow / TFLite** if you need robust **Mobile/Edge Deployment**.
 *   **Choose GoMLX** if you need **High-Performance Training in Go** and can tolerate CGo/C++ dependencies.
 *   **Choose Core ML** if you are targeting **iOS/macOS** exclusively.
-*   **Choose Loom** if you need **Pure Go-Native Embedding** (Cloud/CLI/Server), want a single binary with zero dependencies, or want to experiment with the **Neural Tweening** training paradigm.
+*   **Choose Loom** if you need **Pure Go-Native Embedding** (Cloud/CLI/Server), want a single binary with zero dependencies, want to experiment with the **Neural Tweening** training paradigm, or need unique features like **Step-Based Forward Pass** for real-time inference and **Dynamic Architecture Generation** for automated model exploration.
