@@ -31,6 +31,47 @@ Output: "hi
 I'm excited to see what you come up with! Let me know if you have any"
 ```
 
+## Framework Comparison
+
+**Loom** is a specialized, lightweight, embeddable AI framework. Unlike general-purpose research frameworks, it is designed for **native embedding** into Go applications, targeting edge devices, CLIs, and backend microservices.
+
+### Capabilities Comparison Matrix
+
+| Feature | **Loom** (Go) | **PyTorch** | **TensorFlow** | **GoMLX** | **Spago** |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Runtime Dependency** | **None** (Binary) | Heavy (Pip) | Binary (Edge) | CGo / XLA | None |
+| **Safetensors** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ |
+| **Neural Tweening** | ✅ **Hybrid Engine** | ❌ | ❌ | ❌ | ❌ |
+| **LR Schedulers** | ✅ **7 Types** | ✅ | ✅ | ✅ | ⚠️ Basic |
+| **Optimizers** | ✅ **3 (SGD/AdamW/RMSprop)** | ✅ Many | ✅ Many | ✅ | ✅ |
+| **RNN / LSTM** | ✅ **Full Gate** | ✅ | ✅ | ✅ | ✅ |
+| **Transformer (MHA)** | ✅ (Explicit) | ✅ | ✅ | ✅ | ✅ (BERT) |
+| **SwiGLU** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ |
+| **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ |
+| **LayerNorm / RMSNorm** | ✅ **Native** | ✅ | ✅ | ✅ | ✅ |
+| **Dynamic Arch Gen** | ✅ **Built-in** | ❌ | ❌ | ❌ | ❌ |
+| **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ |
+| **K-Means Clustering** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ |
+| **WASM Training** | ✅ **Full** | ❌ | ❌ | ❌ | ❌ |
+| **Cross-Lang ABI** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ |
+| **Tokenizer** | ✅ **Pure Go** | ❌ (Rust/C++) | ❌ (C++) | ❌ | ❌ |
+
+### Go Ecosystem Comparison
+
+| Feature | **Loom** | **GoMLX** | **Gorgonia** | **Spago** | **Go-Deep** |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Implementation** | Pure Go | CGo (XLA) | Pure Go + CGo | Pure Go | Pure Go |
+| **Load Safetensors** | ✅ **Native** | ✅ | ❌ | ❌ | ❌ |
+| **Hybrid Tweening** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ |
+| **Softmax Variants** | ✅ **10 Types** | ⚠️ Standard | ⚠️ Standard | ⚠️ Standard | ⚠️ Standard |
+| **Network Grafting** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ |
+| **C-ABI (Polyglot)** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ |
+| **WASM Training** | ✅ **Full** | ❌ (XLA) | ❌ | ❌ | ❌ |
+
+**Verdict**: Loom is the only Pure Go framework capable of loading and running modern **Llama-style LLMs** (Safetensors + SwiGLU + MHA) without CGo. Choose Loom for pure Go-native embedding, single-binary deployment, or to experiment with the Neural Tweening training paradigm.
+
+For detailed comparison, see [`docs/loom_assessment_comparison.md`](docs/loom_assessment_comparison.md).
+
 ## Key Features
 
 ### 🚀 GPU Acceleration (Experimental - Untested)

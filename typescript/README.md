@@ -14,6 +14,21 @@ Isomorphic TypeScript/JavaScript wrapper for the LOOM WebAssembly neural network
 - 💾 **Model Persistence** - Save and load trained models as JSON
 - ✅ **Cross-Platform Consistency** - Same API as Python, C#, C, WASM
 
+## Framework Comparison
+
+| Feature | **Loom/welvet** | **TensorFlow.js** | **Brain.js** | **ONNX.js** |
+| :--- | :---: | :---: | :---: | :---: |
+| **Runtime** | WASM (Pure Go) | JS + WebGL | Pure JS | WASM |
+| **Training in Browser** | ✅ **Full** | ✅ (Slow) | ✅ | ❌ |
+| **Safetensors** | ✅ **Native** | ❌ | ❌ | ❌ |
+| **Neural Tweening** | ✅ **Hybrid Engine** | ❌ | ❌ | ❌ |
+| **Parallel / MoE** | ✅ **Structure** | ❌ | ❌ | ❌ |
+| **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ |
+| **Streaming LLM** | ✅ | ✅ | ❌ | ❌ |
+| **Pure Go Tokenizer** | ✅ | ❌ | ❌ | ❌ |
+
+For detailed comparison, see [`docs/loom_assessment_comparison.md`](../docs/loom_assessment_comparison.md).
+
 ## Installation
 
 ```bash

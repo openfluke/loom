@@ -22,6 +22,21 @@
 - 🎨 **Multiple Activations** - ReLU, Sigmoid, Tanh, Softplus, LeakyReLU
 - ⚠️ **GPU Note** - GPU/WebGPU code exists but is untested; all demos use reliable CPU execution
 
+## Framework Comparison
+
+| Feature | **Loom/Welvet** | **ML.NET** | **TensorFlow.NET** | **ONNX Runtime** |
+| :--- | :---: | :---: | :---: | :---: |
+| **Runtime** | Native C-ABI | .NET Native | TF C++ | ONNX C++ |
+| **Training Support** | ✅ **Full** | ⚠️ Limited | ✅ | ❌ Inference Only |
+| **Safetensors** | ✅ **Native** | ❌ | ❌ | ❌ |
+| **Neural Tweening** | ✅ **Hybrid Engine** | ❌ | ❌ | ❌ |
+| **Parallel / MoE** | ✅ **Structure** | ❌ | ❌ (Manual) | ❌ |
+| **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ |
+| **Streaming LLM** | ✅ | ❌ | ✅ | ✅ |
+| **Pure Go Tokenizer** | ✅ | ❌ | ❌ | ❌ |
+
+For detailed comparison, see [`docs/loom_assessment_comparison.md`](../docs/loom_assessment_comparison.md).
+
 ## 📦 Installation
 
 ```bash

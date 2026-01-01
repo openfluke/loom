@@ -4,6 +4,22 @@
 
 High-performance neural network library with **transformer inference** for Python via C-ABI bindings. CPU-first with reliable execution.
 
+## Framework Comparison
+
+| Feature | **Loom/welvet** | **PyTorch** | **TensorFlow** | **GoMLX** | **Spago** |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Runtime Dependency** | **None** (Binary) | Heavy (Pip) | Binary (Edge) | CGo / XLA | None |
+| **Safetensors** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ |
+| **Neural Tweening** | ✅ **Hybrid Engine** | ❌ | ❌ | ❌ | ❌ |
+| **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ |
+| **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ |
+| **K-Means Clustering** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ |
+| **WASM Training** | ✅ **Full** | ❌ | ❌ | ❌ | ❌ |
+| **Cross-Lang ABI** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ |
+| **Tokenizer** | ✅ **Pure Go** | ❌ (Rust/C++) | ❌ (C++) | ❌ | ❌ |
+
+For detailed comparison, see [`docs/loom_assessment_comparison.md`](../docs/loom_assessment_comparison.md).
+
 ## Installation
 
 ```bash
