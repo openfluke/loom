@@ -30,6 +30,7 @@
 *   **Step-Based Forward Pass**: `StepForward` API allows layer-by-layer propagation for real-time/streaming inference and fine-grained control over network execution.
 *   **Dynamic Architecture Generation**: Built-in API for programmatically generating diverse network architectures with configurable brain types (MHA, LSTM, RNN, Dense, SwiGLU, NormDense), grid shapes, and combine modes.
 *   **K-Means Clustering**: Built-in parallel K-Means clustering with Silhouette scoring for unsupervised learning, ensemble analysis, and architecture grouping.
+*   **Correlation Analysis**: WASM-compatible Pearson and Spearman correlation matrix computation with feature statistics (mean, std, min, max), strong correlation detection, and JSON output for frontend heatmap visualization.
 
 ### Key Limitations
 *   **Ecosystem Maturity**: No central "Model Zoo" or pip-installable convenience; relies on loading external checkpoints.
@@ -117,6 +118,7 @@ The following table compares **Loom** against major industry leaders and special
 | | **Dynamic Arch Gen** | ✅ **Built-in** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **K-Means Clustering** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Correlation Analysis** | ✅ **Pearson/Spearman** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Model Evaluation** | ✅ **Deviation/Metrics** | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | | **Network Telemetry** | ✅ **Blueprint API** | ❌ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | ❌ |
 | | **Runtime Introspection** | ✅ **Reflection** | ⚠️ (Python) | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | ❌ |
@@ -179,6 +181,7 @@ The Go AI landscape is fragmented. Most "serious" frameworks are wrappers around
 | | **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Dynamic Arch Gen** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **K-Means Clustering** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Correlation Analysis** | ✅ **Pearson/Spearman** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Model Evaluation** | ✅ **Full Suite** | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ |
 | | **Network Telemetry** | ✅ **Blueprint** | ❌ | ⚠️ | ❌ | ❌ | ❌ |
 | | **Runtime Introspection** | ✅ **Reflection** | ❌ | ⚠️ | ❌ | ❌ | ❌ |
