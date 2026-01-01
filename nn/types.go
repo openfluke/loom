@@ -39,6 +39,16 @@ func IsIntegerType[T Numeric]() bool {
 	return false
 }
 
+// IsFloatType checks if T is a floating-point type
+func IsFloatType[T Numeric]() bool {
+	var z T
+	switch any(z).(type) {
+	case float32, float64:
+		return true
+	}
+	return false
+}
+
 // Tensor wraps numerical data with metadata for type-agnostic operations.
 // It replaces raw []float32 slices to enable multi-precision training.
 type Tensor[T Numeric] struct {

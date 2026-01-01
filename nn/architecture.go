@@ -89,6 +89,7 @@ type ArchConfig struct {
 	Brains       []BrainType    `json:"brains"`       // One per brain cell
 	BrainNames   []string       `json:"brainNames"`   // String names for JSON
 	InitScale    float32        `json:"initScale"`    // Weight initialization scale
+	DType        string         `json:"dtype"`        // Numerical type: "float32", "float64", "int32", "int16", "int8"
 }
 
 // ArchGenOptions configures the random architecture generator
@@ -114,6 +115,14 @@ type ArchGenOptions struct {
 	// ActivationDistribution: probability of each activation type
 	// Default: uniform distribution across all 5 types
 	ActivationDistribution []float64
+
+	// DTypes: available numerical types for weights (default: float32 only)
+	// Options: "float32", "float64", "int32", "int16", "int8"
+	DTypes []string
+
+	// DTypeDistribution: probability of each dtype being selected
+	// Default: 100% float32
+	DTypeDistribution []float64
 }
 
 // DefaultArchGenOptions returns options matching test43a's distributions
@@ -133,6 +142,9 @@ func DefaultArchGenOptions() *ArchGenOptions {
 		CombineDistribution: []float64{0.35, 0.30, 0.20, 0.15},
 		// Activation: uniform
 		ActivationDistribution: []float64{0.2, 0.2, 0.2, 0.2, 0.2},
+		// DType: default to float32 only
+		DTypes:            []string{"float32"},
+		DTypeDistribution: []float64{1.0},
 	}
 }
 
@@ -364,16 +376,22 @@ func GenerateDiverseConfigs(count int, opts *ArchGenOptions) []ArchConfig {
 		// Random budget scale
 		budgetScale := opts.BudgetMin + float32(rand.Float64())*(opts.BudgetMax-opts.BudgetMin)
 
+		// Random DType
+		dtype := "float32" // default
+		if len(opts.DTypes) > 0 {
+			dtype = selectDType(opts.DTypes, opts.DTypeDistribution)
+		}
+
 		// Build mutation string for tracking
 		brainStr := strings.Join(brainNames, "-")
 		if len(brainStr) > 30 {
 			brainStr = brainStr[:27] + "..."
 		}
-		mutationStr := fmt.Sprintf("%dx%d_%s_%s_D%d_LR%.4f",
+		mutationStr := fmt.Sprintf("%dx%d_%s_%s_D%d_%s_LR%.4f",
 			shape.Rows, shape.Cols,
 			combineMode,
 			ActivationTypeNames[activation],
-			dModel, lr)
+			dModel, dtype, lr)
 
 		configs[i] = ArchConfig{
 			ID:           i,
@@ -392,6 +410,7 @@ func GenerateDiverseConfigs(count int, opts *ArchGenOptions) []ArchConfig {
 			Brains:       brains,
 			BrainNames:   brainNames,
 			InitScale:    opts.InitScale,
+			DType:        dtype,
 		}
 	}
 
@@ -441,6 +460,25 @@ func selectActivation(dist []float64) ActivationType {
 		}
 	}
 	return ActivationLeakyReLU // fallback
+}
+
+// selectDType selects a numerical type based on probability distribution
+func selectDType(dtypes []string, dist []float64) string {
+	if len(dtypes) == 0 {
+		return "float32"
+	}
+	if len(dist) == 0 {
+		return dtypes[rand.Intn(len(dtypes))]
+	}
+	r := rand.Float64()
+	cumulative := 0.0
+	for i, p := range dist {
+		cumulative += p
+		if r < cumulative && i < len(dtypes) {
+			return dtypes[i]
+		}
+	}
+	return dtypes[0] // fallback
 }
 
 // initRandomWeights fills a slice with random values scaled by scale

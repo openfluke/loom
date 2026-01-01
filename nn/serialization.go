@@ -24,6 +24,7 @@ type SavedModel struct {
 // NetworkConfig represents the network architecture
 type NetworkConfig struct {
 	ID            string            `json:"id"`
+	DType         string            `json:"dtype,omitempty"` // Numerical type: "float32", "float64", "int32", "int16", "int8"
 	BatchSize     int               `json:"batch_size"`
 	GridRows      int               `json:"grid_rows"`
 	GridCols      int               `json:"grid_cols"`
@@ -1109,9 +1110,23 @@ func stringToActivation(s string) ActivationType {
 // This allows building complete neural networks from JSON without manually assigning layers
 // The JSON structure matches the NetworkConfig format used in serialization
 func BuildNetworkFromJSON(jsonConfig string) (*Network, error) {
+	net, _, err := BuildNetworkFromJSONWithDType(jsonConfig)
+	return net, err
+}
+
+// BuildNetworkFromJSONWithDType builds a network from JSON and returns the dtype specified in config
+// Returns: network, dtype (defaults to "float32" if not specified), error
+// The dtype can be used with SaveModelWithDType/LoadModelWithDType for multi-precision storage
+func BuildNetworkFromJSONWithDType(jsonConfig string) (*Network, string, error) {
 	var config NetworkConfig
 	if err := json.Unmarshal([]byte(jsonConfig), &config); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+		return nil, "", fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+
+	// Default dtype to float32 if not specified
+	dtype := config.DType
+	if dtype == "" {
+		dtype = "float32"
 	}
 
 	// Default batch size to 1 if not specified
@@ -1132,7 +1147,7 @@ func BuildNetworkFromJSON(jsonConfig string) (*Network, error) {
 	// Validate layer count
 	expectedLayers := config.GridRows * config.GridCols * config.LayersPerCell
 	if len(config.Layers) != expectedLayers {
-		return nil, fmt.Errorf("layer count mismatch: expected %d (rows=%d × cols=%d × layers_per_cell=%d), got %d",
+		return nil, "", fmt.Errorf("layer count mismatch: expected %d (rows=%d × cols=%d × layers_per_cell=%d), got %d",
 			expectedLayers, config.GridRows, config.GridCols, config.LayersPerCell, len(config.Layers))
 	}
 
@@ -1144,14 +1159,14 @@ func BuildNetworkFromJSON(jsonConfig string) (*Network, error) {
 
 		layerConfig, err := buildLayerConfig(layerDef)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build layer %d (row=%d, col=%d, layer=%d): %w",
+			return nil, "", fmt.Errorf("failed to build layer %d (row=%d, col=%d, layer=%d): %w",
 				i, row, col, layer, err)
 		}
 
 		network.SetLayer(row, col, layer, layerConfig)
 	}
 
-	return network, nil
+	return network, dtype, nil
 }
 
 // BuildNetworkFromFile creates a neural network from a JSON configuration file
@@ -1206,23 +1221,34 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		config.OutputWidth = def.OutputWidth
 
 	case "mha", "multi_head_attention":
-		config.Type = LayerMultiHeadAttention
-		config.DModel = def.DModel
-		config.NumHeads = def.NumHeads
+		// Use InitMHABrain to properly initialize weights
+		numHeads := def.NumHeads
+		if numHeads == 0 {
+			numHeads = 8 // Default
+		}
+		config = InitMHABrain(def.DModel, numHeads, 0.5)
 		config.SeqLength = def.SeqLength
-		config.HeadDim = def.DModel / def.NumHeads
+		if config.SeqLength == 0 {
+			config.SeqLength = 1
+		}
 
 	case "rnn":
-		config.Type = LayerRNN
+		// Use InitRNNBrain to properly initialize weights
+		dModel := def.HiddenSize
+		if dModel == 0 {
+			dModel = def.InputSize
+		}
+		config = InitRNNBrain(dModel, 0.5)
 		config.RNNInputSize = def.InputSize
-		config.HiddenSize = def.HiddenSize
-		config.SeqLength = def.SeqLength
 
 	case "lstm":
-		config.Type = LayerLSTM
+		// Use InitLSTMBrain to properly initialize weights
+		dModel := def.HiddenSize
+		if dModel == 0 {
+			dModel = def.InputSize
+		}
+		config = InitLSTMBrain(dModel, 0.5)
 		config.RNNInputSize = def.InputSize
-		config.HiddenSize = def.HiddenSize
-		config.SeqLength = def.SeqLength
 
 	case "softmax":
 		config.Type = LayerSoftmax
@@ -1238,31 +1264,44 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		config.EntmaxAlpha = def.EntmaxAlpha
 
 	case "layer_norm", "layernorm":
+		// Initialize LayerNorm with gamma=1 and beta=0
 		config.Type = LayerNorm
 		config.NormSize = def.NormSize
 		if def.Epsilon == 0 {
-			config.Epsilon = 1e-5 // Default epsilon
+			config.Epsilon = 1e-5
 		} else {
 			config.Epsilon = def.Epsilon
+		}
+		// Initialize weights
+		config.Gamma = make([]float32, def.NormSize)
+		config.Beta = make([]float32, def.NormSize)
+		for i := range config.Gamma {
+			config.Gamma[i] = 1.0
 		}
 
 	case "rms_norm", "rmsnorm":
+		// Initialize RMSNorm with gamma=1
 		config.Type = LayerRMSNorm
 		config.NormSize = def.NormSize
 		if def.Epsilon == 0 {
-			config.Epsilon = 1e-5 // Default epsilon
+			config.Epsilon = 1e-5
 		} else {
 			config.Epsilon = def.Epsilon
 		}
+		// Initialize weights
+		config.Gamma = make([]float32, def.NormSize)
+		for i := range config.Gamma {
+			config.Gamma[i] = 1.0
+		}
 
 	case "swiglu":
-		config.Type = LayerSwiGLU
-		// Use InputSize/OutputSize for SwiGLU if Width/Height aren't specified
-		if def.InputSize > 0 {
-			config.InputHeight = def.InputSize
-		} else if def.InputHeight > 0 {
-			config.InputHeight = def.InputHeight
+		// Use InitSwiGLUBrain to properly initialize weights
+		inSize := def.InputSize
+		if inSize == 0 {
+			inSize = def.InputHeight
 		}
+		config = InitSwiGLUBrain(inSize, 0.5)
+		config.OutputHeight = def.OutputHeight
 
 		if def.OutputSize > 0 {
 			config.OutputHeight = def.OutputSize
@@ -1305,6 +1344,18 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 			branchConfig, err := buildLayerConfig(branchDef)
 			if err != nil {
 				return config, fmt.Errorf("parallel branch %d: %w", i, err)
+			}
+			config.ParallelBranches[i] = branchConfig
+		}
+
+	case "sequential":
+		config.Type = LayerSequential
+		// Build sequential layer configurations (processed in order)
+		config.ParallelBranches = make([]LayerConfig, len(def.Branches))
+		for i, branchDef := range def.Branches {
+			branchConfig, err := buildLayerConfig(branchDef)
+			if err != nil {
+				return config, fmt.Errorf("sequential layer %d: %w", i, err)
 			}
 			config.ParallelBranches[i] = branchConfig
 		}
