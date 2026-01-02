@@ -64,11 +64,11 @@ GOOS=linux GOARCH=$GOARCH CGO_ENABLED=1 CC=$CC go build -buildmode=c-shared -o "
 
 echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
 
-# Build C benchmark
-echo "Building simple_bench..."
-$CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,'$ORIGIN' -lm
+# Build universal test
+echo "Building universal_test..."
+$CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/universal_test" universal_test.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,'$ORIGIN' -lm
 
-echo "✓ Benchmark compiled: $OUTPUT_DIR/simple_bench"
+echo "✓ Universal test compiled: $OUTPUT_DIR/universal_test"
 echo ""
 
 # Show files
@@ -78,7 +78,7 @@ echo ""
 echo "=== Build Complete ==="
 echo "Deploy to ARM64 Linux device (Raspberry Pi 4+, ARM servers, etc.):"
 echo "  scp -r $OUTPUT_DIR user@device:/path/to/dest"
-echo "  ssh user@device 'cd /path/to/dest && ./simple_bench'"
+echo "  ssh user@device 'cd /path/to/dest && ./universal_test'"
 echo ""
 echo "Or test with QEMU (if installed):"
-echo "  qemu-aarch64 -L /usr/aarch64-linux-gnu $OUTPUT_DIR/simple_bench"
+echo "  qemu-aarch64 -L /usr/aarch64-linux-gnu $OUTPUT_DIR/universal_test"

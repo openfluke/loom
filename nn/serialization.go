@@ -284,6 +284,9 @@ func serializeBranches(branches []LayerConfig) []LayerDefinition {
 			}
 
 			def.Branches = serializeBranches(branch.ParallelBranches) // Recursive call
+		case LayerSequential:
+			// Sequential layers store their sub-layers in ParallelBranches (processed in order)
+			def.Branches = serializeBranches(branch.ParallelBranches) // Recursive call
 		}
 
 		defs[i] = def
@@ -344,6 +347,9 @@ func serializeBranchWeights(branches []LayerConfig) []LayerWeights {
 			w.DownBias = branch.DownBias
 		case LayerParallel:
 			// Recursively serialize nested branch weights
+			w.BranchWeights = serializeBranchWeights(branch.ParallelBranches)
+		case LayerSequential:
+			// Recursively serialize nested sequential layer weights
 			w.BranchWeights = serializeBranchWeights(branch.ParallelBranches)
 		}
 
@@ -500,6 +506,17 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				GridOutputRows:   def.GridOutputRows,
 				GridOutputCols:   def.GridOutputCols,
 				GridOutputLayers: def.GridOutputLayers,
+			}
+		case "sequential":
+			// Recursively deserialize nested sequential layers with their weights
+			nestedBranches, err := deserializeBranches(def.Branches, w.BranchWeights)
+			if err != nil {
+				return nil, fmt.Errorf("failed to deserialize sequential branches: %w", err)
+			}
+
+			config = LayerConfig{
+				Type:             LayerSequential,
+				ParallelBranches: nestedBranches, // Sequential uses ParallelBranches to store sub-layers
 			}
 		default:
 			return nil, fmt.Errorf("unknown branch type: %s", def.Type)
@@ -658,6 +675,11 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 			// Serialize each branch recursively
 			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
 			layerWeights.BranchWeights = serializeBranchWeights(layerConfig.ParallelBranches)
+
+		case LayerSequential:
+			// Serialize sequential layers (stored in ParallelBranches)
+			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
+			layerWeights.BranchWeights = serializeBranchWeights(layerConfig.ParallelBranches)
 		}
 
 		config.Layers = append(config.Layers, layerDef)
@@ -785,6 +807,12 @@ func (b *ModelBundle) SaveToFile(filename string) error {
 
 // DeserializeModel creates a Network from a SavedModel
 func DeserializeModel(saved SavedModel) (*Network, error) {
+	// Check if this is a multi-precision model
+	if saved.Weights.Format == "multiPrecisionB64" {
+		network, _, err := deserializeMultiPrecisionModel(saved, "float32")
+		return network, err
+	}
+
 	config := saved.Config
 
 	// Create network
@@ -983,6 +1011,18 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				GridOutputLayers: layerDef.GridOutputLayers,
 			}
 
+		case "sequential":
+			// Deserialize sequential branches recursively with their weights
+			branches, err := deserializeBranches(layerDef.Branches, layerWeights.BranchWeights)
+			if err != nil {
+				return nil, fmt.Errorf("failed to deserialize sequential branches: %w", err)
+			}
+
+			layerConfig = LayerConfig{
+				Type:             LayerSequential,
+				ParallelBranches: branches,
+			}
+
 		default:
 			return nil, fmt.Errorf("unknown layer type: %s", layerDef.Type)
 		}
@@ -1018,6 +1058,8 @@ func layerTypeToString(lt LayerType) string {
 		return "residual"
 	case LayerParallel:
 		return "parallel"
+	case LayerSequential:
+		return "sequential"
 	default:
 		return "unknown"
 	}

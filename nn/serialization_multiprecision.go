@@ -279,6 +279,8 @@ func (n *Network) SaveModelWithDType(modelID string, dtype string) (string, erro
 		case LayerParallel:
 			layerDef.CombineMode = layerConfig.CombineMode
 			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
+		case LayerSequential:
+			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
 		}
 
 		config.Layers = append(config.Layers, layerDef)
@@ -344,6 +346,10 @@ func serializeLayerMultiPrecision(cfg *LayerConfig, dtype string, scale float64)
 		mp.UpBias = encodeSliceWithDType(cfg.UpBias, dtype, scale)
 		mp.DownBias = encodeSliceWithDType(cfg.DownBias, dtype, scale)
 	case LayerParallel:
+		for _, branch := range cfg.ParallelBranches {
+			mp.BranchWeights = append(mp.BranchWeights, serializeLayerMultiPrecision(&branch, dtype, scale))
+		}
+	case LayerSequential:
 		for _, branch := range cfg.ParallelBranches {
 			mp.BranchWeights = append(mp.BranchWeights, serializeLayerMultiPrecision(&branch, dtype, scale))
 		}
@@ -538,6 +544,15 @@ func deserializeLayerMultiPrecision(def LayerDefinition, mp MultiPrecisionLayer,
 			branch := deserializeLayerMultiPrecision(branchDef, branchMP, dtype, scale)
 			cfg.ParallelBranches = append(cfg.ParallelBranches, branch)
 		}
+	case LayerSequential:
+		for j, branchDef := range def.Branches {
+			var branchMP MultiPrecisionLayer
+			if j < len(mp.BranchWeights) {
+				branchMP = mp.BranchWeights[j]
+			}
+			branch := deserializeLayerMultiPrecision(branchDef, branchMP, dtype, scale)
+			cfg.ParallelBranches = append(cfg.ParallelBranches, branch)
+		}
 	}
 
 	return cfg
@@ -717,6 +732,10 @@ func countLayerWeights(cfg *LayerConfig) int {
 		count = len(cfg.GateWeights) + len(cfg.UpWeights) + len(cfg.DownWeights)
 		count += len(cfg.GateBias) + len(cfg.UpBias) + len(cfg.DownBias)
 	case LayerParallel:
+		for i := range cfg.ParallelBranches {
+			count += countLayerWeights(&cfg.ParallelBranches[i])
+		}
+	case LayerSequential:
 		for i := range cfg.ParallelBranches {
 			count += countLayerWeights(&cfg.ParallelBranches[i])
 		}
