@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sync"
 	"syscall/js"
 	"time"
 
@@ -276,6 +277,43 @@ func createNetworkFromJSON(this js.Value, args []js.Value) interface{} {
 	// Add getInputSize for convenience
 	obj.Set("getInputSize", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		return network.InputSize
+	}))
+
+	// Add Introspection methods manually if they are not on the struct or not exposed
+	obj.Set("GetNetworkInfo", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		// Basic info
+		info := map[string]interface{}{
+			"InputSize":     network.InputSize,
+			"TotalLayers":   network.TotalLayers(),
+			"GridRows":      network.GridRows,
+			"GridCols":      network.GridCols,
+			"LayersPerCell": network.LayersPerCell,
+		}
+		b, _ := json.Marshal(info)
+		return string(b)
+	}))
+
+	obj.Set("GetTotalParameters", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		total := 0
+		for _, layer := range network.Layers {
+			total += len(layer.Kernel) + len(layer.Bias)
+			total += len(layer.EmbeddingWeights)
+			total += len(layer.QWeights) + len(layer.KWeights) + len(layer.VWeights) + len(layer.OutputWeight)
+			total += len(layer.WeightIH) + len(layer.WeightHH)
+		}
+		return fmt.Sprintf("[%d]", total)
+	}))
+
+	obj.Set("GetMemoryUsage", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		totalParams := 0
+		for _, layer := range network.Layers {
+			totalParams += len(layer.Kernel) + len(layer.Bias)
+			totalParams += len(layer.EmbeddingWeights)
+			totalParams += len(layer.QWeights) + len(layer.KWeights) + len(layer.VWeights) + len(layer.OutputWeight)
+			totalParams += len(layer.WeightIH) + len(layer.WeightHH)
+		}
+		totalBytes := totalParams * 4
+		return fmt.Sprintf("[%d]", totalBytes)
 	}))
 
 	return obj
@@ -581,6 +619,121 @@ func createAdaptationTracker(this js.Value, args []js.Value) interface{} {
 	return createAdaptationTrackerWrapper(tracker)
 }
 
+// ============================================================================
+// Grafting & Stats Support
+// ============================================================================
+
+var graftNetworks = make(map[int64]*nn.Network)
+var graftNetworkNextID int64 = 1
+var graftNetworkMu sync.RWMutex
+
+func createNetworkForGraft(this js.Value, args []js.Value) interface{} {
+	if len(args) < 1 {
+		return "Expected JSON config"
+	}
+	jsonConfig := args[0].String()
+	network, err := nn.BuildNetworkFromJSON(jsonConfig)
+	if err != nil {
+		return -1
+	}
+	network.InitializeWeights()
+
+	graftNetworkMu.Lock()
+	id := graftNetworkNextID
+	graftNetworkNextID++
+	graftNetworks[id] = network
+	graftNetworkMu.Unlock()
+
+	return id
+}
+
+func graftNetworksWrapper(this js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return `{"error": "Expected idsJSON and combineMode"}`
+	}
+
+	var networkIDs []int64
+	if err := json.Unmarshal([]byte(args[0].String()), &networkIDs); err != nil {
+		return fmt.Sprintf(`{"error": "Invalid IDs: %v"}`, err)
+	}
+
+	networks := make([]*nn.Network, 0, len(networkIDs))
+	graftNetworkMu.RLock()
+	for _, id := range networkIDs {
+		if net, ok := graftNetworks[id]; ok {
+			networks = append(networks, net)
+		}
+	}
+	graftNetworkMu.RUnlock()
+
+	if len(networks) < 2 {
+		return `{"error": "Need at least 2 networks"}`
+	}
+
+	mode := args[1].String()
+	res, err := nn.GraftNetworks(networks, mode)
+	if err != nil {
+		return fmt.Sprintf(`{"error": "%v"}`, err)
+	}
+
+	out := map[string]interface{}{
+		"success":      true,
+		"type":         res.Type,
+		"num_branches": len(res.ParallelBranches),
+		"combine_mode": res.CombineMode,
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
+func kmeansClusterWrapper(this js.Value, args []js.Value) interface{} {
+	if len(args) < 3 {
+		return `{"error": "Expected dataJSON, k, iterations"}`
+	}
+	var data [][]float32
+	json.Unmarshal([]byte(args[0].String()), &data)
+	k := args[1].Int()
+	iter := args[2].Int()
+
+	centroids, assignments := nn.KMeansCluster(data, int(k), int(iter), false)
+	
+	res := map[string]interface{}{
+		"centroids": centroids,
+		"assignment": assignments,
+	}
+	b, _ := json.Marshal(res)
+	return string(b)
+}
+
+func computeCorrelationWrapper(this js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return `{"error": "Expected matrixA, matrixB"}`
+	}
+	var A, B [][]float32
+	json.Unmarshal([]byte(args[0].String()), &A)
+	// args[1] can be null/undefined for auto-correlation?
+	if !args[1].IsNull() && !args[1].IsUndefined() {
+		json.Unmarshal([]byte(args[1].String()), &B)
+	}
+
+	res := nn.ComputeCorrelationMatrix(A, nil)
+	b, _ := json.Marshal(res)
+	return string(b)
+}
+
+func findComplementaryMatchesWrapper(this js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return `{"error": "Expected modelsJSON, minCoverage"}`
+	}
+	var models []nn.ModelPerformance
+	json.Unmarshal([]byte(args[0].String()), &models)
+	minCov := args[1].Float()
+
+	matches := nn.FindComplementaryMatches(models, minCov)
+	b, _ := json.Marshal(matches)
+	return string(b)
+}
+
 func main() {
 	fmt.Println("Loom WASM Framework Initialized")
 
@@ -590,6 +743,14 @@ func main() {
 
 	// Register AdaptationTracker for adaptation benchmarks
 	js.Global().Set("createAdaptationTracker", js.FuncOf(createAdaptationTracker))
+
+	// Register Grafting & Stats
+	js.Global().Set("createNetworkForGraft", js.FuncOf(createNetworkForGraft))
+	js.Global().Set("graftNetworks", js.FuncOf(graftNetworksWrapper))
+	js.Global().Set("kmeansCluster", js.FuncOf(kmeansClusterWrapper))
+	js.Global().Set("kmeansCluster", js.FuncOf(kmeansClusterWrapper))
+	js.Global().Set("computeCorrelation", js.FuncOf(computeCorrelationWrapper))
+	js.Global().Set("findComplementaryMatches", js.FuncOf(findComplementaryMatchesWrapper))
 
 	fmt.Println("Available functions:")
 	fmt.Println("  - createLoomNetwork(jsonConfig) - Create network from JSON")

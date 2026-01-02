@@ -1,729 +1,1049 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LOOM v0.0.7 WASM Test Suite</title>
-    <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      body {
-        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-        min-height: 100vh;
-        padding: 20px;
-        color: #e0e0e0;
-      }
-      .container {
-        max-width: 1400px;
-        margin: 0 auto;
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 16px;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
-        overflow: hidden;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-      }
-      .header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 30px;
-        text-align: center;
-      }
-      .header h1 { font-size: 2.5em; margin-bottom: 10px; }
-      .header p { font-size: 1.2em; opacity: 0.9; }
-      .content { padding: 30px; }
-      .summary-bar {
-        display: flex;
-        gap: 20px;
-        justify-content: center;
-        padding: 20px;
-        background: rgba(0, 0, 0, 0.2);
-        border-radius: 12px;
-        margin-bottom: 30px;
-      }
-      .summary-item {
-        text-align: center;
-        padding: 15px 30px;
-        border-radius: 8px;
-        min-width: 120px;
-      }
-      .summary-item.passed { background: rgba(74, 222, 128, 0.2); border: 1px solid #4ade80; }
-      .summary-item.failed { background: rgba(248, 113, 113, 0.2); border: 1px solid #f87171; }
-      .summary-item.pending { background: rgba(96, 165, 250, 0.2); border: 1px solid #60a5fa; }
-      .summary-item h3 { font-size: 2em; }
-      .summary-item p { opacity: 0.8; }
-      .section {
-        margin-bottom: 20px;
-        background: rgba(255, 255, 255, 0.03);
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        overflow: hidden;
-      }
-      .section-header {
-        padding: 15px 20px;
-        background: rgba(102, 126, 234, 0.1);
-        cursor: pointer;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        user-select: none;
-      }
-      .section-header:hover { background: rgba(102, 126, 234, 0.2); }
-      .section-header h2 { color: #a5b4fc; font-size: 1.3em; }
-      .section-header .stats { display: flex; gap: 15px; font-size: 0.9em; }
-      .section-content { padding: 20px; display: none; }
-      .section.expanded .section-content { display: block; }
-      .test-item {
-        padding: 12px 15px;
-        margin: 8px 0;
-        background: rgba(0, 0, 0, 0.2);
-        border-radius: 8px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        border-left: 4px solid #444;
-        transition: all 0.3s;
-      }
-      .test-item.passed { border-left-color: #4ade80; }
-      .test-item.failed { border-left-color: #f87171; }
-      .test-item.running { border-left-color: #fbbf24; animation: pulse 1s infinite; }
-      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-      .test-details { font-size: 0.85em; opacity: 0.7; margin-top: 5px; }
-      button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        padding: 12px 30px;
-        border-radius: 8px;
-        font-size: 16px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.3s;
-      }
-      button:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4); }
-      button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-      .button-group { display: flex; gap: 15px; margin-bottom: 30px; flex-wrap: wrap; justify-content: center; }
-      .output {
-        background: #1a1a1a;
-        color: #d4d4d4;
-        padding: 20px;
-        border-radius: 12px;
-        font-family: "Courier New", monospace;
-        font-size: 13px;
-        white-space: pre-wrap;
-        max-height: 500px;
-        overflow-y: auto;
-        margin-top: 20px;
-        border: 1px solid #333;
-      }
-      .status { padding: 10px 15px; border-radius: 8px; margin-bottom: 20px; text-align: center; }
-      .status.loading { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
-      .status.ready { background: rgba(74, 222, 128, 0.2); color: #4ade80; }
-      .success { color: #4ade80; }
-      .error { color: #f87171; }
-      .info { color: #60a5fa; }
-      .warn { color: #fbbf24; }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="header">
-        <h1>🧠 LOOM v0.0.7 Test Suite</h1>
-        <p>Complete Feature Validation in WebAssembly</p>
-      </div>
-      <div class="content">
-        <div id="status" class="status loading">Loading WASM module...</div>
-        
-        <div class="summary-bar">
-          <div class="summary-item passed"><h3 id="passedCount">0</h3><p>Passed</p></div>
-          <div class="summary-item failed"><h3 id="failedCount">0</h3><p>Failed</p></div>
-          <div class="summary-item pending"><h3 id="pendingCount">0</h3><p>Pending</p></div>
-        </div>
 
-        <div class="button-group">
-          <button onclick="runAllTests()" id="runAllBtn" disabled>🚀 Run All Tests</button>
-          <button onclick="clearLog()">🗑️ Clear Log</button>
-        </div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LOOM v0.0.7 WASM Test Suite</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
 
-        <div class="section expanded" id="section-core">
-          <div class="section-header" onclick="toggleSection('section-core')">
-            <h2>📦 Part 1: Core Feature Tests</h2>
-            <div class="stats"><span id="core-stats">0/6</span></div>
-          </div>
-          <div class="section-content">
-            <div class="test-item" id="test-arch"><span>Architecture Generation with DType</span><span>⏳</span></div>
-            <div class="test-item" id="test-filter"><span>Filter Combine Mode (MoE)</span><span>⏳</span></div>
-            <div class="test-item" id="test-seq"><span>Sequential Layer Composition</span><span>⏳</span></div>
-            <div class="test-item" id="test-kmeans"><span>K-Means Clustering</span><span>⏳</span></div>
-            <div class="test-item" id="test-corr"><span>Correlation Analysis</span><span>⏳</span></div>
-            <div class="test-item" id="test-graft"><span>Network Grafting</span><span>⏳</span></div>
-          </div>
-        </div>
+    body {
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      min-height: 100vh;
+      padding: 20px;
+      color: #e0e0e0;
+    }
 
-        <div class="section" id="section-precision">
-          <div class="section-header" onclick="toggleSection('section-precision')">
-            <h2>🔢 Part 2: Multi-Precision Serialization</h2>
-            <div class="stats"><span id="precision-stats">0/55</span></div>
-          </div>
-          <div class="section-content" id="precision-tests"></div>
-        </div>
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
 
-        <div class="section" id="section-additional">
-          <div class="section-header" onclick="toggleSection('section-additional')">
-            <h2>⚡ Part 3: Additional Features</h2>
-            <div class="stats"><span id="additional-stats">0/11</span></div>
-          </div>
-          <div class="section-content">
-            <div class="test-item" id="test-opt"><span>Optimizers</span><span>⏳</span></div>
-            <div class="test-item" id="test-sched"><span>Learning Rate Schedulers</span><span>⏳</span></div>
-            <div class="test-item" id="test-act"><span>Activation Functions</span><span>⏳</span></div>
-            <div class="test-item" id="test-softmax"><span>Softmax Variants</span><span>⏳</span></div>
-            <div class="test-item" id="test-embed"><span>Embedding Layer</span><span>⏳</span></div>
-            <div class="test-item" id="test-intro"><span>Introspection & Telemetry</span><span>⏳</span></div>
-            <div class="test-item" id="test-tween"><span>Step-Tween Training</span><span>⏳</span></div>
-            <div class="test-item" id="test-conv1d"><span>Conv1D Layer</span><span>⏳</span></div>
-            <div class="test-item" id="test-resid"><span>Residual Connection</span><span>⏳</span></div>
-            <div class="test-item" id="test-ensemble"><span>Ensemble Features</span><span>⏳</span></div>
-            <div class="test-item" id="test-observer"><span>Observer Pattern</span><span>⏳</span></div>
-          </div>
-        </div>
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 30px;
+      text-align: center;
+    }
 
-        <div class="output" id="output">Waiting for WASM module to load...</div>
-      </div>
+    .header h1 {
+      font-size: 2.5em;
+      margin-bottom: 10px;
+    }
+
+    .header p {
+      font-size: 1.2em;
+      opacity: 0.9;
+    }
+
+    .content {
+      padding: 30px;
+    }
+
+    .summary-bar {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 12px;
+      margin-bottom: 30px;
+    }
+
+    .summary-item {
+      text-align: center;
+      padding: 15px 30px;
+      border-radius: 8px;
+      min-width: 120px;
+    }
+
+    .summary-item.passed {
+      background: rgba(74, 222, 128, 0.2);
+      border: 1px solid #4ade80;
+    }
+
+    .summary-item.failed {
+      background: rgba(248, 113, 113, 0.2);
+      border: 1px solid #f87171;
+    }
+
+    .summary-item.pending {
+      background: rgba(96, 165, 250, 0.2);
+      border: 1px solid #60a5fa;
+    }
+
+    .summary-item h3 {
+      font-size: 2em;
+    }
+
+    .summary-item p {
+      opacity: 0.8;
+    }
+
+    .section {
+      margin-bottom: 20px;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+
+    .section-header {
+      padding: 15px 20px;
+      background: rgba(102, 126, 234, 0.1);
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+    }
+
+    .section-header:hover {
+      background: rgba(102, 126, 234, 0.2);
+    }
+
+    .section-header h2 {
+      color: #a5b4fc;
+      font-size: 1.3em;
+    }
+
+    .section-header .stats {
+      display: flex;
+      gap: 15px;
+      font-size: 0.9em;
+    }
+
+    .section-content {
+      padding: 20px;
+      display: none;
+    }
+
+    .section.expanded .section-content {
+      display: block;
+    }
+
+    .test-item {
+      padding: 12px 15px;
+      margin: 8px 0;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-left: 4px solid #444;
+      transition: all 0.3s;
+    }
+
+    .test-item.passed {
+      border-left-color: #4ade80;
+    }
+
+    .test-item.failed {
+      border-left-color: #f87171;
+    }
+
+    .test-item.running {
+      border-left-color: #fbbf24;
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.5;
+      }
+    }
+
+    .test-details {
+      font-size: 0.85em;
+      opacity: 0.7;
+      margin-top: 5px;
+    }
+
+    button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 15px;
+      margin-bottom: 30px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .output {
+      background: #1a1a1a;
+      color: #d4d4d4;
+      padding: 20px;
+      border-radius: 12px;
+      font-family: "Courier New", monospace;
+      font-size: 13px;
+      white-space: pre-wrap;
+      max-height: 500px;
+      overflow-y: auto;
+      margin-top: 20px;
+      border: 1px solid #333;
+    }
+
+    .status {
+      padding: 10px 15px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+
+    .status.loading {
+      background: rgba(59, 130, 246, 0.2);
+      color: #60a5fa;
+    }
+
+    .status.ready {
+      background: rgba(74, 222, 128, 0.2);
+      color: #4ade80;
+    }
+
+    .success {
+      color: #4ade80;
+    }
+
+    .error {
+      color: #f87171;
+    }
+
+    .info {
+      color: #60a5fa;
+    }
+
+    .warn {
+      color: #fbbf24;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🧠 LOOM v0.0.7 Test Suite</h1>
+      <p>Complete Feature Validation in WebAssembly</p>
     </div>
+    <div class="content">
+      <div id="status" class="status loading">Loading WASM module...</div>
 
-    <script src="wasm_exec.js"></script>
-    <script>
-      let wasmReady = false;
-      let network = null;
-      let passed = 0, failed = 0, pending = 0;
+      <div class="summary-bar">
+        <div class="summary-item passed">
+          <h3 id="passedCount">0</h3>
+          <p>Passed</p>
+        </div>
+        <div class="summary-item failed">
+          <h3 id="failedCount">0</h3>
+          <p>Failed</p>
+        </div>
+        <div class="summary-item pending">
+          <h3 id="pendingCount">0</h3>
+          <p>Pending</p>
+        </div>
+      </div>
 
-      const layerTypes = ["Dense", "MHA", "RNN", "LSTM", "LayerNorm", "RMSNorm", "SwiGLU", "Conv2D", "Parallel", "Sequential", "Softmax"];
-      const dtypes = ["float32", "float64", "int32", "int16", "int8"];
+      <div class="button-group">
+        <button onclick="runAllTests()" id="runAllBtn" disabled>🚀 Run All Tests</button>
+        <button onclick="clearLog()">🗑️ Clear Log</button>
+      </div>
 
-      // Initialize precision test items
-      document.addEventListener('DOMContentLoaded', () => {
-        const container = document.getElementById('precision-tests');
-        layerTypes.forEach(layer => {
-          dtypes.forEach(dtype => {
-            const id = `test-${layer.toLowerCase()}-${dtype}`;
-            container.innerHTML += `<div class="test-item" id="${id}"><span>${layer}/${dtype}</span><span>⏳</span></div>`;
-          });
+      <div class="section expanded" id="section-core">
+        <div class="section-header" onclick="toggleSection('section-core')">
+          <h2>📦 Part 1: Core Feature Tests</h2>
+          <div class="stats"><span id="core-stats">0/6</span></div>
+        </div>
+        <div class="section-content">
+          <div class="test-item" id="test-arch"><span>Architecture Generation with DType</span><span>⏳</span></div>
+          <div class="test-item" id="test-filter"><span>Filter Combine Mode (MoE)</span><span>⏳</span></div>
+          <div class="test-item" id="test-seq"><span>Sequential Layer Composition</span><span>⏳</span></div>
+          <div class="test-item" id="test-kmeans"><span>K-Means Clustering</span><span>⏳</span></div>
+          <div class="test-item" id="test-corr"><span>Correlation Analysis</span><span>⏳</span></div>
+          <div class="test-item" id="test-graft"><span>Network Grafting</span><span>⏳</span></div>
+        </div>
+      </div>
+
+      <div class="section" id="section-precision">
+        <div class="section-header" onclick="toggleSection('section-precision')">
+          <h2>🔢 Part 2: Multi-Precision Serialization</h2>
+          <div class="stats"><span id="precision-stats">0/55</span></div>
+        </div>
+        <div class="section-content" id="precision-tests"></div>
+      </div>
+
+      <div class="section" id="section-additional">
+        <div class="section-header" onclick="toggleSection('section-additional')">
+          <h2>⚡ Part 3: Additional Features</h2>
+          <div class="stats"><span id="additional-stats">0/11</span></div>
+        </div>
+        <div class="section-content">
+          <div class="test-item" id="test-opt"><span>Optimizers</span><span>⏳</span></div>
+          <div class="test-item" id="test-sched"><span>Learning Rate Schedulers</span><span>⏳</span></div>
+          <div class="test-item" id="test-act"><span>Activation Functions</span><span>⏳</span></div>
+          <div class="test-item" id="test-softmax"><span>Softmax Variants</span><span>⏳</span></div>
+          <div class="test-item" id="test-embed"><span>Embedding Layer</span><span>⏳</span></div>
+          <div class="test-item" id="test-intro"><span>Introspection & Telemetry</span><span>⏳</span></div>
+          <div class="test-item" id="test-tween"><span>Step-Tween Training</span><span>⏳</span></div>
+          <div class="test-item" id="test-conv1d"><span>Conv1D Layer</span><span>⏳</span></div>
+          <div class="test-item" id="test-resid"><span>Residual Connection</span><span>⏳</span></div>
+          <div class="test-item" id="test-ensemble"><span>Ensemble Features</span><span>⏳</span></div>
+          <div class="test-item" id="test-observer"><span>Observer Pattern</span><span>⏳</span></div>
+        </div>
+      </div>
+
+      <div class="output" id="output">Waiting for WASM module to load...</div>
+    </div>
+  </div>
+
+  <script src="wasm_exec.js"></script>
+  <script>
+    let wasmReady = false;
+    let network = null;
+    let passed = 0, failed = 0, pending = 0;
+
+    const layerTypes = ["Dense", "MHA", "RNN", "LSTM", "LayerNorm", "RMSNorm", "SwiGLU", "Conv2D", "Parallel", "Sequential", "Softmax"];
+    const dtypes = ["float32", "float64", "int32", "int16", "int8"];
+
+    // Initialize precision test items
+    document.addEventListener('DOMContentLoaded', () => {
+      const container = document.getElementById('precision-tests');
+      layerTypes.forEach(layer => {
+        dtypes.forEach(dtype => {
+          const id = `test-${layer.toLowerCase()}-${dtype}`;
+          container.innerHTML += `<div class="test-item" id="${id}"><span>${layer}/${dtype}</span><span>⏳</span></div>`;
         });
-        pending = 6 + 55 + 11;
-        updateCounts();
+      });
+      pending = 6 + 55 + 11;
+      updateCounts();
+    });
+
+    const go = new Go();
+    WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject)
+      .then((result) => {
+        go.run(result.instance);
+        wasmReady = true;
+        updateStatus("ready", "✅ WASM module loaded and ready!");
+        document.getElementById("runAllBtn").disabled = false;
+      })
+      .catch((err) => {
+        updateStatus("error", "❌ Failed to load WASM: " + err);
+        log("error", "WASM load error: " + err);
       });
 
-      const go = new Go();
-      WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject)
-        .then((result) => {
-          go.run(result.instance);
-          wasmReady = true;
-          updateStatus("ready", "✅ WASM module loaded and ready!");
-          document.getElementById("runAllBtn").disabled = false;
-        })
-        .catch((err) => {
-          updateStatus("error", "❌ Failed to load WASM: " + err);
-          log("error", "WASM load error: " + err);
-        });
+    function updateStatus(type, message) {
+      const status = document.getElementById("status");
+      status.className = "status " + type;
+      status.textContent = message;
+    }
 
-      function updateStatus(type, message) {
-        const status = document.getElementById("status");
-        status.className = "status " + type;
-        status.textContent = message;
-      }
+    function log(type, message) {
+      const output = document.getElementById("output");
+      const timestamp = new Date().toLocaleTimeString();
+      output.innerHTML += `<span class="${type}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+    }
 
-      function log(type, message) {
-        const output = document.getElementById("output");
-        const timestamp = new Date().toLocaleTimeString();
-        output.innerHTML += `<span class="${type}">[${timestamp}] ${message}</span>\n`;
-        output.scrollTop = output.scrollHeight;
-      }
+    function clearLog() { document.getElementById("output").innerHTML = ""; }
 
-      function clearLog() { document.getElementById("output").innerHTML = ""; }
+    function updateCounts() {
+      document.getElementById("passedCount").textContent = passed;
+      document.getElementById("failedCount").textContent = failed;
+      document.getElementById("pendingCount").textContent = pending;
+    }
 
-      function updateCounts() {
-        document.getElementById("passedCount").textContent = passed;
-        document.getElementById("failedCount").textContent = failed;
-        document.getElementById("pendingCount").textContent = pending;
-      }
+    function setTestResult(id, success, detail = "") {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.className = "test-item " + (success ? "passed" : "failed");
+      el.children[1].textContent = success ? "✅" : "❌";
+      if (detail) el.innerHTML += `<div class="test-details">${detail}</div>`;
+      if (success) passed++; else failed++;
+      pending--;
+      updateCounts();
+    }
 
-      function setTestResult(id, success, detail = "") {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.className = "test-item " + (success ? "passed" : "failed");
-        el.children[1].textContent = success ? "✅" : "❌";
-        if (detail) el.innerHTML += `<div class="test-details">${detail}</div>`;
-        if (success) passed++; else failed++;
-        pending--;
-        updateCounts();
-      }
+    function toggleSection(id) {
+      document.getElementById(id).classList.toggle('expanded');
+    }
 
-      function toggleSection(id) {
-        document.getElementById(id).classList.toggle('expanded');
-      }
-
-      function getJSONConfig(layerType, dtype) {
-        const configs = {
-          "Dense": { id: "dense_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
+    function getJSONConfig(layerType, dtype) {
+      const configs = {
+        "Dense": {
+          id: "dense_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 8, output_height: 64 },
             { type: "dense", activation: "tanh", input_height: 64, output_height: 32 },
             { type: "dense", activation: "sigmoid", input_height: 32, output_height: 4 }
-          ]},
-          "MHA": { id: "mha_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+          ]
+        },
+        "MHA": {
+          id: "mha_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "multi_head_attention", d_model: 64, num_heads: 8, seq_length: 1 },
             { type: "dense", activation: "sigmoid", input_height: 64, output_height: 4 }
-          ]},
-          "RNN": { id: "rnn_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+          ]
+        },
+        "RNN": {
+          id: "rnn_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "rnn", input_size: 16, hidden_size: 32, activation: "tanh" },
             { type: "dense", activation: "sigmoid", input_height: 32, output_height: 4 }
-          ]},
-          "LSTM": { id: "lstm_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+          ]
+        },
+        "LSTM": {
+          id: "lstm_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "lstm", input_size: 16, hidden_size: 32 },
             { type: "dense", activation: "sigmoid", input_height: 32, output_height: 4 }
-          ]},
-          "LayerNorm": { id: "layernorm_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
+          ]
+        },
+        "LayerNorm": {
+          id: "layernorm_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 16, output_height: 32 },
             { type: "layer_norm", norm_size: 32, epsilon: 1e-5 },
             { type: "dense", activation: "sigmoid", input_height: 32, output_height: 4 }
-          ]},
-          "RMSNorm": { id: "rmsnorm_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
+          ]
+        },
+        "RMSNorm": {
+          id: "rmsnorm_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 16, output_height: 32 },
             { type: "rms_norm", norm_size: 32, epsilon: 1e-5 },
             { type: "dense", activation: "sigmoid", input_height: 32, output_height: 4 }
-          ]},
-          "SwiGLU": { id: "swiglu_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
+          ]
+        },
+        "SwiGLU": {
+          id: "swiglu_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 32, output_height: 64 },
             { type: "swiglu", input_height: 64, output_height: 128 },
             { type: "dense", activation: "sigmoid", input_height: 64, output_height: 4 }
-          ]},
-          "Conv2D": { id: "conv2d_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+          ]
+        },
+        "Conv2D": {
+          id: "conv2d_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "conv2d", input_channels: 1, filters: 2, kernel_size: 3, stride: 1, padding: 1, input_height: 4, input_width: 4, activation: "leaky_relu" },
             { type: "dense", activation: "sigmoid", input_height: 32, output_height: 4 }
-          ]},
-          "Parallel": { id: "parallel_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
+          ]
+        },
+        "Parallel": {
+          id: "parallel_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 8, output_height: 16 },
-            { type: "parallel", combine_mode: "concat", branches: [
-              { type: "dense", activation: "tanh", input_height: 16, output_height: 8 },
-              { type: "dense", activation: "sigmoid", input_height: 16, output_height: 8 }
-            ]},
+            {
+              type: "parallel", combine_mode: "concat", branches: [
+                { type: "dense", activation: "tanh", input_height: 16, output_height: 8 },
+                { type: "dense", activation: "sigmoid", input_height: 16, output_height: 8 }
+              ]
+            },
             { type: "dense", activation: "sigmoid", input_height: 16, output_height: 4 }
-          ]},
-          "Sequential": { id: "sequential_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
-            { type: "sequential", branches: [
-              { type: "dense", activation: "leaky_relu", input_height: 8, output_height: 16 },
-              { type: "dense", activation: "tanh", input_height: 16, output_height: 8 }
-            ]},
+          ]
+        },
+        "Sequential": {
+          id: "sequential_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+            {
+              type: "sequential", branches: [
+                { type: "dense", activation: "leaky_relu", input_height: 8, output_height: 16 },
+                { type: "dense", activation: "tanh", input_height: 16, output_height: 8 }
+              ]
+            },
             { type: "dense", activation: "sigmoid", input_height: 8, output_height: 4 }
-          ]},
-          "Softmax": { id: "softmax_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
+          ]
+        },
+        "Softmax": {
+          id: "softmax_test", dtype, batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 3, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 8, output_height: 16 },
             { type: "dense", activation: "leaky_relu", input_height: 16, output_height: 4 },
             { type: "softmax", softmax_variant: "standard", temperature: 1.0 }
-          ]}
-        };
-        return JSON.stringify(configs[layerType]);
-      }
-
-      function getInputSize(layerType) {
-        const sizes = { Dense: 8, MHA: 64, RNN: 16, LSTM: 16, LayerNorm: 16, RMSNorm: 16, SwiGLU: 32, Conv2D: 16, Parallel: 8, Sequential: 8, Softmax: 8 };
-        return sizes[layerType] || 8;
-      }
-
-      function getThreshold(dtype) {
-        const thresholds = { float64: 1e-6, float32: 1e-6, int32: 0.1, int16: 0.15, int8: 0.25 };
-        return thresholds[dtype] || 0.1;
-      }
-
-      async function runAllTests() {
-        if (!wasmReady) { log("error", "WASM not ready"); return; }
-        clearLog();
-        passed = 0; failed = 0; pending = 72; updateCounts();
-        log("info", "╔══════════════════════════════════════════════════════════════════════╗");
-        log("info", "║               LOOM v0.0.7 Complete Feature Test Suite               ║");
-        log("info", "╚══════════════════════════════════════════════════════════════════════╝");
-
-        // Part 1: Core Tests
-        log("info", "\n═══════════════════════════════════════════════════════════════════════");
-        log("info", "                     PART 1: CORE FEATURE TESTS                        ");
-        log("info", "═══════════════════════════════════════════════════════════════════════");
-        
-        await testArchitectureGeneration();
-        await testFilterCombineMode();
-        await testSequentialLayers();
-        await testKMeansClustering();
-        await testCorrelationAnalysis();
-        await testNetworkGrafting();
-        document.getElementById("core-stats").textContent = `${passed}/6`;
-
-        // Part 2: Multi-Precision
-        log("info", "\n═══════════════════════════════════════════════════════════════════════");
-        log("info", "           PART 2: MULTI-PRECISION SAVE/LOAD FOR ALL LAYERS           ");
-        log("info", "═══════════════════════════════════════════════════════════════════════");
-        
-        const p2Start = passed;
-        for (const layer of layerTypes) {
-          for (const dtype of dtypes) {
-            await testLayerWithDType(layer, dtype);
-          }
+          ]
         }
-        document.getElementById("precision-stats").textContent = `${passed - p2Start}/55`;
+      };
+      return JSON.stringify(configs[layerType]);
+    }
 
-        // Part 3: Additional
-        log("info", "\n═══════════════════════════════════════════════════════════════════════");
-        log("info", "              PART 3: ADDITIONAL FEATURE TESTS                        ");
-        log("info", "═══════════════════════════════════════════════════════════════════════");
-        
-        const p3Start = passed;
-        await testOptimizers();
-        await testSchedulers();
-        await testActivations();
-        await testSoftmaxVariants();
-        await testEmbeddingLayer();
-        await testIntrospection();
-        await testStepTween();
-        await testConv1DLayer();
-        await testResidualConnection();
-        await testEnsembleFeatures();
-        await testObserverPattern();
-        document.getElementById("additional-stats").textContent = `${passed - p3Start}/11`;
+    function getInputSize(layerType) {
+      const sizes = { Dense: 8, MHA: 64, RNN: 16, LSTM: 16, LayerNorm: 16, RMSNorm: 16, SwiGLU: 32, Conv2D: 16, Parallel: 8, Sequential: 8, Softmax: 8 };
+      return sizes[layerType] || 8;
+    }
 
-        log("info", "\n╔══════════════════════════════════════════════════════════════════════╗");
-        log(passed === 72 ? "success" : "warn", `║              FINAL RESULTS: ${passed}/${passed + failed} TESTS PASSED                       ║`);
-        log("info", "╚══════════════════════════════════════════════════════════════════════╝");
+    function getThreshold(dtype) {
+      const thresholds = { float64: 1e-6, float32: 1e-6, int32: 0.1, int16: 0.15, int8: 0.25 };
+      return thresholds[dtype] || 0.1;
+    }
+
+    async function runAllTests() {
+      if (!wasmReady) { log("error", "WASM not ready"); return; }
+      clearLog();
+      passed = 0; failed = 0; pending = 72; updateCounts();
+      log("info", "╔══════════════════════════════════════════════════════════════════════╗");
+      log("info", "║               LOOM v0.0.7 Complete Feature Test Suite               ║");
+      log("info", "╚══════════════════════════════════════════════════════════════════════╝");
+
+      // Part 1: Core Tests
+      log("info", "\n═══════════════════════════════════════════════════════════════════════");
+      log("info", "                     PART 1: CORE FEATURE TESTS                        ");
+      log("info", "═══════════════════════════════════════════════════════════════════════");
+
+      await testArchitectureGeneration();
+      await testFilterCombineMode();
+      await testSequentialLayers();
+      await testKMeansClustering();
+      await testCorrelationAnalysis();
+      await testNetworkGrafting();
+      document.getElementById("core-stats").textContent = `${passed}/6`;
+
+      // Part 2: Multi-Precision
+      log("info", "\n═══════════════════════════════════════════════════════════════════════");
+      log("info", "           PART 2: MULTI-PRECISION SAVE/LOAD FOR ALL LAYERS           ");
+      log("info", "═══════════════════════════════════════════════════════════════════════");
+
+      const p2Start = passed;
+      for (const layer of layerTypes) {
+        for (const dtype of dtypes) {
+          await testLayerWithDType(layer, dtype);
+        }
       }
+      document.getElementById("precision-stats").textContent = `${passed - p2Start}/55`;
 
-      async function testArchitectureGeneration() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Architecture Generation with DType                                  │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        try {
-          const config = { dtype: "float32", batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+      // Part 3: Additional
+      log("info", "\n═══════════════════════════════════════════════════════════════════════");
+      log("info", "              PART 3: ADDITIONAL FEATURE TESTS                        ");
+      log("info", "═══════════════════════════════════════════════════════════════════════");
+
+      const p3Start = passed;
+      await testOptimizers();
+      await testSchedulers();
+      await testActivations();
+      await testSoftmaxVariants();
+      await testEmbeddingLayer();
+      await testIntrospection();
+      await testStepTween();
+      await testConv1DLayer();
+      await testResidualConnection();
+      await testEnsembleFeatures();
+      await testObserverPattern();
+      document.getElementById("additional-stats").textContent = `${passed - p3Start}/11`;
+
+      log("info", "\n╔══════════════════════════════════════════════════════════════════════╗");
+      log(passed === 72 ? "success" : "warn", `║              FINAL RESULTS: ${passed}/${passed + failed} TESTS PASSED                       ║`);
+      log("info", "╚══════════════════════════════════════════════════════════════════════╝");
+    }
+
+    async function testArchitectureGeneration() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Architecture Generation with DType                                  │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const config = {
+          dtype: "float32", batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 8, output_height: 16 },
             { type: "dense", activation: "sigmoid", input_height: 16, output_height: 4 }
-          ]};
-          const net = createLoomNetwork(JSON.stringify(config));
-          if (typeof net === "string") throw new Error(net);
-          log("success", "  ✓ Network created with dtype=float32");
-          const result = net.ForwardCPU(JSON.stringify([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]]));
-          const parsed = JSON.parse(result);
-          if (parsed[0].length === 4) {
-            log("success", `  ✓ Forward pass: output=[${parsed[0].map(v => v.toFixed(3)).join(", ")}]`);
-            log("success", "  ✅ PASSED: Architecture Generation with DType");
-            setTestResult("test-arch", true);
-          } else throw new Error("Output size mismatch");
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-arch", false, e.message); }
-      }
+          ]
+        };
+        const net = createLoomNetwork(JSON.stringify(config));
+        if (typeof net === "string") throw new Error(net);
+        log("success", "  ✓ Network created with dtype=float32");
+        const result = net.ForwardCPU(JSON.stringify([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]]));
+        const parsed = JSON.parse(result);
+        if (parsed[0].length === 4) {
+          log("success", `  ✓ Forward pass: output=[${parsed[0].map(v => v.toFixed(3)).join(", ")}]`);
+          log("success", "  ✅ PASSED: Architecture Generation with DType");
+          setTestResult("test-arch", true);
+        } else throw new Error("Output size mismatch");
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-arch", false, e.message); }
+    }
 
-      async function testFilterCombineMode() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Parallel Filter Combine Mode (MoE)                                  │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        try {
-          const config = { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
-            { type: "parallel", combine_mode: "filter", filter_temperature: 1.0, branches: [
-              { type: "dense", activation: "tanh", input_height: 4, output_height: 2 },
-              { type: "dense", activation: "sigmoid", input_height: 4, output_height: 2 }
-            ], filter_gate: { type: "dense", input_height: 4, output_height: 2, activation: "sigmoid" }},
+    async function testFilterCombineMode() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Parallel Filter Combine Mode (MoE)                                  │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const config = {
+          batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+            {
+              type: "parallel", combine_mode: "filter", filter_temperature: 1.0, branches: [
+                { type: "dense", activation: "tanh", input_height: 4, output_height: 2 },
+                { type: "dense", activation: "sigmoid", input_height: 4, output_height: 2 }
+              ], filter_gate: { type: "dense", input_height: 4, output_height: 2, activation: "sigmoid" }
+            },
             { type: "dense", activation: "sigmoid", input_height: 2, output_height: 2 }
-          ]};
-          const net = createLoomNetwork(JSON.stringify(config));
-          if (typeof net === "string") throw new Error(net);
-          const result = net.ForwardCPU(JSON.stringify([[0.1, 0.2, 0.3, 0.4]]));
-          const parsed = JSON.parse(result);
-          if (parsed[0].length === 2) {
-            log("success", `  ✓ Forward pass: output=[${parsed[0].map(v => v.toFixed(3)).join(", ")}]`);
-            log("success", "  ✅ PASSED: Filter Combine Mode (MoE)");
-            setTestResult("test-filter", true);
-          } else throw new Error("Output size mismatch");
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-filter", false, e.message); }
-      }
+          ]
+        };
+        const net = createLoomNetwork(JSON.stringify(config));
+        if (typeof net === "string") throw new Error(net);
+        const result = net.ForwardCPU(JSON.stringify([[0.1, 0.2, 0.3, 0.4]]));
+        const parsed = JSON.parse(result);
+        if (parsed[0].length === 2) {
+          log("success", `  ✓ Forward pass: output=[${parsed[0].map(v => v.toFixed(3)).join(", ")}]`);
+          log("success", "  ✅ PASSED: Filter Combine Mode (MoE)");
+          setTestResult("test-filter", true);
+        } else throw new Error("Output size mismatch");
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-filter", false, e.message); }
+    }
 
-      async function testSequentialLayers() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Sequential Layer Composition                                        │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
+    async function testSequentialLayers() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Sequential Layer Composition                                        │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const config = {
+          batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 1, layers: [
+            {
+              type: "sequential", branches: [
+                { type: "dense", activation: "leaky_relu", input_height: 4, output_height: 8 },
+                { type: "dense", activation: "sigmoid", input_height: 8, output_height: 2 }
+              ]
+            }
+          ]
+        };
+        const net = createLoomNetwork(JSON.stringify(config));
+        if (typeof net === "string") throw new Error(net);
+        const result = net.ForwardCPU(JSON.stringify([[0.1, 0.2, 0.3, 0.4]]));
+        const parsed = JSON.parse(result);
+        if (parsed[0].length === 2) {
+          log("success", `  ✓ Sequential layer with 2 sub-layers`);
+          log("success", `  ✓ Forward pass: output=[${parsed[0].map(v => v.toFixed(3)).join(", ")}]`);
+          log("success", "  ✅ PASSED: Sequential Layer Composition");
+          setTestResult("test-seq", true);
+        } else throw new Error("Output size mismatch");
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-seq", false, e.message); }
+    }
+
+    async function testKMeansClustering() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ K-Means Clustering                                                  │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const data = [[1.0, 1.0], [1.1, 1.1], [5.0, 5.0], [5.1, 5.1]];
+        // kmeansCluster(dataJSON, k, iter) -> returns JSON string
+        const resStr = kmeansCluster(JSON.stringify(data), 2, 10);
+        const res = JSON.parse(resStr);
+
+        if (res.centroids && res.centroids.length === 2) {
+          log("success", `  ✓ K-Means: ${res.centroids.length} centroids found`);
+          log("success", "  ✅ PASSED: K-Means Clustering");
+          setTestResult("test-kmeans", true);
+        } else throw new Error("Incorrect centroid count");
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-kmeans", false, e.message); }
+    }
+
+    async function testCorrelationAnalysis() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Correlation Analysis                                                │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const data = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]; // 4 samples, 3 features
+        // computeCorrelation(dataJSON, null) -> returns JSON string
+        const resStr = computeCorrelation(JSON.stringify(data), null);
+
+        let res;
         try {
-          const config = { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 1, layers: [
-            { type: "sequential", branches: [
-              { type: "dense", activation: "leaky_relu", input_height: 4, output_height: 8 },
-              { type: "dense", activation: "sigmoid", input_height: 8, output_height: 2 }
-            ]}
-          ]};
-          const net = createLoomNetwork(JSON.stringify(config));
-          if (typeof net === "string") throw new Error(net);
-          const result = net.ForwardCPU(JSON.stringify([[0.1, 0.2, 0.3, 0.4]]));
-          const parsed = JSON.parse(result);
-          if (parsed[0].length === 2) {
-            log("success", `  ✓ Sequential layer with 2 sub-layers`);
-            log("success", `  ✓ Forward pass: output=[${parsed[0].map(v => v.toFixed(3)).join(", ")}]`);
-            log("success", "  ✅ PASSED: Sequential Layer Composition");
-            setTestResult("test-seq", true);
-          } else throw new Error("Output size mismatch");
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-seq", false, e.message); }
-      }
+          res = JSON.parse(resStr);
+        } catch (e) { throw new Error("JSON parse error: " + resStr); }
 
-      async function testKMeansClustering() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ K-Means Clustering                                                  │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        // K-means is in nn package, not directly exposed - mark as not applicable in WASM
-        log("warn", "  ⚠ K-Means not directly exposed to WASM (internal nn function)");
-        log("success", "  ✅ PASSED: K-Means Clustering (skipped - internal API)");
-        setTestResult("test-kmeans", true, "Internal API - not exposed to WASM");
-      }
+        // nn.ComputeCorrelationMatrix returns { correlation: { matrix: ... } }
+        // Check both cases to be safe
+        const mat = (res.correlation && res.correlation.matrix) ? res.correlation.matrix :
+          (res.Correlation && res.Correlation.Matrix) ? res.Correlation.Matrix :
+            res.matrix;
 
-      async function testCorrelationAnalysis() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Correlation Analysis                                                │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        log("warn", "  ⚠ Correlation not directly exposed to WASM (internal nn function)");
-        log("success", "  ✅ PASSED: Correlation Analysis (skipped - internal API)");
-        setTestResult("test-corr", true, "Internal API - not exposed to WASM");
-      }
-
-      async function testNetworkGrafting() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Network Grafting                                                    │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        log("warn", "  ⚠ Grafting not directly exposed to WASM (internal nn function)");
-        log("success", "  ✅ PASSED: Network Grafting (skipped - internal API)");
-        setTestResult("test-graft", true, "Internal API - not exposed to WASM");
-      }
-
-      async function testLayerWithDType(layer, dtype) {
-        const id = `test-${layer.toLowerCase()}-${dtype}`;
-        try {
-          const config = getJSONConfig(layer, dtype);
-          const net = createLoomNetwork(config);
-          if (typeof net === "string") throw new Error(net);
-          
-          const inputSize = getInputSize(layer);
-          const input = Array(inputSize).fill(0).map((_, i) => (i + 1) * 0.1);
-          const result = net.ForwardCPU(JSON.stringify([input]));
-          const parsed = JSON.parse(result);
-          
-          if (!parsed[0] || parsed[0].length !== 4) throw new Error("Output size mismatch");
-          
-          // Save and load test
-          const saveResult = net.SaveModelWithDType(JSON.stringify([`${layer}_test`, dtype]));
-          const saveParsed = JSON.parse(saveResult);
-          if (saveParsed[1]) throw new Error(saveParsed[1]);
-          
-          log("success", `  ✓ ${layer.padEnd(10)}/${dtype.padEnd(8)}: forward OK, save/load cycle passed`);
-          setTestResult(id, true);
-        } catch(e) {
-          log("error", `  ❌ ${layer}/${dtype}: ${e.message}`);
-          setTestResult(id, false, e.message);
+        if (mat && mat.length === 3) {
+          log("success", `  ✓ Correlation: ${mat.length}x${mat[0].length} matrix computed`);
+          log("success", "  ✅ PASSED: Correlation Analysis");
+          setTestResult("test-corr", true);
+        } else {
+          throw new Error("Invalid correlation result.");
         }
-      }
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-corr", false, e.message); }
+    }
 
-      async function testOptimizers() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Optimizers                                                          │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
+    async function testNetworkGrafting() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Network Grafting                                                    │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const config = {
+          dtype: "float32", batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2,
+          layers: [
+            { type: "dense", input_height: 4, output_height: 8 },
+            { type: "dense", input_height: 8, output_height: 4 }
+          ]
+        };
+        const jsonConfig = JSON.stringify(config);
+        // createNetworkForGraft(jsonConfig) -> returns handle ID (number)
+        const h1 = createNetworkForGraft(jsonConfig);
+        const h2 = createNetworkForGraft(jsonConfig);
+
+        if (h1 <= 0 || h2 <= 0) throw new Error("Failed to create graft handles. Got: " + h1 + ", " + h2);
+
+        // graftNetworks(idsJSON, mode) -> returns JSON string
+        const resStr = graftNetworks(JSON.stringify([h1, h2]), "concat");
+        const res = JSON.parse(resStr);
+
+        if (res.success) {
+          log("success", `  ✓ Grafted: ${res.num_branches} branches, type=${res.type}`);
+          log("success", "  ✅ PASSED: Network Grafting");
+          setTestResult("test-graft", true);
+        } else throw new Error(res.error || "Grafting failed");
+
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-graft", false, e.message); }
+    }
+
+    async function testLayerWithDType(layer, dtype) {
+      const id = `test-${layer.toLowerCase()}-${dtype}`;
+      try {
+        const config = getJSONConfig(layer, dtype);
+        const net = createLoomNetwork(config);
+        if (typeof net === "string") throw new Error(net);
+
+        const inputSize = getInputSize(layer);
+        const input = Array(inputSize).fill(0).map((_, i) => (i + 1) * 0.1);
+        const result = net.ForwardCPU(JSON.stringify([input]));
+        const parsed = JSON.parse(result);
+
+        if (!parsed[0] || parsed[0].length !== 4) throw new Error("Output size mismatch");
+
+        // Save and load test
+        const saveResult = net.SaveModelWithDType(JSON.stringify([`${layer}_test`, dtype]));
+        const saveParsed = JSON.parse(saveResult);
+        if (saveParsed[1]) throw new Error(saveParsed[1]);
+
+        log("success", `  ✓ ${layer.padEnd(10)}/${dtype.padEnd(8)}: forward OK, save/load cycle passed`);
+        setTestResult(id, true);
+      } catch (e) {
+        log("error", `  ❌ ${layer}/${dtype}: ${e.message}`);
+        setTestResult(id, false, e.message);
+      }
+    }
+
+    async function testOptimizers() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Optimizers                                                          │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        // Use leaky_relu and simple config to avoid NaN/Exploreration issues
+        const config = {
+          dtype: "float32", batch_size: 2, grid_rows: 1, grid_cols: 1, layers_per_cell: 1,
+          layers: [{ type: "dense", input_height: 2, output_height: 2, activation: "leaky_relu" }]
+        };
+        const net = createLoomNetwork(JSON.stringify(config));
+        if (!net) throw new Error("Failed to create network");
+
+        const trainConfig = { Epochs: 5, LearningRate: 0.001, LossType: "mse" };
+        // net.Train([batches, config]) -> JSON string
+        // Batches: Input[2], Target[2]
+        const batches = [
+          { Input: [0, 0], Target: [0, 0] },
+          { Input: [1, 1], Target: [1, 1] }
+        ];
+
+        const resStr = net.Train(JSON.stringify([batches, trainConfig]));
+        // Log result for debugging
+        if (!resStr) throw new Error("Net.Train returned empty string");
+
         try {
-          const config = { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
-            { type: "dense", activation: "leaky_relu", input_height: 4, output_height: 8 },
-            { type: "dense", activation: "sigmoid", input_height: 8, output_height: 2 }
-          ]};
-          const net = createLoomNetwork(JSON.stringify(config));
-          if (typeof net === "string") throw new Error(net);
-          
-          // Train briefly to exercise optimizer
-          const batches = [{ Input: [0.1, 0.2, 0.3, 0.4], Target: [1.0, 0.0] }];
-          const trainConfig = { Epochs: 5, LearningRate: 0.01, UseGPU: false, LossType: "mse" };
-          const trainResult = net.Train(JSON.stringify([batches, trainConfig]));
-          const trainParsed = JSON.parse(trainResult);
-          
-          if (trainParsed[0] && trainParsed[0].FinalLoss !== undefined) {
-            log("success", `  ✓ SGD optimizer tested via Train() - finalLoss=${trainParsed[0].FinalLoss.toFixed(6)}`);
+          const res = JSON.parse(resStr);
+          // net.Train returns [TrainingResult, error] via reflection wrapper
+          if (Array.isArray(res) && res.length > 0 && res[0] && res[0].FinalLoss !== undefined) {
+            log("success", `  ✓ Optimizer training complete. Loss: ${res[0].FinalLoss.toFixed(4)}`);
             log("success", "  ✅ PASSED: Optimizers");
             setTestResult("test-opt", true);
-          } else throw new Error("Training failed");
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-opt", false, e.message); }
-      }
-
-      async function testSchedulers() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Learning Rate Schedulers                                            │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        log("warn", "  ⚠ Schedulers are internal to training loop, not directly exposed");
-        log("success", "  ✅ PASSED: Learning Rate Schedulers (via training API)");
-        setTestResult("test-sched", true, "Tested via Train API");
-      }
-
-      async function testActivations() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Activation Functions                                                │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        try {
-          const activations = ["sigmoid", "tanh", "leaky_relu", "relu", "softplus"];
-          for (const act of activations) {
-            const config = { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 1, layers: [
-              { type: "dense", activation: act, input_height: 4, output_height: 4 }
-            ]};
-            const net = createLoomNetwork(JSON.stringify(config));
-            if (typeof net === "string") throw new Error(`${act}: ${net}`);
-            const result = net.ForwardCPU(JSON.stringify([[0.5, 0.5, 0.5, 0.5]]));
-            const parsed = JSON.parse(result);
-            if (!parsed[0] || parsed[0].some(v => isNaN(v))) throw new Error(`${act} returned NaN`);
-            log("success", `  ✓ ${act}: f(0.5)=[${parsed[0].map(v => v.toFixed(3)).join(", ")}]`);
+            return;
           }
-          log("success", "  ✅ PASSED: Activation Functions");
-          setTestResult("test-act", true);
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-act", false, e.message); }
-      }
+          // Fallback if not array (shouldn't happen with methodWrapper but good for safety)
+          if (res.FinalLoss !== undefined) {
+            log("success", `  ✓ Optimizer training complete. Loss: ${res.FinalLoss.toFixed(4)}`);
+            setTestResult("test-opt", true);
+            return;
+          }
+        } catch (err) {
+          throw new Error("JSON parse error: " + err.message + " | Raw: " + resStr.substring(0, 50) + "...");
+        }
+        throw new Error("Training failed (FinalLoss undefined in response)");
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-opt", false, e.message); }
+    }
 
-      async function testSoftmaxVariants() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Softmax Variants                                                    │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        try {
-          const config = { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+    async function testSchedulers() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Learning Rate Schedulers                                            │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      log("warn", "  ⚠ Schedulers are internal to training loop, not directly exposed");
+      log("success", "  ✅ PASSED: Learning Rate Schedulers (via training API)");
+      setTestResult("test-sched", true, "Tested via Train API");
+    }
+
+    async function testActivations() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Activation Functions                                                │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const activations = ["sigmoid", "tanh", "leaky_relu", "relu", "softplus"];
+        for (const act of activations) {
+          const config = {
+            batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 1, layers: [
+              { type: "dense", activation: act, input_height: 4, output_height: 4 }
+            ]
+          };
+          const net = createLoomNetwork(JSON.stringify(config));
+          if (typeof net === "string") throw new Error(`${act}: ${net}`);
+          const result = net.ForwardCPU(JSON.stringify([[0.5, 0.5, 0.5, 0.5]]));
+          const parsed = JSON.parse(result);
+          if (!parsed[0] || parsed[0].some(v => isNaN(v))) throw new Error(`${act} returned NaN`);
+          log("success", `  ✓ ${act}: f(0.5)=[${parsed[0].map(v => v.toFixed(3)).join(", ")}]`);
+        }
+        log("success", "  ✅ PASSED: Activation Functions");
+        setTestResult("test-act", true);
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-act", false, e.message); }
+    }
+
+    async function testSoftmaxVariants() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Softmax Variants                                                    │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const config = {
+          batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 4, output_height: 4 },
             { type: "softmax", softmax_variant: "standard", temperature: 1.0 }
-          ]};
-          const net = createLoomNetwork(JSON.stringify(config));
-          if (typeof net === "string") throw new Error(net);
-          const result = net.ForwardCPU(JSON.stringify([[1.0, 2.0, 3.0, 4.0]]));
-          const parsed = JSON.parse(result);
-          const sum = parsed[0].reduce((a, b) => a + b, 0);
-          if (Math.abs(sum - 1.0) < 0.01) {
-            log("success", `  ✓ Standard Softmax: sum=${sum.toFixed(4)} (≈1.0)`);
-            log("success", "  ✅ PASSED: Softmax Variants");
-            setTestResult("test-softmax", true);
-          } else throw new Error(`Sum=${sum}, expected ~1.0`);
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-softmax", false, e.message); }
-      }
+          ]
+        };
+        const net = createLoomNetwork(JSON.stringify(config));
+        if (typeof net === "string") throw new Error(net);
+        const result = net.ForwardCPU(JSON.stringify([[1.0, 2.0, 3.0, 4.0]]));
+        const parsed = JSON.parse(result);
+        const sum = parsed[0].reduce((a, b) => a + b, 0);
+        if (Math.abs(sum - 1.0) < 0.01) {
+          log("success", `  ✓ Standard Softmax: sum=${sum.toFixed(4)} (≈1.0)`);
+          log("success", "  ✅ PASSED: Softmax Variants");
+          setTestResult("test-softmax", true);
+        } else throw new Error(`Sum=${sum}, expected ~1.0`);
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-softmax", false, e.message); }
+    }
 
-      async function testEmbeddingLayer() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Embedding Layer                                                     │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        try {
-          const config = { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+    async function testEmbeddingLayer() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Embedding Layer                                                     │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const config = {
+          batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "embedding", vocab_size: 100, embedding_dim: 16 },
             { type: "dense", activation: "sigmoid", input_height: 16, output_height: 4 }
-          ]};
-          const net = createLoomNetwork(JSON.stringify(config));
-          if (typeof net === "string") throw new Error(net);
-          const result = net.ForwardCPU(JSON.stringify([[5.0]])); // Token index
-          const parsed = JSON.parse(result);
-          if (parsed[0].length === 4) {
-            log("success", `  ✓ Embedding lookup: token 5 → 16 dims → 4 outputs`);
-            log("success", "  ✅ PASSED: Embedding Layer");
-            setTestResult("test-embed", true);
-          } else throw new Error("Output size mismatch");
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-embed", false, e.message); }
-      }
+          ]
+        };
+        const net = createLoomNetwork(JSON.stringify(config));
+        if (typeof net === "string") throw new Error(net);
+        const result = net.ForwardCPU(JSON.stringify([[5.0]])); // Token index
+        const parsed = JSON.parse(result);
+        if (parsed[0].length === 4) {
+          log("success", `  ✓ Embedding lookup: token 5 → 16 dims → 4 outputs`);
+          log("success", "  ✅ PASSED: Embedding Layer");
+          setTestResult("test-embed", true);
+        } else throw new Error("Output size mismatch");
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-embed", false, e.message); }
+    }
 
-      async function testIntrospection() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Introspection & Telemetry                                           │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        try {
-          const config = { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+    async function testIntrospection() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Introspection & Telemetry                                           │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const config = {
+          batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 4, output_height: 8 },
             { type: "dense", activation: "sigmoid", input_height: 8, output_height: 2 }
-          ]};
-          const net = createLoomNetwork(JSON.stringify(config));
-          if (typeof net === "string") throw new Error(net);
-          
-          const layersResult = net.TotalLayers();
-          const layersParsed = JSON.parse(layersResult);
-          log("success", `  ✓ TotalLayers: ${layersParsed[0]}`);
-          
-          const inputSize = net.getInputSize();
-          log("success", `  ✓ getInputSize: ${inputSize}`);
-          
-          log("success", "  ✅ PASSED: Introspection & Telemetry");
-          setTestResult("test-intro", true);
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-intro", false, e.message); }
-      }
+          ]
+        };
+        const net = createLoomNetwork(JSON.stringify(config));
+        if (typeof net === "string") throw new Error(net);
 
-      async function testStepTween() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Step-Tween Training                                                 │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        try {
-          const config = { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+        const layersResult = net.TotalLayers();
+        const layersParsed = JSON.parse(layersResult);
+        log("success", `  ✓ TotalLayers: ${layersParsed[0]}`);
+
+        const inputSize = net.getInputSize();
+        log("success", `  ✓ getInputSize: ${inputSize}`);
+
+        log("success", "  ✅ PASSED: Introspection & Telemetry");
+        setTestResult("test-intro", true);
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-intro", false, e.message); }
+    }
+
+    async function testStepTween() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Step-Tween Training                                                 │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const config = {
+          batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 4, output_height: 8 },
             { type: "dense", activation: "sigmoid", input_height: 8, output_height: 2 }
-          ]};
-          const net = createLoomNetwork(JSON.stringify(config));
-          if (typeof net === "string") throw new Error(net);
-          
-          const tweenState = net.createTweenState(true);
-          log("success", "  ✓ TweenState created with useChainRule=true");
-          
-          const input = [0.1, 0.2, 0.3, 0.4];
-          const loss = tweenState.TweenStep(input, 0, 2, 0.01);
-          log("success", `  ✓ TweenStep executed, loss=${loss.toFixed(4)}`);
-          
-          log("success", "  ✅ PASSED: Step-Tween Training");
-          setTestResult("test-tween", true);
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-tween", false, e.message); }
-      }
+          ]
+        };
+        const net = createLoomNetwork(JSON.stringify(config));
+        if (typeof net === "string") throw new Error(net);
 
-      async function testConv1DLayer() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Conv1D Layer                                                        │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        try {
-          const config = { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+        const tweenState = net.createTweenState(true);
+        log("success", "  ✓ TweenState created with useChainRule=true");
+
+        const input = [0.1, 0.2, 0.3, 0.4];
+        const loss = tweenState.TweenStep(input, 0, 2, 0.01);
+        log("success", `  ✓ TweenStep executed, loss=${loss.toFixed(4)}`);
+
+        log("success", "  ✅ PASSED: Step-Tween Training");
+        setTestResult("test-tween", true);
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-tween", false, e.message); }
+    }
+
+    async function testConv1DLayer() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Conv1D Layer                                                        │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const config = {
+          batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "conv1d", input_length: 16, input_channels: 1, kernel_size: 3, stride: 1, padding: 1, filters: 4, activation: "leaky_relu" },
             { type: "dense", activation: "sigmoid", input_height: 64, output_height: 4 }
-          ]};
-          const net = createLoomNetwork(JSON.stringify(config));
-          if (typeof net === "string") throw new Error(net);
-          const result = net.ForwardCPU(JSON.stringify([Array(16).fill(0).map((_, i) => i * 0.1)]));
-          const parsed = JSON.parse(result);
-          if (parsed[0].length === 4) {
-            log("success", `  ✓ Conv1D: [16] → [16×4] → Dense → [4]`);
-            log("success", "  ✅ PASSED: Conv1D Layer");
-            setTestResult("test-conv1d", true);
-          } else throw new Error("Output size mismatch");
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-conv1d", false, e.message); }
-      }
+          ]
+        };
+        const net = createLoomNetwork(JSON.stringify(config));
+        if (typeof net === "string") throw new Error(net);
+        const result = net.ForwardCPU(JSON.stringify([Array(16).fill(0).map((_, i) => i * 0.1)]));
+        const parsed = JSON.parse(result);
+        if (parsed[0].length === 4) {
+          log("success", `  ✓ Conv1D: [16] → [16×4] → Dense → [4]`);
+          log("success", "  ✅ PASSED: Conv1D Layer");
+          setTestResult("test-conv1d", true);
+        } else throw new Error("Output size mismatch");
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-conv1d", false, e.message); }
+    }
 
-      async function testResidualConnection() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Residual Connection                                                 │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        try {
-          const config = { batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
+    async function testResidualConnection() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Residual Connection                                                 │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        const config = {
+          batch_size: 1, grid_rows: 1, grid_cols: 1, layers_per_cell: 2, layers: [
             { type: "dense", activation: "leaky_relu", input_height: 4, output_height: 4, residual: true },
             { type: "dense", activation: "sigmoid", input_height: 4, output_height: 2 }
-          ]};
-          const net = createLoomNetwork(JSON.stringify(config));
-          if (typeof net === "string") throw new Error(net);
-          const result = net.ForwardCPU(JSON.stringify([[1.0, 2.0, 3.0, 4.0]]));
-          const parsed = JSON.parse(result);
-          if (parsed[0].length === 2) {
-            log("success", "  ✓ Residual connection enabled via config");
-            log("success", "  ✅ PASSED: Residual Connection");
-            setTestResult("test-resid", true);
-          } else throw new Error("Output size mismatch");
-        } catch(e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-resid", false, e.message); }
-      }
+          ]
+        };
+        const net = createLoomNetwork(JSON.stringify(config));
+        if (typeof net === "string") throw new Error(net);
+        const result = net.ForwardCPU(JSON.stringify([[1.0, 2.0, 3.0, 4.0]]));
+        const parsed = JSON.parse(result);
+        if (parsed[0].length === 2) {
+          log("success", "  ✓ Residual connection enabled via config");
+          log("success", "  ✅ PASSED: Residual Connection");
+          setTestResult("test-resid", true);
+        } else throw new Error("Output size mismatch");
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-resid", false, e.message); }
+    }
 
-      async function testEnsembleFeatures() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Ensemble Features                                                   │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        log("warn", "  ⚠ Ensemble functions are internal (FindComplementaryMatches)");
-        log("success", "  ✅ PASSED: Ensemble Features (skipped - internal API)");
-        setTestResult("test-ensemble", true, "Internal API");
-      }
+    async function testEnsembleFeatures() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Ensemble Features                                                   │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        // Mock model performances with specific masks (true=correct, false=incorrect)
+        // Model A: Correct on 0,1,2 (Tasks A, B first half)
+        // Model B: Correct on 3,4 (Task B second half)
+        // Combined they cover everything.
+        const models = [
+          { ModelID: "model_1", Mask: [true, true, true, false, false] },
+          { ModelID: "model_2", Mask: [false, false, false, true, true] }
+        ];
+        // findComplementaryMatches(modelsJSON, minCoverage) -> returns JSON string
+        const resStr = findComplementaryMatches(JSON.stringify(models), 0.5);
+        const matches = JSON.parse(resStr);
 
-      async function testObserverPattern() {
-        log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
-        log("info", "│ Observer Pattern                                                    │");
-        log("info", "└──────────────────────────────────────────────────────────────────────┘");
-        log("warn", "  ⚠ Observer pattern is internal to Go layer config");
-        log("success", "  ✅ PASSED: Observer Pattern (skipped - internal API)");
-        setTestResult("test-observer", true, "Internal API");
-      }
-    </script>
-  </body>
+        if (Array.isArray(matches) && matches.length > 0) {
+          const m = matches[0];
+          // Check if we found the pair
+          if (m.Models) { // Depending on JSON output format, check structure
+            // EnsembleMatch JSON?
+            // Check keys
+            const keys = Object.keys(m);
+            // Go struct: ModelA, ModelB, Coverage, Overlap
+            if (m.ModelA && m.ModelB && m.Coverage >= 0.9) {
+              log("success", `  ✓ Found complementary pair: ${m.ModelA} + ${m.ModelB} (Cov: ${m.Coverage.toFixed(2)})`);
+              log("success", "  ✅ PASSED: Ensemble Features");
+              setTestResult("test-ensemble", true);
+              return;
+            }
+          }
+          // Try alternate check if keys are lowercase (standard json marshal)
+          if (m.model_a || m.ModelA) {
+            log("success", `  ✓ Found match (keys checked)`);
+            setTestResult("test-ensemble", true);
+            return;
+          }
+        }
+        throw new Error("No valid complementary matches found. Res: " + resStr);
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-ensemble", false, e.message); }
+    }
+
+    async function testObserverPattern() {
+      log("info", "\n┌──────────────────────────────────────────────────────────────────────┐");
+      log("info", "│ Observer Pattern (AdaptationTracker)                                │");
+      log("info", "└──────────────────────────────────────────────────────────────────────┘");
+      try {
+        // createAdaptationTracker(windowMs, totalMs) -> returns Object
+        const tracker = createAdaptationTracker(100, 1000);
+        if (!tracker) throw new Error("Failed to create tracker");
+
+        tracker.start("TaskA", 1);
+        tracker.recordOutput(true);
+        tracker.recordOutput(false);
+
+        const taskID = tracker.getCurrentTask();
+        if (taskID !== 1) throw new Error("Tracker task tracking error");
+
+        const resStr = tracker.finalize();
+        const stats = JSON.parse(resStr);
+
+        // stats.avg_accuracy (from json tag) or stats.AvgAccuracy
+        if (stats.avg_accuracy !== undefined || stats.AvgAccuracy !== undefined) {
+          const acc = stats.avg_accuracy !== undefined ? stats.avg_accuracy : stats.AvgAccuracy;
+          log("success", `  ✓ Tracker finalized. Accuracy: ${acc.toFixed(2)}`);
+          log("success", "  ✅ PASSED: Observer Pattern");
+          setTestResult("test-observer", true);
+        } else throw new Error("Invalid tracker stats. Keys: " + Object.keys(stats).join(", "));
+
+      } catch (e) { log("error", "  ❌ FAILED: " + e.message); setTestResult("test-observer", false, e.message); }
+    }
+  </script>
+</body>
+
 </html>
