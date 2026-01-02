@@ -10,7 +10,7 @@ namespace Welvet;
 /// P/Invoke declarations for LOOM C-ABI functions.
 /// This class wraps the native libloom library (libloom.so/dylib/dll).
 /// </summary>
-internal static class NativeMethods
+public static class NativeMethods
 {
     // Use simple name - let the resolver handle platform specifics
     private const string LibName = "libloom";
@@ -240,15 +240,31 @@ internal static class NativeMethods
     private static string GetCustomRuntimeIdentifier()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            return "windows_x86_64";
+        {
+            return RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.Arm64 => "windows_arm64",
+                _ => "windows_x86_64"
+            };
+        }
         else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             if (RuntimeInformation.RuntimeIdentifier.Contains("android"))
                 return "android_arm64";
-            return "linux_x86_64";
+            return RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.Arm64 => "linux_arm64",
+                _ => "linux_x86_64"
+            };
         }
         else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            return "macos_arm64";
+        {
+            return RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.X64 => "macos_x86_64",
+                _ => "macos_arm64"
+            };
+        }
 
         return "unknown";
     }
@@ -314,7 +330,7 @@ internal static class NativeMethods
     /// Creates a new neural network and returns JSON with handle.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr Loom_NewNetwork(
+    public static extern IntPtr Loom_NewNetwork(
         int inputSize,
         int gridRows,
         int gridCols,
@@ -326,7 +342,7 @@ internal static class NativeMethods
     /// Returns JSON array of return values.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr Loom_Call(
+    public static extern IntPtr Loom_Call(
         long handle,
         [MarshalAs(UnmanagedType.LPStr)] string methodName,
         [MarshalAs(UnmanagedType.LPStr)] string argsJson);
@@ -335,25 +351,25 @@ internal static class NativeMethods
     /// Frees a network handle.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void Loom_Free(long handle);
+    public static extern void Loom_Free(long handle);
 
     /// <summary>
     /// Frees a C string returned by the library.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void Loom_FreeCString(IntPtr cstr);
+    public static extern void Loom_FreeCString(IntPtr cstr);
 
     /// <summary>
     /// Gets the LOOM library version string.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr Loom_GetVersion();
+    public static extern IntPtr Loom_GetVersion();
 
     /// <summary>
     /// Creates a dense layer configuration (legacy API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr Loom_InitDenseLayer(
+    public static extern IntPtr Loom_InitDenseLayer(
         int inputSize,
         int outputSize,
         int activation);
@@ -362,7 +378,7 @@ internal static class NativeMethods
     /// Generic layer initialization via registry system.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr Loom_CallLayerInit(
+    public static extern IntPtr Loom_CallLayerInit(
         [MarshalAs(UnmanagedType.LPStr)] string functionName,
         [MarshalAs(UnmanagedType.LPStr)] string paramsJson);
 
@@ -370,13 +386,13 @@ internal static class NativeMethods
     /// Lists all available layer initialization functions.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr Loom_ListLayerInitFunctions();
+    public static extern IntPtr Loom_ListLayerInitFunctions();
 
     /// <summary>
     /// Sets a layer in the network at specific grid position.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr Loom_SetLayer(
+    public static extern IntPtr Loom_SetLayer(
         long handle,
         int gridRow,
         int gridCol,
@@ -387,14 +403,14 @@ internal static class NativeMethods
     /// Gets network information as JSON.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr Loom_GetInfo(long handle);
+    public static extern IntPtr Loom_GetInfo(long handle);
 
     /// <summary>
     /// Loads a complete model from JSON string (structure + weights).
     /// Returns JSON with handle.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr Loom_LoadModel(
+    public static extern IntPtr Loom_LoadModel(
         [MarshalAs(UnmanagedType.LPStr)] string modelJson,
         [MarshalAs(UnmanagedType.LPStr)] string modelId);
 
@@ -402,7 +418,7 @@ internal static class NativeMethods
     /// Saves a model to JSON string (structure + weights).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr Loom_SaveModel(
+    public static extern IntPtr Loom_SaveModel(
         long handle,
         [MarshalAs(UnmanagedType.LPStr)] string modelId);
 
@@ -414,14 +430,14 @@ internal static class NativeMethods
     /// Creates a network from JSON configuration (new simple API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr CreateLoomNetwork(
+    public static extern IntPtr CreateLoomNetwork(
         [MarshalAs(UnmanagedType.LPStr)] string jsonConfig);
 
     /// <summary>
     /// Forward pass with float array input (new simple API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr LoomForward(
+    public static extern IntPtr LoomForward(
         [MarshalAs(UnmanagedType.LPArray)] float[] inputs,
         int length);
 
@@ -429,7 +445,7 @@ internal static class NativeMethods
     /// Backward pass with gradients (new simple API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr LoomBackward(
+    public static extern IntPtr LoomBackward(
         [MarshalAs(UnmanagedType.LPArray)] float[] gradients,
         int length);
 
@@ -437,13 +453,13 @@ internal static class NativeMethods
     /// Update weights with learning rate (new simple API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void LoomUpdateWeights(float learningRate);
+    public static extern void LoomUpdateWeights(float learningRate);
 
     /// <summary>
     /// Train network with batches and config JSON (new simple API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr LoomTrain(
+    public static extern IntPtr LoomTrain(
         [MarshalAs(UnmanagedType.LPStr)] string batchesJSON,
         [MarshalAs(UnmanagedType.LPStr)] string configJSON);
 
@@ -451,14 +467,14 @@ internal static class NativeMethods
     /// Save model to JSON string (new simple API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr LoomSaveModel(
+    public static extern IntPtr LoomSaveModel(
         [MarshalAs(UnmanagedType.LPStr)] string modelID);
 
     /// <summary>
     /// Load model from JSON string (new simple API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr LoomLoadModel(
+    public static extern IntPtr LoomLoadModel(
         [MarshalAs(UnmanagedType.LPStr)] string jsonString,
         [MarshalAs(UnmanagedType.LPStr)] string modelID);
 
@@ -466,13 +482,13 @@ internal static class NativeMethods
     /// Get network information JSON (new simple API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr LoomGetNetworkInfo();
+    public static extern IntPtr LoomGetNetworkInfo();
 
     /// <summary>
     /// Evaluate network with inputs and expected outputs (new simple API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr LoomEvaluateNetwork(
+    public static extern IntPtr LoomEvaluateNetwork(
         [MarshalAs(UnmanagedType.LPStr)] string inputsJSON,
         [MarshalAs(UnmanagedType.LPStr)] string expectedOutputsJSON);
 
@@ -480,41 +496,41 @@ internal static class NativeMethods
     /// Free a C string returned by LOOM (new simple API).
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void FreeLoomString(IntPtr str);
+    public static extern void FreeLoomString(IntPtr str);
 
     // ====================================================================
     // Stepping API (Fine-grained control)
     // ====================================================================
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern long LoomInitStepState(int inputSize);
+    public static extern long LoomInitStepState(int inputSize);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void LoomSetInput(long handle, [MarshalAs(UnmanagedType.LPArray)] float[] input, int length);
+    public static extern void LoomSetInput(long handle, [MarshalAs(UnmanagedType.LPArray)] float[] input, int length);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern long LoomStepForward(long handle);
+    public static extern long LoomStepForward(long handle);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr LoomGetOutput(long handle);
+    public static extern IntPtr LoomGetOutput(long handle);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr LoomStepBackward(long handle, [MarshalAs(UnmanagedType.LPArray)] float[] gradients, int length);
+    public static extern IntPtr LoomStepBackward(long handle, [MarshalAs(UnmanagedType.LPArray)] float[] gradients, int length);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void LoomApplyGradients(float learningRate);
+    public static extern void LoomApplyGradients(float learningRate);
 
     [DllImport(LibName, EntryPoint = "LoomApplyGradientsAdamW", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void LoomApplyGradientsAdamW(float learningRate, float beta1, float beta2, float weightDecay);
+    public static extern void LoomApplyGradientsAdamW(float learningRate, float beta1, float beta2, float weightDecay);
 
     [DllImport(LibName, EntryPoint = "LoomApplyGradientsRMSprop", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void LoomApplyGradientsRMSprop(float learningRate, float alpha, float epsilon, float momentum);
+    public static extern void LoomApplyGradientsRMSprop(float learningRate, float alpha, float epsilon, float momentum);
 
     [DllImport(LibName, EntryPoint = "LoomApplyGradientsSGDMomentum", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void LoomApplyGradientsSGDMomentum(float learningRate, float momentum, float dampening, int nesterov);
+    public static extern void LoomApplyGradientsSGDMomentum(float learningRate, float momentum, float dampening, int nesterov);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void LoomFreeStepState(long handle);
+    public static extern void LoomFreeStepState(long handle);
 
     // ====================================================================
     // Transformer Inference API
@@ -525,7 +541,7 @@ internal static class NativeMethods
     /// Returns JSON with {"success": true, "vocab_size": ..., ...}
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr LoadTokenizerFromBytes(
+    public static extern IntPtr LoadTokenizerFromBytes(
         IntPtr data,
         int dataLen);
 
@@ -534,7 +550,7 @@ internal static class NativeMethods
     /// Returns JSON with {"success": true, "num_layers": ..., ...}
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr LoadTransformerFromBytes(
+    public static extern IntPtr LoadTransformerFromBytes(
         IntPtr configData,
         int configLen,
         IntPtr weightsData,
@@ -545,7 +561,7 @@ internal static class NativeMethods
     /// Returns JSON with {"success": true, "ids": [...]}
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr EncodeText(
+    public static extern IntPtr EncodeText(
         [MarshalAs(UnmanagedType.LPStr)] string text,
         [MarshalAs(UnmanagedType.I1)] bool addSpecialTokens);
 
@@ -554,7 +570,7 @@ internal static class NativeMethods
     /// Returns JSON with {"success": true, "text": "..."}
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr DecodeTokens(
+    public static extern IntPtr DecodeTokens(
         [MarshalAs(UnmanagedType.LPStr)] string idsJson,
         [MarshalAs(UnmanagedType.I1)] bool skipSpecialTokens);
 
@@ -563,7 +579,7 @@ internal static class NativeMethods
     /// Returns JSON with {"success": true, "generated_text": "..."}
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr GenerateText(
+    public static extern IntPtr GenerateText(
         [MarshalAs(UnmanagedType.LPStr)] string prompt,
         int maxTokens,
         float temperature);
@@ -573,14 +589,14 @@ internal static class NativeMethods
     /// Returns JSON with {"success": true, "token": ..., "is_eos": ...}
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern IntPtr GenerateNextToken(
+    public static extern IntPtr GenerateNextToken(
         [MarshalAs(UnmanagedType.LPStr)] string idsJson,
         float temperature);
 
     /// <summary>
     /// Helper to marshal IntPtr to managed string and free native memory.
     /// </summary>
-    internal static string PtrToStringAndFree(IntPtr ptr)
+    public static string PtrToStringAndFree(IntPtr ptr)
     {
         if (ptr == IntPtr.Zero)
             return string.Empty;
@@ -605,14 +621,14 @@ internal static class NativeMethods
     /// <param name="useChainRule">If 1, use chain rule (TweenChain mode)</param>
     /// <returns>TweenState handle, or -1 on error</returns>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern long LoomCreateTweenState(int useChainRule);
+    public static extern long LoomCreateTweenState(int useChainRule);
 
     /// <summary>
     /// Applies one tween step.
     /// </summary>
     /// <returns>Gap value (distance to target)</returns>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern float LoomTweenStep(
+    public static extern float LoomTweenStep(
         long handle,
         [MarshalAs(UnmanagedType.LPArray)] float[] input,
         int inputLen,
@@ -624,7 +640,7 @@ internal static class NativeMethods
     /// Frees a TweenState.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void LoomFreeTweenState(long handle);
+    public static extern void LoomFreeTweenState(long handle);
 
     // ====================================================================
     // AdaptationTracker API (Benchmark Task Switching)
@@ -637,13 +653,13 @@ internal static class NativeMethods
     /// <param name="totalDurationMs">Total test duration in milliseconds</param>
     /// <returns>Tracker handle, or -1 on error</returns>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern long LoomCreateAdaptationTracker(int windowDurationMs, int totalDurationMs);
+    public static extern long LoomCreateAdaptationTracker(int windowDurationMs, int totalDurationMs);
 
     /// <summary>
     /// Sets model information for the tracker.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern void LoomTrackerSetModelInfo(
+    public static extern void LoomTrackerSetModelInfo(
         long handle,
         [MarshalAs(UnmanagedType.LPStr)] string modelName,
         [MarshalAs(UnmanagedType.LPStr)] string modeName);
@@ -652,7 +668,7 @@ internal static class NativeMethods
     /// Schedules a task change at a specific offset from start.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern void LoomTrackerScheduleTaskChange(
+    public static extern void LoomTrackerScheduleTaskChange(
         long handle,
         int atOffsetMs,
         int taskId,
@@ -662,7 +678,7 @@ internal static class NativeMethods
     /// Starts the tracker with an initial task.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    internal static extern void LoomTrackerStart(
+    public static extern void LoomTrackerStart(
         long handle,
         [MarshalAs(UnmanagedType.LPStr)] string taskName,
         int taskId);
@@ -672,23 +688,96 @@ internal static class NativeMethods
     /// </summary>
     /// <returns>Previous task ID (for detecting task changes)</returns>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int LoomTrackerRecordOutput(long handle, int isCorrect);
+    public static extern int LoomTrackerRecordOutput(long handle, int isCorrect);
 
     /// <summary>
     /// Gets the current task ID.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int LoomTrackerGetCurrentTask(long handle);
+    public static extern int LoomTrackerGetCurrentTask(long handle);
 
     /// <summary>
     /// Finalizes tracking and returns results as JSON.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr LoomTrackerFinalize(long handle);
+    public static extern IntPtr LoomTrackerFinalize(long handle);
 
     /// <summary>
     /// Frees an AdaptationTracker.
     /// </summary>
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void LoomFreeTracker(long handle);
+    public static extern void LoomFreeTracker(long handle);
+
+    // ====================================================================
+    // Statistical Tools API
+    // ====================================================================
+
+    /// <summary>
+    /// Performs K-Means clustering on data.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr LoomKMeansCluster([MarshalAs(UnmanagedType.LPStr)] string dataJSON, int k, int maxIter);
+
+    /// <summary>
+    /// Computes silhouette score for clustering.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern float LoomSilhouetteScore([MarshalAs(UnmanagedType.LPStr)] string dataJSON, [MarshalAs(UnmanagedType.LPStr)] string assignmentsJSON);
+
+    /// <summary>
+    /// Computes Pearson correlation matrix.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr LoomComputeCorrelation([MarshalAs(UnmanagedType.LPStr)] string dataJSON);
+
+    // ====================================================================
+    // Network Grafting API
+    // ====================================================================
+
+    /// <summary>
+    /// Creates a network handle specifically for grafting.
+    /// </summary>
+    [DllImport(LibName, EntryPoint = "LoomCreateNetworkForGraft", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern long LoomCreateNetworkHandle([MarshalAs(UnmanagedType.LPStr)] string jsonConfig);
+
+    /// <summary>
+    /// Grafts multiple networks into a single architecture.
+    /// </summary>
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr LoomGraftNetworks([MarshalAs(UnmanagedType.LPStr)] string networkIDsJSON, [MarshalAs(UnmanagedType.LPStr)] string combineMode);
+
+    /// <summary>
+    /// Frees a network handle used for grafting.
+    /// </summary>
+    [DllImport(LibName, EntryPoint = "LoomFreeGraftNetwork", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void LoomFreeGraftNetwork(long handle);
+
+    // ====================================================================
+    // Learning Rate Schedulers API
+    // ====================================================================
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern long LoomCreateConstantScheduler(float baseLR);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern long LoomCreateLinearDecayScheduler(float startLR, float endLR, int totalSteps);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern long LoomCreateCosineScheduler(float startLR, float minLR, int totalSteps);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern float LoomSchedulerGetLR(long handle, int step);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr LoomSchedulerName(long handle);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void LoomFreeScheduler(long handle);
+
+    // ====================================================================
+    // Ensemble Features API
+    // ====================================================================
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr LoomFindComplementaryMatches([MarshalAs(UnmanagedType.LPStr)] string modelsJSON, float minCoverage);
 }

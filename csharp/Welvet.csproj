@@ -8,11 +8,11 @@
     
     <!-- NuGet Package Metadata -->
     <PackageId>Welvet</PackageId>
-    <Version>0.0.18</Version>
+    <Version>0.0.19</Version>
     <Authors>OpenFluke / Samuel Watson</Authors>
     <Company>OpenFluke</Company>
-    <Description>Welvet - LOOM Neural Network Framework for .NET - GPU-accelerated deep learning and transformer inference with 7 CPU layer types</Description>
-    <PackageTags>neural-network;machine-learning;deep-learning;gpu;ai;webgpu;welvet;loom;transformer;llm</PackageTags>
+    <Description>Welvet - LOOM Neural Network Framework for .NET. 12 layer types (Dense, LSTM, RNN, Conv2D, Conv1D, MHA, LayerNorm, RMSNorm, SwiGLU, Softmax, Embedding, Parallel), transformer/LLM inference with streaming, neural tweening, K-Means clustering, Pearson/Spearman correlation, network grafting, step-based forward pass, 7 LR schedulers, 3 optimizers (SGD/AdamW/RMSprop), ensemble features, and bit-for-bit model sharing with Python/TypeScript/Go. Multi-platform: Linux, Windows, macOS, Android, iOS.</Description>
+    <PackageTags>neural-network;machine-learning;deep-learning;ai;welvet;loom;transformer;llm;cross-platform;lstm;rnn;attention;maui;dotnet;inference;training;safetensors;kmeans;clustering;correlation;ensemble;optimizer;adamw</PackageTags>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/openfluke/loom</PackageProjectUrl>
     <RepositoryUrl>https://github.com/openfluke/loom.git</RepositoryUrl>
@@ -35,10 +35,26 @@
   <None Include="build/Welvet.targets" Pack="true" PackagePath="buildTransitive/" />
     
     <!-- Include native libraries - keep source path structure in package -->
+    <!-- Linux -->
     <None Include="runtimes/linux_x86_64/libloom.so" Pack="true" PackagePath="runtimes/linux_x86_64/" />
+    <None Include="runtimes/linux_arm64/libloom.so" Pack="true" PackagePath="runtimes/linux_arm64/" />
+    <!-- macOS -->
     <None Include="runtimes/macos_arm64/libloom.dylib" Pack="true" PackagePath="runtimes/macos_arm64/" />
+    <None Include="runtimes/macos_x86_64/libloom.dylib" Pack="true" PackagePath="runtimes/macos_x86_64/" />
+    <None Include="runtimes/macos_universal/libloom.dylib" Pack="true" PackagePath="runtimes/macos_universal/" />
+    <!-- Windows -->
     <None Include="runtimes/windows_x86_64/libloom.dll" Pack="true" PackagePath="runtimes/windows_x86_64/" />
+    <None Include="runtimes/windows_arm64/libloom.dll" Pack="true" PackagePath="runtimes/windows_arm64/" />
+    <!-- Android -->
     <None Include="runtimes/android_arm64/libloom.so" Pack="true" PackagePath="runtimes/android_arm64/" />
+    <!-- iOS Device -->
+    <None Include="runtimes/ios_arm64/libloom.a" Pack="true" PackagePath="runtimes/ios_arm64/" />
+    <None Include="runtimes/ios_arm64/libloom.h" Pack="true" PackagePath="runtimes/ios_arm64/" />
+    <!-- iOS Simulators -->
+    <None Include="runtimes/ios_arm64_sim/libloom.a" Pack="true" PackagePath="runtimes/ios_arm64_sim/" />
+    <None Include="runtimes/ios_x86_64_sim/libloom.a" Pack="true" PackagePath="runtimes/ios_x86_64_sim/" />
+    <!-- iOS XCFramework (universal) -->
+    <None Include="runtimes/ios_xcframework/**/*" Pack="true" PackagePath="runtimes/ios_xcframework/" />
   </ItemGroup>
 
 </Project>
