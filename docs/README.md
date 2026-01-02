@@ -188,4 +188,20 @@ All platforms share the same simple API with identical behavior:
 
 **For the latest information, see the [main README](../README.md).**
 
+---
+
+## 📜 Research Portfolio
+
+Loom contains implementations of **5 distinct, publishable research contributions**. Each has a dedicated README with full documentation:
+
+| # | Paper | Venue | README |
+|---|-------|-------|--------|
+| 1 | Polyglot Zero-Dependency AI Runtime | MLSys | [research_paper_1_polyglot_runtime.md](research_paper_1_polyglot_runtime.md) |
+| 2 | StepTweenChain Hybrid Optimizer | NeurIPS/ICLR | [research_paper_2_steptween.md](research_paper_2_steptween.md) |
+| 3 | Heterogeneous MoE via Stitched Routing | CVPR/ICCV | [research_paper_3_heterogeneous_moe.md](research_paper_3_heterogeneous_moe.md) |
+| 4 | Native Integer Training | TinyML | [research_paper_4_integer_training.md](research_paper_4_integer_training.md) |
+| 5 | Spatially-Adaptive Stitching for ARC | AAAI | [research_paper_5_arc_stitching.md](research_paper_5_arc_stitching.md) |
+
+---
+
 **Made with ❤️ by OpenFluke**
