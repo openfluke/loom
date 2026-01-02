@@ -79,6 +79,13 @@ type LayerDefinition struct {
 	NormSize int     `json:"norm_size,omitempty"`
 	Epsilon  float32 `json:"epsilon,omitempty"`
 
+	// Embedding fields
+	VocabSize    int `json:"vocab_size,omitempty"`
+	EmbeddingDim int `json:"embedding_dim,omitempty"`
+
+	// Conv1D fields
+	InputLength int `json:"input_length,omitempty"`
+
 	// Parallel layer fields
 	Branches         []LayerDefinition `json:"branches,omitempty"`
 	CombineMode      string            `json:"combine_mode,omitempty"` // "concat", "add", "avg", "grid_scatter"
@@ -1359,6 +1366,22 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 			}
 			config.ParallelBranches[i] = branchConfig
 		}
+
+	case "embedding":
+		// Use InitEmbeddingLayer to properly initialize weights
+		config = InitEmbeddingLayer(def.VocabSize, def.EmbeddingDim)
+
+	case "conv1d":
+		// Use InitConv1DLayer to properly initialize weights
+		seqLen := def.InputLength
+		if seqLen == 0 {
+			seqLen = def.InputHeight // Fallback to InputHeight
+		}
+		inChannels := def.InputChannels
+		if inChannels == 0 {
+			inChannels = 1 // Default to 1 channel
+		}
+		config = InitConv1DLayer(seqLen, inChannels, def.KernelSize, def.Stride, def.Padding, def.Filters, stringToActivation(def.Activation))
 
 	default:
 		return config, fmt.Errorf("unknown layer type: %s", def.Type)
