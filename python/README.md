@@ -6,19 +6,42 @@ High-performance neural network library with **transformer inference** for Pytho
 
 ## Framework Comparison
 
-| Feature | **Loom/welvet** | **PyTorch** | **TensorFlow** | **GoMLX** | **Spago** |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Runtime Dependency** | **None** (Binary) | Heavy (Pip) | Binary (Edge) | CGo / XLA | None |
-| **Safetensors** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ |
-| **Neural Tweening** | ✅ **Hybrid Engine** | ❌ | ❌ | ❌ | ❌ |
-| **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ |
-| **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ |
-| **K-Means Clustering** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ |
-| **WASM Training** | ✅ **Full** | ❌ | ❌ | ❌ | ❌ |
-| **Cross-Lang ABI** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ |
-| **Tokenizer** | ✅ **Pure Go** | ❌ (Rust/C++) | ❌ (C++) | ❌ | ❌ |
+| Feature Category | Feature | **Loom/welvet** | **PyTorch** | **TF / TFLite** | **GoMLX** | **Core ML** | **TF.js** | **Candle** |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Core** | **Runtime Dependency** | **None** (Binary) | Heavy (Pip) | Binary (Edge) | CGo / XLA | None | Browser | None |
+| | **Auto-Differentiation** | ⚠️ Hybrid/Manual | ✅ Full | ✅ Full | ✅ Full | ❌ | ✅ Full | ✅ Full |
+| **Loading** | **Safetensors** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| | **Structure Inference** | ✅ **Auto-Detect** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Training** | **Neural Tweening** | ✅ **Hybrid Engine** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **LR Schedulers** | ✅ **7 Types** | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ |
+| **Layer Support** | **Dense (MLP)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **Conv1D/2D** | ✅ **Native** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **RNN / LSTM** | ✅ **Full Gate** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **Transformer (MHA)** | ✅ (Explicit) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ |
+| | **Stitch Layers** | ✅ **Native** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ |
+| **Advanced** | **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **K-Means / Stats** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **Cross-Lang ABI** | ✅ **Universal** | ❌ | ❌ | ❌ | ❌ | ❌ | ⚠️ |
+| **Platform** | **WASM Training** | ✅ **Full** | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 
-For detailed comparison, see [`docs/loom_assessment_comparison.md`](../docs/loom_assessment_comparison.md).
+For detailed analysis, see [`docs/loom_assessment_comparison.md`](../docs/loom_assessment_comparison.md).
+
+## 🌍 Cross-Ecosystem Compatibility
+
+Models trained in Python can be loaded instantly in C#, Go, or TypeScript.
+
+- **Python**: [PyPI](https://pypi.org/project/welvet/) (`pip install welvet`)
+- **C# / .NET**: [NuGet](https://www.nuget.org/packages/Welvet) (`dotnet add package Welvet`)
+- **TypeScript / Node**: [NPM](https://www.npmjs.com/package/@openfluke/welvet) (`npm install @openfluke/welvet`)
+- **Go**: [GitHub](https://github.com/openfluke/loom) (`go get github.com/openfluke/loom`)
+
+### Supported Platforms
+Welvet includes pre-compiled binaries for:
+- **Linux**: x86_64, ARM64, ARMv7
+- **Windows**: x86_64, x86, ARM64
+- **macOS**: Apple Silicon (M1/M2/M3), Intel (Universal)
+- **Android**: ARM64, ARMv7
 
 ## Installation
 
@@ -246,6 +269,48 @@ tracker.close()
 - `tracker.close()` - Free resources
 
 See `examples/test18_adaptation.py` for a complete multi-architecture benchmark comparing 5 training modes across Dense, Conv2D, RNN, LSTM, and Attention networks.
+
+### 🔗 Network Grafting - Architecture Fusion
+
+Combine multiple trained networks into a single parallel super-network. Use this for ensemble methods or architecture search.
+
+```python
+import welvet
+import json
+
+# Create two networks
+config = json.dumps({"layers": [{"type": "dense", "input_height": 4, "output_height": 4}]})
+h1 = welvet.create_network_for_graft(config)
+h2 = welvet.create_network_for_graft(config)
+
+# Graft them together (concatenation)
+result = welvet.graft_networks([h1, h2], combine_mode="concat")
+print(f"New grafted architecture: {result['type']}")
+```
+
+### 🧠 Unsupervised Learning & Stats
+
+Loom includes high-performance statistical tools powered by the same backend.
+
+#### K-Means Clustering
+Parallel K-Means clustering with Silhouette validation.
+
+```python
+data = [[1.0, 2.0], [1.1, 2.1], [5.0, 5.0], [5.1, 5.1]]
+# Cluster into 2 groups, max 100 iterations
+results = welvet.kmeans_cluster(data, k=2, iterations=100)
+print(f"Centroids: {results['centroids']}")
+print(f"Silhouette Score: {results['silhouette_score']:.3f} (Quality metric)")
+```
+
+#### Correlation Analysis
+Compute Pearson and Spearman correlation matrices instantly.
+
+```python
+matrix_a = [[1, 2, 3], [4, 5, 6]]
+matrix_b = [[1, 2, 3], [4, 5, 6]]
+corr_matrix = welvet.compute_correlation_matrix(matrix_a, matrix_b)
+```
 
 ### 🚀 Transformer Inference (LLMs)
 

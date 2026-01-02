@@ -1999,3 +1999,130 @@ class AdaptationTracker:
         self.close()
         return False
 
+
+# ---- Extended Capabilities (Tweens, Schedulers, etc) ----
+
+# 1. TweenState
+class TweenState:
+    """Manages state for interpolated training (Tweening)."""
+    def __init__(self, input_size: int):
+        if not _LoomCreateTweenState:
+            raise RuntimeError("LoomCreateTweenState not available")
+        self.handle = _LoomCreateTweenState(int(input_size))
+        if self.handle <= 0:
+            raise RuntimeError("Failed to create TweenState")
+
+    def step(self, input_data: List[float], target_class: int, output_size: int, learning_rate: float) -> float:
+        if not _LoomTweenStep:
+            raise RuntimeError("LoomTweenStep not available")
+        arr = (ctypes.c_float * len(input_data))(*input_data)
+        return float(_LoomTweenStep(self.handle, arr, len(input_data), int(target_class), int(output_size), float(learning_rate)))
+
+    def close(self):
+        if self.handle and _LoomFreeTweenState:
+            _LoomFreeTweenState(self.handle)
+            self.handle = 0
+    def __del__(self): self.close()
+    def __enter__(self): return self
+    def __exit__(self, *args): self.close()
+
+# 2. Schedulers
+_LoomCreateConstantScheduler = _sym("LoomCreateConstantScheduler")
+if _LoomCreateConstantScheduler:
+    _LoomCreateConstantScheduler.restype = ctypes.c_longlong
+    _LoomCreateConstantScheduler.argtypes = [ctypes.c_float]
+
+_LoomSchedulerGetLR = _sym("LoomSchedulerGetLR")
+if _LoomSchedulerGetLR:
+    _LoomSchedulerGetLR.restype = ctypes.c_float
+    _LoomSchedulerGetLR.argtypes = [ctypes.c_longlong, ctypes.c_int]
+
+_LoomFreeScheduler = _sym("LoomFreeScheduler")
+if _LoomFreeScheduler:
+    _LoomFreeScheduler.argtypes = [ctypes.c_longlong]
+
+def create_constant_scheduler(lr: float) -> int:
+    """Create a constant learning rate scheduler."""
+    if not _LoomCreateConstantScheduler: return 0
+    return _LoomCreateConstantScheduler(float(lr))
+
+def get_scheduler_lr(handle: int, step: int) -> float:
+    """Get LR from scheduler at specific step."""
+    if not _LoomSchedulerGetLR: return 0.0
+    return float(_LoomSchedulerGetLR(int(handle), int(step)))
+
+def free_scheduler(handle: int):
+    if _LoomFreeScheduler: _LoomFreeScheduler(int(handle))
+
+# 3. K-Means
+_LoomKMeansCluster = _sym("LoomKMeansCluster")
+if _LoomKMeansCluster:
+    _LoomKMeansCluster.restype = ctypes.c_void_p
+    _LoomKMeansCluster.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+
+def kmeans_cluster(data: List[List[float]], k: int, iterations: int) -> dict:
+    """Run K-Means clustering."""
+    if not _LoomKMeansCluster: return {}
+    data_json = json.dumps(data).encode('utf-8')
+    res_ptr = _LoomKMeansCluster(data_json, int(k), int(iterations))
+    if not res_ptr: return {}
+    
+    # Cast to read string
+    res_cstr = ctypes.cast(res_ptr, ctypes.c_char_p)
+    try:
+        if not res_cstr.value: return {}
+        return json.loads(res_cstr.value.decode('utf-8'))
+    finally:
+        if _FreeLoomString: _FreeLoomString(res_cstr)
+
+# 4. Correlation
+_LoomComputeCorrelation = _sym("LoomComputeCorrelation")
+if _LoomComputeCorrelation:
+    _LoomComputeCorrelation.restype = ctypes.c_void_p
+    _LoomComputeCorrelation.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+
+def compute_correlation_matrix(matrix_a: List[List[float]], matrix_b: List[List[float]]) -> List[List[float]]:
+    """Compute correlation matrix between two datasets."""
+    if not _LoomComputeCorrelation: return []
+    res_ptr = _LoomComputeCorrelation(json.dumps(matrix_a).encode(), json.dumps(matrix_b).encode())
+    if not res_ptr: return []
+    
+    res_cstr = ctypes.cast(res_ptr, ctypes.c_char_p)
+    try:
+        if not res_cstr.value: return []
+        return json.loads(res_cstr.value.decode('utf-8'))
+    finally:
+        if _FreeLoomString: _FreeLoomString(res_cstr)
+
+# 5. Grafting
+_LoomCreateNetworkForGraft = _sym("LoomCreateNetworkForGraft")
+if _LoomCreateNetworkForGraft:
+    _LoomCreateNetworkForGraft.restype = ctypes.c_longlong
+    _LoomCreateNetworkForGraft.argtypes = [ctypes.c_char_p]
+
+def create_network_for_graft(json_config: str) -> int:
+    """Create a network and return its handle for grafting."""
+    if not _LoomCreateNetworkForGraft: return -1
+    return _LoomCreateNetworkForGraft(json_config.encode('utf-8'))
+
+_LoomGraftNetworks = _sym("LoomGraftNetworks")
+if _LoomGraftNetworks:
+    _LoomGraftNetworks.restype = ctypes.c_void_p
+    _LoomGraftNetworks.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+
+def graft_networks(network_ids: List[int], combine_mode: str = "concat") -> dict:
+    """Graft multiple networks together."""
+    if not _LoomGraftNetworks: return {}
+    ids_json = json.dumps(network_ids).encode('utf-8')
+    mode_cstr = combine_mode.encode('utf-8')
+    
+    res_ptr = _LoomGraftNetworks(ids_json, mode_cstr)
+    if not res_ptr: return {}
+    
+    res_cstr = ctypes.cast(res_ptr, ctypes.c_char_p)
+    try:
+        if not res_cstr.value: return {}
+        return json.loads(res_cstr.value.decode('utf-8'))
+    finally:
+        if _FreeLoomString: _FreeLoomString(res_cstr)
+

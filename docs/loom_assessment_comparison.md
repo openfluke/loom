@@ -219,4 +219,4 @@ This table compares framework support for different numerical types across major
 *   **Choose TensorFlow / TFLite** if you need robust **Mobile/Edge Deployment**.
 *   **Choose GoMLX** if you need **High-Performance Training in Go** and can tolerate CGo/C++ dependencies.
 *   **Choose Core ML** if you are targeting **iOS/macOS** exclusively.
-*   **Choose Loom** if you need **Pure Go-Native Embedding** (Cloud/CLI/Server), want a single binary with zero dependencies, want to experiment with the **Neural Tweening** training paradigm, or need unique features like **Step-Based Forward Pass** for real-time inference and **Dynamic Architecture Generation** for automated model exploration.
+*   **Choose Loom** if you need **Pure Go-Native Embedding** (Cloud/CLI/Server), want a single binary with zero dependencies, need **High-Performance Python Bindings** (via `welvet`) that run identically on every platform, want to experiment with the **Neural Tweening** training paradigm, or need unique features like **Step-Based Forward Pass** for real-time inference and **Dynamic Architecture Generation** for automated model exploration.

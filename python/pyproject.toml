@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "welvet"
-version = "0.0.8"
-description = "Wrapper for Embedding Loom Via External (C-ABI) Toolchain — GPU-accelerated neural networks with transformer inference"
+version = "0.0.9"
+description = "Complete Python bindings for LOOM v0.0.7 — Portable neural networks with transformer inference"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "Apache-2.0"}
@@ -48,6 +48,7 @@ loom_py = [
   "darwin_universal/*.dylib",
   "windows_x86_64/*.dll",
   "windows_x86/*.dll",
+  "windows_arm64/*.dll",
   "android_arm64/*.so",
   "android_armv7/*.so",
 ]
