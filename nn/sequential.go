@@ -244,3 +244,127 @@ func sequentialForwardCPU(input []float32, layers []LayerConfig, batchSize int) 
 
 	return currentInput, intermediates, nil
 }
+
+// sequentialBackwardCPU computes gradients for sequential layer.
+// Re-runs forward pass to reconstruct inputs for each layer.
+func sequentialBackwardCPU(input []float32, gradOutput []float32, intermediates [][]float32, layers []LayerConfig, batchSize int) ([]float32, [][]float32, [][]float32, error) {
+	if len(layers) == 0 {
+		return gradOutput, nil, nil, nil
+	}
+
+	// 1. Re-run forward pass to get inputs for each layer
+	// layerInputs[i] is the input to layer i.
+	layerInputs := make([][]float32, len(layers))
+	currentInput := input
+	
+	for i := range layers {
+		layerInputs[i] = currentInput
+		
+		layerCfg := &layers[i]
+		var postAct []float32
+		
+		// We only need the output (postAct) to serve as input for next layer
+		switch layerCfg.Type {
+		case LayerDense:
+			_, postAct = denseForwardCPU(currentInput, layerCfg, batchSize)
+		case LayerConv2D:
+			_, postAct = conv2DForwardCPU(currentInput, layerCfg, batchSize)
+		case LayerMultiHeadAttention:
+			_, postAct = MultiHeadAttentionForwardCPU(currentInput, layerCfg, batchSize)
+		case LayerRNN:
+			postAct, _ = rnnForwardCPU(layerCfg, currentInput, batchSize, layerCfg.SeqLength, layerCfg.RNNInputSize, layerCfg.HiddenSize)
+		case LayerLSTM:
+			postAct, _ = lstmForwardCPU(layerCfg, currentInput, batchSize, layerCfg.SeqLength, layerCfg.RNNInputSize, layerCfg.HiddenSize)
+		case LayerSwiGLU:
+			_, postAct = SwiGLUForwardCPU(currentInput, layerCfg, batchSize)
+		case LayerNorm:
+			postAct = layerNormForwardCPU(currentInput, nil, layerCfg, batchSize)
+		case LayerRMSNorm:
+			postAct = rmsNormForwardCPU(currentInput, nil, layerCfg, batchSize)
+		case LayerSoftmax:
+			postAct, _ = ForwardSoftmaxCPU(currentInput, layerCfg)
+			if postAct == nil { postAct = currentInput }
+		default:
+			postAct = currentInput
+		}
+		currentInput = postAct
+	}
+
+	// 2. Backward Pass
+	nestedKernelGrads := make([][]float32, len(layers))
+	nestedBiasGrads := make([][]float32, len(layers))
+	currentGrad := gradOutput
+
+	for i := len(layers) - 1; i >= 0; i-- {
+		layerCfg := &layers[i]
+		layerInput := layerInputs[i]
+		preAct := intermediates[i]
+
+		var gradInput, kGrad, bGrad []float32
+
+		switch layerCfg.Type {
+		case LayerDense:
+			gradInput, kGrad, bGrad = denseBackwardCPU(currentGrad, layerInput, preAct, layerCfg, batchSize)
+		case LayerConv2D:
+			gradInput, kGrad, bGrad = conv2DBackwardCPU(currentGrad, layerInput, preAct, layerCfg, batchSize)
+		case LayerMultiHeadAttention:
+			var gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB []float32
+			gradInput, gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB = multiHeadAttentionBackwardCPU(currentGrad, layerInput, preAct, layerCfg, batchSize)
+			kGrad = append(append(append(gradQW, gradKW...), gradVW...), gradOutW...)
+			bGrad = append(append(append(gradQB, gradKB...), gradVB...), gradOutB...)
+		case LayerRNN:
+			var gradWeightIH, gradWeightHH, gradBiasH []float32
+			gradInput, gradWeightIH, gradWeightHH, gradBiasH = rnnBackwardCPU(layerCfg, currentGrad, layerInput, preAct, batchSize, layerCfg.SeqLength, layerCfg.RNNInputSize, layerCfg.HiddenSize)
+			kGrad = append(append(gradWeightIH, gradWeightHH...), gradBiasH...)
+		case LayerLSTM:
+			states := make(map[string][]float32)
+			hiddenSize := layerCfg.HiddenSize
+			seqLength := layerCfg.SeqLength
+			states["hidden"] = make([]float32, batchSize*(seqLength+1)*hiddenSize)
+			states["cell"] = make([]float32, batchSize*(seqLength+1)*hiddenSize)
+			states["i_gate"] = make([]float32, batchSize*seqLength*hiddenSize)
+			states["f_gate"] = make([]float32, batchSize*seqLength*hiddenSize)
+			states["g_gate"] = make([]float32, batchSize*seqLength*hiddenSize)
+			states["o_gate"] = make([]float32, batchSize*seqLength*hiddenSize)
+			states["c_tanh"] = make([]float32, batchSize*seqLength*hiddenSize)
+
+			offset := 0
+			for _, key := range []string{"hidden", "cell", "i_gate", "f_gate", "g_gate", "o_gate", "c_tanh"} {
+				if offset+len(states[key]) <= len(preAct) {
+					copy(states[key], preAct[offset:offset+len(states[key])])
+				}
+				offset += len(states[key])
+			}
+
+			var grads map[string][]float32
+			gradInput, grads = lstmBackwardCPU(layerCfg, currentGrad, layerInput, states, batchSize, seqLength, layerCfg.RNNInputSize, hiddenSize)
+			kGrad = append(append(append(grads["WeightIH_i"], grads["WeightHH_i"]...), grads["BiasH_i"]...),
+				append(append(grads["WeightIH_f"], grads["WeightHH_f"]...), grads["BiasH_f"]...)...)
+			kGrad = append(kGrad, append(append(grads["WeightIH_g"], grads["WeightHH_g"]...), grads["BiasH_g"]...)...)
+			kGrad = append(kGrad, append(append(grads["WeightIH_o"], grads["WeightHH_o"]...), grads["BiasH_o"]...)...)
+		case LayerSwiGLU:
+			gradInput = make([]float32, len(layerInput)); copy(gradInput, currentGrad)
+		case LayerNorm:
+			gradInput = make([]float32, len(layerInput)); copy(gradInput, currentGrad)
+		case LayerRMSNorm:
+			gradInput = rmsNormBackwardCPU(preAct, nil, currentGrad, layerCfg, batchSize)
+		case LayerSoftmax:
+			// Softmax backward
+			softmaxOutput, _ := ForwardSoftmaxCPU(preAct, layerCfg)
+			gradInput = make([]float32, len(currentGrad))
+			for idx := range gradInput {
+				for j := range currentGrad {
+					gradInput[idx] += currentGrad[j] * softmaxOutput[j] * (kroneckerFloat(idx, j) - softmaxOutput[idx])
+				}
+			}
+		default:
+			return nil, nil, nil, fmt.Errorf("unsupported layer type %d in sequential backward", layerCfg.Type)
+		}
+
+		nestedKernelGrads[i] = kGrad
+		nestedBiasGrads[i] = bGrad
+		currentGrad = gradInput
+	}
+
+	return currentGrad, nestedKernelGrads, nestedBiasGrads, nil
+}

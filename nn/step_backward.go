@@ -198,6 +198,12 @@ func StepBackwardGeneric[T Numeric](
 			accumulateGradient(grads, layerIdx, gradOut)
 		}
 		
+		// Reset gradients for frozen layers
+		if config.Frozen {
+			kernelGrads[layerIdx] = nil
+			biasGrads[layerIdx] = nil
+		}
+
 		// Gradient Scaling / Attention (Optional, matching float32 logic if desired)
 		// applySoftmaxGradientScalingGeneric(kernelGrads[layerIdx], biasGrads[layerIdx])
 	}
@@ -398,13 +404,18 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 		}
 
 		// === Gradient Attention / Scaling ===
-		if len(kernelGrads) > 0 {
-			applySoftmaxGradientScaling(kernelGrads)
-			n.kernelGradients[layerIdx] = kernelGrads
-		}
-		if len(biasGrads) > 0 {
-			applySoftmaxGradientScaling(biasGrads)
-			n.biasGradients[layerIdx] = biasGrads
+		if config.Frozen {
+			n.kernelGradients[layerIdx] = nil
+			n.biasGradients[layerIdx] = nil
+		} else {
+			if len(kernelGrads) > 0 {
+				applySoftmaxGradientScaling(kernelGrads)
+				n.kernelGradients[layerIdx] = kernelGrads
+			}
+			if len(biasGrads) > 0 {
+				applySoftmaxGradientScaling(biasGrads)
+				n.biasGradients[layerIdx] = biasGrads
+			}
 		}
 
 		// Notify observer if present (step mode)

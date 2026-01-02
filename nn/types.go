@@ -346,6 +346,9 @@ type LayerConfig struct {
 
 	// Pruning support
 	IsDisabled bool // If true, this layer acts as an identity function (pass-through)
+
+	// Training control
+	Frozen bool // If true, weights in this layer will not be updated during training
 }
 
 // GridPosition specifies where a parallel branch output should be placed in the grid

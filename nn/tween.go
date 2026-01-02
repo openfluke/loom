@@ -502,7 +502,7 @@ func (ts *GenericTweenState[T]) TweenWeightsChainRule(n *Network, rate float32) 
 
 	for i := 0; i < ts.TotalLayers; i++ {
 		cfg := ts.getLayerCfgGeneric(n, i)
-		if cfg == nil || cfg.IsDisabled {
+		if cfg == nil || cfg.IsDisabled || cfg.Frozen {
 			continue
 		}
 

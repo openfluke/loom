@@ -1129,6 +1129,58 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				bOff += len(nestedBiasGrads[j])
 			}
 
+		case LayerSequential:
+			// Nested sequential backward
+			// Unpack intermediates [count, size1, data1, ...]
+			if len(preAct) == 0 {
+				return nil, nil, nil, fmt.Errorf("no pre-activation data for sequential layer")
+			}
+			numNested := int(preAct[0])
+			nestedPreActs := make([][]float32, numNested)
+			offset := 1
+			for j := 0; j < numNested; j++ {
+				if offset >= len(preAct) {
+					break
+				}
+				size := int(preAct[offset])
+				offset++
+				if offset+size <= len(preAct) {
+					nestedPreActs[j] = preAct[offset : offset+size]
+					offset += size
+				}
+			}
+
+			var nestedKernelGrads, nestedBiasGrads [][]float32
+			var err error
+			// Note: parallelBackwardCPU iterates branches, sequentialBackwardCPU iterates layers.
+			// Sequential Layer reuses ParallelBranches to store the sequence.
+			branchInputGrad, nestedKernelGrads, nestedBiasGrads, err = sequentialBackwardCPU(input, gradOut, nestedPreActs, branchCfg.ParallelBranches, batchSize)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("nested sequential backward failed: %w", err)
+			}
+			
+			// Flatten kernel/bias grads for this branch (Sequential layer returns []Layer grads)
+			// parallelBackwardCPU expects ONE kernelGrad/biasGrad slice per BRANCH.
+			// But wait, LayerSequential inside Parallel means "this branch is a sequence".
+			// The caller of parallelBackwardCPU expects `allKernelGrads[i]` to be a FLAT slice of all weights in that branch.
+			
+			totalKernel := 0
+			totalBias := 0
+			for j := range nestedKernelGrads {
+				totalKernel += len(nestedKernelGrads[j])
+				totalBias += len(nestedBiasGrads[j])
+			}
+			kernelGrad = make([]float32, totalKernel)
+			biasGrad = make([]float32, totalBias)
+			kOff := 0
+			bOff := 0
+			for j := range nestedKernelGrads {
+				copy(kernelGrad[kOff:], nestedKernelGrads[j])
+				kOff += len(nestedKernelGrads[j])
+				copy(biasGrad[bOff:], nestedBiasGrads[j])
+				bOff += len(nestedBiasGrads[j])
+			}
+
 		default:
 			return nil, nil, nil, fmt.Errorf("unsupported layer type %d in parallel branch %d backward", branchCfg.Type, i)
 		}

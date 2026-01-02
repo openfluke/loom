@@ -8,8 +8,8 @@
 *   **True Embeddability**: Compiles into a single binary. **Zero external dependencies**.
 *   **"Run Anywhere" (Polyglot)**: First-class **C ABI** and **WebAssembly (WASM)** support allows Loom to run (and train!) in browsers, Python, C#, Rust, and Node.js with identical behavior.
 *   **Hybrid Gradient/Geometric Engine**: "Neural Tweening" is not just gradient-free; it is a **Hybrid Engine** combining geometric gap-closing with **backpropagation-guided momentum**. Features "Link Budget" telemetry and "Explosion Detection" for self-healing training.
-*   **Structural Parallelism**: Beyond simple MoE, the `LayerParallel` system supports arbitrary branching (Concat, Add, Average, Grid Scatter, **Filter/Softmax-Gated MoE**), enabling native **Inception**, **ResNeXt**, **Siamese**, and **Mixture-of-Experts** architectures with learned routing.
-*   **Sequential Layer Composition**: The `LayerSequential` system allows grouping multiple sub-layers (e.g., expert + stitch) into a single branch for modular network construction.
+*   **Structural Parallelism**: Beyond simple MoE, the `LayerParallel` system supports arbitrary branching (Concat, Add, Average, Grid Scatter, **Filter/Softmax-Gated MoE**), enabling native **Inception**, **ResNeXt**, **Siamese**, and **Learned Mixture-of-Experts** architectures.
+*   **Sequential Layer Composition**: The `LayerSequential` system allows grouping multiple sub-layers (e.g., expert + stitch) into a single branch, enabling **Heterogeneous MoE** where experts can have different internal sizes but project to a common output via **Stitch Layers**.
 *   **Native Mixed-Precision**: The generic tensor backend supports `int8`, `uint16`, and `float32` natively, offering a path to quantization-aware training without post-processing.
 *   **Universal Tokenizer**: Pure Go implementation of BPE (compatible with HuggingFace `tokenizer.json`).
 *   **Generic Model Loading**: "Shape-sniffing" `safetensors` loader that infers architectures (Llama, GPT) automatically.
@@ -28,7 +28,7 @@
 *   **Network Grafting**: Combine trained networks by grafting their layers into parallel super-networks for architecture search.
 *   **Stitch Layers**: Native dimensionality projection layers for connecting networks with different output sizes during model fusion.
 *   **Step-Based Forward Pass**: `StepForward` API allows layer-by-layer propagation for real-time/streaming inference and fine-grained control over network execution.
-*   **Dynamic Architecture Generation**: Built-in API for programmatically generating diverse network architectures with configurable brain types (MHA, LSTM, RNN, Dense, SwiGLU, NormDense), grid shapes, and combine modes.
+*   **Dynamic Architecture Generation**: Built-in API for programmatically generating diverse network architectures with configurable brain types (MHA, LSTM, dense, etc.) AND **Multi-Precision Architecture Search** (generating specific `int8`, `float16` storage models).
 *   **K-Means Clustering**: Built-in parallel K-Means clustering with Silhouette scoring for unsupervised learning, ensemble analysis, and architecture grouping.
 *   **Correlation Analysis**: WASM-compatible Pearson and Spearman correlation matrix computation with feature statistics (mean, std, min, max), strong correlation detection, and JSON output for frontend heatmap visualization.
 
@@ -164,8 +164,8 @@ The Go AI landscape is fragmented. Most "serious" frameworks are wrappers around
 | | **Transformer (MHA)** | ✅ **Explicit** | ✅ | ⚠️ Hard | ✅ (BERT) | ❌ | ❌ |
 | | **SwiGLU** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | | **Embeddings** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| | **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ |
-| | **Sequential Layers** | ✅ **Native** | ⚠️ (Manual) | ⚠️ (Manual) | ⚠️ (Manual) | ❌ | ❌ |
+| | **Parallel / MoE** | ✅ **MoE + Gating** | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ |
+| | **Sequential Layers** | ✅ **Native + Nested** | ⚠️ (Manual) | ⚠️ (Manual) | ⚠️ (Manual) | ❌ | ❌ |
 | | **Tokenizer** | ✅ **Pure Go** | ❌ (Deps) | ❌ | ✅ (WordPiece) | ❌ | ❌ |
 | **Training** | **Gradient Descent** | ✅ Manual | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ❌ |
 | | **Hybrid Tweening** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -204,7 +204,7 @@ This table compares framework support for different numerical types across major
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
 | **All Layers** | **Float32** | ✅ | ✅ | ✅ | ✅ (Float64) | ✅ |
 | (Dense, Conv, | **Float64 (High Prec)** | ✅ **Native** | ✅ | ✅ | ✅ | ✅ |
-| RNN, Attn) | **Float16 / BF16** | ✅ | ✅ (XLA) | ❌ | ❌ | ✅ |
+| RNN, Attn) | **Float16 / BF16** | ⚠️ (Storage) | ✅ (XLA) | ❌ | ❌ | ✅ |
 | | **Int8 (Training)** | ✅ **Native** | ❌ | ❌ | ❌ | ⚠️ (QAT Wrapper) |
 | | **Int8 (Inference)** | ✅ | ❌ | ❌ | ❌ | ✅ (Quant) |
 | | **Int16, Int32, Int64** | ✅ **Native** | ✅ (XLA) | ⚠️ (Tensor) | ❌ | ❌ (Tensor Only) |
