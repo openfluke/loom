@@ -6,6 +6,216 @@ import (
 	"time"
 )
 
+// =============================================================================
+// Generic Backward Pass Support
+// =============================================================================
+
+// GenericBackwardResult holds the results of a generic backward pass.
+type GenericBackwardResult[T Numeric] struct {
+	GradInput     *Tensor[T]
+	KernelGrads   *Tensor[T]
+	BiasGrads     *Tensor[T]
+}
+
+// StepBackwardGeneric executes backward pass for GenericStepState.
+// This is a placeholder for the generic backward pass implementation.
+// StepBackwardGeneric executes backward pass for GenericStepState.
+// Returns input gradient, kernel gradients, bias gradients, and duration.
+func StepBackwardGeneric[T Numeric](
+	n *Network,
+	state *GenericStepState[T],
+	gradOutput *Tensor[T],
+) (*Tensor[T], []any, []any, time.Duration) {
+	start := time.Now()
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	totalLayers := n.TotalLayers()
+	if len(state.LayerData) <= totalLayers {
+		return NewTensor[T](len(gradOutput.Data)), nil, nil, time.Since(start)
+	}
+
+	// Gradients for activations [0...totalLayers]
+	grads := make([]*Tensor[T], totalLayers+1)
+	
+	// Initialize output gradient
+	grads[totalLayers] = gradOutput.Clone()
+	
+	// Storage for weight gradients
+	kernelGrads := make([]any, totalLayers)
+	biasGrads := make([]any, totalLayers)
+
+	// Backpropagate through grid in reverse order
+	for layerIdx := totalLayers - 1; layerIdx >= 0; layerIdx-- {
+		// Calculate grid position
+		row := layerIdx / (n.GridCols * n.LayersPerCell)
+		remainder := layerIdx % (n.GridCols * n.LayersPerCell)
+		col := remainder / n.LayersPerCell
+		layer := remainder % n.LayersPerCell
+
+		config := n.GetLayer(row, col, layer)
+
+		// Get inputs and context
+		input := state.LayerData[layerIdx]
+		context := state.BackwardContext[layerIdx]
+		gradOut := grads[layerIdx+1]
+
+		if gradOut == nil {
+			gradOut = NewTensor[T](len(input.Data))
+		}
+
+		if config.IsDisabled {
+			accumulateGradient(grads, layerIdx, gradOut)
+			continue
+		}
+
+		switch config.Type {
+		case LayerDense:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+			preAct, _ := context.(*Tensor[T])
+			gInput, gWeights, gBias := DenseBackward(gradOut, input, preAct, weights, config.InputHeight, config.OutputHeight, n.BatchSize, config.Activation)
+			
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = gWeights
+			biasGrads[layerIdx] = gBias
+
+		case LayerConv2D:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+			preAct, _ := context.(*Tensor[T])
+			gInput, gKernel, gBias := Conv2DBackward(gradOut, input, preAct, weights,
+				config.InputHeight, config.InputWidth, config.InputChannels,
+				config.KernelSize, config.Stride, config.Padding, config.Filters,
+				config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
+			
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = gKernel
+			biasGrads[layerIdx] = gBias
+
+		case LayerRNN:
+			wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
+			wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
+			hiddenStates, _ := context.(*Tensor[T])
+			gInput, gWIH, gWHH, gBiasH := RNNBackward(gradOut, input, hiddenStates, wIH, wHH, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+			
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = []*Tensor[T]{gWIH, gWHH}
+			biasGrads[layerIdx] = gBiasH
+
+		case LayerLSTM:
+			states, _ := context.(map[string]*Tensor[T])
+			weights := &LSTMWeights[T]{
+				WeightIH_i: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_i, len(config.WeightIH_i))),
+				WeightHH_i: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_i, len(config.WeightHH_i))),
+				BiasH_i:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_i, len(config.BiasH_i))),
+				WeightIH_f: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_f, len(config.WeightIH_f))),
+				WeightHH_f: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_f, len(config.WeightHH_f))),
+				BiasH_f:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_f, len(config.BiasH_f))),
+				WeightIH_g: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_g, len(config.WeightIH_g))),
+				WeightHH_g: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_g, len(config.WeightHH_g))),
+				BiasH_g:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_g, len(config.BiasH_g))),
+				WeightIH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_o, len(config.WeightIH_o))),
+				WeightHH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_o, len(config.WeightHH_o))),
+				BiasH_o:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_o, len(config.BiasH_o))),
+			}
+			gInput, gWeights := LSTMBackward(gradOut, input, states, weights, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+			
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = gWeights
+			biasGrads[layerIdx] = nil
+
+		case LayerSoftmax:
+			softmaxOut, _ := context.(*Tensor[T])
+			gInput := SoftmaxBackward(gradOut, softmaxOut, config.SoftmaxRows, config.SoftmaxCols)
+			accumulateGradient(grads, layerIdx, gInput)
+
+		case LayerNorm:
+			gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
+			beta := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Beta, len(config.Beta)))
+			gInput, gGamma, gBeta := LayerNormBackward(input, nil, gradOut, gamma, beta, config.NormSize, n.BatchSize, float64(config.Epsilon))
+			
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = gGamma
+			biasGrads[layerIdx] = gBeta
+
+		case LayerRMSNorm:
+			gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
+			gInput, gGamma := RMSNormBackward(input, nil, gradOut, gamma, config.NormSize, n.BatchSize, float64(config.Epsilon))
+			
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = gGamma
+
+		case LayerSwiGLU:
+			gateW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateWeights, len(config.GateWeights)))
+			upW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpWeights, len(config.UpWeights)))
+			downW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownWeights, len(config.DownWeights)))
+			gInput, gGateW, gUpW, gDownW, gGateB, gUpB, gDownB := SwiGLUBackward(
+				gradOut, input,
+				gateW, upW, downW,
+				ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateBias, len(config.GateBias))),
+				ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpBias, len(config.UpBias))),
+				ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownBias, len(config.DownBias))),
+				config.InputHeight, config.OutputHeight, n.BatchSize)
+			
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = []*Tensor[T]{gGateW, gUpW, gDownW}
+			biasGrads[layerIdx] = []*Tensor[T]{gGateB, gUpB, gDownB}
+
+		case LayerMultiHeadAttention:
+			weights := &AttentionWeights[T]{
+				QWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
+				QBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
+				KWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
+				KBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
+				VWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
+				VBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
+				OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputWeight, len(config.OutputWeight))),
+				OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputBias, len(config.OutputBias))),
+				DModel: config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
+			}
+			gInput, gWeights := MultiHeadAttentionBackward(gradOut, input, weights)
+			
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = gWeights
+
+		case LayerResidual:
+			gInput, gSkip := ResidualBackward(gradOut)
+			accumulateGradient(grads, layerIdx, gInput)
+			if layerIdx > 0 {
+				accumulateGradient(grads, layerIdx-1, gSkip)
+			}
+
+		case LayerParallel:
+			branchIntermediates, _ := context.([]*Tensor[T])
+			branches := make([]*LayerConfig, len(config.ParallelBranches))
+			for i := range config.ParallelBranches {
+				branches[i] = &config.ParallelBranches[i]
+			}
+			gInput, _ := ParallelBackward(gradOut, input, branches, branchIntermediates, config.CombineMode)
+			accumulateGradient(grads, layerIdx, gInput)
+
+		default:
+			accumulateGradient(grads, layerIdx, gradOut)
+		}
+		
+		// Reset gradients for frozen layers
+		if config.Frozen {
+			kernelGrads[layerIdx] = nil
+			biasGrads[layerIdx] = nil
+		}
+
+		// Gradient Scaling / Attention (Optional, matching float32 logic if desired)
+		// applySoftmaxGradientScalingGeneric(kernelGrads[layerIdx], biasGrads[layerIdx])
+	}
+	
+	state.StepCount++
+	return grads[0], kernelGrads, biasGrads, time.Since(start)
+}
+
+// =============================================================================
+// Original float32 Implementation
+// =============================================================================
+
 // StepBackward executes one backward step for ALL layers simultaneously
 // It applies a "Softmax Variation" to the weight gradients to balance updates
 func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float32, time.Duration) {
@@ -194,13 +404,18 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 		}
 
 		// === Gradient Attention / Scaling ===
-		if len(kernelGrads) > 0 {
-			applySoftmaxGradientScaling(kernelGrads)
-			n.kernelGradients[layerIdx] = kernelGrads
-		}
-		if len(biasGrads) > 0 {
-			applySoftmaxGradientScaling(biasGrads)
-			n.biasGradients[layerIdx] = biasGrads
+		if config.Frozen {
+			n.kernelGradients[layerIdx] = nil
+			n.biasGradients[layerIdx] = nil
+		} else {
+			if len(kernelGrads) > 0 {
+				applySoftmaxGradientScaling(kernelGrads)
+				n.kernelGradients[layerIdx] = kernelGrads
+			}
+			if len(biasGrads) > 0 {
+				applySoftmaxGradientScaling(biasGrads)
+				n.biasGradients[layerIdx] = biasGrads
+			}
 		}
 
 		// Notify observer if present (step mode)

@@ -137,52 +137,149 @@ func ForwardSoftmaxCPU(input []float32, config *LayerConfig) ([]float32, error) 
 	}
 }
 
-// softmaxStandard applies standard softmax with optional temperature scaling
-func softmaxStandard(logits []float32, temperature float32) []float32 {
+// =============================================================================
+// Generic Softmax Implementation
+// =============================================================================
+
+// ApplySoftmax applies standard softmax for any numeric type.
+func ApplySoftmax[T Numeric](logits *Tensor[T], temperature float64) *Tensor[T] {
 	if temperature == 0 {
 		temperature = 1.0
 	}
 
-	// Scale by temperature
-	scaled := make([]float32, len(logits))
-	maxLogit := logits[0] / temperature
-	for i, v := range logits {
-		scaled[i] = v / temperature
-		if scaled[i] > maxLogit {
-			maxLogit = scaled[i]
+	n := len(logits.Data)
+	result := NewTensor[T](n)
+
+	// Find max for numerical stability
+	maxLogit := float64(logits.Data[0])
+	if IsIntegerType[T]() {
+		maxLogit /= 10000.0
+	}
+	maxLogit /= temperature
+
+	for _, v := range logits.Data {
+		scaled := float64(v)
+		if IsIntegerType[T]() {
+			scaled /= 10000.0
+		}
+		scaled /= temperature
+		if scaled > maxLogit {
+			maxLogit = scaled
 		}
 	}
 
-	// Numerical stability: subtract max
-	exps := make([]float32, len(scaled))
-	sum := float32(0.0)
-	for i, v := range scaled {
-		exps[i] = float32(math.Exp(float64(v - maxLogit)))
+	// Compute exp and sum
+	exps := make([]float64, n)
+	sum := 0.0
+	for i, v := range logits.Data {
+		val := float64(v)
+		if IsIntegerType[T]() {
+			val /= 10000.0
+		}
+		exps[i] = math.Exp(val/temperature - maxLogit)
 		sum += exps[i]
 	}
 
 	// Normalize
-	probs := make([]float32, len(logits))
 	for i := range exps {
-		probs[i] = exps[i] / sum
+		val := exps[i] / sum
+		if IsIntegerType[T]() {
+			result.Data[i] = T(val * 100.0)
+		} else {
+			result.Data[i] = T(val)
+		}
 	}
 
-	return probs
+	return result
 }
 
-// softmaxGrid applies independent softmax to each row
-func softmaxGrid(logits []float32, rows, cols int, temperature float32) []float32 {
-	result := make([]float32, len(logits))
+// ApplySoftmaxGrid applies independent softmax to each row.
+func ApplySoftmaxGrid[T Numeric](logits *Tensor[T], rows, cols int, temperature float64) *Tensor[T] {
+	result := NewTensor[T](len(logits.Data))
 
 	for r := 0; r < rows; r++ {
 		rowStart := r * cols
 		rowEnd := rowStart + cols
-		rowSlice := logits[rowStart:rowEnd]
-		rowProbs := softmaxStandard(rowSlice, temperature)
-		copy(result[rowStart:rowEnd], rowProbs)
+		rowSlice := NewTensorFromSlice(logits.Data[rowStart:rowEnd], cols)
+		rowProbs := ApplySoftmax(rowSlice, temperature)
+		copy(result.Data[rowStart:rowEnd], rowProbs.Data)
 	}
 
 	return result
+}
+
+// SoftmaxBackward computes gradients for Softmax layer.
+func SoftmaxBackward[T Numeric](gradOutput, output *Tensor[T], softmaxRows, softmaxCols int) *Tensor[T] {
+	gradInput := NewTensor[T](len(gradOutput.Data))
+	
+	// If dimensions not specified, treat as single vector
+	if softmaxRows == 0 {
+		softmaxRows = 1
+		softmaxCols = len(gradOutput.Data)
+	}
+
+	// Process each "row" (independent softmax group)
+	for r := 0; r < softmaxRows; r++ {
+		start := r * softmaxCols
+		end := start + softmaxCols
+		
+		// For each element in this row
+		for i := start; i < end; i++ {
+			var gradSum float64
+			// Jacobian-vector product: dL/dx_i = sum_j (dL/dx_j * dy_j/dx_i)
+			// dy_j/dx_i = y_i * (delta_ij - y_j)
+			
+			// For integer types, the output values are scaled by 100.
+			// We need to unscale them to get probabilities [0, 1] for the Jacobian.
+			y_i := float64(output.Data[i])
+			if IsIntegerType[T]() {
+				y_i /= 100.0
+			}
+			
+			for j := start; j < end; j++ {
+				grad_j := float64(gradOutput.Data[j])
+				y_j := float64(output.Data[j])
+				if IsIntegerType[T]() {
+					y_j /= 100.0
+				}
+				
+				delta := 0.0
+				if i == j {
+					delta = 1.0
+				}
+				
+				jacobian := y_i * (delta - y_j)
+				gradSum += grad_j * jacobian
+			}
+			
+			// For integer types, we scale the gradient by 100 to match activation scaling
+			if IsIntegerType[T]() {
+				gradSum *= 100.0
+			}
+
+			gradInput.Data[i] = T(gradSum)
+		}
+	}
+
+	return gradInput
+}
+
+// =============================================================================
+// Backward-compatible float32 functions
+// =============================================================================
+
+// softmaxStandard applies standard softmax with optional temperature scaling
+func softmaxStandard(logits []float32, temperature float32) []float32 {
+	inputT := NewTensorFromSlice(logits, len(logits))
+	result := ApplySoftmax(inputT, float64(temperature))
+	return result.Data
+}
+
+// softmaxGrid applies independent softmax to each row
+func softmaxGrid(logits []float32, rows, cols int, temperature float32) []float32 {
+	inputT := NewTensorFromSlice(logits, len(logits))
+	result := ApplySoftmaxGrid(inputT, rows, cols, float64(temperature))
+	return result.Data
 }
 
 // softmaxHierarchical applies softmax at each level of hierarchy
@@ -282,6 +379,7 @@ func softmaxSparse(logits []float32) []float32 {
 	if k > 0 {
 		cumSum = float32(0)
 		for i := 0; i < k; i++ {
+			cumSum += sorted[i]
 			cumSum += sorted[i]
 		}
 		tau = (cumSum - 1.0) / float32(k)

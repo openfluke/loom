@@ -271,3 +271,126 @@ func bfloat16ToFloat32(bf16 uint16) float32 {
 	f32bits := uint32(bf16) << 16
 	return float32frombits(f32bits)
 }
+
+// TensorWithShape holds tensor data along with its shape
+type TensorWithShape struct {
+	Values []float32
+	Shape  []int
+	DType  string
+}
+
+// LoadSafetensorsWithShapes loads safetensors and returns both values and shapes
+// This enables proper layer type detection based on tensor dimensions
+func LoadSafetensorsWithShapes(data []byte) (map[string]TensorWithShape, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("data too short: need at least 8 bytes for header size")
+	}
+
+	headerSize := binary.LittleEndian.Uint64(data[0:8])
+
+	if len(data) < int(8+headerSize) {
+		return nil, fmt.Errorf("data too short: header size %d but only %d bytes available", headerSize, len(data)-8)
+	}
+
+	headerBytes := data[8 : 8+headerSize]
+
+	var rawHeader map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &rawHeader); err != nil {
+		return nil, fmt.Errorf("failed to parse header: %w", err)
+	}
+
+	allData := data[8+headerSize:]
+
+	tensors := make(map[string]TensorWithShape)
+	for name, value := range rawHeader {
+		if name == "__metadata__" {
+			continue
+		}
+
+		infoMap, ok := value.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		dtype, _ := infoMap["dtype"].(string)
+		if dtype != "F32" && dtype != "F16" && dtype != "BF16" {
+			continue
+		}
+
+		shapeList, _ := infoMap["shape"].([]interface{})
+		offsetList, _ := infoMap["data_offsets"].([]interface{})
+
+		shape := make([]int, len(shapeList))
+		for i, v := range shapeList {
+			shape[i] = int(v.(float64))
+		}
+
+		startOffset := int(offsetList[0].(float64))
+
+		numElements := 1
+		for _, dim := range shape {
+			numElements *= dim
+		}
+
+		tensorData := make([]float32, numElements)
+
+		if dtype == "F32" {
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*4
+				if offset+4 > len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				bits := binary.LittleEndian.Uint32(allData[offset : offset+4])
+				tensorData[i] = float32frombits(bits)
+			}
+		} else if dtype == "F16" {
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*2
+				if offset+2 > len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				f16bits := binary.LittleEndian.Uint16(allData[offset : offset+2])
+				tensorData[i] = float16ToFloat32(f16bits)
+			}
+		} else if dtype == "BF16" {
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*2
+				if offset+2 > len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				bf16bits := binary.LittleEndian.Uint16(allData[offset : offset+2])
+				tensorData[i] = bfloat16ToFloat32(bf16bits)
+			}
+		}
+
+		tensors[name] = TensorWithShape{
+			Values: tensorData,
+			Shape:  shape,
+			DType:  dtype,
+		}
+	}
+
+	return tensors, nil
+}
+
+// InferLayerType determines layer type from tensor shape
+// Returns: "conv" (4D), "dense" (2D), "norm" (1D), "embedding" (2D large vocab), "unknown"
+func InferLayerType(shape []int) string {
+	switch len(shape) {
+	case 1:
+		return "norm" // 1D = bias or norm weight
+	case 2:
+		// 2D could be dense/linear or embedding
+		// Embeddings typically have vocab_size >> hidden_size
+		if shape[0] > shape[1]*4 {
+			return "embedding" // [vocab_size, hidden_size]
+		}
+		return "dense" // [out_features, in_features]
+	case 3:
+		return "conv1d" // [out, in, kernel]
+	case 4:
+		return "conv2d" // [out, in, kernel_h, kernel_w]
+	default:
+		return "unknown"
+	}
+}

@@ -5,25 +5,47 @@
     <WelvetNativeLibPath>$(MSBuildThisFileDirectory)..\runtimes\</WelvetNativeLibPath>
   </PropertyGroup>
   
+  <!-- Detect architecture for choosing correct native library -->
+  <PropertyGroup>
+    <WelvetIsArm64 Condition="'$(RuntimeIdentifier)' != '' And ($(RuntimeIdentifier.Contains('arm64')) Or $(RuntimeIdentifier.Contains('aarch64')))">true</WelvetIsArm64>
+    <WelvetIsArm64 Condition="'$(WelvetIsArm64)' == '' And '$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)' == 'Arm64'">true</WelvetIsArm64>
+  </PropertyGroup>
+
   <ItemGroup>
-    <!-- Windows - include for all Windows targets including MAUI -->
+    <!-- Windows x64 -->
     <None Include="$(WelvetNativeLibPath)windows_x86_64\libloom.dll" 
-          Condition="'$(OS)' == 'Windows_NT' Or '$(TargetPlatformIdentifier)' == 'Windows'">
+          Condition="('$(OS)' == 'Windows_NT' Or '$(TargetPlatformIdentifier)' == 'Windows') And '$(WelvetIsArm64)' != 'true'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>libloom.dll</Link>
       <Visible>false</Visible>
     </None>
     
-    <!-- Linux (non-Android) -->
+    <!-- Windows ARM64 -->
+    <None Include="$(WelvetNativeLibPath)windows_arm64\libloom.dll" 
+          Condition="('$(OS)' == 'Windows_NT' Or '$(TargetPlatformIdentifier)' == 'Windows') And '$(WelvetIsArm64)' == 'true'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>libloom.dll</Link>
+      <Visible>false</Visible>
+    </None>
+    
+    <!-- Linux x64 (non-Android) -->
     <None Include="$(WelvetNativeLibPath)linux_x86_64\libloom.so" 
-          Condition="'$(OS)' != 'Windows_NT' And '$(TargetFrameworkIdentifier)' != 'MonoAndroid' And '$(TargetPlatformIdentifier)' != 'android'">
+          Condition="'$(OS)' != 'Windows_NT' And '$(TargetFrameworkIdentifier)' != 'MonoAndroid' And '$(TargetPlatformIdentifier)' != 'android' And '$(TargetPlatformIdentifier)' != 'macOS' And '$(TargetPlatformIdentifier)' != 'maccatalyst' And '$(WelvetIsArm64)' != 'true'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>libloom.so</Link>
       <Visible>false</Visible>
     </None>
     
-    <!-- macOS -->
-    <None Include="$(WelvetNativeLibPath)macos_arm64\libloom.dylib" 
+    <!-- Linux ARM64 (non-Android) -->
+    <None Include="$(WelvetNativeLibPath)linux_arm64\libloom.so" 
+          Condition="'$(OS)' != 'Windows_NT' And '$(TargetFrameworkIdentifier)' != 'MonoAndroid' And '$(TargetPlatformIdentifier)' != 'android' And '$(TargetPlatformIdentifier)' != 'macOS' And '$(TargetPlatformIdentifier)' != 'maccatalyst' And '$(WelvetIsArm64)' == 'true'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>libloom.so</Link>
+      <Visible>false</Visible>
+    </None>
+    
+    <!-- macOS (using universal by default for broad compatibility) -->
+    <None Include="$(WelvetNativeLibPath)macos_universal\libloom.dylib" 
           Condition="'$(TargetPlatformIdentifier)' == 'macOS' Or '$(TargetPlatformIdentifier)' == 'maccatalyst'">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>libloom.dylib</Link>
@@ -44,6 +66,31 @@
     <AndroidNativeLibrary Include="$(WelvetNativeLibPath)android_arm64\libloom.so">
       <Link>libs\arm64-v8a\libloom.so</Link>
     </AndroidNativeLibrary>
+  </ItemGroup>
+
+  <!-- iOS: Use NativeReference for static libraries -->
+  <!-- iOS Device (arm64) -->
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'iOS' And '$(RuntimeIdentifier)' == 'ios-arm64'">
+    <NativeReference Include="$(WelvetNativeLibPath)ios_arm64\libloom.a">
+      <Kind>Static</Kind>
+      <ForceLoad>true</ForceLoad>
+    </NativeReference>
+  </ItemGroup>
+
+  <!-- iOS Simulator ARM64 -->
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'iOS' And '$(RuntimeIdentifier)' == 'iossimulator-arm64'">
+    <NativeReference Include="$(WelvetNativeLibPath)ios_arm64_sim\libloom.a">
+      <Kind>Static</Kind>
+      <ForceLoad>true</ForceLoad>
+    </NativeReference>
+  </ItemGroup>
+
+  <!-- iOS Simulator x64 -->
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'iOS' And '$(RuntimeIdentifier)' == 'iossimulator-x64'">
+    <NativeReference Include="$(WelvetNativeLibPath)ios_x86_64_sim\libloom.a">
+      <Kind>Static</Kind>
+      <ForceLoad>true</ForceLoad>
+    </NativeReference>
   </ItemGroup>
 
   <!-- MAUI Windows: Ensure DLL is in the app bundle -->

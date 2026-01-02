@@ -27,19 +27,12 @@ build_arch() {
     if GOOS=darwin GOARCH=$GOARCH CGO_ENABLED=1 go build -buildmode=c-shared -o "$OUTPUT_DIR/$LIB_NAME" *.go 2>&1; then
         echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
         
-        # Build C benchmarks (only works if we're on the same arch or have cross-compile toolchain)
-        echo "Building simple_bench..."
-        if clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm 2>&1; then
-            echo "✓ Benchmark compiled: $OUTPUT_DIR/simple_bench"
+        # Build universal test
+        echo "Building universal_test..."
+        if clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/universal_test" universal_test.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm 2>&1; then
+            echo "✓ Universal test compiled: $OUTPUT_DIR/universal_test"
         else
-            echo "⚠ Could not compile simple_bench for $DIR_ARCH (cross-compile not available)"
-        fi
-        
-        echo "Building test18_adaptation..."
-        if clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/test18_adaptation" test18_adaptation.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm 2>&1; then
-            echo "✓ Test18 compiled: $OUTPUT_DIR/test18_adaptation"
-        else
-            echo "⚠ Could not compile test18_adaptation for $DIR_ARCH (cross-compile not available)"
+            echo "⚠ Could not compile universal_test for $DIR_ARCH (cross-compile not available)"
         fi
         
         echo ""
@@ -89,14 +82,10 @@ if $BUILD_SUCCESS_ARM64 && $BUILD_SUCCESS_X64; then
     # Copy header from arm64 build
     cp "compiled/macos_arm64/libloom.h" "$OUTPUT_DIR/libloom.h"
     
-    # Build benchmarks for universal (uses current arch's compiler)
-    echo "Building simple_bench..."
-    clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
-    echo "✓ Benchmark compiled: $OUTPUT_DIR/simple_bench"
-    
-    echo "Building test18_adaptation..."
-    clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/test18_adaptation" test18_adaptation.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
-    echo "✓ Test18 compiled: $OUTPUT_DIR/test18_adaptation"
+    # Build universal test for universal binary
+    echo "Building universal_test..."
+    clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/universal_test" universal_test.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
+    echo "✓ Universal test compiled: $OUTPUT_DIR/universal_test"
     
     echo ""
     ls -lh "$OUTPUT_DIR"
@@ -131,8 +120,10 @@ fi
 echo ""
 echo "=== Build Complete ==="
 echo ""
-echo "Run with:"
-echo "  cd compiled/macos_arm64 && ./simple_bench"
-echo "  cd compiled/macos_x86_64 && ./simple_bench"
-echo "  cd compiled/macos_universal && ./simple_bench"
+echo ""
+ echo "Run with:"
+ echo "  cd compiled/macos_arm64 && ./universal_test"
+ echo "  cd compiled/macos_x86_64 && ./universal_test"
+ echo "  cd compiled/macos_universal && ./universal_test"
+
 

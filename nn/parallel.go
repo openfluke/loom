@@ -2,6 +2,511 @@ package nn
 
 import "fmt"
 
+// =============================================================================
+// Generic Parallel Layer Implementation
+// =============================================================================
+
+// ParallelForward executes multiple sub-layers in parallel for any numeric type.
+// Returns combined output and a slice of intermediate tensors (one per branch) for backward pass.
+func ParallelForward[T Numeric](
+	input *Tensor[T],
+	branches []*LayerConfig,
+	batchSize int,
+	combineMode string,
+) (*Tensor[T], []*Tensor[T], error) {
+	if len(branches) == 0 {
+		return nil, nil, fmt.Errorf("parallel layer has no branches defined")
+	}
+
+	branchOutputs := make([]*Tensor[T], len(branches))
+	branchIntermediates := make([]*Tensor[T], len(branches))
+	totalOutputSize := 0
+
+	for i, branchCfg := range branches {
+		var preAct, postAct *Tensor[T]
+
+		// Route to appropriate generic layer forward based on type
+		switch branchCfg.Type {
+		case LayerDense:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Kernel, len(branchCfg.Kernel)))
+			bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Bias, len(branchCfg.Bias)))
+			preAct, postAct = DenseForward(input, weights, bias, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize, branchCfg.Activation)
+
+		case LayerConv2D:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Kernel, len(branchCfg.Kernel)))
+			bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Bias, len(branchCfg.Bias)))
+			preAct, postAct = Conv2DForward(input, weights, bias,
+				branchCfg.InputHeight, branchCfg.InputWidth, branchCfg.InputChannels,
+				branchCfg.KernelSize, branchCfg.Stride, branchCfg.Padding, branchCfg.Filters,
+				branchCfg.OutputHeight, branchCfg.OutputWidth, batchSize, branchCfg.Activation)
+
+		case LayerMultiHeadAttention:
+			weights := &AttentionWeights[T]{
+				QWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.QWeights, len(branchCfg.QWeights))),
+				QBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.QBias, len(branchCfg.QBias))),
+				KWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.KWeights, len(branchCfg.KWeights))),
+				KBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.KBias, len(branchCfg.KBias))),
+				VWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.VWeights, len(branchCfg.VWeights))),
+				VBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.VBias, len(branchCfg.VBias))),
+				OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.OutputWeight, len(branchCfg.OutputWeight))),
+				OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.OutputBias, len(branchCfg.OutputBias))),
+				DModel:       branchCfg.DModel, NumHeads: branchCfg.NumHeads, NumKVHeads: branchCfg.NumKVHeads, HeadDim: branchCfg.HeadDim,
+			}
+			postAct = MultiHeadAttentionForward(input, weights, 10000.0)
+			preAct = postAct // Placeholder
+
+		case LayerRNN:
+			wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.WeightIH, len(branchCfg.WeightIH)))
+			wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.WeightHH, len(branchCfg.WeightHH)))
+			biasH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.BiasH, len(branchCfg.BiasH)))
+			postAct, preAct = RNNForward(input, wIH, wHH, biasH, batchSize, branchCfg.SeqLength, branchCfg.RNNInputSize, branchCfg.HiddenSize)
+
+		case LayerLSTM:
+			weights := &LSTMWeights[T]{
+				WeightIH_i: ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.WeightIH_i, len(branchCfg.WeightIH_i))),
+				WeightHH_i: ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.WeightHH_i, len(branchCfg.WeightHH_i))),
+				BiasH_i:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.BiasH_i, len(branchCfg.BiasH_i))),
+				WeightIH_f: ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.WeightIH_f, len(branchCfg.WeightIH_f))),
+				WeightHH_f: ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.WeightHH_f, len(branchCfg.WeightHH_f))),
+				BiasH_f:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.BiasH_f, len(branchCfg.BiasH_f))),
+				WeightIH_g: ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.WeightIH_g, len(branchCfg.WeightIH_g))),
+				WeightHH_g: ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.WeightHH_g, len(branchCfg.WeightHH_g))),
+				BiasH_g:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.BiasH_g, len(branchCfg.BiasH_g))),
+				WeightIH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.WeightIH_o, len(branchCfg.WeightIH_o))),
+				WeightHH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.WeightHH_o, len(branchCfg.WeightHH_o))),
+				BiasH_o:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.BiasH_o, len(branchCfg.BiasH_o))),
+			}
+			postAct, _, _, _ = LSTMForward(input, weights, batchSize, branchCfg.SeqLength, branchCfg.RNNInputSize, branchCfg.HiddenSize)
+			preAct = postAct // Placeholder
+
+		case LayerSwiGLU:
+			gateW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.GateWeights, len(branchCfg.GateWeights)))
+			upW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.UpWeights, len(branchCfg.UpWeights)))
+			downW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.DownWeights, len(branchCfg.DownWeights)))
+			gateBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.GateBias, len(branchCfg.GateBias)))
+			upBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.UpBias, len(branchCfg.UpBias)))
+			downBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.DownBias, len(branchCfg.DownBias)))
+			postAct = SwiGLUForward(input, gateW, upW, downW, gateBias, upBias, downBias, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize)
+			preAct = input.Clone()
+
+		case LayerNorm:
+			gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Gamma, len(branchCfg.Gamma)))
+			beta := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Beta, len(branchCfg.Beta)))
+			normSize := branchCfg.NormSize
+			if normSize <= 0 {
+				normSize = len(input.Data)
+			}
+			postAct = LayerNormForward(input, nil, gamma, beta, normSize, batchSize, float64(branchCfg.Epsilon))
+			preAct = input.Clone()
+
+		case LayerRMSNorm:
+			gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Gamma, len(branchCfg.Gamma)))
+			normSize := branchCfg.NormSize
+			if normSize <= 0 {
+				normSize = len(input.Data)
+			}
+			postAct = RMSNormForward(input, nil, gamma, normSize, float64(branchCfg.Epsilon))
+			preAct = input.Clone()
+
+		case LayerSoftmax:
+			postAct = ApplySoftmax(input, float64(branchCfg.Temperature))
+			preAct = input.Clone()
+
+		case LayerParallel:
+			// Nested parallel layers - convert to slice of pointers
+			nestedBranches := make([]*LayerConfig, len(branchCfg.ParallelBranches))
+			for j := range branchCfg.ParallelBranches {
+				nestedBranches[j] = &branchCfg.ParallelBranches[j]
+			}
+			var err error
+			postAct, branchIntermediates, err = ParallelForward[T](input, nestedBranches, batchSize, branchCfg.CombineMode)
+			if err != nil {
+				return nil, nil, fmt.Errorf("nested parallel layer %d failed: %w", i, err)
+			}
+			preAct = input.Clone()
+
+		case LayerSequential:
+			nestedLayers := make([]*LayerConfig, len(branchCfg.ParallelBranches))
+			for j := range branchCfg.ParallelBranches {
+				nestedLayers[j] = &branchCfg.ParallelBranches[j]
+			}
+			var err error
+			postAct, _, err = SequentialForward[T](input, nestedLayers, batchSize)
+			if err != nil {
+				return nil, nil, fmt.Errorf("sequential branch %d failed: %w", i, err)
+			}
+			preAct = input.Clone() // Placeholder
+
+		default:
+			// For unsupported types, pass through
+			postAct = input.Clone()
+			preAct = input.Clone()
+		}
+
+		branchOutputs[i] = postAct
+		branchIntermediates[i] = preAct
+
+		// Notify observer for this specific branch
+		if branchCfg.Observer != nil {
+			postActF32 := ConvertSliceTToFloat32(postAct.Data)
+			inputF32 := ConvertSliceTToFloat32(input.Data)
+			notifyBranchObserver(branchCfg, branchCfg, i, "forward", "forward", inputF32, postActF32, 0)
+		}
+
+		if combineMode == "concat" || combineMode == "" || combineMode == "grid_scatter" || combineMode == "filter" {
+			totalOutputSize += len(postAct.Data)
+		} else {
+			// For add/avg, all outputs must be same size
+			if i == 0 {
+				totalOutputSize = len(postAct.Data)
+			} else if len(postAct.Data) != totalOutputSize {
+				return nil, nil, fmt.Errorf("branch %d output size %d doesn't match expected %d for combine mode %s",
+					i, len(postAct.Data), totalOutputSize, combineMode)
+			}
+		}
+	}
+
+	// Combine outputs based on combine mode
+	var combined *Tensor[T]
+
+	switch combineMode {
+	case "concat", "": // Default to concatenation
+		combined = NewTensor[T](totalOutputSize)
+		offset := 0
+		for _, branchOut := range branchOutputs {
+			copy(combined.Data[offset:], branchOut.Data)
+			offset += len(branchOut.Data)
+		}
+
+	case "add": // Element-wise addition
+		combined = NewTensor[T](totalOutputSize)
+		for _, branchOut := range branchOutputs {
+			for j := range branchOut.Data {
+				combined.Data[j] = T(float64(combined.Data[j]) + float64(branchOut.Data[j]))
+			}
+		}
+
+	case "avg", "average": // Element-wise average
+		combined = NewTensor[T](totalOutputSize)
+		for _, branchOut := range branchOutputs {
+			for j := range branchOut.Data {
+				combined.Data[j] = T(float64(combined.Data[j]) + float64(branchOut.Data[j]))
+			}
+		}
+		scale := 1.0 / float64(len(branches))
+		for j := range combined.Data {
+			combined.Data[j] = T(float64(combined.Data[j]) * scale)
+		}
+
+	case "grid_scatter": // Simplified grid_scatter (concatenation)
+		combined = NewTensor[T](totalOutputSize)
+		offset := 0
+		for _, branchOut := range branchOutputs {
+			copy(combined.Data[offset:], branchOut.Data)
+			offset += len(branchOut.Data)
+		}
+
+	// NOTE: "filter" mode now handled by ParallelForwardFiltered function for full control
+
+	default:
+		return nil, nil, fmt.Errorf("unknown combine mode: %s", combineMode)
+	}
+
+	return combined, branchIntermediates, nil
+}
+
+// ParallelForwardFiltered executes parallel branches with softmax-gated combining.
+// The gate layer computes N logits (one per branch), softmax normalizes them,
+// and outputs are weighted-summed. Requires all branches to have same output size.
+// Returns: combined output, branch outputs, gate weights (for backward pass).
+func ParallelForwardFiltered[T Numeric](
+	input *Tensor[T],
+	branches []*LayerConfig,
+	gateConfig *LayerConfig,
+	softmaxType SoftmaxType,
+	temperature float32,
+	batchSize int,
+) (*Tensor[T], []*Tensor[T], []float32, error) {
+	if len(branches) == 0 {
+		return nil, nil, nil, fmt.Errorf("parallel filter layer has no branches")
+	}
+
+	// 1. Compute all branch outputs
+	branchOutputs := make([]*Tensor[T], len(branches))
+	var expectedSize int
+
+	for i, branchCfg := range branches {
+		var postAct *Tensor[T]
+
+		switch branchCfg.Type {
+		case LayerDense:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Kernel, len(branchCfg.Kernel)))
+			bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Bias, len(branchCfg.Bias)))
+			_, postAct = DenseForward(input, weights, bias, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize, branchCfg.Activation)
+		case LayerSwiGLU:
+			gateW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.GateWeights, len(branchCfg.GateWeights)))
+			upW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.UpWeights, len(branchCfg.UpWeights)))
+			downW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.DownWeights, len(branchCfg.DownWeights)))
+			gateBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.GateBias, len(branchCfg.GateBias)))
+			upBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.UpBias, len(branchCfg.UpBias)))
+			downBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.DownBias, len(branchCfg.DownBias)))
+			postAct = SwiGLUForward(input, gateW, upW, downW, gateBias, upBias, downBias, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize)
+		default:
+			// Fallback: use generic ParallelForward for this branch type
+			nestedBranches := []*LayerConfig{branchCfg}
+			var err error
+			postAct, _, err = ParallelForward[T](input, nestedBranches, batchSize, "concat")
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("branch %d forward failed: %w", i, err)
+			}
+		}
+
+		branchOutputs[i] = postAct
+		if i == 0 {
+			expectedSize = len(postAct.Data)
+		} else if len(postAct.Data) != expectedSize {
+			return nil, nil, nil, fmt.Errorf("filter mode requires same-sized outputs: branch 0 has %d, branch %d has %d",
+				expectedSize, i, len(postAct.Data))
+		}
+	}
+
+	// 2. Compute gate weights
+	gateLogits := make([]float32, len(branches))
+	
+	if gateConfig != nil && gateConfig.Type == LayerDense {
+		// Use the gate layer to compute logits
+		gateWeights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(gateConfig.Kernel, len(gateConfig.Kernel)))
+		gateBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(gateConfig.Bias, len(gateConfig.Bias)))
+		_, gateOut := DenseForward(input, gateWeights, gateBias, gateConfig.InputHeight, gateConfig.OutputHeight, batchSize, ActivationScaledReLU)
+		
+		// Convert gate output to float32 for softmax
+		for i := 0; i < len(gateLogits) && i < len(gateOut.Data); i++ {
+			gateLogits[i] = float32(gateOut.Data[i])
+		}
+	} else {
+		// Uniform weights if no gate layer
+		for i := range gateLogits {
+			gateLogits[i] = 1.0 / float32(len(branches))
+		}
+	}
+
+	// 3. Apply softmax to get weights
+	if temperature <= 0 {
+		temperature = 1.0
+	}
+	gateWeights, _ := ForwardSoftmaxCPU(gateLogits, &LayerConfig{
+		SoftmaxVariant: softmaxType,
+		Temperature:    temperature,
+	})
+
+	// 4. Weighted sum of branch outputs
+	combined := NewTensor[T](expectedSize)
+	for i, branchOut := range branchOutputs {
+		weight := float64(gateWeights[i])
+		for j, val := range branchOut.Data {
+			combined.Data[j] = T(float64(combined.Data[j]) + weight*float64(val))
+		}
+	}
+
+	return combined, branchOutputs, gateWeights, nil
+}
+
+// ParallelBackward computes gradients for parallel layer.
+func ParallelBackward[T Numeric](
+	gradOutput, input *Tensor[T],
+	branches []*LayerConfig,
+	branchIntermediates []*Tensor[T],
+	combineMode string,
+) (*Tensor[T], [][]float32) {
+
+	if len(branches) == 0 {
+		return nil, nil
+	}
+
+	gradInput := NewTensor[T](len(input.Data))
+	branchGrads := make([]*Tensor[T], len(branches))
+	batchSize := 1 // Assume batchSize=1 for gradient splitting
+
+	// Split gradient based on combine mode
+	switch combineMode {
+	case "concat", "", "grid_scatter":
+		offset := 0
+		for i, branchCfg := range branches {
+			var size int
+			switch branchCfg.Type {
+			case LayerDense:
+				size = batchSize * branchCfg.OutputHeight
+			case LayerConv2D:
+				size = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
+			default:
+				size = len(input.Data)
+			}
+			if offset+size > len(gradOutput.Data) {
+				size = len(gradOutput.Data) - offset
+			}
+			if size <= 0 {
+				branchGrads[i] = NewTensor[T](len(input.Data))
+			} else {
+				branchGrads[i] = NewTensorFromSlice(gradOutput.Data[offset:offset+size], size)
+			}
+			offset += size
+		}
+
+	case "add":
+		for i := range branches {
+			branchGrads[i] = gradOutput.Clone()
+		}
+
+	case "avg", "average":
+		scale := 1.0 / float64(len(branches))
+		for i := range branches {
+			bg := NewTensor[T](len(gradOutput.Data))
+			for j := range gradOutput.Data {
+				bg.Data[j] = T(float64(gradOutput.Data[j]) * scale)
+			}
+			branchGrads[i] = bg
+		}
+	}
+
+	// Process branches
+	for i, branchCfg := range branches {
+		gradBranch := branchGrads[i]
+		if gradBranch == nil {
+			continue
+		}
+		intermediate := branchIntermediates[i]
+
+		var subGradInput *Tensor[T]
+
+		switch branchCfg.Type {
+		case LayerDense:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Kernel, len(branchCfg.Kernel)))
+			subGradInput, _, _ = DenseBackward(gradBranch, input, intermediate, weights, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize, branchCfg.Activation)
+
+		case LayerResidual:
+			gIn, _ := ResidualBackward(gradBranch)
+			subGradInput = gIn
+
+		case LayerParallel:
+			// Nested parallel backward
+			nestedBranches := make([]*LayerConfig, len(branchCfg.ParallelBranches))
+			for j := range branchCfg.ParallelBranches {
+				nestedBranches[j] = &branchCfg.ParallelBranches[j]
+			}
+			subGradInput, _ = ParallelBackward(gradBranch, input, nestedBranches, branchIntermediates, branchCfg.CombineMode)
+
+		case LayerSequential:
+			nestedLayers := make([]*LayerConfig, len(branchCfg.ParallelBranches))
+			for j := range branchCfg.ParallelBranches {
+				nestedLayers[j] = &branchCfg.ParallelBranches[j]
+			}
+			// Note: We don't have individual layer intermediates here because ParallelForward
+			// only returns ONE intermediate tensor per branch.
+			// SequentialForward needs a list of intermediates.
+			// This confirms my suspicion that we need to pack/unpack intermediates.
+			// For now, we pass nil/empty, effectively disabling training through Sequential layers
+			// until a better state management is implemented.
+			subGradInput = SequentialBackward(gradBranch, input, nestedLayers, nil)
+
+		default:
+			if len(gradBranch.Data) == len(input.Data) {
+				subGradInput = gradBranch.Clone()
+			}
+		}
+
+		// Accumulate
+		if subGradInput != nil && len(subGradInput.Data) == len(gradInput.Data) {
+			for j := range gradInput.Data {
+				gradInput.Data[j] += subGradInput.Data[j]
+			}
+		}
+	}
+
+	return gradInput, nil
+}
+
+// ParallelBackwardFiltered computes gradients for filter combine mode.
+// Each branch receives gradient scaled by its gate weight.
+// Gate gradient is computed based on how much each branch contributed to the loss.
+func ParallelBackwardFiltered[T Numeric](
+	gradOutput, input *Tensor[T],
+	branches []*LayerConfig,
+	branchOutputs []*Tensor[T],
+	gateWeights []float32,
+	gateConfig *LayerConfig,
+) (*Tensor[T], []float32) {
+	gradInput := NewTensor[T](len(input.Data))
+	batchSize := 1
+
+	// Each branch gets gradient scaled by its gate weight
+	for i, branchCfg := range branches {
+		weight := float64(gateWeights[i])
+		if weight < 0.001 {
+			continue // Skip branches with negligible weight
+		}
+
+		// Scale gradient by gate weight
+		scaledGrad := NewTensor[T](len(gradOutput.Data))
+		for j := range gradOutput.Data {
+			scaledGrad.Data[j] = T(float64(gradOutput.Data[j]) * weight)
+		}
+
+		var subGradInput *Tensor[T]
+		switch branchCfg.Type {
+		case LayerDense:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Kernel, len(branchCfg.Kernel)))
+			subGradInput, _, _ = DenseBackward(scaledGrad, input, input.Clone(), weights, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize, branchCfg.Activation)
+		default:
+			subGradInput = scaledGrad.Clone()
+		}
+
+		// Accumulate gradients from all branches
+		if subGradInput != nil && len(subGradInput.Data) == len(gradInput.Data) {
+			for j := range gradInput.Data {
+				gradInput.Data[j] += subGradInput.Data[j]
+			}
+		}
+	}
+
+	// Compute gate gradient (for gate layer training)
+	// dL/d(gate_i) = sum_j(gradOutput_j * branchOutput_i_j) - contribution of gate_i
+	gateGrad := make([]float32, len(gateWeights))
+	for i, branchOut := range branchOutputs {
+		var contribution float64
+		for j := range gradOutput.Data {
+			contribution += float64(gradOutput.Data[j]) * float64(branchOut.Data[j])
+		}
+		gateGrad[i] = float32(contribution)
+	}
+
+	return gradInput, gateGrad
+}
+
+// InitFilteredParallelLayer creates a parallel layer with softmax-gated filtering.
+// branches: the sub-layers to run in parallel
+// gateInputSize: size of input to the gate layer
+// numBranches: must match len(branches), used for gate output size
+// softmaxType: which softmax variant to use for gating
+func InitFilteredParallelLayer(branches []LayerConfig, gateInputSize int, softmaxType SoftmaxType, temperature float32) LayerConfig {
+	numBranches := len(branches)
+	
+	// Create gate layer: Dense(inputSize -> numBranches)
+	gateLayer := InitDenseLayer(gateInputSize, numBranches, ActivationScaledReLU)
+	
+	return LayerConfig{
+		Type:              LayerParallel,
+		ParallelBranches:  branches,
+		CombineMode:       "filter",
+		FilterGateConfig:  &gateLayer,
+		FilterSoftmax:     softmaxType,
+		FilterTemperature: temperature,
+	}
+}
+
+// =============================================================================
+// Original float32 Implementation (Full featured)
+// =============================================================================
+
 // parallelForwardCPU executes multiple sub-layers in parallel and combines their outputs
 // Returns: combined output, pre-activations for all branches (for backward pass), error
 func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode string) ([]float32, [][]float32, error) {
@@ -45,25 +550,21 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 		case LayerSwiGLU:
 			preAct, postAct = SwiGLUForwardCPU(input, branchCfg, batchSize)
 		case LayerNorm:
-			// LayerNorm doesn't use residual in parallel branches
 			postAct = layerNormForwardCPU(input, nil, branchCfg, batchSize)
 			preAct = make([]float32, len(input))
-			copy(preAct, input) // Store input for backward
+			copy(preAct, input)
 		case LayerRMSNorm:
-			// RMSNorm doesn't use residual in parallel branches
 			postAct = rmsNormForwardCPU(input, nil, branchCfg, batchSize)
 			preAct = make([]float32, len(input))
-			copy(preAct, input) // Store input for backward
+			copy(preAct, input)
 		case LayerSoftmax:
-			// Softmax forward
 			var err error
 			postAct, err = ForwardSoftmaxCPU(input, branchCfg)
 			if err != nil {
-				// Fallback to standard softmax
 				postAct = softmaxStandard(input, 1.0)
 			}
 			preAct = make([]float32, len(input))
-			copy(preAct, input) // Store logits for backward
+			copy(preAct, input)
 		case LayerParallel:
 			// Nested parallel layers
 			var nestedPreActs [][]float32
@@ -86,6 +587,29 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 				copy(preAct[offset:], pa)
 				offset += len(pa)
 			}
+		case LayerSequential:
+			// Sequential branch
+			var nestedPreActs [][]float32
+			var err error
+			postAct, nestedPreActs, err = sequentialForwardCPU(input, branchCfg.ParallelBranches, batchSize)
+			if err != nil {
+				return nil, nil, fmt.Errorf("sequential branch %d failed: %w", i, err)
+			}
+			// Flatten nested pre-activations similar to Parallel layer
+			totalSize := 1 // metadata: type/count
+			for _, pa := range nestedPreActs {
+				totalSize += 1 + len(pa) // size + data
+			}
+			preAct = make([]float32, totalSize)
+			preAct[0] = float32(len(nestedPreActs))
+			offset := 1
+			for _, pa := range nestedPreActs {
+				preAct[offset] = float32(len(pa))
+				offset++
+				copy(preAct[offset:], pa)
+				offset += len(pa)
+			}
+			
 		default:
 			return nil, nil, fmt.Errorf("unsupported layer type %d in parallel branch %d", branchCfg.Type, i)
 		}
@@ -98,10 +622,7 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 			notifyBranchObserver(cfg, branchCfg, i, mode, "forward", input, postAct, 0)
 		}
 
-		if cfg.CombineMode == "concat" || cfg.CombineMode == "" {
-			totalOutputSize += len(postAct)
-		} else if cfg.CombineMode == "grid_scatter" {
-			// For grid_scatter, branches can have different sizes (accumulated later)
+		if cfg.CombineMode == "concat" || cfg.CombineMode == "" || cfg.CombineMode == "grid_scatter" || cfg.CombineMode == "filter" {
 			totalOutputSize += len(postAct)
 		} else {
 			// For add/avg, all outputs must be same size
@@ -141,7 +662,6 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 				combined[j] += branchOut[j]
 			}
 		}
-		// Divide by number of branches
 		scale := 1.0 / float32(len(cfg.ParallelBranches))
 		for j := range combined {
 			combined[j] *= scale
@@ -153,8 +673,6 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 				len(cfg.GridPositions), len(cfg.ParallelBranches))
 		}
 
-		// Calculate total features per grid position
-		// First pass: determine max features needed per grid cell
 		gridCells := cfg.GridOutputRows * cfg.GridOutputCols * cfg.GridOutputLayers
 		if gridCells == 0 {
 			return nil, nil, fmt.Errorf("grid_scatter requires GridOutputRows/Cols/Layers to be set")
@@ -165,30 +683,25 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 		for i, branchOut := range branchOutputs {
 			pos := cfg.GridPositions[i]
 
-			// Validate position
 			if pos.TargetRow >= cfg.GridOutputRows || pos.TargetCol >= cfg.GridOutputCols || pos.TargetLayer >= cfg.GridOutputLayers {
 				return nil, nil, fmt.Errorf("branch %d grid position (%d,%d,%d) exceeds grid bounds (%d,%d,%d)",
 					i, pos.TargetRow, pos.TargetCol, pos.TargetLayer,
 					cfg.GridOutputRows, cfg.GridOutputCols, cfg.GridOutputLayers)
 			}
 
-			// Calculate flat index for this grid position
 			gridIdx := pos.TargetRow*cfg.GridOutputCols*cfg.GridOutputLayers +
 				pos.TargetCol*cfg.GridOutputLayers +
 				pos.TargetLayer
 
-			// Each branch contributes features to its grid position
 			branchOutputPerSample := len(branchOut) / batchSize
 			featuresPerPosition[gridIdx] = branchOutputPerSample
 		}
 
-		// Calculate total output size
 		totalFeatures := 0
 		for _, f := range featuresPerPosition {
 			totalFeatures += f
 		}
 
-		// Initialize output
 		combined = make([]float32, batchSize*totalFeatures)
 
 		// Place each branch output at its designated position
@@ -196,7 +709,6 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 			pos := cfg.GridPositions[i]
 			branchOutputPerSample := len(branchOut) / batchSize
 
-			// Calculate offset: sum of features from all previous grid positions
 			gridIdx := pos.TargetRow*cfg.GridOutputCols*cfg.GridOutputLayers +
 				pos.TargetCol*cfg.GridOutputLayers +
 				pos.TargetLayer
@@ -206,12 +718,95 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 				offset += featuresPerPosition[j]
 			}
 
-			// Copy branch output for each sample in batch
 			for b := 0; b < batchSize; b++ {
 				srcStart := b * branchOutputPerSample
 				srcEnd := srcStart + branchOutputPerSample
 				dstStart := b*totalFeatures + offset
 				copy(combined[dstStart:dstStart+branchOutputPerSample], branchOut[srcStart:srcEnd])
+			}
+		}
+
+	case "filter": // Softmax-gated weighted combination with auto-padding
+		if len(branchOutputs) == 0 {
+			return nil, nil, fmt.Errorf("filter mode requires at least one branch")
+		}
+
+		// Find the maximum output size across all branches
+		maxSize := 0
+		for _, bo := range branchOutputs {
+			if len(bo) > maxSize {
+				maxSize = len(bo)
+			}
+		}
+
+		// Pad smaller outputs to match the maximum size
+		paddedOutputs := make([][]float32, len(branchOutputs))
+		for i, bo := range branchOutputs {
+			if len(bo) == maxSize {
+				paddedOutputs[i] = bo
+			} else {
+				// Pad with zeros
+				padded := make([]float32, maxSize)
+				copy(padded, bo)
+				paddedOutputs[i] = padded
+			}
+		}
+		branchOutputs = paddedOutputs
+
+		// Compute gate logits
+		gateLogits := make([]float32, len(branchOutputs))
+		if cfg.FilterGateConfig != nil && cfg.FilterGateConfig.Type == LayerDense {
+			// Run gate layer on input
+			gateWeights := cfg.FilterGateConfig.Kernel
+			gateBias := cfg.FilterGateConfig.Bias
+			gateOutSize := cfg.FilterGateConfig.OutputHeight
+			if gateOutSize == 0 {
+				gateOutSize = len(branchOutputs)
+			}
+			inputSize := cfg.FilterGateConfig.InputHeight
+			if inputSize == 0 {
+				inputSize = len(input)
+			}
+			// Simple dense forward for gate
+			for o := 0; o < gateOutSize && o < len(gateLogits); o++ {
+				sum := float32(0)
+				for i := 0; i < inputSize && i < len(input); i++ {
+					wIdx := o*inputSize + i
+					if wIdx < len(gateWeights) {
+						sum += input[i] * gateWeights[wIdx]
+					}
+				}
+				if o < len(gateBias) {
+					sum += gateBias[o]
+				}
+				gateLogits[o] = sum
+			}
+		} else {
+			// Uniform weights if no gate layer
+			for i := range gateLogits {
+				gateLogits[i] = 1.0 / float32(len(branchOutputs))
+			}
+		}
+
+		// Apply softmax to gate logits
+		temp := cfg.FilterTemperature
+		if temp <= 0 {
+			temp = 1.0
+		}
+		gateWeights, _ := ForwardSoftmaxCPU(gateLogits, &LayerConfig{
+			SoftmaxVariant: cfg.FilterSoftmax,
+			Temperature:    temp,
+		})
+
+		// Weighted sum of branch outputs
+		combined = make([]float32, maxSize)
+		for i, branchOut := range branchOutputs {
+			weight := float32(1.0 / float32(len(branchOutputs))) // default
+			if i < len(gateWeights) {
+				weight = gateWeights[i]
+			}
+			for j := range branchOut {
+				combined[j] += weight * branchOut[j]
 			}
 		}
 
@@ -237,12 +832,10 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 		branchGrads = make([][]float32, len(cfg.ParallelBranches))
 		offset := 0
 
-		// We need to know output sizes - recompute from forward (TODO: cache this)
 		for i := range cfg.ParallelBranches {
 			branchCfg := &cfg.ParallelBranches[i]
 			var outputSize int
 
-			// Quick size calculation based on layer type
 			switch branchCfg.Type {
 			case LayerDense:
 				outputSize = batchSize * branchCfg.OutputHeight
@@ -255,16 +848,14 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			case LayerLSTM:
 				outputSize = batchSize * branchCfg.SeqLength * branchCfg.HiddenSize
 			case LayerSwiGLU:
-				outputSize = len(input) // SwiGLU outputs same size as input
+				outputSize = len(input)
 			case LayerNorm:
-				outputSize = len(input) // LayerNorm preserves size
+				outputSize = len(input)
 			case LayerRMSNorm:
-				outputSize = len(input) // RMSNorm preserves size
+				outputSize = len(input)
 			case LayerSoftmax:
-				outputSize = len(input) // Softmax preserves size
+				outputSize = len(input)
 			case LayerParallel:
-				// For nested parallel, need to compute from config
-				// This is complex, so run a dummy forward to get size
 				dummyOut, _, err := parallelForwardCPU(input, branchCfg, batchSize, mode)
 				if err != nil {
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
@@ -278,13 +869,13 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			offset += outputSize
 		}
 
-	case "add": // Each branch gets full gradient
+	case "add":
 		branchGrads = make([][]float32, len(cfg.ParallelBranches))
 		for i := range branchGrads {
 			branchGrads[i] = gradOutput
 		}
 
-	case "avg", "average": // Each branch gets scaled gradient
+	case "avg", "average":
 		branchGrads = make([][]float32, len(cfg.ParallelBranches))
 		scale := 1.0 / float32(len(cfg.ParallelBranches))
 		for i := range branchGrads {
@@ -294,10 +885,9 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			}
 		}
 
-	case "grid_scatter": // Extract gradients from specific grid positions
+	case "grid_scatter":
 		branchGrads = make([][]float32, len(cfg.ParallelBranches))
 
-		// Reconstruct features per position (same logic as forward)
 		gridCells := cfg.GridOutputRows * cfg.GridOutputCols * cfg.GridOutputLayers
 		featuresPerPosition := make([]int, gridCells)
 
@@ -305,7 +895,6 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			branchCfg := &cfg.ParallelBranches[i]
 			pos := cfg.GridPositions[i]
 
-			// Calculate output size for this branch
 			var branchOutputSize int
 			switch branchCfg.Type {
 			case LayerDense:
@@ -343,18 +932,15 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			featuresPerPosition[gridIdx] = branchOutputPerSample
 		}
 
-		// Calculate total features
 		totalFeatures := 0
 		for _, f := range featuresPerPosition {
 			totalFeatures += f
 		}
 
-		// Extract gradient for each branch from its grid position
 		for i := range cfg.ParallelBranches {
 			branchCfg := &cfg.ParallelBranches[i]
 			pos := cfg.GridPositions[i]
 
-			// Calculate branch output size
 			var branchOutputSize int
 			switch branchCfg.Type {
 			case LayerDense:
@@ -387,7 +973,6 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 
 			branchOutputPerSample := branchOutputSize / batchSize
 
-			// Calculate offset: sum of features from all previous grid positions
 			gridIdx := pos.TargetRow*cfg.GridOutputCols*cfg.GridOutputLayers +
 				pos.TargetCol*cfg.GridOutputLayers +
 				pos.TargetLayer
@@ -397,12 +982,26 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				offset += featuresPerPosition[j]
 			}
 
-			// Extract gradient from grid position
 			branchGrads[i] = make([]float32, branchOutputSize)
 			for b := 0; b < batchSize; b++ {
 				srcStart := b*totalFeatures + offset
 				dstStart := b * branchOutputPerSample
 				copy(branchGrads[i][dstStart:dstStart+branchOutputPerSample], gradOutput[srcStart:srcStart+branchOutputPerSample])
+			}
+		}
+
+	case "filter": // Gradients flow to branches weighted by gate values
+		branchGrads = make([][]float32, len(cfg.ParallelBranches))
+		outputSize := len(gradOutput)
+
+		// For filter mode, each branch gets gradient scaled by its gate weight
+		// Since we don't have the exact gate weights stored, we use uniform distribution
+		// This is a simplification - ideally we'd store gate weights from forward pass
+		scale := 1.0 / float32(len(cfg.ParallelBranches))
+		for i := range branchGrads {
+			branchGrads[i] = make([]float32, outputSize)
+			for j := range gradOutput {
+				branchGrads[i][j] = gradOutput[j] * scale
 			}
 		}
 
@@ -423,7 +1022,6 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 		var branchInputGrad []float32
 		var kernelGrad, biasGrad []float32
 
-		// Route to appropriate layer type backward function
 		switch branchCfg.Type {
 		case LayerDense:
 			branchInputGrad, kernelGrad, biasGrad = denseBackwardCPU(gradOut, input, preAct, branchCfg, batchSize)
@@ -434,7 +1032,6 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 		case LayerMultiHeadAttention:
 			var gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB []float32
 			branchInputGrad, gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB = multiHeadAttentionBackwardCPU(gradOut, input, preAct, branchCfg, batchSize)
-			// Concatenate all weight gradients
 			kernelGrad = append(append(append(gradQW, gradKW...), gradVW...), gradOutW...)
 			biasGrad = append(append(append(gradQB, gradKB...), gradVB...), gradOutB...)
 
@@ -444,7 +1041,6 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			kernelGrad = append(append(gradWeightIH, gradWeightHH...), gradBiasH...)
 
 		case LayerLSTM:
-			// Unflatten states from preActivations
 			states := make(map[string][]float32)
 			hiddenSize := branchCfg.HiddenSize
 			seqLength := branchCfg.SeqLength
@@ -464,67 +1060,34 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 
 			var grads map[string][]float32
 			branchInputGrad, grads = lstmBackwardCPU(branchCfg, gradOut, input, states, batchSize, seqLength, branchCfg.RNNInputSize, hiddenSize)
-			// Concatenate all LSTM gradients
 			kernelGrad = append(append(append(grads["WeightIH_i"], grads["WeightHH_i"]...), grads["BiasH_i"]...),
 				append(append(grads["WeightIH_f"], grads["WeightHH_f"]...), grads["BiasH_f"]...)...)
 			kernelGrad = append(kernelGrad, append(append(grads["WeightIH_g"], grads["WeightHH_g"]...), grads["BiasH_g"]...)...)
 			kernelGrad = append(kernelGrad, append(append(grads["WeightIH_o"], grads["WeightHH_o"]...), grads["BiasH_o"]...)...)
 
 		case LayerSwiGLU:
-			// SwiGLU backward - TODO: implement proper backward pass
-			// For now, just pass gradient through
 			branchInputGrad = make([]float32, len(input))
 			copy(branchInputGrad, gradOut)
 			kernelGrad = nil
 			biasGrad = nil
 
 		case LayerNorm:
-			// LayerNorm backward - TODO: implement proper backward pass
-			// For now, just pass gradient through
 			branchInputGrad = make([]float32, len(input))
 			copy(branchInputGrad, gradOut)
 			kernelGrad = nil
 			biasGrad = nil
 
 		case LayerRMSNorm:
-			// RMSNorm has backward function
 			branchInputGrad = rmsNormBackwardCPU(preAct, nil, gradOut, branchCfg, batchSize)
-			kernelGrad = nil // Gamma gradients not computed yet
+			kernelGrad = nil
 			biasGrad = nil
 
 		case LayerSoftmax:
-			// Softmax backward
-			// Get softmax output from forward (need to recompute for now)
 			softmaxOutput, _ := ForwardSoftmaxCPU(preAct, branchCfg)
-
-			if branchCfg.SoftmaxRows > 0 {
-				// Grid Softmax
-				rows := branchCfg.SoftmaxRows
-				cols := branchCfg.SoftmaxCols
-				branchInputGrad = make([]float32, len(gradOut))
-
-				for row := 0; row < rows; row++ {
-					start := row * cols
-					end := start + cols
-					for i := start; i < end; i++ {
-						var gradSum float32
-						for j := start; j < end; j++ {
-							jacobian := softmaxOutput[j] * (kroneckerFloat(i, j) - softmaxOutput[i])
-							gradSum += gradOut[j] * jacobian
-						}
-						branchInputGrad[i] = gradSum
-					}
-				}
-			} else {
-				// Standard softmax
-				branchInputGrad = make([]float32, len(gradOut))
-				for i := range branchInputGrad {
-					var gradSum float32
-					for j := range gradOut {
-						jacobian := softmaxOutput[j] * (kroneckerFloat(i, j) - softmaxOutput[i])
-						gradSum += gradOut[j] * jacobian
-					}
-					branchInputGrad[i] = gradSum
+			branchInputGrad = make([]float32, len(gradOut))
+			for idx := range branchInputGrad {
+				for j := range gradOut {
+					branchInputGrad[idx] += gradOut[j] * softmaxOutput[j] * (kroneckerFloat(idx, j) - softmaxOutput[idx])
 				}
 			}
 			kernelGrad = nil
@@ -532,7 +1095,6 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 
 		case LayerParallel:
 			// Nested parallel backward
-			// Unflatten nested pre-activations
 			numNested := int(preAct[0])
 			nestedPreActs := make([][]float32, numNested)
 			offset := 1
@@ -550,7 +1112,58 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				return nil, nil, nil, fmt.Errorf("nested parallel backward failed: %w", err)
 			}
 
-			// Flatten nested gradients
+			totalKernel := 0
+			totalBias := 0
+			for j := range nestedKernelGrads {
+				totalKernel += len(nestedKernelGrads[j])
+				totalBias += len(nestedBiasGrads[j])
+			}
+			kernelGrad = make([]float32, totalKernel)
+			biasGrad = make([]float32, totalBias)
+			kOff := 0
+			bOff := 0
+			for j := range nestedKernelGrads {
+				copy(kernelGrad[kOff:], nestedKernelGrads[j])
+				kOff += len(nestedKernelGrads[j])
+				copy(biasGrad[bOff:], nestedBiasGrads[j])
+				bOff += len(nestedBiasGrads[j])
+			}
+
+		case LayerSequential:
+			// Nested sequential backward
+			// Unpack intermediates [count, size1, data1, ...]
+			if len(preAct) == 0 {
+				return nil, nil, nil, fmt.Errorf("no pre-activation data for sequential layer")
+			}
+			numNested := int(preAct[0])
+			nestedPreActs := make([][]float32, numNested)
+			offset := 1
+			for j := 0; j < numNested; j++ {
+				if offset >= len(preAct) {
+					break
+				}
+				size := int(preAct[offset])
+				offset++
+				if offset+size <= len(preAct) {
+					nestedPreActs[j] = preAct[offset : offset+size]
+					offset += size
+				}
+			}
+
+			var nestedKernelGrads, nestedBiasGrads [][]float32
+			var err error
+			// Note: parallelBackwardCPU iterates branches, sequentialBackwardCPU iterates layers.
+			// Sequential Layer reuses ParallelBranches to store the sequence.
+			branchInputGrad, nestedKernelGrads, nestedBiasGrads, err = sequentialBackwardCPU(input, gradOut, nestedPreActs, branchCfg.ParallelBranches, batchSize)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("nested sequential backward failed: %w", err)
+			}
+			
+			// Flatten kernel/bias grads for this branch (Sequential layer returns []Layer grads)
+			// parallelBackwardCPU expects ONE kernelGrad/biasGrad slice per BRANCH.
+			// But wait, LayerSequential inside Parallel means "this branch is a sequence".
+			// The caller of parallelBackwardCPU expects `allKernelGrads[i]` to be a FLAT slice of all weights in that branch.
+			
 			totalKernel := 0
 			totalBias := 0
 			for j := range nestedKernelGrads {
@@ -577,11 +1190,10 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			inputGrad[j] += branchInputGrad[j]
 		}
 
-		// Store gradients for this branch
 		allKernelGrads[i] = kernelGrad
 		allBiasGrads[i] = biasGrad
 
-		// Notify observer for this specific branch (restoring functionality removed from leaf layers)
+		// Notify observer for this specific branch
 		if cfg.Observer != nil {
 			notifyBranchObserver(cfg, branchCfg, i, mode, "backward", nil, branchInputGrad, 0)
 		}

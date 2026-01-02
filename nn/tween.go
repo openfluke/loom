@@ -6,6 +6,844 @@ import (
 	"math/rand"
 )
 
+// =============================================================================
+// Generic TweenState Implementation
+// Supports int8, uint16, float32, etc. natively with mixed-precision math.
+// =============================================================================
+
+// GenericTweenState holds bidirectional analysis state for any numeric type.
+type GenericTweenState[T Numeric] struct {
+	// Forward pass: what each layer ACTUALLY produces (top-down)
+	ForwardActs []*Tensor[T]
+
+	// Backward pass: what each layer SHOULD produce (bottom-up from expected)
+	BackwardTargets []*Tensor[T]
+
+	// Link budget per layer: how much information is preserved (0-1)
+	LinkBudgets []float32
+
+	// Gap at each layer: magnitude of difference between forward and backward
+	Gaps []float32
+
+	// Momentum for stable updates (Stored as float32 for smoothness)
+	WeightVel [][]float32
+	BiasVel   [][]float32
+
+	// Config holds all tunable parameters
+	Config *TweenConfig
+
+	TotalLayers int
+	TweenSteps  int
+	LossHistory []float32
+
+	// === CHAIN RULE SUPPORT ===
+	ChainGradients [][]float32 // Gradients are always small floats
+
+	// === GRADIENT EXPLOSION DETECTION ===
+	PrevAvgGap     float32
+	GapGrowthRate  float32
+	ExplosionCount int
+	AdaptiveRate   float32
+	BaselineGap    float32
+	GapSamples     int
+}
+
+// NewGenericTweenState creates a generic tween state.
+func NewGenericTweenState[T Numeric](n *Network, config *TweenConfig) *GenericTweenState[T] {
+	total := n.TotalLayers()
+	if config == nil {
+		config = DefaultTweenConfig(total)
+	} else {
+		if config.FrontierMin < 0 || config.FrontierMin >= total {
+			config.FrontierMin = total - 1
+		}
+	}
+
+	ts := &GenericTweenState[T]{
+		Config:          config,
+		ForwardActs:     make([]*Tensor[T], total+1),
+		BackwardTargets: make([]*Tensor[T], total+1),
+		LinkBudgets:     make([]float32, total),
+		Gaps:            make([]float32, total),
+		WeightVel:       make([][]float32, total),
+		BiasVel:         make([][]float32, total),
+		TotalLayers:     total,
+		ChainGradients:  make([][]float32, total+1),
+		AdaptiveRate:    1.0,
+	}
+
+	// Init momentum buckets matching network structure
+	for i := 0; i < total; i++ {
+		cfg := ts.getLayerCfgGeneric(n, i)
+		if cfg != nil && len(cfg.Kernel) > 0 {
+			ts.WeightVel[i] = make([]float32, len(cfg.Kernel))
+			ts.BiasVel[i] = make([]float32, len(cfg.Bias))
+			ts.LinkBudgets[i] = 1.0
+		}
+	}
+	return ts
+}
+
+// getLayerCfgGeneric calculates row/col/layer from flat index and returns LayerConfig
+func (ts *GenericTweenState[T]) getLayerCfgGeneric(n *Network, i int) *LayerConfig {
+	row := i / (n.GridCols * n.LayersPerCell)
+	col := (i / n.LayersPerCell) % n.GridCols
+	layer := i % n.LayersPerCell
+	return n.GetLayer(row, col, layer)
+}
+
+// setLayerCfgGeneric calculates row/col/layer and sets LayerConfig
+func (ts *GenericTweenState[T]) setLayerCfgGeneric(n *Network, i int, cfg LayerConfig) {
+	row := i / (n.GridCols * n.LayersPerCell)
+	col := (i / n.LayersPerCell) % n.GridCols
+	layer := i % n.LayersPerCell
+	n.SetLayer(row, col, layer, cfg)
+}
+
+// SetForwardActivation sets the forward activation for a layer.
+func (ts *GenericTweenState[T]) SetForwardActivation(layerIdx int, activation *Tensor[T]) {
+	if layerIdx >= 0 && layerIdx < len(ts.ForwardActs) {
+		ts.ForwardActs[layerIdx] = activation.Clone()
+	}
+}
+
+// GetGap returns the gap at a specific layer.
+func (ts *GenericTweenState[T]) GetGap(layerIdx int) float32 {
+	if layerIdx >= 0 && layerIdx < len(ts.Gaps) {
+		return ts.Gaps[layerIdx]
+	}
+	return 0
+}
+
+// ForwardPass executes the network forward pass and captures activations.
+func (ts *GenericTweenState[T]) ForwardPass(n *Network, input *Tensor[T], backend Backend[T]) *Tensor[T] {
+	output, acts, _, _ := GenericForwardPass(n, input, backend)
+
+	// Copy activations to state
+	for i, act := range acts {
+		if i < len(ts.ForwardActs) {
+			ts.ForwardActs[i] = act.Clone()
+		}
+	}
+
+	return output
+}
+
+// TweenStep: One complete bidirectional iteration with explosion detection
+func (ts *GenericTweenState[T]) TweenStep(n *Network, input *Tensor[T], targetClass int, outputSize int, rate float32, backend Backend[T]) float32 {
+	// 1. Forward
+	output := ts.ForwardPass(n, input, backend)
+
+	// 2. Backward with chain rule
+	ts.BackwardPassChainRule(n, targetClass, outputSize)
+
+	// 3. Calculate Link Budgets
+	ts.CalculateLinkBudgets()
+
+	// 4. Adaptive Rate Calculation
+	avgGap := float32(0)
+	for _, g := range ts.Gaps {
+		avgGap += g
+	}
+	if len(ts.Gaps) > 0 {
+		avgGap /= float32(len(ts.Gaps))
+	}
+
+	effectiveRate := rate
+	if avgGap > 10.0 {
+		effectiveRate = rate * 0.1
+	} else if avgGap > 5.0 {
+		effectiveRate = rate * 0.5
+	}
+
+	// 5. Update Weights
+	ts.TweenWeightsChainRule(n, effectiveRate)
+
+	ts.TweenSteps++
+
+	// Loss Calculation (Mixed Precision: T -> float64)
+	loss := float64(0)
+	for i, v := range output.Data {
+		t := 0.0
+		if i == targetClass {
+			t = 1.0
+		}
+		// CAST T TO FLOAT FOR LOSS CALC
+		val := float64(v)
+		if IsIntegerType[T]() {
+			val /= 100.0 // Normalize integer outputs
+		}
+		loss += (val - t) * (val - t)
+	}
+	return float32(loss)
+}
+
+// CalculateLinkBudgets measures information preservation
+func (ts *GenericTweenState[T]) CalculateLinkBudgets() {
+	for i := 0; i < ts.TotalLayers; i++ {
+		fwd := ts.ForwardActs[i+1]
+		bwd := ts.BackwardTargets[i+1]
+
+		if fwd == nil || bwd == nil {
+			ts.LinkBudgets[i] = 0.5
+			ts.Gaps[i] = 0
+			continue
+		}
+
+		dot, fwdMag, bwdMag := 0.0, 0.0, 0.0
+		gapSum := 0.0
+		minLen := len(fwd.Data)
+		if len(bwd.Data) < minLen {
+			minLen = len(bwd.Data)
+		}
+
+		for j := 0; j < minLen; j++ {
+			fVal := float64(fwd.Data[j])
+			bVal := float64(bwd.Data[j])
+
+			// Normalize integers
+			if IsIntegerType[T]() {
+				fVal /= 100.0
+				bVal /= 100.0
+			}
+
+			dot += fVal * bVal
+			fwdMag += fVal * fVal
+			bwdMag += bVal * bVal
+			gap := fVal - bVal
+			gapSum += gap * gap
+		}
+
+		if fwdMag > 0.001 && bwdMag > 0.001 {
+			cosine := dot / (math.Sqrt(fwdMag * bwdMag))
+			ts.LinkBudgets[i] = float32((cosine + 1) / 2)
+		} else {
+			ts.LinkBudgets[i] = 0.5
+		}
+
+		ts.Gaps[i] = float32(math.Sqrt(gapSum / float64(minLen+1)))
+	}
+}
+
+// ComputeGaps calculates gaps (alias for compatibility)
+func (ts *GenericTweenState[T]) ComputeGaps() {
+	ts.CalculateLinkBudgets()
+}
+
+// BackwardPassChainRule: Generates float32 gradients based on T inputs
+func (ts *GenericTweenState[T]) BackwardPassChainRule(n *Network, targetClass int, outputSize int) {
+	outputAct := ts.ForwardActs[ts.TotalLayers]
+	if outputAct == nil {
+		return
+	}
+
+	// Output Gradient (always float32)
+	gradOutput := make([]float32, len(outputAct.Data))
+	for i := range gradOutput {
+		actual := float64(outputAct.Data[i])
+		if IsIntegerType[T]() {
+			actual /= 100.0
+		}
+		target := 0.0
+		if i == targetClass {
+			target = 1.0
+		}
+		gradOutput[i] = float32(target - actual)
+	}
+
+	currentGrad := gradOutput
+	ts.ChainGradients[ts.TotalLayers] = currentGrad
+
+	for i := ts.TotalLayers - 1; i >= 0; i-- {
+		cfg := ts.getLayerCfgGeneric(n, i)
+		if cfg == nil || cfg.IsDisabled {
+			ts.ChainGradients[i] = currentGrad
+			continue
+		}
+
+		input := ts.ForwardActs[i]
+		output := ts.ForwardActs[i+1]
+		if input == nil || output == nil {
+			ts.ChainGradients[i] = currentGrad
+			continue
+		}
+
+		// Depth scaling
+		depthFromOutput := float32(ts.TotalLayers - 1 - i)
+		depthScale := float32(math.Pow(float64(ts.Config.DepthScaleFactor), float64(depthFromOutput)))
+		if depthScale > 100.0 {
+			depthScale = 100.0
+		}
+
+		var inputGrad []float32
+
+		// Compute Input Gradient based on Layer Type
+		switch cfg.Type {
+		case LayerDense:
+			inputGrad = ts.chainRuleBackwardDenseGeneric(cfg, input, output, currentGrad, depthScale)
+		case LayerConv2D:
+			inputGrad = ts.chainRuleBackwardConv2DGeneric(cfg, input, output, currentGrad, depthScale)
+		case LayerEmbedding:
+			inputGrad = ts.chainRuleBackwardEmbeddingGeneric(cfg, input, output, currentGrad, depthScale)
+		case LayerConv1D:
+			inputGrad = ts.chainRuleBackwardConv1DGeneric(cfg, input, output, currentGrad, depthScale)
+		default:
+			// Pass-through for other layers
+			inputGrad = make([]float32, len(input.Data))
+			copyLen := len(currentGrad)
+			if len(input.Data) < copyLen {
+				copyLen = len(input.Data)
+			}
+			for j := 0; j < copyLen; j++ {
+				inputGrad[j] = currentGrad[j]
+			}
+		}
+
+		// Store Gradient
+		ts.ChainGradients[i] = inputGrad
+		currentGrad = inputGrad
+
+		// Compute Generic Backward Target
+		targetT := NewTensor[T](len(input.Data))
+		for j := 0; j < len(input.Data); j++ {
+			val := float64(input.Data[j])
+			gradVal := float64(0)
+			if j < len(inputGrad) {
+				gradVal = float64(inputGrad[j])
+			}
+			if IsIntegerType[T]() {
+				gradVal *= 100.0
+			}
+			targetT.Data[j] = T(val + gradVal)
+		}
+		ts.BackwardTargets[i] = targetT
+	}
+}
+
+// chainRuleBackwardDenseGeneric computes gradient for Dense layer
+func (ts *GenericTweenState[T]) chainRuleBackwardDenseGeneric(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	inputSize := len(input.Data)
+	outputSize := len(gradOutput)
+	gradInput := make([]float32, inputSize)
+
+	// Precompute local gradient
+	localGrad := make([]float32, outputSize)
+	for j := 0; j < outputSize && j < len(output.Data); j++ {
+		outVal := float32(output.Data[j])
+		if IsIntegerType[T]() {
+			outVal /= 100.0
+		}
+		deriv := ts.activateDerivativeFromOutputGeneric(outVal, cfg.Activation)
+		localGrad[j] = clipGradGeneric(gradOutput[j]*deriv*depthScale, 10.0)
+	}
+
+	// Propagate: gradInput = Weights^T * localGrad
+	for in := 0; in < inputSize; in++ {
+		sum := float32(0)
+		for out := 0; out < outputSize; out++ {
+			wIdx := in*outputSize + out
+			if wIdx < len(cfg.Kernel) {
+				sum += cfg.Kernel[wIdx] * localGrad[out]
+			}
+		}
+		gradInput[in] = clipGradGeneric(sum, 10.0)
+	}
+	return gradInput
+}
+
+// chainRuleBackwardConv2DGeneric computes gradient for Conv2D layer
+func (ts *GenericTweenState[T]) chainRuleBackwardConv2DGeneric(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	gradInput := make([]float32, len(input.Data))
+
+	avgGrad := float32(0)
+	for j := 0; j < len(gradOutput) && j < len(output.Data); j++ {
+		outVal := float32(output.Data[j])
+		if IsIntegerType[T]() {
+			outVal /= 100.0
+		}
+		deriv := ts.activateDerivativeFromOutputGeneric(outVal, cfg.Activation)
+		avgGrad += gradOutput[j] * deriv
+	}
+	if len(gradOutput) > 0 {
+		avgGrad /= float32(len(gradOutput))
+	}
+	avgGrad *= depthScale
+
+	for i := range gradInput {
+		gradInput[i] = avgGrad
+	}
+	return gradInput
+}
+
+// chainRuleBackwardAttention computes gradient for Attention layer (generic)
+func (ts *GenericTweenState[T]) chainRuleBackwardAttention(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	gradInput := make([]float32, len(input.Data))
+	avgGrad := float32(0)
+	for _, g := range gradOutput {
+		avgGrad += g
+	}
+	if len(gradOutput) > 0 {
+		avgGrad /= float32(len(gradOutput))
+	}
+	avgGrad *= depthScale * 0.5 // Attention typically needs smaller gradients
+
+	for i := range gradInput {
+		gradInput[i] = avgGrad
+	}
+	return gradInput
+}
+
+// chainRuleBackwardRNN computes gradient for RNN layer (generic)
+func (ts *GenericTweenState[T]) chainRuleBackwardRNN(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	gradInput := make([]float32, len(input.Data))
+	avgGrad := float32(0)
+	for _, g := range gradOutput {
+		avgGrad += g
+	}
+	if len(gradOutput) > 0 {
+		avgGrad /= float32(len(gradOutput))
+	}
+	avgGrad *= depthScale * 0.7
+
+	for i := range gradInput {
+		gradInput[i] = avgGrad
+	}
+	return gradInput
+}
+
+// chainRuleBackwardLSTM computes gradient for LSTM layer (generic)
+func (ts *GenericTweenState[T]) chainRuleBackwardLSTM(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	gradInput := make([]float32, len(input.Data))
+	avgGrad := float32(0)
+	for _, g := range gradOutput {
+		avgGrad += g
+	}
+	if len(gradOutput) > 0 {
+		avgGrad /= float32(len(gradOutput))
+	}
+	avgGrad *= depthScale * 0.6 // LSTM gates dampen gradients
+
+	for i := range gradInput {
+		gradInput[i] = avgGrad
+	}
+	return gradInput
+}
+
+// chainRuleBackwardNorm computes gradient for Norm layer (generic)
+func (ts *GenericTweenState[T]) chainRuleBackwardNorm(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	gradInput := make([]float32, len(input.Data))
+	copyLen := len(gradOutput)
+	if len(input.Data) < copyLen {
+		copyLen = len(input.Data)
+	}
+	for i := 0; i < copyLen; i++ {
+		gradInput[i] = gradOutput[i] * depthScale
+	}
+	return gradInput
+}
+
+// chainRuleBackwardSwiGLU computes gradient for SwiGLU layer (generic)
+func (ts *GenericTweenState[T]) chainRuleBackwardSwiGLU(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	gradInput := make([]float32, len(input.Data))
+	avgGrad := float32(0)
+	for _, g := range gradOutput {
+		avgGrad += g
+	}
+	if len(gradOutput) > 0 {
+		avgGrad /= float32(len(gradOutput))
+	}
+	avgGrad *= depthScale * 0.5
+
+	for i := range gradInput {
+		gradInput[i] = avgGrad
+	}
+	return gradInput
+}
+
+// chainRuleBackwardEmbeddingGeneric computes gradient for Embedding layer (generic)
+func (ts *GenericTweenState[T]) chainRuleBackwardEmbeddingGeneric(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	// Embedding layer has discrete int inputs (Input Size = seqLen)
+	// Output Size = seqLen * embeddingDim
+	// There is no gradient flow TO the discrete inputs.
+	// We return a zero gradient for inputs.
+	
+	gradInput := make([]float32, len(input.Data))
+	// Zeros
+	return gradInput
+}
+
+// chainRuleBackwardConv1DGeneric computes gradient for Conv1D layer (generic)
+func (ts *GenericTweenState[T]) chainRuleBackwardConv1DGeneric(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	gradInput := make([]float32, len(input.Data))
+
+	avgGrad := float32(0)
+	for j := 0; j < len(gradOutput) && j < len(output.Data); j++ {
+		outVal := float32(output.Data[j])
+		if IsIntegerType[T]() {
+			outVal /= 100.0
+		}
+		deriv := ts.activateDerivativeFromOutputGeneric(outVal, cfg.Activation)
+		avgGrad += gradOutput[j] * deriv
+	}
+	if len(gradOutput) > 0 {
+		avgGrad /= float32(len(gradOutput))
+	}
+	avgGrad *= depthScale
+
+	for i := range gradInput {
+		gradInput[i] = avgGrad
+	}
+	return gradInput
+}
+
+// TweenWeightsChainRule updates weights using chain rule gradients
+func (ts *GenericTweenState[T]) TweenWeightsChainRule(n *Network, rate float32) {
+	mom := ts.Config.Momentum
+
+	for i := 0; i < ts.TotalLayers; i++ {
+		cfg := ts.getLayerCfgGeneric(n, i)
+		if cfg == nil || cfg.IsDisabled || cfg.Frozen {
+			continue
+		}
+
+		input := ts.ForwardActs[i]
+
+		var outputGrad []float32
+		if i+1 < len(ts.ChainGradients) {
+			outputGrad = ts.ChainGradients[i+1]
+		}
+
+		if input == nil || len(outputGrad) == 0 {
+			continue
+		}
+
+		// Apply updates based on layer type
+		switch cfg.Type {
+		case LayerDense:
+			ts.chainRuleUpdateDenseGeneric(cfg, input, outputGrad, rate*ts.Config.DenseRate, mom, i)
+		case LayerConv2D:
+			ts.chainRuleUpdateConv2DGeneric(cfg, input, outputGrad, rate*ts.Config.Conv2DRate, mom, i)
+		case LayerMultiHeadAttention:
+			ts.chainRuleUpdateAttentionGeneric(cfg, outputGrad, rate*ts.Config.AttentionRate)
+		case LayerRNN:
+			ts.chainRuleUpdateRNNGeneric(cfg, outputGrad, rate*ts.Config.RNNRate)
+		case LayerLSTM:
+			ts.chainRuleUpdateLSTMGeneric(cfg, outputGrad, rate*ts.Config.LSTMRate)
+		case LayerNorm, LayerRMSNorm:
+			ts.chainRuleUpdateNormGeneric(cfg, outputGrad, rate*ts.Config.NormRate)
+		case LayerSwiGLU:
+			ts.chainRuleUpdateSwiGLUGeneric(cfg, outputGrad, rate*ts.Config.SwiGLURate)
+		case LayerEmbedding:
+			ts.chainRuleUpdateEmbeddingGeneric(cfg, outputGrad, rate*ts.Config.EmbeddingRate)
+		case LayerConv1D:
+			ts.chainRuleUpdateConv1DGeneric(cfg, input, outputGrad, rate*ts.Config.Conv1DRate, mom, i)
+		}
+
+		ts.setLayerCfgGeneric(n, i, *cfg)
+	}
+}
+
+// chainRuleUpdateDenseGeneric applies gradient update to Dense layer
+func (ts *GenericTweenState[T]) chainRuleUpdateDenseGeneric(cfg *LayerConfig, input *Tensor[T], outputGrad []float32, rate, mom float32, layerIdx int) {
+	inputSize := len(input.Data)
+	outputSize := len(outputGrad)
+
+	for in := 0; in < inputSize; in++ {
+		inVal := float32(input.Data[in])
+		if IsIntegerType[T]() {
+			inVal /= 100.0
+		}
+
+		for out := 0; out < outputSize; out++ {
+			wIdx := in*outputSize + out
+			if wIdx >= len(cfg.Kernel) {
+				continue
+			}
+
+			delta := rate * inVal * outputGrad[out]
+			delta = clipGradGeneric(delta, 1.0)
+
+			if layerIdx < len(ts.WeightVel) && wIdx < len(ts.WeightVel[layerIdx]) {
+				ts.WeightVel[layerIdx][wIdx] = mom*ts.WeightVel[layerIdx][wIdx] + (1-mom)*delta
+				cfg.Kernel[wIdx] += ts.WeightVel[layerIdx][wIdx]
+			} else {
+				cfg.Kernel[wIdx] += delta
+			}
+		}
+	}
+
+	for out := 0; out < len(cfg.Bias) && out < outputSize; out++ {
+		grad := clipGradGeneric(rate*outputGrad[out], 1.0)
+		cfg.Bias[out] += grad
+	}
+}
+
+// chainRuleUpdateConv2DGeneric applies gradient update to Conv2D layer
+func (ts *GenericTweenState[T]) chainRuleUpdateConv2DGeneric(cfg *LayerConfig, input *Tensor[T], outputGrad []float32, rate, mom float32, layerIdx int) {
+	avgInput := float32(0)
+	for _, v := range input.Data {
+		val := float32(v)
+		if IsIntegerType[T]() {
+			val /= 100.0
+		}
+		avgInput += val
+	}
+	if len(input.Data) > 0 {
+		avgInput /= float32(len(input.Data))
+	}
+
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+
+	delta := clipGradGeneric(rate*avgInput*avgGrad, 0.1)
+	for i := range cfg.Kernel {
+		cfg.Kernel[i] += delta
+	}
+	for i := range cfg.Bias {
+		cfg.Bias[i] += clipGradGeneric(rate*avgGrad, 0.1)
+	}
+}
+
+// chainRuleUpdateAttentionGeneric applies gradient update to Attention layer
+func (ts *GenericTweenState[T]) chainRuleUpdateAttentionGeneric(cfg *LayerConfig, outputGrad []float32, rate float32) {
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+	delta := clipGradGeneric(rate*avgGrad, 0.1)
+
+	for i := range cfg.QWeights {
+		cfg.QWeights[i] += delta * 0.1
+	}
+	for i := range cfg.KWeights {
+		cfg.KWeights[i] += delta * 0.1
+	}
+	for i := range cfg.VWeights {
+		cfg.VWeights[i] += delta * 0.1
+	}
+	for i := range cfg.OutputWeight {
+		cfg.OutputWeight[i] += delta * 0.1
+	}
+}
+
+// chainRuleUpdateRNNGeneric applies gradient update to RNN layer
+func (ts *GenericTweenState[T]) chainRuleUpdateRNNGeneric(cfg *LayerConfig, outputGrad []float32, rate float32) {
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+	delta := clipGradGeneric(rate*avgGrad, 0.1)
+
+	for i := range cfg.WeightIH {
+		cfg.WeightIH[i] += delta
+	}
+	for i := range cfg.WeightHH {
+		cfg.WeightHH[i] += delta * 0.5
+	}
+	for i := range cfg.BiasH {
+		cfg.BiasH[i] += delta
+	}
+}
+
+// chainRuleUpdateLSTMGeneric applies gradient update to LSTM layer
+func (ts *GenericTweenState[T]) chainRuleUpdateLSTMGeneric(cfg *LayerConfig, outputGrad []float32, rate float32) {
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+	delta := clipGradGeneric(rate*avgGrad, 0.1)
+
+	// Update all 4 LSTM gates
+	for i := range cfg.WeightIH_i {
+		cfg.WeightIH_i[i] += delta
+	}
+	for i := range cfg.WeightIH_f {
+		cfg.WeightIH_f[i] += delta
+	}
+	for i := range cfg.WeightIH_g {
+		cfg.WeightIH_g[i] += delta
+	}
+	for i := range cfg.WeightIH_o {
+		cfg.WeightIH_o[i] += delta
+	}
+	for i := range cfg.WeightHH_i {
+		cfg.WeightHH_i[i] += delta * 0.3
+	}
+	for i := range cfg.WeightHH_f {
+		cfg.WeightHH_f[i] += delta * 0.3
+	}
+	for i := range cfg.WeightHH_g {
+		cfg.WeightHH_g[i] += delta * 0.3
+	}
+	for i := range cfg.WeightHH_o {
+		cfg.WeightHH_o[i] += delta * 0.3
+	}
+	for i := range cfg.BiasH_i {
+		cfg.BiasH_i[i] += delta
+	}
+	for i := range cfg.BiasH_f {
+		cfg.BiasH_f[i] += delta
+	}
+	for i := range cfg.BiasH_g {
+		cfg.BiasH_g[i] += delta
+	}
+	for i := range cfg.BiasH_o {
+		cfg.BiasH_o[i] += delta
+	}
+}
+
+// chainRuleUpdateNormGeneric applies gradient update to Norm layer
+func (ts *GenericTweenState[T]) chainRuleUpdateNormGeneric(cfg *LayerConfig, outputGrad []float32, rate float32) {
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+
+	for i := range cfg.Gamma {
+		cfg.Gamma[i] += clipGradGeneric(rate*avgGrad*ts.Config.NormGammaRate, 0.01)
+	}
+	for i := range cfg.Beta {
+		cfg.Beta[i] += clipGradGeneric(rate*avgGrad*ts.Config.NormBetaRate, 0.1)
+	}
+}
+
+// chainRuleUpdateSwiGLUGeneric applies gradient update to SwiGLU layer
+func (ts *GenericTweenState[T]) chainRuleUpdateSwiGLUGeneric(cfg *LayerConfig, outputGrad []float32, rate float32) {
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+	delta := clipGradGeneric(rate*avgGrad, 0.05)
+
+	for i := range cfg.GateWeights {
+		cfg.GateWeights[i] += delta
+	}
+	for i := range cfg.UpWeights {
+		cfg.UpWeights[i] += delta
+	}
+	for i := range cfg.DownWeights {
+		cfg.DownWeights[i] += delta
+	}
+}
+
+// chainRuleUpdateEmbeddingGeneric applies gradient update to Embedding layer
+func (ts *GenericTweenState[T]) chainRuleUpdateEmbeddingGeneric(cfg *LayerConfig, outputGrad []float32, rate float32) {
+	// Embedding update (simplified generic)
+	// Ideally we need the input tokens to know WHICH rows to update.
+	// But in this GenericTween pass, we are doing a simplified "gap-based" update 
+	// that smears the update across weights proportional to the gap.
+	
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+	delta := clipGradGeneric(rate*avgGrad, 0.05)
+
+	// In a real training loop we'd only update the specific tokens.
+	// Here we update all embeddings slightly to shift the manifold.
+	for i := range cfg.EmbeddingWeights {
+		cfg.EmbeddingWeights[i] += delta * 0.01 // Very small update per weight
+	}
+}
+
+// chainRuleUpdateConv1DGeneric applies gradient update to Conv1D layer
+func (ts *GenericTweenState[T]) chainRuleUpdateConv1DGeneric(cfg *LayerConfig, input *Tensor[T], outputGrad []float32, rate, mom float32, layerIdx int) {
+	avgInput := float32(0)
+	for _, v := range input.Data {
+		val := float32(v)
+		if IsIntegerType[T]() {
+			val /= 100.0
+		}
+		avgInput += val
+	}
+	if len(input.Data) > 0 {
+		avgInput /= float32(len(input.Data))
+	}
+
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+
+	delta := clipGradGeneric(rate*avgInput*avgGrad, 0.1)
+	for i := range cfg.Conv1DKernel {
+		cfg.Conv1DKernel[i] += delta
+	}
+	for i := range cfg.Conv1DBias {
+		cfg.Conv1DBias[i] += clipGradGeneric(rate*avgGrad, 0.1)
+	}
+}
+
+// activateDerivativeFromOutputGeneric computes activation derivative
+func (ts *GenericTweenState[T]) activateDerivativeFromOutputGeneric(output float32, activation ActivationType) float32 {
+	switch activation {
+	case ActivationScaledReLU:
+		if output > 0 {
+			return ts.Config.ReLUSlope
+		}
+		return 0.0
+	case ActivationSigmoid:
+		return output*(1.0-output) + ts.Config.DerivativeEpsilon
+	case ActivationTanh:
+		return (1.0 - output*output) + ts.Config.DerivativeEpsilon
+	case ActivationLeakyReLU:
+		if output >= 0 {
+			return 1.0
+		}
+		return ts.Config.LeakyReLUSlope
+	case ActivationSoftplus:
+		return 1.0 / (1.0 + float32(math.Exp(-float64(output))))
+	default:
+		return 1.0
+	}
+}
+
+// clipGradGeneric clips a gradient to prevent explosion
+func clipGradGeneric(grad, max float32) float32 {
+	if math.IsNaN(float64(grad)) || math.IsInf(float64(grad), 0) {
+		return 0
+	}
+	if grad > max {
+		return max
+	}
+	if grad < -max {
+		return -max
+	}
+	return grad
+}
+
+
+// =============================================================================
+// Original float32 Implementation
+// =============================================================================
+
+
 // NeuralTween - True Bidirectional Approach
 //
 // Concept:
@@ -34,6 +872,8 @@ type TweenConfig struct {
 	NormRate        float32 // Default: 0.1
 	SwiGLURate      float32 // Default: 0.2
 	Conv2DRate      float32 // Default: 0.1
+	EmbeddingRate   float32 // Default: 0.1
+	Conv1DRate      float32 // Default: 0.1
 
 	// === MOMENTUM & UPDATE SCALING ===
 	Momentum             float32 // Default: 0.9
@@ -95,6 +935,8 @@ func DefaultTweenConfig(totalLayers int) *TweenConfig {
 		NormRate:             0.1,
 		SwiGLURate:           0.2,
 		Conv2DRate:           0.1,
+		EmbeddingRate:        0.1,
+		Conv1DRate:           0.1,
 		Momentum:             0.9,
 		BiasRateMultiplier:   0.1,
 		WeightRateMultiplier: 0.01,

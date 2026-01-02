@@ -42,6 +42,17 @@ func LoadTransformerFromSafetensors(modelDir string) (*Network, error) {
 		return nil, err
 	}
 
+	// Validate required fields to prevent panics
+	if config.NumHeads == 0 {
+		return nil, fmt.Errorf("unsupported model: num_attention_heads is 0 (model may use encoder-decoder architecture)")
+	}
+	if config.HiddenSize == 0 {
+		return nil, fmt.Errorf("unsupported model: hidden_size is 0")
+	}
+	if config.NumLayers == 0 {
+		return nil, fmt.Errorf("unsupported model: num_hidden_layers is 0")
+	}
+
 	fmt.Printf("Loading transformer model:\n")
 	fmt.Printf("  Model type: %s\n", config.ModelType)
 	if len(config.Architectures) > 0 {
@@ -178,6 +189,17 @@ func LoadTransformerFromBytes(configData []byte, weightsData []byte) (*Network, 
 		return nil, err
 	}
 
+	// Validate required fields to prevent panics
+	if config.NumHeads == 0 {
+		return nil, fmt.Errorf("unsupported model: num_attention_heads is 0 (model may use encoder-decoder architecture)")
+	}
+	if config.HiddenSize == 0 {
+		return nil, fmt.Errorf("unsupported model: hidden_size is 0")
+	}
+	if config.NumLayers == 0 {
+		return nil, fmt.Errorf("unsupported model: num_hidden_layers is 0")
+	}
+
 	fmt.Printf("Loading transformer model from bytes:\n")
 	fmt.Printf("  Model type: %s\n", config.ModelType)
 	if len(config.Architectures) > 0 {
@@ -299,16 +321,36 @@ func extractQKVWeights(tensors map[string][]float32, prefix string, config Trans
 	kWeight := getTensor(tensors, prefix+".self_attn.k_proj.weight")
 	vWeight := getTensor(tensors, prefix+".self_attn.v_proj.weight")
 
-	// Transpose from PyTorch [out, in] to LOOM [in, out] format
 	hiddenSize := config.HiddenSize
-	kvDim := config.NumKVHeads * (config.HiddenSize / config.NumHeads)
+	headDim := 0
+	if config.NumHeads > 0 {
+		headDim = config.HiddenSize / config.NumHeads
+	}
+	kvDim := config.NumKVHeads * headDim
 
-	// Q: [hiddenSize, hiddenSize] -> transpose
-	qWeightTransposed := transposeWeights(qWeight, hiddenSize, hiddenSize)
+	// Handle empty weights gracefully (model may not have expected structure)
+	var qWeightTransposed, kWeightTransposed, vWeightTransposed []float32
 
-	// K, V: [kvDim, hiddenSize] -> transpose
-	kWeightTransposed := transposeWeights(kWeight, kvDim, hiddenSize)
-	vWeightTransposed := transposeWeights(vWeight, kvDim, hiddenSize)
+	if len(qWeight) > 0 {
+		// Q: [hiddenSize, hiddenSize] -> transpose
+		qWeightTransposed = transposeWeights(qWeight, hiddenSize, hiddenSize)
+	} else {
+		qWeightTransposed = make([]float32, hiddenSize*hiddenSize)
+	}
+
+	if len(kWeight) > 0 && kvDim > 0 {
+		// K: [kvDim, hiddenSize] -> transpose
+		kWeightTransposed = transposeWeights(kWeight, kvDim, hiddenSize)
+	} else {
+		kWeightTransposed = make([]float32, kvDim*hiddenSize)
+	}
+
+	if len(vWeight) > 0 && kvDim > 0 {
+		// V: [kvDim, hiddenSize] -> transpose
+		vWeightTransposed = transposeWeights(vWeight, kvDim, hiddenSize)
+	} else {
+		vWeightTransposed = make([]float32, kvDim*hiddenSize)
+	}
 
 	// Load biases (Qwen2.5 has them, unlike Llama)
 	qBias := getTensor(tensors, prefix+".self_attn.q_proj.bias")
@@ -364,7 +406,12 @@ func getTensor(tensors map[string][]float32, name string) []float32 {
 
 // validateArchitecture checks if the model architecture is supported
 func validateArchitecture(config TransformerConfig) error {
-	unsupportedTypes := []string{"t5", "mt5", "bart", "bert", "roberta", "encoder-decoder", "marian"}
+	// Models that use encoder-decoder, BERT-style, or incompatible attention patterns
+	unsupportedTypes := []string{
+		"t5", "mt5", "bart", "bert", "roberta", "encoder-decoder", "marian",
+		"detr", "yolos", "rt_detr", "yolo", // Detection models with encoder-decoder
+		"vit", "deit", "swin", "beit",      // Vision transformers (encoder-only)
+	}
 	modelType := strings.ToLower(config.ModelType)
 
 	for _, unsup := range unsupportedTypes {

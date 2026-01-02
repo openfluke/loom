@@ -1,227 +1,170 @@
-# Welvet
+# Welvet - LOOM C# / .NET Bindings
 
-> .NET bindings for the LOOM neural network framework via C-ABI
+**Wrapper for Embedding Loom Via External (C-ABI) Toolchain**
 
-**Welvet** (Wrapper for Embedding Loom Via External Toolchain) provides a complete neural network API for .NET applications. Built on the LOOM C-ABI, it delivers high-performance deep learning with GPU acceleration support.
+High-performance neural network library with **transformer inference** for .NET via C-ABI bindings. Zero runtime dependencies—just add the NuGet package and go.
 
 [![NuGet](https://img.shields.io/nuget/v/Welvet.svg)](https://www.nuget.org/packages/Welvet/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](../LICENSE)
 
-## ✨ Features
+## Framework Comparison
 
-- 🎉 **NEW: Simple API** - Streamlined functions matching Python/TypeScript/C - `CreateLoomNetwork`, `LoomForward`, `LoomTrain`, `LoomEvaluateNetwork`
-- 🤖 **Transformer Inference** - Run LLMs like SmolLM2-135M with streaming generation
-- 🚀 **Native Performance** - Direct P/Invoke to C library, zero overhead
-- 🧠 **8 Layer Types (All CPU)** - Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants), Parallel (4 combine modes)
-- ✅ **Full CPU Implementation** - Every layer works with complete forward/backward passes - tested and reliable!
-- ✅ **Cross-Platform Consistency** - Same API and results as Python, TypeScript, C, WASM
-- 💾 **One-Line Model Loading** - Load complete models with `LoomLoadModel()`
-- 🎯 **Full Training Support** - Forward, backward, weight updates
-- 🌐 **Cross-Platform** - Works on Linux, macOS, Windows (x64, ARM64)
-- 📘 **Strongly Typed** - Full C# API with IntelliSense support
-- 🎨 **Multiple Activations** - ReLU, Sigmoid, Tanh, Softplus, LeakyReLU
-- ⚠️ **GPU Note** - GPU/WebGPU code exists but is untested; all demos use reliable CPU execution
+| Feature Category | Feature | **Loom/Welvet** | **ML.NET** | **TensorFlow.NET** | **ONNX Runtime** | **Accord.NET** |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Core** | **Runtime Dependency** | **None** (Native) | .NET Native | TF C++ | ONNX C++ | .NET Native |
+| | **Auto-Differentiation** | ⚠️ Hybrid/Manual | ⚠️ Limited | ✅ Full | ❌ | ❌ |
+| **Loading** | **Safetensors** | ✅ **Native** | ❌ | ❌ | ❌ | ❌ |
+| | **Structure Inference** | ✅ **Auto-Detect** | ❌ | ❌ | ❌ | ❌ |
+| **Training** | **Full Training** | ✅ **Complete** | ⚠️ Limited | ✅ | ❌ Inference Only | ✅ |
+| | **Neural Tweening** | ✅ **Hybrid Engine** | ❌ | ❌ | ❌ | ❌ |
+| | **LR Schedulers** | ✅ **7 Types** | ⚠️ | ✅ | ❌ | ⚠️ |
+| **Layer Support** | **Dense (MLP)** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **Conv1D/2D** | ✅ **Native** | ✅ | ✅ | ✅ | ✅ |
+| | **RNN / LSTM** | ✅ **Full Gate** | ⚠️ | ✅ | ✅ | ⚠️ |
+| | **Transformer (MHA)** | ✅ (Explicit) | ❌ | ✅ | ✅ | ❌ |
+| | **Parallel / MoE** | ✅ **Structure** | ❌ | ❌ (Manual) | ❌ | ❌ |
+| | **Stitch Layers** | ✅ **Native** | ❌ | ❌ | ❌ | ❌ |
+| **Advanced** | **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ |
+| | **K-Means / Stats** | ✅ **Parallel** | ✅ | ❌ | ❌ | ✅ |
+| | **Cross-Lang ABI** | ✅ **Universal** | ❌ | ❌ | ⚠️ | ❌ |
+| **Platform** | **Streaming LLM** | ✅ | ❌ | ✅ | ✅ | ❌ |
 
-## 📦 Installation
+For detailed analysis, see [`docs/loom_assessment_comparison.md`](../docs/loom_assessment_comparison.md).
+
+## 🌍 Cross-Ecosystem Compatibility
+
+Models trained in C# can be loaded instantly in Python, Go, or TypeScript. **Bit-for-bit identical results** across all platforms.
+
+| Platform | Package | Install |
+|:---------|:--------|:--------|
+| **C#/.NET** | [NuGet](https://www.nuget.org/packages/Welvet) | `dotnet add package Welvet` |
+| **Python** | [PyPI](https://pypi.org/project/welvet/) | `pip install welvet` |
+| **TypeScript/Node** | [NPM](https://www.npmjs.com/package/@openfluke/welvet) | `npm install @openfluke/welvet` |
+| **Go** | [GitHub](https://github.com/openfluke/loom) | `go get github.com/openfluke/loom` |
+
+### Supported Platforms
+
+Welvet includes pre-compiled binaries for:
+- **Linux**: x86_64, ARM64
+- **Windows**: x86_64, ARM64
+- **macOS**: Apple Silicon (M1/M2/M3), Intel, Universal
+- **Android**: ARM64 (via MAUI)
+- **iOS**: ARM64; simulators (via MAUI with XCFramework)
+
+## Installation
 
 ```bash
 dotnet add package Welvet
 ```
 
 Or via NuGet Package Manager:
-
 ```
 Install-Package Welvet
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
-### 🎉 NEW: Simple API (Recommended)
+### 🎉 Simple API (Recommended)
 
-The simple API provides cross-platform consistency with Python, TypeScript, and C:
+The simple API provides **cross-platform consistency** with Python, TypeScript, and Go:
 
 ```csharp
-using System;
 using System.Text.Json;
-using Welvet.Examples;
+using Welvet;
 
-// Create network from JSON
+// Create network from JSON configuration
 var config = @"{
     ""batch_size"": 1,
     ""grid_rows"": 1,
-    ""grid_cols"": 3,
-    ""layers_per_cell"": 1,
+    ""grid_cols"": 1,
+    ""layers_per_cell"": 2,
     ""layers"": [
-        {""type"": ""dense"", ""input_size"": 8, ""output_size"": 16, ""activation"": ""relu""},
-        {
-            ""type"": ""parallel"",
-            ""combine_mode"": ""grid_scatter"",
-            ""grid_output_rows"": 3,
-            ""grid_output_cols"": 1,
-            ""grid_output_layers"": 1,
-            ""grid_positions"": [
-                {""branch_index"": 0, ""target_row"": 0, ""target_col"": 0, ""target_layer"": 0},
-                {""branch_index"": 1, ""target_row"": 1, ""target_col"": 0, ""target_layer"": 0},
-                {""branch_index"": 2, ""target_row"": 2, ""target_col"": 0, ""target_layer"": 0}
-            ],
-            ""branches"": [
-                {
-                    ""type"": ""parallel"",
-                    ""combine_mode"": ""add"",
-                    ""branches"": [
-                        {""type"": ""dense"", ""input_size"": 16, ""output_size"": 8, ""activation"": ""relu""},
-                        {""type"": ""dense"", ""input_size"": 16, ""output_size"": 8, ""activation"": ""gelu""}
-                    ]
-                },
-                {""type"": ""lstm"", ""input_size"": 16, ""hidden_size"": 8, ""seq_length"": 1},
-                {""type"": ""rnn"", ""input_size"": 16, ""hidden_size"": 8, ""seq_length"": 1}
-            ]
-        },
-        {""type"": ""dense"", ""input_size"": 24, ""output_size"": 2, ""activation"": ""sigmoid""}
+        {""type"": ""dense"", ""input_height"": 4, ""output_height"": 8, ""activation"": ""relu""},
+        {""type"": ""dense"", ""input_height"": 8, ""output_height"": 2, ""activation"": ""sigmoid""}
     ]
 }";
 
-var resultPtr = GridScatterDemo.CreateLoomNetwork(config);
-var result = GridScatterDemo.PtrToStringAndFree(resultPtr);
+var result = Network.CreateFromJson(config);
 Console.WriteLine("✅ Network created!");
 
-// Training
+// Training data
 var batches = new[] {
-    new { Input = new[] { 0.2f, 0.2f, 0.2f, 0.2f, 0.8f, 0.8f, 0.8f, 0.8f }, Target = new[] { 1.0f, 0.0f } },
-    new { Input = new[] { 0.9f, 0.9f, 0.9f, 0.9f, 0.1f, 0.1f, 0.1f, 0.1f }, Target = new[] { 0.0f, 1.0f } },
-    new { Input = new[] { 0.7f, 0.7f, 0.7f, 0.7f, 0.3f, 0.3f, 0.3f, 0.3f }, Target = new[] { 0.0f, 1.0f } },
-    new { Input = new[] { 0.3f, 0.3f, 0.3f, 0.3f, 0.7f, 0.7f, 0.7f, 0.7f }, Target = new[] { 1.0f, 0.0f } }
+    new { Input = new[] { 0f, 0f, 1f, 1f }, Target = new[] { 1f, 0f } },
+    new { Input = new[] { 1f, 1f, 0f, 0f }, Target = new[] { 0f, 1f } }
 };
 
-string batchesJson = JsonSerializer.Serialize(batches);
-string trainingConfig = @"{
-    ""Epochs"": 800,
-    ""LearningRate"": 0.15,
-    ""UseGPU"": false,
-    ""PrintEveryBatch"": 0,
-    ""GradientClip"": 1.0,
-    ""LossType"": ""mse"",
-    ""Verbose"": false
-}";
-
-var trainResultPtr = GridScatterDemo.LoomTrain(batchesJson, trainingConfig);
+var trainConfig = new { Epochs = 100, LearningRate = 0.1f, LossType = "mse" };
+var trainResult = NativeMethods.LoomTrain(
+    JsonSerializer.Serialize(batches),
+    JsonSerializer.Serialize(trainConfig)
+);
 Console.WriteLine("✅ Training complete!");
 
 // Forward pass
-float[] input = new[] { 0.2f, 0.2f, 0.2f, 0.2f, 0.8f, 0.8f, 0.8f, 0.8f };
-var outputPtr = GridScatterDemo.LoomForward(input, input.Length);
-var outputJson = GridScatterDemo.PtrToStringAndFree(outputPtr);
-var output = JsonSerializer.Deserialize<float[]>(outputJson);
-Console.WriteLine($"Output: [{output[0]:F3}, {output[1]:F3}]");  // [0.950, 0.050]
+float[] input = { 0f, 0f, 1f, 1f };
+var outputPtr = NativeMethods.LoomForward(input, input.Length);
+var output = JsonSerializer.Deserialize<float[]>(NativeMethods.PtrToStringAndFree(outputPtr));
+Console.WriteLine($"Output: [{output[0]:F3}, {output[1]:F3}]");  // [0.95, 0.05]
 
-// Evaluate
-var evalInputs = new[] {
-    new[] { 0.2f, 0.2f, 0.2f, 0.2f, 0.8f, 0.8f, 0.8f, 0.8f },
-    // ... more samples
-};
-var expected = new[] { 0.0, 1.0, 1.0, 0.0 };
-
-var evalPtr = GridScatterDemo.LoomEvaluateNetwork(
-    JsonSerializer.Serialize(evalInputs),
-    JsonSerializer.Serialize(expected)
-);
-var metricsJson = GridScatterDemo.PtrToStringAndFree(evalPtr);
-// Parse and display metrics: Quality Score: 100/100, Avg Deviation: 0.00%
-
-// Save/Load
-var modelJsonPtr = GridScatterDemo.LoomSaveModel("my_model");
-var modelJson = GridScatterDemo.PtrToStringAndFree(modelJsonPtr);
+// Save/Load - works across ALL platforms!
+var modelPtr = NativeMethods.LoomSaveModel("my_model");
+var modelJson = NativeMethods.PtrToStringAndFree(modelPtr);
 Console.WriteLine($"✓ Model saved ({modelJson.Length} bytes)");
 
-var loadPtr = GridScatterDemo.LoomLoadModel(modelJson, "my_model");
-Console.WriteLine("✓ Model loaded - predictions match!");
+// Load in Python, TypeScript, or Go with identical results
+NativeMethods.LoomLoadModel(modelJson, "my_model");
 ```
 
 **Simple API Functions:**
 
-- `CreateLoomNetwork(jsonConfig)` - Create from JSON
-- `LoomForward(inputs, length)` - Forward pass
-- `LoomBackward(gradients, length)` - Backward pass
-- `LoomUpdateWeights(learningRate)` - Update weights
-- `LoomTrain(batchesJSON, configJSON)` - Train network
-- `LoomSaveModel(modelID)` - Save to JSON string
-- `LoomLoadModel(jsonString, modelID)` - Load from JSON
-- `LoomGetNetworkInfo()` - Get network information
-- `LoomEvaluateNetwork(inputsJSON, expectedJSON)` - Evaluate with metrics
-- `FreeLoomString(ptr)` - Free C strings
-
-**Cross-Platform Results:**
-
-- ✅ Same training: 99.5% improvement, 100/100 quality score
-- ✅ Same save/load: 0.00 prediction difference
-- ✅ Same evaluation: Identical deviation metrics
-
-See `examples/GridScatterDemo.cs` for complete working example.
+| Function | Description |
+|:---------|:------------|
+| `CreateLoomNetwork(config)` | Create network from JSON |
+| `LoomForward(inputs, length)` | Forward pass |
+| `LoomBackward(gradients, length)` | Backward pass |
+| `LoomUpdateWeights(learningRate)` | Update weights |
+| `LoomTrain(batchesJSON, configJSON)` | Train network |
+| `LoomSaveModel(modelID)` | Save to JSON string |
+| `LoomLoadModel(jsonString, modelID)` | Load from JSON |
+| `LoomGetNetworkInfo()` | Get network info |
+| `LoomEvaluateNetwork(inputsJSON, expectedJSON)` | Evaluate with metrics |
 
 ### ⚡ Stepping API - Fine-Grained Execution Control
 
-**NEW:** Execute networks one step at a time for online learning:
+Execute networks one step at a time for online learning and stateful processing:
 
 ```csharp
 using Welvet;
 
 // Create network
-var config = @"{
-    ""batch_size"": 1,
-    ""layers"": [
-        {""type"": ""dense"", ""input_height"": 4, ""output_height"": 8, ""activation"": ""relu""},
-        {""type"": ""lstm"", ""input_size"": 8, ""hidden_size"": 12, ""seq_length"": 1},
-        {""type"": ""dense"", ""input_height"": 12, ""output_height"": 3, ""activation"": ""softmax""}
-    ]
-}";
 Network.CreateFromJson(config);
 
 // Initialize stepping state
-var state = new StepState(inputSize: 4);
+using var stepState = new StepState(inputSize: 4);
 
 // Training loop - update weights after EACH step
 for (int step = 0; step < 100000; step++)
 {
-    state.SetInput(new float[] { 0.1f, 0.2f, 0.1f, 0.3f });
-    state.StepForward();
-    var output = state.GetOutput();
+    stepState.SetInput(new float[] { 0.1f, 0.2f, 0.1f, 0.3f });
+    stepState.StepForward();
+    var output = stepState.GetOutput();
     
     // Calculate gradients
-    var gradients = new float[output.Length];
-    for (int i = 0; i < output.Length; i++)
-        gradients[i] = output[i] - target[i];
+    var gradients = output.Select((o, i) => o - target[i]).ToArray();
     
-    // Backward pass
-    state.StepBackward(gradients);
-    
-    // Update weights immediately
-    Network.ApplyGradients(learningRate: 0.01f);
+    // Backward pass and update
+    stepState.StepBackward(gradients);
+    NativeMethods.LoomApplyGradients(0.01f);
 }
 ```
 
-**Stepping API Classes:**
-- `StepState(int inputSize)` - Initialize stepping state
-- `state.SetInput(float[] data)` - Set input for current step
-- `state.StepForward()` - Execute forward pass
-- `state.GetOutput()` - Get output from last layer
-- `state.StepBackward(float[] gradients)` - Execute backward pass
-- `Network.ApplyGradients(float learningRate)` - Update network weights
-
-See `examples/StepTrainV3.cs` for a complete example achieving 100% accuracy.
-
 ### 🧬 Neural Tweening API - Real-Time Adaptation
 
-**NEW:** Neural tweening enables networks to adapt to changing goals in real-time without full backpropagation:
+Neural tweening enables networks to adapt to changing goals in real-time without full backpropagation:
 
 ```csharp
 using Welvet;
 
-// Create network
-var config = @"{""batch_size"": 1, ""layers"": [
-    {""type"": ""dense"", ""input_size"": 8, ""output_size"": 32, ""activation"": ""leaky_relu""},
-    {""type"": ""dense"", ""input_size"": 32, ""output_size"": 16, ""activation"": ""leaky_relu""},
-    {""type"": ""dense"", ""input_size"": 16, ""output_size"": 4, ""activation"": ""sigmoid""}
-]}";
 Network.CreateFromJson(config);
 
 // Create TweenState with chain rule (StepTweenChain mode)
@@ -235,11 +178,6 @@ foreach (var (observation, targetClass) in trainingStream)
 }
 ```
 
-**TweenState Class:**
-- `TweenState(bool useChainRule = false)` - Create tween state (chain rule = TweenChain mode)
-- `tween.Step(input, targetClass, outputSize, learningRate)` - Apply one tween step
-- `tween.Dispose()` - Free resources (use `using` statement)
-
 ### 📊 AdaptationTracker - Benchmark Task Switching
 
 Track accuracy across task changes for benchmarking real-time adaptation:
@@ -247,14 +185,12 @@ Track accuracy across task changes for benchmarking real-time adaptation:
 ```csharp
 using Welvet;
 
-// Create tracker with 1s windows over 10s test
 using var tracker = new AdaptationTracker(windowDurationMs: 1000, totalDurationMs: 10000);
 tracker.SetModelInfo("Dense-5L", "StepTweenChain");
 
-// Schedule task changes at 1/3 and 2/3 of test
+// Schedule task changes
 tracker.ScheduleTaskChange(3333, taskId: 1, taskName: "AVOID");
 tracker.ScheduleTaskChange(6666, taskId: 0, taskName: "CHASE");
-
 tracker.Start("CHASE", taskId: 0);
 
 // Run test loop
@@ -262,304 +198,174 @@ while (timeElapsed < 10000)
 {
     int currentTask = tracker.GetCurrentTask();
     // ... run network ...
-    tracker.RecordOutput(isCorrect: true);
+    tracker.RecordOutput(isCorrect: correct);
 }
 
-// Get results
-var results = tracker.FinalizeResult();
-Console.WriteLine($"Avg accuracy: {results.AvgAccuracy:F1}%");
+var results = tracker.GetResults();
+Console.WriteLine($"Avg accuracy: {results.RootElement.GetProperty("avg_accuracy").GetDouble():F1}%");
 ```
 
-**AdaptationTracker Class:**
-- `AdaptationTracker(int windowDurationMs, int totalDurationMs)` - Create tracker
-- `tracker.SetModelInfo(modelName, modeName)` - Set model info
-- `tracker.ScheduleTaskChange(atOffsetMs, taskId, taskName)` - Schedule task change
-- `tracker.Start(taskName, taskId)` - Start tracking
-- `tracker.GetCurrentTask()` - Get current task ID
-- `tracker.RecordOutput(isCorrect)` - Record output
-- `tracker.GetResults()` - Get raw `JsonDocument` results
-- `tracker.FinalizeResult()` - Get `AdaptationResult` with parsed fields
-- `tracker.Dispose()` - Free resources (use `using` statement)
+### 🔗 Network Grafting - Architecture Fusion
 
-See `examples/Test18Adaptation.cs` for a complete multi-architecture benchmark comparing 5 training modes across Dense, Conv2D, RNN, LSTM, and Attention networks.
-
-
-## 📚 API Reference
-
-### Transformer Class (NEW!)
-
-#### Static Methods
+Combine multiple trained networks into a single parallel super-network:
 
 ```csharp
-// Load tokenizer from file or bytes
-TokenizerLoadResult LoadTokenizer(string tokenizerPath)
-TokenizerLoadResult LoadTokenizerFromBytes(byte[] data)
+using Welvet;
 
-// Load model from directory, files, or bytes
-TransformerLoadResult LoadModelFromDirectory(string modelDir)
-TransformerLoadResult LoadModel(string configPath, string weightsPath)
-TransformerLoadResult LoadModelFromBytes(byte[] configData, byte[] weightsData)
+long h1 = NativeMethods.LoomCreateNetworkHandle(config);
+long h2 = NativeMethods.LoomCreateNetworkHandle(config);
 
-// Encode text to token IDs
-EncodeResult Encode(string text, bool addSpecialTokens = true)
-
-// Decode token IDs to text
-DecodeResult Decode(int[] tokenIds, bool skipSpecialTokens = true)
-
-// Generate text (blocking, all tokens at once)
-GenerateResult Generate(string prompt, int maxTokens = 50, float temperature = 0.7f)
-
-// Generate text (streaming, token-by-token)
-IEnumerable<string> GenerateStream(string prompt, int maxTokens = 50, float temperature = 0.7f)
+var handlesJson = JsonSerializer.Serialize(new[] { h1, h2 });
+var resultPtr = NativeMethods.LoomGraftNetworks(handlesJson, "concat");
+var result = NativeMethods.PtrToStringAndFree(resultPtr);
+// Result: {"success": true, "num_branches": 2, "combine_mode": "concat"}
 ```
 
-#### Example: Streaming Generation
+### 🧠 Statistical Tools
+
+Built-in K-Means clustering and correlation analysis:
+
+```csharp
+using Welvet;
+
+// K-Means Clustering
+var data = new[] { new[] { 1f, 1f }, new[] { 1.1f, 1.1f }, new[] { 5f, 5f }, new[] { 5.1f, 5.1f } };
+var kmeansPtr = NativeMethods.LoomKMeansCluster(JsonSerializer.Serialize(data), k: 2, maxIter: 100);
+var kmeans = JsonSerializer.Deserialize<JsonElement>(NativeMethods.PtrToStringAndFree(kmeansPtr));
+Console.WriteLine($"Centroids: {kmeans.GetProperty("centroids")}");
+
+// Correlation Matrix
+var matrix = new[] { new[] { 1f, 2f, 3f }, new[] { 4f, 5f, 6f } };
+var corrPtr = NativeMethods.LoomComputeCorrelation(JsonSerializer.Serialize(matrix));
+```
+
+### 🚀 Transformer Inference (LLMs)
+
+Run LLaMA, SmolLM, GPT-2, and other transformers with **streaming support**:
 
 ```csharp
 using Welvet;
 
 // Load model
 Transformer.LoadTokenizer("models/SmolLM2-135M-Instruct/tokenizer.json");
-var result = Transformer.LoadModelFromDirectory("models/SmolLM2-135M-Instruct");
+Transformer.LoadModelFromDirectory("models/SmolLM2-135M-Instruct");
 
-if (!result.Success)
-{
-    Console.WriteLine($"Error: {result.Error}");
-    return;
-}
-
-Console.WriteLine($"Model loaded: {result.NumLayers} layers, {result.HiddenSize} hidden size");
-
-// Stream generation
+// Stream generation - tokens appear in real-time!
 foreach (var token in Transformer.GenerateStream("The capital of France is", maxTokens: 50))
 {
-    Console.Write(token);  // Prints token-by-token in real-time
+    Console.Write(token);
 }
+
+// Or generate all at once
+var text = Transformer.Generate("Once upon a time", maxTokens: 50, temperature: 0.7f);
 ```
 
-### Network Class
+## Complete Test Suite
 
-#### Static Methods
-
-```csharp
-// Create new network
-Network Create(int inputSize, int gridRows = 2, int gridCols = 2,
-               int layersPerCell = 3, bool useGpu = false)
-
-// Load complete model (ONE LINE!)
-Network LoadFromString(string modelJson, string modelId = "loaded_model")
-
-// Get library version
-string GetVersion()
-```
-
-#### Instance Methods
-
-```csharp
-// Save model to JSON
-string SaveToString(string modelId = "saved_model")
-
-// Forward pass
-float[] Forward(float[] input)
-
-// Backward pass
-float[] Backward(float[] gradOutput)
-
-// Update weights
-void UpdateWeights(float learningRate)
-
-// Zero gradients
-void ZeroGradients()
-
-// Get network info
-Dictionary<string, object> GetInfo()
-
-// Dispose (free native resources)
-void Dispose()
-```
-
-### Activation Enum
-
-```csharp
-public enum Activation
-{
-    ScaledReLU = 0,  // ReLU with 1.1x scaling (default)
-    ReLU = 0,        // Alias for ScaledReLU
-    Sigmoid = 1,     // Logistic sigmoid
-    Tanh = 2,        // Hyperbolic tangent
-    Softplus = 3,    // Smooth ReLU
-    LeakyReLU = 4,   // ReLU with 0.1x negative slope
-    Linear = 3       // No activation (alias for Softplus)
-}
-```
-
-## 🎯 Complete Example
-
-```csharp
-using Welvet;
-using System;
-using System.IO;
-using System.Linq;
-
-class Program
-{
-    static void Main()
-    {
-        Console.WriteLine("🧠 WELVET Example\n");
-
-        // Load model from JSON
-        string modelJson = File.ReadAllText("test.json");
-        using var network = Network.LoadFromString(modelJson, "example");
-
-        Console.WriteLine($"✅ Model loaded! (handle: {network.Handle})");
-        Console.WriteLine($"✅ LOOM version: {Network.GetVersion()}\n");
-
-        // Create input
-        float[] input = Enumerable.Repeat(0.8f, 16)
-            .Concat(Enumerable.Repeat(0.2f, 16))
-            .ToArray();
-
-        // Forward pass
-        Console.WriteLine("▶️ Running inference...");
-        float[] output = network.Forward(input);
-
-        Console.WriteLine($"Output: [{string.Join(", ", output.Select(x => $"{x:F6}"))}]");
-
-        // Training
-        Console.WriteLine("\n🎯 Training for 10 epochs...");
-        float[] target = new float[] { 0.5f, 0.5f };
-
-        for (int epoch = 0; epoch < 10; epoch++)
-        {
-            float[] currentOutput = network.Forward(input);
-
-            // Compute loss (MSE)
-            float loss = currentOutput.Zip(target, (o, t) => (o - t) * (o - t))
-                .Average();
-
-            // Backward pass
-            float[] gradOutput = currentOutput.Zip(target, (o, t) => (o - t) * 2 / target.Length)
-                .ToArray();
-            network.Backward(gradOutput);
-
-            // Update weights
-            network.UpdateWeights(0.05f);
-
-            if (epoch == 0 || epoch == 9)
-                Console.WriteLine($"Epoch {epoch + 1}: Loss = {loss:F6}");
-        }
-
-        Console.WriteLine("\n✅ Training complete!");
-
-        // Save model
-        string savedJson = network.SaveToString("trained_model");
-        File.WriteAllText("trained.json", savedJson);
-        Console.WriteLine("✅ Model saved to trained.json");
-    }
-}
-```
-
-## 🤖 Transformer Examples
-
-### Test All Functions
-
-Run `TransformerTest.cs` to test loading, encoding, decoding, and streaming:
+The `UniversalTest.cs` example demonstrates all framework capabilities:
 
 ```bash
-dotnet run --project TransformerTest.cs ../../models/SmolLM2-135M-Instruct
+cd examples
+dotnet run --project UniversalTest.csproj
 ```
 
-### Web Interface with Streaming
+**Test Coverage (80/80 tests passing):**
+- ✅ 12 Layer Types × 6 Data Types (72 tests)
+- ✅ Network Grafting
+- ✅ K-Means Clustering & Correlation Analysis
+- ✅ Optimizers (SGD, AdamW, RMSprop)
+- ✅ Ensemble Features
+- ✅ Observer Pattern (Adaptation Tracking)
+- ✅ Introspection API
+- ✅ Step & Tween API
+- ✅ Advanced Layers (Embedding, Residual)
 
-Run `TransformerWebInterface.cs` for a beautiful web UI with real-time streaming:
+## Layer Types
 
-```bash
-dotnet run --project TransformerWebInterface.cs ../../models/SmolLM2-135M-Instruct 8080
-```
+| Layer | Type String | Description |
+|:------|:------------|:------------|
+| Dense | `dense` | Fully connected layer |
+| LSTM | `lstm` | Long Short-Term Memory |
+| RNN | `rnn` | Recurrent Neural Network |
+| Conv2D | `conv2d` | 2D Convolution |
+| Conv1D | `conv1d` | 1D Convolution |
+| Multi-Head Attention | `multi_head_attention` | Transformer attention |
+| LayerNorm | `layer_norm` | Layer normalization |
+| RMSNorm | `rms_norm` | RMS normalization |
+| SwiGLU | `swiglu` | SwiGLU activation layer |
+| Softmax | `softmax` | Softmax classification |
+| Embedding | `embedding` | Token embedding |
+| Parallel | `parallel` | Branching with combine modes |
+| Sequential | `sequential` | Grouped sub-layers |
 
-Then open http://localhost:8080/inference.html in your browser to see tokens stream in real-time!
+**Parallel Combine Modes:** `add`, `concat`, `multiply`, `average`, `grid_scatter`, `filter`
 
-**Features:**
+**Activation Functions:** `relu`, `sigmoid`, `tanh`, `softmax`, `gelu`, `swish`, `mish`, `leaky_relu`, `elu`, `selu`, `linear`
 
-- Server-Sent Events (SSE) streaming
-- Beautiful token-by-token display
-- Adjustable temperature and max tokens
-- CORS enabled for external clients
-- Same HTML UI as Python/Go versions
+## 🌐 Cross-Platform Model Sharing
 
-## 🌐 Cross-Platform Model Loading
-
-The same JSON model file works across **all platforms**:
+The same JSON model works across **all platforms** - train once, deploy anywhere:
 
 ```csharp
-// C#/.NET
-using var network = Network.LoadFromString(modelJson, "model_id");
+// C# - Save model
+var modelJson = NativeMethods.PtrToStringAndFree(NativeMethods.LoomSaveModel("model"));
+File.WriteAllText("model.json", modelJson);
 ```
 
 ```python
-# Python
+# Python - Load same model
 import welvet
-network = welvet.load_model_from_string(model_json, "model_id")
+with open("model.json") as f:
+    modelJson = f.read()
+welvet.load_model_simple(modelJson, "model")
+output = welvet.forward_simple([0.1, 0.2, 0.3, 0.4])  # Identical results!
 ```
 
-```javascript
-// JavaScript/WASM
-import { initLoom } from "@openfluke/welvet";
-const loom = await initLoom();
-const network = loom.LoadModelFromString(modelJSON, "model_id");
+```typescript
+// TypeScript - Load same model
+import { loadLoomNetwork } from "@openfluke/welvet";
+const modelJson = fs.readFileSync("model.json", "utf-8");
+const network = loadLoomNetwork(modelJson, "model");
+const output = network.ForwardCPU(JSON.stringify([[0.1, 0.2, 0.3, 0.4]]));
+// Bit-for-bit identical!
 ```
 
 ```go
-// Go
-network, _ := nn.LoadModelFromString(modelJSON, "model_id")
+// Go - Load same model
+import "github.com/openfluke/loom/nn"
+modelJson, _ := os.ReadFile("model.json")
+network, _ := nn.LoadModelFromString(string(modelJson), "model")
+output, _ := network.ForwardCPU([]float32{0.1, 0.2, 0.3, 0.4})
 ```
 
-See `examples/all_layers_validation.go` in the main repo for a complete cross-platform test!
-
-## 🔧 Building from Source
+## Building from Source
 
 ```bash
-# Clone the repo
 git clone https://github.com/openfluke/loom.git
 cd loom/csharp
 
-# Build the library
+# Build
 dotnet build -c Release
 
-# Run tests (if you create them)
-dotnet test
-
-# Pack for NuGet
-dotnet pack -c Release
+# Run examples
+cd examples
+dotnet run --project UniversalTest.csproj
 ```
 
-## 📦 Publishing to NuGet
-
-```bash
-# Build and pack
-dotnet pack -c Release
-
-# Publish to NuGet
-dotnet nuget push bin/Release/Welvet.0.0.2.nupkg \
-    --api-key YOUR_API_KEY \
-    --source https://api.nuget.org/v3/index.json
-```
-
-## 📖 Documentation
+## Documentation
 
 - [Main LOOM README](../README.md) - Framework overview
 - [Python Bindings](../python/README.md) - Python API reference
 - [TypeScript Bindings](../typescript/README.md) - TypeScript/WASM API
-- [Examples](../examples/README.md) - Code examples and demos
+- [Assessment Comparison](../docs/loom_assessment_comparison.md) - Detailed framework comparison
 
-## 🤝 Contributing
-
-Contributions welcome! Please see the [main repository](https://github.com/openfluke/loom) for guidelines.
-
-## 📄 License
+## License
 
 Apache License 2.0 - see [LICENSE](../LICENSE) for details.
 
-## 🙏 Acknowledgments
+## Links
 
-Built on the LOOM neural network framework by OpenFluke.
+- **GitHub**: [github.com/openfluke/loom](https://github.com/openfluke/loom)
+- **NuGet**: [Welvet](https://www.nuget.org/packages/Welvet)
+- **PyPI**: [welvet](https://pypi.org/project/welvet/)
+- **NPM**: [@openfluke/welvet](https://www.npmjs.com/package/@openfluke/welvet)

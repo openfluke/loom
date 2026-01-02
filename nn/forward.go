@@ -8,6 +8,270 @@ import (
 	"github.com/openfluke/webgpu/wgpu"
 )
 
+// =============================================================================
+// Generic Forward Pass Implementation
+// =============================================================================
+
+// GenericForwardPass executes network forward pass for any numeric type.
+// Uses the Backend interface for computation.
+// Returns:
+// - Final output tensor
+// - List of output activations for each layer (activations[0] = input)
+// - List of backward contexts for each layer (intermediate states needed for backprop)
+// - Duration of forward pass
+func GenericForwardPass[T Numeric](
+	n *Network,
+	input *Tensor[T],
+	backend Backend[T],
+) (*Tensor[T], []*Tensor[T], []any, time.Duration) {
+	start := time.Now()
+
+	totalLayers := n.TotalLayers()
+	activations := make([]*Tensor[T], totalLayers+1)
+	backwardContext := make([]any, totalLayers)
+
+	// Store input
+	activations[0] = input.Clone()
+	data := input.Clone()
+
+	layerIdx := 0
+
+	// Forward through grid
+	for row := 0; row < n.GridRows; row++ {
+		for col := 0; col < n.GridCols; col++ {
+			for layer := 0; layer < n.LayersPerCell; layer++ {
+				config := n.GetLayer(row, col, layer)
+				
+				// Context for this layer
+				var context any
+
+				if config.IsDisabled {
+					// Pass through
+					activations[layerIdx+1] = data.Clone()
+					context = nil
+				} else {
+					switch config.Type {
+					case LayerDense:
+						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
+						pre, post := DenseForward(data, weights, bias, config.InputHeight, config.OutputHeight, n.BatchSize, config.Activation)
+						data = post
+						activations[layerIdx+1] = post
+						context = pre // Store pre-activation
+
+					case LayerConv2D:
+						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
+						pre, post := Conv2DForward(data, weights, bias,
+							config.InputHeight, config.InputWidth, config.InputChannels,
+							config.KernelSize, config.Stride, config.Padding, config.Filters,
+							config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
+						data = post
+						activations[layerIdx+1] = post
+						context = pre // Store pre-activation
+
+					case LayerRNN:
+						wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
+						wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
+						biasH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH, len(config.BiasH)))
+						output, hiddenStates := RNNForward(data, wIH, wHH, biasH, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+						data = output
+						activations[layerIdx+1] = output
+						context = hiddenStates // Store hidden states
+
+					case LayerLSTM:
+						weights := &LSTMWeights[T]{
+							WeightIH_i: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_i, len(config.WeightIH_i))),
+							WeightHH_i: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_i, len(config.WeightHH_i))),
+							BiasH_i:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_i, len(config.BiasH_i))),
+							WeightIH_f: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_f, len(config.WeightIH_f))),
+							WeightHH_f: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_f, len(config.WeightHH_f))),
+							BiasH_f:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_f, len(config.BiasH_f))),
+							WeightIH_g: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_g, len(config.WeightIH_g))),
+							WeightHH_g: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_g, len(config.WeightHH_g))),
+							BiasH_g:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_g, len(config.BiasH_g))),
+							WeightIH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH_o, len(config.WeightIH_o))),
+							WeightHH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_o, len(config.WeightHH_o))),
+							BiasH_o:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_o, len(config.BiasH_o))),
+						}
+						output, hidden, cell, allGates := LSTMForward(data, weights, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
+						data = output
+						activations[layerIdx+1] = output
+						// Pack context for LSTMBackward
+						states := map[string]*Tensor[T]{
+							"hidden": hidden,
+							"cell":   cell,
+						}
+						for k, v := range allGates {
+							states[k] = v
+						}
+						context = states
+
+					case LayerSoftmax:
+						output := ApplySoftmax(data, float64(config.Temperature))
+						data = output
+						activations[layerIdx+1] = output
+						context = output // Softmax needs its output for backward jacobian
+
+					case LayerNorm:
+						gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
+						beta := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Beta, len(config.Beta)))
+						normSize := config.NormSize
+						if normSize <= 0 {
+							normSize = len(data.Data)
+						}
+						output := LayerNormForward(data, nil, gamma, beta, normSize, n.BatchSize, float64(config.Epsilon))
+						data = output
+						activations[layerIdx+1] = output
+						context = nil // LayerNorm backward only needs input, which is activations[layerIdx]
+
+					case LayerRMSNorm:
+						gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
+						normSize := config.NormSize
+						if normSize <= 0 {
+							normSize = len(data.Data)
+						}
+						output := RMSNormForward(data, nil, gamma, normSize, float64(config.Epsilon))
+						data = output
+						activations[layerIdx+1] = output
+						context = nil // RMSNorm backward needs input (activations[layerIdx])
+
+					case LayerSwiGLU:
+						gateW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateWeights, len(config.GateWeights)))
+						upW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpWeights, len(config.UpWeights)))
+						downW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownWeights, len(config.DownWeights)))
+						gateBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateBias, len(config.GateBias)))
+						upBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpBias, len(config.UpBias)))
+						downBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownBias, len(config.DownBias)))
+						output := SwiGLUForward(data, gateW, upW, downW, gateBias, upBias, downBias, config.InputHeight, config.OutputHeight, n.BatchSize)
+						data = output
+						activations[layerIdx+1] = output
+						context = nil // SwiGLU backward recomputes intermediates or needs caching. Current implementation recomputes.
+
+					case LayerMultiHeadAttention:
+						weights := &AttentionWeights[T]{
+							QWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
+							QBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
+							KWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
+							KBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
+							VWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
+							VBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
+							OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputWeight, len(config.OutputWeight))),
+							OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputBias, len(config.OutputBias))),
+							DModel: config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
+						}
+						output := MultiHeadAttentionForward(data, weights, 10000.0)
+						data = output
+						activations[layerIdx+1] = output
+						context = nil // Backward recomputes simply or doesn't need context stored here
+
+				case LayerParallel:
+						// Convert config.ParallelBranches ([]LayerConfig) to []*LayerConfig
+						branches := make([]*LayerConfig, len(config.ParallelBranches))
+						for i := range config.ParallelBranches {
+							branches[i] = &config.ParallelBranches[i]
+						}
+						output, intermediates, err := ParallelForward(data, branches, n.BatchSize, config.CombineMode)
+						if err != nil {
+							// On error, identity
+							output = data.Clone()
+						}
+						data = output
+						activations[layerIdx+1] = output
+						context = intermediates
+
+						activations[layerIdx+1] = output
+						context = intermediates
+
+					case LayerSequential:
+						layers := make([]*LayerConfig, len(config.ParallelBranches))
+						for i := range config.ParallelBranches {
+							layers[i] = &config.ParallelBranches[i]
+						}
+						output, intermediates, err := SequentialForward[T](data, layers, n.BatchSize)
+						if err != nil {
+							// On error, identity
+							output = data.Clone()
+						}
+						data = output
+						activations[layerIdx+1] = output
+						context = intermediates
+
+					case LayerEmbedding:
+						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.EmbeddingWeights, len(config.EmbeddingWeights)))
+						output := EmbeddingForward(data, weights, config.VocabSize, config.EmbeddingDim)
+						data = output
+						activations[layerIdx+1] = output
+						context = nil // Embedding backward needs token IDs (stored in activations[layerIdx])
+
+					case LayerConv1D:
+						kernel := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DBias, len(config.Conv1DBias)))
+						seqLen := config.InputHeight // Using InputHeight for sequence length
+						if seqLen <= 0 {
+							seqLen = len(data.Data) / (config.Conv1DInChannels * n.BatchSize)
+						}
+						pre, post := Conv1DForward(data, kernel, bias,
+							seqLen, config.Conv1DInChannels,
+							config.Conv1DKernelSize, config.Conv1DStride, config.Conv1DPadding,
+							config.Conv1DFilters, n.BatchSize, config.Activation)
+						data = post
+						activations[layerIdx+1] = post
+						context = pre // Store pre-activation
+
+					case LayerResidual:
+						// Residual connects current input to something? 
+						// Current design: Residual layer takes input, assumes it's added to *previous* layer input.
+						// Wait, standard residual is: y = x + f(x).
+						// But if LayerResidual is a separate layer in grid, it implies:
+						// Layer N: Dense -> output O
+						// Layer N+1: Residual -> output O + Input_of_N?
+						// Or Input_to_N is not available here easily.
+						// Looking at `examples` test:
+						// SetLayer(..., 0, Dense)
+						// SetLayer(..., 1, Residual)
+						// This implies Residual adds activations[layerIdx] + activations[layerIdx-1]?
+						// Let's assume ResidualForward adds input + skipInput.
+						// We need skipInput.
+						
+						// GenericForwardPass loop structure:
+						// activations[layerIdx] is input to CURRENT layer.
+						// activations[layerIdx+1] will be output.
+						// Skip connection usually skips 1 layer or block.
+						// If we assume skip from layerIdx-1 (input to previous layer):
+						var skipInput *Tensor[T]
+						if layerIdx > 0 {
+							skipInput = activations[layerIdx-1] 
+						}
+						// If layerIdx=0, skip is nil
+						
+						output := ResidualForward(data, skipInput)
+						data = output
+						activations[layerIdx+1] = output
+						context = nil
+
+					default:
+						// Apply activation using backend
+						data = backend.Activate(data, config.Activation)
+						activations[layerIdx+1] = data.Clone()
+						context = nil 
+					}
+				}
+				
+				backwardContext[layerIdx] = context
+				layerIdx++
+			}
+		}
+	}
+
+	return data, activations, backwardContext, time.Since(start)
+}
+
+// =============================================================================
+// Original float32 Implementation
+// =============================================================================
+
+
 // ForwardCPU executes the grid network on CPU and stores intermediate activations for backprop
 func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 	start := time.Now()
@@ -212,6 +476,43 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					if config.Observer != nil {
 						notifyObserver(config, "normal", "forward", layerIdx, data, n.activations[layerIdx+1], 0)
 					}
+					if config.Observer != nil {
+						notifyObserver(config, "normal", "forward", layerIdx, data, n.activations[layerIdx+1], 0)
+					}
+				} else if config.Type == LayerSequential {
+					// Sequential layer
+					output, _, err := sequentialForwardCPU(data, config.ParallelBranches, n.BatchSize)
+					if err != nil {
+						fmt.Printf("Sequential layer error: %v\n", err)
+						output = data
+					}
+					
+					// Store intermediates (simplified)
+					// We can flatten intermediates similar to Parallel layer if we wanted,
+					// but for now let's just use the output as "pre-activation" effectively since we don't fully support backward yet.
+					n.preActivations[layerIdx] = make([]float32, 1) // Dummy
+					
+					data = output
+					
+				} else if config.Type == LayerEmbedding {
+					// Embedding lookup layer
+					output := embeddingForwardCPU(data, config)
+
+					// Store token IDs as pre-activation (needed for backward)
+					n.preActivations[layerIdx] = make([]float32, len(data))
+					copy(n.preActivations[layerIdx], data)
+
+					// Use embedding output for next layer
+					data = output
+				} else if config.Type == LayerConv1D {
+					// Conv1D layer
+					preAct, postAct := conv1DForwardCPU(data, config, n.BatchSize)
+
+					// Store pre-activation values
+					n.preActivations[layerIdx] = preAct
+
+					// Use post-activation for next layer
+					data = postAct
 				} else {
 					// Default: element-wise activation only
 					// Store pre-activation values

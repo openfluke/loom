@@ -522,4 +522,241 @@ func LoomFreeTracker(handle C.longlong) {
 	adaptationTrackerMu.Unlock()
 }
 
+// ============================================================================
+// K-Means Clustering C-ABI Exports
+// ============================================================================
+
+//export LoomKMeansCluster
+func LoomKMeansCluster(dataJSON *C.char, k C.int, maxIter C.int) *C.char {
+	// Parse data (2D array of float32)
+	var data [][]float32
+	if err := json.Unmarshal([]byte(C.GoString(dataJSON)), &data); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid data JSON: %v"}`, err))
+	}
+
+	centroids, assignments := nn.KMeansCluster(data, int(k), int(maxIter), false)
+
+	result := map[string]interface{}{
+		"centroids":   centroids,
+		"assignments": assignments,
+	}
+
+	resultJSON, _ := json.Marshal(result)
+	return C.CString(string(resultJSON))
+}
+
+//export LoomSilhouetteScore
+func LoomSilhouetteScore(dataJSON *C.char, assignmentsJSON *C.char) C.float {
+	var data [][]float32
+	if err := json.Unmarshal([]byte(C.GoString(dataJSON)), &data); err != nil {
+		return -1.0
+	}
+
+	var assignments []int
+	if err := json.Unmarshal([]byte(C.GoString(assignmentsJSON)), &assignments); err != nil {
+		return -1.0
+	}
+
+	score := nn.ComputeSilhouetteScore(data, assignments)
+	return C.float(score)
+}
+
+// ============================================================================
+// Correlation Analysis C-ABI Exports
+// ============================================================================
+
+//export LoomComputeCorrelation
+func LoomComputeCorrelation(dataJSON *C.char) *C.char {
+	var data [][]float32
+	if err := json.Unmarshal([]byte(C.GoString(dataJSON)), &data); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid data JSON: %v"}`, err))
+	}
+
+	result := nn.ComputeCorrelationMatrix(data, nil)
+	if result == nil {
+		return C.CString(`{"error": "failed to compute correlation"}`)
+	}
+
+	resultJSON, _ := json.Marshal(result)
+	return C.CString(string(resultJSON))
+}
+
+// ============================================================================
+// Network Grafting C-ABI Exports
+// ============================================================================
+
+// Global map to store networks for grafting
+var graftNetworks = make(map[int64]*nn.Network)
+var graftNetworkNextID int64 = 1
+var graftNetworkMu sync.RWMutex
+
+//export LoomCreateNetworkForGraft
+func LoomCreateNetworkForGraft(jsonConfig *C.char) C.longlong {
+	config := C.GoString(jsonConfig)
+
+	network, err := nn.BuildNetworkFromJSON(config)
+	if err != nil {
+		return -1
+	}
+
+	network.InitializeWeights()
+
+	graftNetworkMu.Lock()
+	id := graftNetworkNextID
+	graftNetworkNextID++
+	graftNetworks[id] = network
+	graftNetworkMu.Unlock()
+
+	return C.longlong(id)
+}
+
+//export LoomGraftNetworks
+func LoomGraftNetworks(networkIDsJSON *C.char, combineMode *C.char) *C.char {
+	var networkIDs []int64
+	if err := json.Unmarshal([]byte(C.GoString(networkIDsJSON)), &networkIDs); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid network IDs: %v"}`, err))
+	}
+
+	// Collect networks
+	networks := make([]*nn.Network, 0, len(networkIDs))
+	graftNetworkMu.RLock()
+	for _, id := range networkIDs {
+		if net, ok := graftNetworks[id]; ok {
+			networks = append(networks, net)
+		}
+	}
+	graftNetworkMu.RUnlock()
+
+	if len(networks) < 2 {
+		return C.CString(`{"error": "need at least 2 networks to graft"}`)
+	}
+
+	mode := C.GoString(combineMode)
+	graftedConfig, err := nn.GraftNetworks(networks, mode)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	result := map[string]interface{}{
+		"success":         true,
+		"type":            graftedConfig.Type,
+		"num_branches":    len(graftedConfig.ParallelBranches),
+		"combine_mode":    graftedConfig.CombineMode,
+	}
+
+	resultJSON, _ := json.Marshal(result)
+	return C.CString(string(resultJSON))
+}
+
+//export LoomFreeGraftNetwork
+func LoomFreeGraftNetwork(handle C.longlong) {
+	graftNetworkMu.Lock()
+	delete(graftNetworks, int64(handle))
+	graftNetworkMu.Unlock()
+}
+
+// ============================================================================
+// Learning Rate Scheduler C-ABI Exports
+// ============================================================================
+
+// Global map to store schedulers
+var schedulers = make(map[int64]nn.LRScheduler)
+var schedulerNextID int64 = 1
+var schedulerMu sync.RWMutex
+
+//export LoomCreateConstantScheduler
+func LoomCreateConstantScheduler(baseLR C.float) C.longlong {
+	sched := nn.NewConstantScheduler(float32(baseLR))
+
+	schedulerMu.Lock()
+	id := schedulerNextID
+	schedulerNextID++
+	schedulers[id] = sched
+	schedulerMu.Unlock()
+
+	return C.longlong(id)
+}
+
+//export LoomCreateLinearDecayScheduler
+func LoomCreateLinearDecayScheduler(startLR, endLR C.float, totalSteps C.int) C.longlong {
+	sched := nn.NewLinearDecayScheduler(float32(startLR), float32(endLR), int(totalSteps))
+
+	schedulerMu.Lock()
+	id := schedulerNextID
+	schedulerNextID++
+	schedulers[id] = sched
+	schedulerMu.Unlock()
+
+	return C.longlong(id)
+}
+
+//export LoomCreateCosineScheduler
+func LoomCreateCosineScheduler(startLR, minLR C.float, totalSteps C.int) C.longlong {
+	sched := nn.NewCosineAnnealingScheduler(float32(startLR), float32(minLR), int(totalSteps))
+
+	schedulerMu.Lock()
+	id := schedulerNextID
+	schedulerNextID++
+	schedulers[id] = sched
+	schedulerMu.Unlock()
+
+	return C.longlong(id)
+}
+
+//export LoomSchedulerGetLR
+func LoomSchedulerGetLR(handle C.longlong, step C.int) C.float {
+	schedulerMu.RLock()
+	sched, ok := schedulers[int64(handle)]
+	schedulerMu.RUnlock()
+
+	if !ok {
+		return -1.0
+	}
+
+	return C.float(sched.GetLR(int(step)))
+}
+
+//export LoomSchedulerName
+func LoomSchedulerName(handle C.longlong) *C.char {
+	schedulerMu.RLock()
+	sched, ok := schedulers[int64(handle)]
+	schedulerMu.RUnlock()
+
+	if !ok {
+		return C.CString("invalid")
+	}
+
+	return C.CString(sched.Name())
+}
+
+//export LoomFreeScheduler
+func LoomFreeScheduler(handle C.longlong) {
+	schedulerMu.Lock()
+	delete(schedulers, int64(handle))
+	schedulerMu.Unlock()
+}
+
+// ============================================================================
+// Ensemble Features C-ABI Exports
+// ============================================================================
+
+//export LoomFindComplementaryMatches
+func LoomFindComplementaryMatches(modelsJSON *C.char, minCoverage C.float) *C.char {
+	var models []nn.ModelPerformance
+	if err := json.Unmarshal([]byte(C.GoString(modelsJSON)), &models); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid models JSON: %v"}`, err))
+	}
+
+	matches := nn.FindComplementaryMatches(models, float64(minCoverage))
+
+	result := map[string]interface{}{
+		"matches":      matches,
+		"num_matches":  len(matches),
+	}
+
+	resultJSON, _ := json.Marshal(result)
+	return C.CString(string(resultJSON))
+}
+
 func main() {}
+

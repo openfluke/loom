@@ -6,7 +6,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CABI_DIR="$SCRIPT_DIR/../cabi"
-DEST_DIR="$SCRIPT_DIR/src/loom_py"
+DEST_DIR="$SCRIPT_DIR/src/welvet"
 
 echo "╔════════════════════════════════════════════════════╗"
 echo "║      Copying LOOM Binaries to Python Package      ║"

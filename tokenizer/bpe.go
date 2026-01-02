@@ -125,8 +125,17 @@ func (t *Tokenizer) Encode(text string, addSpecialTokens bool) []uint32 {
 		return []uint32{}
 	}
 
-	// Pre-tokenization: split text into words
-	words := t.PreTokenizer.Split(text)
+	// Combine special tokens and added tokens for preservation during splitting
+	allSpecial := make(map[string]int)
+	for k, v := range t.SpecialTokens {
+		allSpecial[k] = v
+	}
+	for k, v := range t.AddedTokens {
+		allSpecial[k] = v
+	}
+
+	// Pre-tokenization: split text into words, preserving special tokens
+	words := t.PreTokenizer.SplitWithSpecialTokens(text, allSpecial)
 
 	var tokens []uint32
 	for _, word := range words {
@@ -325,10 +334,65 @@ func (t *Tokenizer) Decode(ids []uint32, skipSpecialTokens bool) string {
 	// Join tokens and clean up
 	text := strings.Join(tokens, "")
 
+	// Handle GPT-2 style byte encoding (Ġ -> space, Ċ -> newline, etc.)
+	text = decodeGPT2Bytes(text)
+
 	// Handle byte tokens (e.g., <0x20> -> space)
 	text = t.decodeByteFallback(text)
 
 	return text
+}
+
+// decodeGPT2Bytes converts GPT-2/SmolLM2 style byte-encoded characters back to normal text
+// GPT-2 uses a byte-to-unicode mapping where printable ASCII is shifted to avoid special chars
+func decodeGPT2Bytes(text string) string {
+	// GPT-2 byte-to-unicode mapping (reverse direction)
+	// The encoding uses Unicode chars starting at various points to represent bytes
+	var result strings.Builder
+	for _, r := range text {
+		decoded := gpt2ByteDecode(r)
+		result.WriteRune(decoded)
+	}
+	return result.String()
+}
+
+// gpt2ByteDecode reverses the GPT-2 byte-to-unicode encoding
+func gpt2ByteDecode(r rune) rune {
+	// GPT-2 uses a specific mapping to avoid control characters
+	// Characters 0x21-0x7E and 0xA1-0xAC and 0xAE-0xFF are kept as-is (printable)
+	// Others are shifted to Unicode range starting at 0x100
+	
+	// Common mappings for SmolLM2/GPT-2:
+	// Ġ (U+0120 = 288) -> space (0x20 = 32)
+	// Ċ (U+010A = 266) -> newline (0x0A = 10)
+	// ĉ (U+0109 = 265) -> tab (0x09 = 9)
+	// Ď (U+010E = 270) -> carriage return (0x0D = 13)
+	
+	// The pattern: for bytes 0-255 that aren't printable ASCII,
+	// GPT-2 maps them to 0x100 + offset
+	
+	if r >= 0x100 && r <= 0x1FF {
+		// This is an encoded byte - decode it
+		// The offset depends on which "gap" in the printable range we're filling
+		offset := int(r) - 0x100
+		
+		// Reconstruct the original byte
+		// Bytes 0x00-0x20 (control chars + space) -> 0x100-0x120
+		// Byte 0x7F (DEL) -> 0x121  
+		// Bytes 0x80-0xA0 -> 0x122-0x142
+		// etc.
+		
+		if offset <= 0x20 {
+			return rune(offset)
+		} else if offset == 0x21 {
+			return 0x7F // DEL
+		} else if offset >= 0x22 && offset <= 0x42 {
+			return rune(0x80 + (offset - 0x22))
+		}
+	}
+	
+	// Keep printable ASCII and already-decoded chars as-is
+	return r
 }
 
 // decodeByteFallback decodes byte fallback tokens
@@ -344,9 +408,73 @@ func (t *Tokenizer) decodeByteFallback(text string) string {
 }
 
 // Split splits text using the pre-tokenizer pattern
+// It preserves special tokens by finding them first before regex splitting
 func (pt *PreTokenizer) Split(text string) []string {
+	return pt.SplitWithSpecialTokens(text, nil)
+}
+
+// SplitWithSpecialTokens splits text while preserving special tokens
+func (pt *PreTokenizer) SplitWithSpecialTokens(text string, specialTokens map[string]int) []string {
+	if text == "" {
+		return []string{}
+	}
+
+	// If we have special tokens, find and preserve them
+	if len(specialTokens) > 0 {
+		var result []string
+		remaining := text
+
+		for len(remaining) > 0 {
+			// Find the earliest special token in remaining text
+			earliestIdx := -1
+			earliestToken := ""
+
+			for token := range specialTokens {
+				idx := strings.Index(remaining, token)
+				if idx != -1 && (earliestIdx == -1 || idx < earliestIdx) {
+					earliestIdx = idx
+					earliestToken = token
+				}
+			}
+
+			if earliestIdx == -1 {
+				// No more special tokens, process the rest normally
+				if pt.Pattern != nil {
+					matches := pt.Pattern.FindAllString(remaining, -1)
+					if matches != nil {
+						result = append(result, matches...)
+					}
+				} else {
+					result = append(result, remaining)
+				}
+				break
+			}
+
+			// Process text before the special token
+			if earliestIdx > 0 {
+				before := remaining[:earliestIdx]
+				if pt.Pattern != nil {
+					matches := pt.Pattern.FindAllString(before, -1)
+					if matches != nil {
+						result = append(result, matches...)
+					}
+				} else {
+					result = append(result, before)
+				}
+			}
+
+			// Add the special token as-is
+			result = append(result, earliestToken)
+
+			// Continue with text after the special token
+			remaining = remaining[earliestIdx+len(earliestToken):]
+		}
+
+		return result
+	}
+
+	// No special tokens provided, use normal regex splitting
 	if pt.Pattern == nil {
-		// No pattern, return whole text
 		return []string{text}
 	}
 

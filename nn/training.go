@@ -350,3 +350,182 @@ func (n *Network) printGradientStats() {
 		}
 	}
 }
+
+// =============================================================================
+// Generic Training Functions
+// =============================================================================
+
+// GenericTrainStep executes a single training step for generic types
+func GenericTrainStep[T Numeric](
+	n *Network,
+	input *Tensor[T],
+	target *Tensor[T],
+	learningRate float64,
+	backend Backend[T],
+) (*Tensor[T], float64, time.Duration) {
+	start := time.Now()
+	
+	// 1. Forward Pass
+	output, activations, backwardContext, _ := GenericForwardPass(n, input, backend)
+	
+	// 2. Calculate Loss and Grading
+	// For simplicity, implement MSE here inline or call helper
+	loss, gradOutput := computeGenericMSELoss(output, target)
+	
+	// 3. Backward Pass
+	_, kernelGrads, biasGrads, _ := GenericBackwardPass(n, gradOutput, activations, backwardContext)
+	
+	// 4. Update Weights
+	UpdateWeightsGeneric[T](n, learningRate, kernelGrads, biasGrads)
+	
+	return output, loss, time.Since(start)
+}
+
+func computeGenericMSELoss[T Numeric](output, target *Tensor[T]) (float64, *Tensor[T]) {
+	grad := NewTensor[T](len(output.Data))
+	sum := 0.0
+	scale := 2.0 / float64(len(output.Data))
+	
+	// For integer types, standard MSE gradient (diff * 2/N) is often < 1 and truncates to 0.
+	// We should scale inputs/outputs or just handle it here.
+	// Simple fix: For integers, ensure gradient is at least 1 if diff exists, or don't scale by N here (move to LR).
+	isInt := isIntegerType[T]()
+
+	for i := range output.Data {
+		outVal := float64(output.Data[i])
+		tgtVal := float64(target.Data[i])
+		diff := outVal - tgtVal
+		sum += diff * diff
+		
+		val := diff * scale
+		if isInt && diff != 0 && math.Abs(val) < 0.5 {
+			// If diff exists but scaling makes it 0, preserve direction
+			if val > 0 { val = 1 } else { val = -1 }
+		}
+		grad.Data[i] = T(val)
+	}
+	
+	return sum / float64(len(output.Data)), grad
+}
+
+// UpdateWeightsGeneric updates network weights using generic gradients
+func UpdateWeightsGeneric[T Numeric](n *Network, learningRate float64, kernelGrads []any, biasGrads []any) {
+	lr := learningRate
+	
+	totalLayers := n.TotalLayers()
+	for layerIdx := 0; layerIdx < totalLayers; layerIdx++ {
+		if layerIdx >= len(kernelGrads) { break }
+		
+		// Get layer config to access weights
+		row := layerIdx / (n.GridCols * n.LayersPerCell)
+		remainder := layerIdx % (n.GridCols * n.LayersPerCell)
+		col := remainder / n.LayersPerCell
+		layer := remainder % n.LayersPerCell
+		config := n.GetLayer(row, col, layer)
+		
+		// Update Kernels
+		if kGrad := kernelGrads[layerIdx]; kGrad != nil {
+			switch g := kGrad.(type) {
+			case *Tensor[T]:
+				// Single tensor update (Dense, Conv2D, etc.)
+				applyUpdate(config.Kernel, g, lr)
+			
+			case []*Tensor[T]:
+				// Multiple tensors (RNN, SwiGLU)
+				if config.Type == LayerRNN {
+					if len(g) >= 2 {
+						applyUpdate(config.WeightIH, g[0], lr)
+						applyUpdate(config.WeightHH, g[1], lr)
+					}
+				} else if config.Type == LayerSwiGLU {
+					if len(g) >= 3 {
+						applyUpdate(config.GateWeights, g[0], lr)
+						applyUpdate(config.UpWeights, g[1], lr)
+						applyUpdate(config.DownWeights, g[2], lr)
+					}
+				}
+				
+			case map[string]*Tensor[T]:
+				// Map (LSTM)
+				if config.Type == LayerLSTM {
+					applyUpdate(config.WeightIH_i, g["WeightIH_i"], lr)
+					applyUpdate(config.WeightHH_i, g["WeightHH_i"], lr)
+					applyUpdate(config.WeightIH_f, g["WeightIH_f"], lr)
+					applyUpdate(config.WeightHH_f, g["WeightHH_f"], lr)
+					applyUpdate(config.WeightIH_g, g["WeightIH_g"], lr)
+					applyUpdate(config.WeightHH_g, g["WeightHH_g"], lr)
+					applyUpdate(config.WeightIH_o, g["WeightIH_o"], lr)
+					applyUpdate(config.WeightHH_o, g["WeightHH_o"], lr)
+				}
+				
+			case *AttentionWeights[T]:
+				// Attention struct (MultiHeadAttention)
+				if config.Type == LayerMultiHeadAttention {
+					applyUpdate(config.QWeights, g.QWeights, lr)
+					applyUpdate(config.KWeights, g.KWeights, lr)
+					applyUpdate(config.VWeights, g.VWeights, lr)
+					applyUpdate(config.OutputWeight, g.OutputWeight, lr)
+					applyUpdate(config.QBias, g.QBias, lr) // Biases handled in weights struct for Attention
+					applyUpdate(config.KBias, g.KBias, lr)
+					applyUpdate(config.VBias, g.VBias, lr)
+					applyUpdate(config.OutputBias, g.OutputBias, lr)
+				}
+			}
+		}
+		
+		// Update Biases (if separate)
+		if bGrad := biasGrads[layerIdx]; bGrad != nil {
+			switch g := bGrad.(type) {
+			case *Tensor[T]:
+				// Single tensor (Dense, Conv2D, LayerNorm)
+				if config.Type == LayerNorm {
+					applyUpdate(config.Beta, g, lr)
+				} else {
+					applyUpdate(config.Bias, g, lr)
+				}
+				
+			case []*Tensor[T]:
+				if config.Type == LayerRNN && len(g) >= 1 {
+					applyUpdate(config.BiasH, g[0], lr)
+				} else if config.Type == LayerSwiGLU && len(g) >= 3 {
+					applyUpdate(config.GateBias, g[0], lr)
+					applyUpdate(config.UpBias, g[1], lr)
+					applyUpdate(config.DownBias, g[2], lr)
+				}
+			}
+		}
+		
+		// Special handling where bias might be in kernelGrads (like Attention struct) or special types
+		if config.Type == LayerNorm {
+			// Gamma is in kernelGrads, Beta is in biasGrads
+			if kGrad, ok := kernelGrads[layerIdx].(*Tensor[T]); ok {
+				applyUpdate(config.Gamma, kGrad, lr)
+			}
+		} else if config.Type == LayerRMSNorm {
+			if kGrad, ok := kernelGrads[layerIdx].(*Tensor[T]); ok {
+				applyUpdate(config.Gamma, kGrad, lr)
+			}
+		}
+	}
+}
+
+// applyUpdate updates a float32 slice with generic gradient
+func applyUpdate[T Numeric](weights []float32, grad *Tensor[T], lr float64) {
+	if len(weights) != len(grad.Data) {
+		return // Size mismatch, ignore (safety)
+	}
+	for i := range weights {
+		// W = W - lr * grad
+		weights[i] -= float32(float64(grad.Data[i]) * lr)
+	}
+}
+
+// isIntegerType checks if T is an integer type
+func isIntegerType[T Numeric]() bool {
+	var z T
+	switch any(z).(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	}
+	return false
+}

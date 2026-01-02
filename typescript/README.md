@@ -1,18 +1,54 @@
-# @openfluke/welvet
+# @openfluke/welvet - LOOM TypeScript/WASM Bindings
 
-Isomorphic TypeScript/JavaScript wrapper for the LOOM WebAssembly neural network framework.
+**Wrapper for Embedding Loom Via External (WASM) Toolchain**
 
-## Features
+High-performance neural network library with **full training in browser/Node.js** via WebAssembly. Zero external dependencies—just import and go.
 
-- 🎉 **NEW: Simple API** - Streamlined functions with cross-platform consistency
-- 🚀 **Isomorphic WASM Wrapper** - Works in Node.js and browser with same API
-- 🔄 **Mirrors main.go** - Direct 1:1 mapping to WASM exports
-- 🎯 **Type-Safe** - Full TypeScript type definitions for all Network methods
-- 🤖 **Multi-Agent Networks** - Grid scatter architecture for heterogeneous agents
-- 📦 **JSON Configuration** - Build networks from simple JSON configs
-- ⚡ **Fast Training** - Optimized training with configurable parameters
-- 💾 **Model Persistence** - Save and load trained models as JSON
-- ✅ **Cross-Platform Consistency** - Same API as Python, C#, C, WASM
+## Framework Comparison
+
+| Feature Category | Feature | **Loom/welvet** | **TensorFlow.js** | **Brain.js** | **ONNX.js** | **Candle (WASM)** |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Core** | **Runtime** | WASM (Pure Go) | JS + WebGL | Pure JS | WASM | WASM (Rust) |
+| | **Runtime Dependency** | **None** | Heavy | Light | Light | None |
+| **Loading** | **Safetensors** | ✅ **Native** | ❌ | ❌ | ❌ | ✅ |
+| | **Structure Inference** | ✅ **Auto-Detect** | ❌ | ❌ | ❌ | ❌ |
+| **Training** | **Browser Training** | ✅ **Full** | ✅ (Slow) | ✅ | ❌ | ✅ |
+| | **Neural Tweening** | ✅ **Hybrid Engine** | ❌ | ❌ | ❌ | ❌ |
+| | **LR Schedulers** | ✅ **7 Types** | ✅ | ⚠️ | ❌ | ✅ |
+| **Layer Support** | **Dense (MLP)** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| | **Conv1D/2D** | ✅ **Native** | ✅ | ❌ | ✅ | ✅ |
+| | **RNN / LSTM** | ✅ **Full Gate** | ✅ | ✅ | ✅ | ✅ |
+| | **Transformer (MHA)** | ✅ (Explicit) | ✅ | ❌ | ✅ | ✅ |
+| | **Parallel / MoE** | ✅ **Structure** | ❌ (Manual) | ❌ | ❌ | ❌ |
+| | **Sequential Layers** | ✅ **Native** | ⚠️ | ⚠️ | ❌ | ⚠️ |
+| **Advanced** | **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ |
+| | **Stitch Layers** | ✅ **Native** | ❌ | ❌ | ❌ | ❌ |
+| | **K-Means / Stats** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ |
+| | **Cross-Lang ABI** | ✅ **Universal** | ❌ | ❌ | ❌ | ⚠️ |
+| **Streaming** | **LLM Streaming** | ✅ | ✅ | ❌ | ❌ | ✅ |
+| | **Pure Go Tokenizer** | ✅ | ❌ | ❌ | ❌ | ❌ |
+
+For detailed comparison, see [`docs/loom_assessment_comparison.md`](../docs/loom_assessment_comparison.md).
+
+## 🌍 Cross-Ecosystem Compatibility
+
+Models trained in TypeScript can be loaded instantly in Python, C#, Go, or other WASM environments. **Bit-for-bit identical results** across all platforms.
+
+| Platform | Package | Install |
+|:---------|:--------|:--------|
+| **TypeScript/Node** | [NPM](https://www.npmjs.com/package/@openfluke/welvet) | `npm install @openfluke/welvet` |
+| **Python** | [PyPI](https://pypi.org/project/welvet/) | `pip install welvet` |
+| **C#/.NET** | [NuGet](https://www.nuget.org/packages/Welvet) | `dotnet add package Welvet` |
+| **Go** | [GitHub](https://github.com/openfluke/loom) | `go get github.com/openfluke/loom` |
+
+### Key Strengths
+
+- **True Embeddability**: Single WASM binary. Works in Node.js and browsers with the same API.
+- **Hybrid Gradient/Geometric Engine**: "Neural Tweening" combines geometric gap-closing with backpropagation-guided momentum.
+- **Structural Parallelism**: Native support for Inception, ResNeXt, Siamese, and MoE architectures via `LayerParallel`.
+- **Native Mixed-Precision**: Generic tensor backend supports `int8`, `uint16`, and `float32`.
+- **Complete Evaluation Suite**: Deviation metrics, training milestones, and adaptation tracking.
+- **Network Telemetry**: Runtime introspection with `GetMethodsJSON()` and `ExtractNetworkBlueprint()`.
 
 ## Installation
 
@@ -20,18 +56,19 @@ Isomorphic TypeScript/JavaScript wrapper for the LOOM WebAssembly neural network
 npm install @openfluke/welvet
 ```
 
+**Using Bun:**
+```bash
+bun add @openfluke/welvet
+```
+
 ## Quick Start
 
-### 🎉 NEW: Simple API (Recommended)
+### 🎉 Simple API (Recommended)
 
-The simple API provides streamlined functions with consistent behavior across all platforms:
+The simple API provides streamlined functions with **cross-platform consistency**:
 
 ```typescript
-import {
-  init,
-  createNetworkFromJSON,
-  loadLoomNetwork,
-} from "@openfluke/welvet";
+import { init, createNetworkFromJSON, loadLoomNetwork } from "@openfluke/welvet";
 
 // Initialize LOOM WASM
 await init();
@@ -47,33 +84,17 @@ const config = {
     {
       type: "parallel",
       combine_mode: "grid_scatter",
-      grid_output_rows: 3,
-      grid_output_cols: 1,
-      grid_output_layers: 1,
+      grid_output_rows: 3, grid_output_cols: 1, grid_output_layers: 1,
       grid_positions: [
         { branch_index: 0, target_row: 0, target_col: 0, target_layer: 0 },
         { branch_index: 1, target_row: 1, target_col: 0, target_layer: 0 },
         { branch_index: 2, target_row: 2, target_col: 0, target_layer: 0 },
       ],
       branches: [
-        {
-          type: "parallel",
-          combine_mode: "add",
-          branches: [
-            {
-              type: "dense",
-              input_size: 16,
-              output_size: 8,
-              activation: "relu",
-            },
-            {
-              type: "dense",
-              input_size: 16,
-              output_size: 8,
-              activation: "gelu",
-            },
-          ],
-        },
+        { type: "parallel", combine_mode: "add", branches: [
+          { type: "dense", input_size: 16, output_size: 8, activation: "relu" },
+          { type: "dense", input_size: 16, output_size: 8, activation: "gelu" },
+        ]},
         { type: "lstm", input_size: 16, hidden_size: 8, seq_length: 1 },
         { type: "rnn", input_size: 16, hidden_size: 8, seq_length: 1 },
       ],
@@ -88,86 +109,55 @@ const network = createNetworkFromJSON(JSON.stringify(config));
 const batches = [
   { Input: [0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8], Target: [1.0, 0.0] },
   { Input: [0.9, 0.9, 0.9, 0.9, 0.1, 0.1, 0.1, 0.1], Target: [0.0, 1.0] },
-  { Input: [0.7, 0.7, 0.7, 0.7, 0.3, 0.3, 0.3, 0.3], Target: [0.0, 1.0] },
-  { Input: [0.3, 0.3, 0.3, 0.3, 0.7, 0.7, 0.7, 0.7], Target: [1.0, 0.0] },
 ];
 
 const trainingConfig = {
   Epochs: 800,
   LearningRate: 0.15,
-  UseGPU: false,
-  PrintEveryBatch: 0,
-  GradientClip: 1.0,
   LossType: "mse",
-  Verbose: false,
+  GradientClip: 1.0,
 };
 
-const [result] = network.Train(JSON.stringify([batches, trainingConfig]));
-console.log("Training complete!");
+network.Train(JSON.stringify([batches, trainingConfig]));
 
 // Forward pass
-const [output] = network.ForwardCPU(
-  JSON.stringify([[0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8]])
-);
-console.log("Output:", JSON.parse(output)); // [0.950, 0.050]
-
-// Evaluate network
-const inputs = batches.map((b) => b.Input);
-const expected = [0, 1, 1, 0];
-const [metrics] = network.EvaluateNetwork(JSON.stringify([inputs, expected]));
-const metricsData = JSON.parse(metrics);
-console.log(
-  `Quality: ${metricsData.score}/100, Deviation: ${metricsData.avg_deviation}%`
-);
+const [output] = network.ForwardCPU(JSON.stringify([[0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8]]));
+console.log("Output:", JSON.parse(output)); // [0.95, 0.05]
 
 // Save/Load
 const [modelJSON] = network.SaveModelToString(JSON.stringify(["my_model"]));
-console.log(`Model saved (${modelJSON.length} bytes)`);
-
-// Load model
 const loadedNetwork = loadLoomNetwork(modelJSON, "my_model");
-const [output2] = loadedNetwork.ForwardCPU(
-  JSON.stringify([[0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8]])
-);
-// output2 === output (bit-for-bit identical!)
 ```
 
 **Simple API Functions:**
 
-- `createNetworkFromJSON(jsonConfig)` - Create network from JSON
-- `loadLoomNetwork(jsonString, modelID)` - Load saved model
-- `network.ForwardCPU(inputJSON)` - Forward pass
-- `network.BackwardCPU(gradientsJSON)` - Backward pass
-- `network.Train(paramsJSON)` - Train network
-- `network.SaveModelToString(idJSON)` - Save to JSON string
-- `network.EvaluateNetwork(paramsJSON)` - Evaluate with metrics
-- `network.UpdateWeights(lrJSON)` - Update weights
-
-**Cross-Platform Results:**
-
-- ✅ Same training: 99.5% improvement, 100/100 quality score
-- ✅ Same save/load: 0.00 difference in predictions
-- ✅ Same evaluation: Identical deviation metrics
-- ✅ Same behavior as Python, C#, C, and WASM
-
-See `example/grid-scatter.ts` for a complete working example.
+| Function | Description |
+|:---------|:------------|
+| `createNetworkFromJSON(config)` | Create network from JSON |
+| `loadLoomNetwork(json, id)` | Load saved model |
+| `network.ForwardCPU(input)` | Forward pass |
+| `network.BackwardCPU(gradients)` | Backward pass |
+| `network.Train(params)` | Train network |
+| `network.SaveModelToString(id)` | Save to JSON string |
+| `network.EvaluateNetwork(params)` | Evaluate with metrics |
 
 ### ⚡ Stepping API - Fine-Grained Execution Control
 
-**NEW:** Execute networks one step at a time for online learning:
+Execute networks one step at a time for online learning:
 
 ```typescript
 import { init, createNetwork, StepState } from "@openfluke/welvet";
 
 await init();
 
-// Create network
-const config = { batch_size: 1, layers: [
-  { type: "dense", input_height: 4, output_height: 8, activation: "relu" },
-  { type: "lstm", input_size: 8, hidden_size: 12, seq_length: 1 },
-  { type: "dense", input_height: 12, output_height: 3, activation: "softmax" }
-]};
-const network = createNetwork(config);
+const network = createNetwork({
+  batch_size: 1,
+  layers: [
+    { type: "dense", input_height: 4, output_height: 8, activation: "relu" },
+    { type: "lstm", input_size: 8, hidden_size: 12, seq_length: 1 },
+    { type: "dense", input_height: 12, output_height: 3, activation: "softmax" }
+  ]
+});
 
 // Initialize stepping state
 const state: StepState = network.createStepState(4);
@@ -178,12 +168,8 @@ for (let step = 0; step < 100000; step++) {
   state.stepForward();
   const output = state.getOutput();
   
-  // Calculate gradients
-  const gradients = new Float32Array(output.length);
-  for (let i = 0; i < output.length; i++)
-    gradients[i] = output[i] - target[i];
-  
   // Backward pass
+  const gradients = output.map((o, i) => o - target[i]);
   state.stepBackward(gradients);
   
   // Update weights immediately
@@ -191,19 +177,9 @@ for (let step = 0; step < 100000; step++) {
 }
 ```
 
-**Stepping API:**
-- `network.createStepState(inputSize)` - Initialize stepping state
-- `state.setInput(data)` - Set input for current step
-- `state.stepForward()` - Execute forward pass
-- `state.getOutput()` - Get output from last layer
-- `state.stepBackward(gradients)` - Execute backward pass
-- `network.ApplyGradients(paramsJSON)` - Update network weights
-
-See `example/step_train_v3.ts` for a complete example achieving 100% accuracy.
-
 ### 🧠 Neural Tweening API - Gradient-Free Learning
 
-**NEW:** Direct weight adjustment without backpropagation:
+Direct weight adjustment without backpropagation:
 
 ```typescript
 import { init, createNetwork, TweenState } from "@openfluke/welvet";
@@ -217,212 +193,207 @@ const tweenState: TweenState = network.createTweenState(true); // useChainRule=t
 
 // Training loop - direct weight updates
 for (let step = 0; step < 10000; step++) {
-  const input = new Float32Array([0.1, 0.2, 0.3, 0.4]);
-  const targetClass = 1; // Target output class
-  
-  // Single-step tween learning
-  const loss = tweenState.TweenStep(input, targetClass, 4, 0.02);
+  const loss = tweenState.TweenStep(
+    new Float32Array([0.1, 0.2, 0.3, 0.4]),
+    1,     // targetClass
+    4,     // outputSize
+    0.02   // learningRate
+  );
 }
 ```
 
-**Tweening API:**
-- `network.createTweenState(useChainRule)` - Initialize tween state
-- `tweenState.TweenStep(input, targetClass, outputSize, lr)` - Train step
-- `tweenState.setChainRule(enabled)` - Toggle chain rule
-- `tweenState.getChainRule()` - Get chain rule status
-- `tweenState.getTweenSteps()` - Get total steps performed
+### 📊 Adaptation Benchmark
 
-### 📊 Adaptation Benchmark - Multi-Architecture Testing
-
-**NEW:** Run the full Test 18 Multi-Architecture Adaptation Benchmark:
+Run the full multi-architecture adaptation benchmark:
 
 ```bash
 cd example
 bun run test18_adaptation.ts
 ```
 
-Tests 5 architectures × 3 depths × 5 training modes (75 tests total):
+Tests **5 architectures × 3 depths × 5 training modes** (75 tests total):
 - **Architectures:** Dense, Conv2D, RNN, LSTM, Attention
 - **Depths:** 3, 5, 9 layers
 - **Modes:** NormalBP, StepBP, Tween, TweenChain, StepTweenChain
 
-Measures adaptation speed when tasks change mid-stream (chase→avoid→chase).
+## Complete Test Suite
 
-See `example/test18_adaptation.ts` for the full implementation.
+The `universal_test.ts` example demonstrates all framework capabilities:
 
+```bash
+cd example
+bun run universal_test.ts
 ```
+
+**Test Coverage:**
+- ✅ 12 Layer Types × 6 Data Types (72 tests)
+- ✅ Network Grafting
+- ✅ K-Means Clustering & Correlation Analysis
+- ✅ Optimizers (SGD, AdamW, RMSprop)
+- ✅ Ensemble Features
+- ✅ Observer Pattern (Adaptation Tracking)
+- ✅ Introspection API
+- ✅ Step & Tween API
+- ✅ Advanced Layers (Embedding, Residual)
+
+See [`example/universal_test.ts`](./example/universal_test.ts) for the complete test implementation.
+
+## Layer Types
+
+| Layer | Type String | Description |
+|:------|:------------|:------------|
+| Dense | `dense` | Fully connected layer |
+| LSTM | `lstm` | Long Short-Term Memory |
+| RNN | `rnn` | Recurrent Neural Network |
+| GRU | `gru` | Gated Recurrent Unit |
+| Conv2D | `conv2d` | 2D Convolution |
+| Conv1D | `conv1d` | 1D Convolution |
+| Multi-Head Attention | `multi_head_attention` | Transformer attention |
+| LayerNorm | `layer_norm` | Layer normalization |
+| RMSNorm | `rms_norm` | RMS normalization |
+| SwiGLU | `swiglu` | SwiGLU activation layer |
+| Softmax | `softmax` | Softmax classification |
+| Embedding | `embedding` | Token embedding |
+| Parallel | `parallel` | Branching with combine modes |
+| Sequential | `sequential` | Grouped sub-layers |
+
+**Parallel Combine Modes:** `add`, `concat`, `multiply`, `average`, `grid_scatter`, `filter`
+
+## Activation Functions
+
+`relu`, `sigmoid`, `tanh`, `softmax`, `gelu`, `swish`, `mish`, `leaky_relu`, `elu`, `selu`, `linear`
 
 ## API Reference
 
-### Functions
+### Initialization
 
-#### `async init(): Promise<void>`
+```typescript
+import { init, initBrowser, createNetwork, createNetworkFromJSON } from "@openfluke/welvet";
 
-Initialize LOOM WASM module for Node.js environment.
+// Node.js
+await init();
 
-#### `async initBrowser(): Promise<void>`
+// Browser
+await initBrowser();
+```
 
-Initialize LOOM WASM module for browser environment.
+### Network Methods
 
-#### `createNetwork(config: object | string): Network`
-
-Create a new neural network from JSON configuration object or string.
-
-**Note:** This is the only global function exposed by the WASM (mirrors `createLoomNetwork` from main.go). To load a saved model, just pass the saved JSON string to `createNetwork()`.
-
-### Network Interface
-
-The `Network` object returned by `createNetwork()` has all methods from the Go `nn.Network` type automatically exposed via reflection.
-
-**Important:** All Network methods follow the WASM calling convention:
-
-- Take a single parameter: JSON string of an array of parameters
-- Return a JSON string of an array of results
-
-Example:
+All Network methods follow the WASM calling convention:
+- **Input:** JSON string of an array of parameters
+- **Return:** JSON string of an array of results
 
 ```typescript
 // Method with no parameters
 const info = network.GetNetworkInfo(JSON.stringify([]));
-const parsed = JSON.parse(info)[0];
 
 // Method with parameters
 const result = network.Train(JSON.stringify([batches, config]));
-const data = JSON.parse(result)[0];
 
-// Save model (requires modelID parameter)
+// Save model
 const saved = network.SaveModelToString(JSON.stringify(["my-model"]));
-const json = JSON.parse(saved)[0];
-````
+```
 
-#### Available Network Methods
+**Available Methods:**
 
-- `ForwardCPU(paramsJSON)` - CPU forward pass: `[inputs]`
-- `ForwardGPU(paramsJSON)` - GPU forward pass: `[inputs]`
-- `BackwardCPU(paramsJSON)` - CPU backward pass: `[gradients]`
-- `BackwardGPU(paramsJSON)` - GPU backward pass: `[gradients]`
-- `UpdateWeights(paramsJSON)` - Update weights: `[learningRate]`
-- `Train(paramsJSON)` - Train network: `[batches, config]`
-- `SaveModelToString(paramsJSON)` - Save model: `["modelID"]`
-- `GetWeights(paramsJSON)` - Get layer weights: `[row, col, layer]`
-- `SetWeights(paramsJSON)` - Set layer weights: `[row, col, layer, weights]`
-- `GetBiases(paramsJSON)` - Get layer biases: `[row, col, layer]`
-- `SetBiases(paramsJSON)` - Set layer biases: `[row, col, layer, biases]`
-- `GetActivation(paramsJSON)` - Get activation: `[row, col, layer]`
-- `GetLayerType(paramsJSON)` - Get layer type: `[row, col, layer]`
-- `GetLayerSizes(paramsJSON)` - Get layer sizes: `[row, col, layer]`
-- `GetBatchSize(paramsJSON)` - Get batch size: `[]`
-- `GetGridDimensions(paramsJSON)` - Get grid dimensions: `[]`
-- `GetNetworkInfo(paramsJSON)` - Get network info: `[]`
-- `GetTotalParameters(paramsJSON)` - Get parameter count: `[]`
-- `InitializeWeights(paramsJSON)` - Initialize weights: `[]` or `[method]`
-- `Clone(paramsJSON)` - Clone network: `[]`
-- And 10+ more methods...
-- `GetLastOutput(): string` - Get last forward pass output
+| Method | Parameters | Description |
+|:-------|:-----------|:------------|
+| `ForwardCPU` | `[inputs]` | CPU forward pass |
+| `ForwardGPU` | `[inputs]` | GPU forward pass |
+| `BackwardCPU` | `[gradients]` | CPU backward pass |
+| `Train` | `[batches, config]` | Train network |
+| `SaveModelToString` | `["modelID"]` | Save to JSON |
+| `GetWeights` | `[row, col, layer]` | Get layer weights |
+| `SetWeights` | `[row, col, layer, weights]` | Set layer weights |
+| `GetBiases` | `[row, col, layer]` | Get layer biases |
+| `SetBiases` | `[row, col, layer, biases]` | Set layer biases |
+| `GetNetworkInfo` | `[]` | Get network info |
+| `GetTotalParameters` | `[]` | Get parameter count |
+| `Clone` | `[]` | Clone network |
+| `TotalLayers` | `[]` | Get total layer count |
 
-### Types
+### Statistical Tools
 
-#### `NetworkConfig`
+```typescript
+import welvet from "@openfluke/welvet";
+
+// K-Means Clustering
+const data = [[1, 1], [1.1, 1.1], [5, 5], [5.1, 5.1]];
+const result = welvet.kmeans(data, 2, 100);
+console.log(`Centroids: ${result.centroids}`);
+console.log(`Silhouette Score: ${result.silhouette_score}`);
+
+// Correlation Matrix
+const matrix = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+const corr = welvet.correlation(matrix);
+console.log(`Pearson: ${corr.pearson}`);
+```
+
+### Network Grafting
+
+Combine multiple trained networks:
+
+```typescript
+const h1 = welvet.createKHandle(config);
+const h2 = welvet.createKHandle(config);
+
+const result = welvet.graft([h1, h2], "concat");
+console.log(`Grafted: ${result.num_branches} branches`);
+```
+
+## Examples
+
+```bash
+cd example
+
+# Grid Scatter Multi-Agent
+bun run grid-scatter.ts
+
+# Stepping Training (LSTM)
+bun run step_train_v3.ts
+
+# Adaptation Benchmark (75 tests)
+bun run test18_adaptation.ts
+
+# Full Test Suite (77 tests)
+bun run universal_test.ts
+```
+
+## TypeScript Types
 
 ```typescript
 interface NetworkConfig {
   batch_size: number;
-  grid_rows?: number; // Required for grid networks (use 1 for sequential)
-  grid_cols?: number; // Required for grid networks (use 1 for sequential)
-  layers_per_cell?: number; // Required for grid networks
+  grid_rows?: number;
+  grid_cols?: number;
+  layers_per_cell?: number;
   layers: LayerConfig[];
+  dtype?: "float32" | "float64" | "int32" | "int16" | "int8" | "uint8";
 }
-```
 
-#### `LayerConfig`
-
-```typescript
-interface LayerConfig {
-  type: string;
-  input_size?: number;
-  output_size?: number;
-  hidden_size?: number;
-  seq_length?: number;
-  activation?: string;
-  combine_mode?: string;
-  grid_output_rows?: number;
-  grid_output_cols?: number;
-  grid_output_layers?: number;
-  grid_positions?: GridPosition[];
-  branches?: LayerConfig[];
-}
-```
-
-#### `TrainingBatch`
-
-```typescript
-interface TrainingBatch {
-  Input: number[];
-  Target: number[];
-}
-```
-
-#### `TrainingConfig`
-
-```typescript
 interface TrainingConfig {
   Epochs: number;
   LearningRate: number;
   LossType?: string;
   Verbose?: boolean;
   UseGPU?: boolean;
-  PrintEveryBatch?: number;
   GradientClip?: number;
+}
+
+interface TrainingBatch {
+  Input: number[];
+  Target: number[];
 }
 ```
 
-## Examples
-
-### Grid Scatter Multi-Agent
-
-```bash
-cd example
-bun install
-bun run grid-scatter.ts
-```
-
-### Stepping Training (LSTM)
-
-```bash
-bun run step_train_v3.ts
-```
-
-### Adaptation Benchmark (75 tests)
-
-```bash
-bun run test18_adaptation.ts
-```
-
-> **Note:** Full benchmark takes ~12.5 minutes (10 seconds per test)
-
-## Layer Types
-
-- `dense` - Fully connected layer
-- `lstm` - Long Short-Term Memory layer
-- `rnn` - Recurrent Neural Network layer
-- `gru` - Gated Recurrent Unit layer
-- `cnn` - Convolutional layer
-- `parallel` - Parallel branches with combine modes:
-  - `add` - Element-wise addition
-  - `concat` - Concatenation
-  - `multiply` - Element-wise multiplication
-  - `grid_scatter` - Multi-agent grid routing
-
-## Activation Functions
-
-`relu`, `sigmoid`, `tanh`, `softmax`, `gelu`, `swish`, `mish`, `leaky_relu`, `elu`, `selu`
-
 ## License
 
-APACHE2
+Apache-2.0
 
 ## Links
 
-- [GitHub](https://github.com/openfluke/loom)
-- [WASM Documentation](../wasm/README.md)
-- [Go Examples](../examples/)
+- **GitHub**: [github.com/openfluke/loom](https://github.com/openfluke/loom)
+- **NPM**: [@openfluke/welvet](https://www.npmjs.com/package/@openfluke/welvet)
+- **PyPI**: [welvet](https://pypi.org/project/welvet/)
+- **NuGet**: [Welvet](https://www.nuget.org/packages/Welvet)
+- **Documentation**: [`docs/loom_assessment_comparison.md`](../docs/loom_assessment_comparison.md)

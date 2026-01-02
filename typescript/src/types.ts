@@ -7,13 +7,34 @@ export interface LayerConfig {
   input_size?: number;
   output_size?: number;
   hidden_size?: number;
-  seq_length?: number;
+
   activation?: string;
   combine_mode?: string;
   grid_output_rows?: number;
   grid_output_cols?: number;
   grid_output_layers?: number;
   grid_positions?: GridPosition[];
+  input_height?: number;
+  output_height?: number;
+  input_width?: number;
+  input_channels?: number;
+  output_channels?: number;
+  kernel_size?: number;
+  stride?: number;
+  padding?: number;
+  filters?: number;
+  d_model?: number;
+  num_heads?: number;
+  seq_length?: number;
+  norm_size?: number;
+  vocab_size?: number;
+  embedding_dim?: number;
+  epsilon?: number;
+  softmax_variant?: string;
+  temperature?: number;
+  residual?: boolean;
+  filter_gate?: LayerConfig;
+  filter_temperature?: number;
   branches?: LayerConfig[];
 }
 
@@ -127,7 +148,7 @@ export interface Network {
   ApplyGradientsAdamW(paramsJSON: string): string; // [learningRate, beta1, beta2, weightDecay]
   ApplyGradientsRMSprop(paramsJSON: string): string; // [learningRate, alpha, epsilon, momentum]
   ApplyGradientsSGDMomentum(paramsJSON: string): string; // [learningRate, momentum, dampening, nesterov]
-  
+
   createStepState(inputSize: number): StepState;
   createTweenState(useChainRule?: boolean): TweenState;
 }
@@ -178,6 +199,38 @@ export interface TweenState {
 declare global {
   function createLoomNetwork(jsonConfig: string): Network;
   function createAdaptationTracker(windowMs: number, totalMs: number): AdaptationTracker;
+  function createNetworkForGraft(jsonConfig: string): number;
+  function graftNetworks(idsJSON: string, combineMode: string): string;
+  function kmeansCluster(dataJSON: string, k: number, iter: number): string;
+  function computeCorrelation(matrixAJSON: string, matrixBJSON: string): string;
+  function findComplementaryMatches(modelsJSON: string, minCoverage: number): string;
+}
+
+export interface EnsembleMatch {
+  ModelA: string;
+  ModelB: string;
+  Coverage: number;
+  Overlap: number;
+  WeightedAcc?: number;
+}
+
+export interface GraftResult {
+  success: boolean;
+  type: string;
+  num_branches: number;
+  combine_mode: string;
+  error?: string;
+}
+
+export interface KMeansResult {
+  centroids: number[][];
+  assignment: number[];
+  silhouette_score: number;
+}
+
+export interface CorrelationResult {
+  pearson: number[][];
+  spearman: number[][];
 }
 
 /**

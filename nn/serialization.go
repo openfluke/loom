@@ -24,6 +24,7 @@ type SavedModel struct {
 // NetworkConfig represents the network architecture
 type NetworkConfig struct {
 	ID            string            `json:"id"`
+	DType         string            `json:"dtype,omitempty"` // Numerical type: "float32", "float64", "int32", "int16", "int8"
 	BatchSize     int               `json:"batch_size"`
 	GridRows      int               `json:"grid_rows"`
 	GridCols      int               `json:"grid_cols"`
@@ -78,6 +79,13 @@ type LayerDefinition struct {
 	NormSize int     `json:"norm_size,omitempty"`
 	Epsilon  float32 `json:"epsilon,omitempty"`
 
+	// Embedding fields
+	VocabSize    int `json:"vocab_size,omitempty"`
+	EmbeddingDim int `json:"embedding_dim,omitempty"`
+
+	// Conv1D fields
+	InputLength int `json:"input_length,omitempty"`
+
 	// Parallel layer fields
 	Branches         []LayerDefinition `json:"branches,omitempty"`
 	CombineMode      string            `json:"combine_mode,omitempty"` // "concat", "add", "avg", "grid_scatter"
@@ -102,14 +110,20 @@ type EncodedWeights struct {
 }
 
 // WeightsData represents the actual weight values
+// Type field indicates the numeric type used for weights
 type WeightsData struct {
-	Type   string         `json:"type"`
+	Type   string         `json:"type"`   // "float32", "float64", etc.
+	DType  string         `json:"dtype"`  // DType enum value as string (for multi-type support)
 	Layers []LayerWeights `json:"layers"`
 }
 
 // LayerWeights stores weights for a single layer
+// Note: Currently serialized as float32, but generic tensors can be converted on load
 type LayerWeights struct {
-	// Dense weights (stored as bias per neuron)
+	// Data type for this layer (optional, defaults to float32)
+	DType string `json:"dtype,omitempty"`
+
+	// Dense weights
 	Biases []float32 `json:"biases,omitempty"`
 
 	// Conv2D weights
@@ -270,6 +284,9 @@ func serializeBranches(branches []LayerConfig) []LayerDefinition {
 			}
 
 			def.Branches = serializeBranches(branch.ParallelBranches) // Recursive call
+		case LayerSequential:
+			// Sequential layers store their sub-layers in ParallelBranches (processed in order)
+			def.Branches = serializeBranches(branch.ParallelBranches) // Recursive call
 		}
 
 		defs[i] = def
@@ -330,6 +347,9 @@ func serializeBranchWeights(branches []LayerConfig) []LayerWeights {
 			w.DownBias = branch.DownBias
 		case LayerParallel:
 			// Recursively serialize nested branch weights
+			w.BranchWeights = serializeBranchWeights(branch.ParallelBranches)
+		case LayerSequential:
+			// Recursively serialize nested sequential layer weights
 			w.BranchWeights = serializeBranchWeights(branch.ParallelBranches)
 		}
 
@@ -486,6 +506,17 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				GridOutputRows:   def.GridOutputRows,
 				GridOutputCols:   def.GridOutputCols,
 				GridOutputLayers: def.GridOutputLayers,
+			}
+		case "sequential":
+			// Recursively deserialize nested sequential layers with their weights
+			nestedBranches, err := deserializeBranches(def.Branches, w.BranchWeights)
+			if err != nil {
+				return nil, fmt.Errorf("failed to deserialize sequential branches: %w", err)
+			}
+
+			config = LayerConfig{
+				Type:             LayerSequential,
+				ParallelBranches: nestedBranches, // Sequential uses ParallelBranches to store sub-layers
 			}
 		default:
 			return nil, fmt.Errorf("unknown branch type: %s", def.Type)
@@ -644,6 +675,11 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 			// Serialize each branch recursively
 			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
 			layerWeights.BranchWeights = serializeBranchWeights(layerConfig.ParallelBranches)
+
+		case LayerSequential:
+			// Serialize sequential layers (stored in ParallelBranches)
+			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
+			layerWeights.BranchWeights = serializeBranchWeights(layerConfig.ParallelBranches)
 		}
 
 		config.Layers = append(config.Layers, layerDef)
@@ -771,6 +807,12 @@ func (b *ModelBundle) SaveToFile(filename string) error {
 
 // DeserializeModel creates a Network from a SavedModel
 func DeserializeModel(saved SavedModel) (*Network, error) {
+	// Check if this is a multi-precision model
+	if saved.Weights.Format == "multiPrecisionB64" {
+		network, _, err := deserializeMultiPrecisionModel(saved, "float32")
+		return network, err
+	}
+
 	config := saved.Config
 
 	// Create network
@@ -969,6 +1011,18 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				GridOutputLayers: layerDef.GridOutputLayers,
 			}
 
+		case "sequential":
+			// Deserialize sequential branches recursively with their weights
+			branches, err := deserializeBranches(layerDef.Branches, layerWeights.BranchWeights)
+			if err != nil {
+				return nil, fmt.Errorf("failed to deserialize sequential branches: %w", err)
+			}
+
+			layerConfig = LayerConfig{
+				Type:             LayerSequential,
+				ParallelBranches: branches,
+			}
+
 		default:
 			return nil, fmt.Errorf("unknown layer type: %s", layerDef.Type)
 		}
@@ -1004,6 +1058,8 @@ func layerTypeToString(lt LayerType) string {
 		return "residual"
 	case LayerParallel:
 		return "parallel"
+	case LayerSequential:
+		return "sequential"
 	default:
 		return "unknown"
 	}
@@ -1103,9 +1159,23 @@ func stringToActivation(s string) ActivationType {
 // This allows building complete neural networks from JSON without manually assigning layers
 // The JSON structure matches the NetworkConfig format used in serialization
 func BuildNetworkFromJSON(jsonConfig string) (*Network, error) {
+	net, _, err := BuildNetworkFromJSONWithDType(jsonConfig)
+	return net, err
+}
+
+// BuildNetworkFromJSONWithDType builds a network from JSON and returns the dtype specified in config
+// Returns: network, dtype (defaults to "float32" if not specified), error
+// The dtype can be used with SaveModelWithDType/LoadModelWithDType for multi-precision storage
+func BuildNetworkFromJSONWithDType(jsonConfig string) (*Network, string, error) {
 	var config NetworkConfig
 	if err := json.Unmarshal([]byte(jsonConfig), &config); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+		return nil, "", fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+
+	// Default dtype to float32 if not specified
+	dtype := config.DType
+	if dtype == "" {
+		dtype = "float32"
 	}
 
 	// Default batch size to 1 if not specified
@@ -1126,7 +1196,7 @@ func BuildNetworkFromJSON(jsonConfig string) (*Network, error) {
 	// Validate layer count
 	expectedLayers := config.GridRows * config.GridCols * config.LayersPerCell
 	if len(config.Layers) != expectedLayers {
-		return nil, fmt.Errorf("layer count mismatch: expected %d (rows=%d × cols=%d × layers_per_cell=%d), got %d",
+		return nil, "", fmt.Errorf("layer count mismatch: expected %d (rows=%d × cols=%d × layers_per_cell=%d), got %d",
 			expectedLayers, config.GridRows, config.GridCols, config.LayersPerCell, len(config.Layers))
 	}
 
@@ -1138,14 +1208,14 @@ func BuildNetworkFromJSON(jsonConfig string) (*Network, error) {
 
 		layerConfig, err := buildLayerConfig(layerDef)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build layer %d (row=%d, col=%d, layer=%d): %w",
+			return nil, "", fmt.Errorf("failed to build layer %d (row=%d, col=%d, layer=%d): %w",
 				i, row, col, layer, err)
 		}
 
 		network.SetLayer(row, col, layer, layerConfig)
 	}
 
-	return network, nil
+	return network, dtype, nil
 }
 
 // BuildNetworkFromFile creates a neural network from a JSON configuration file
@@ -1200,23 +1270,34 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		config.OutputWidth = def.OutputWidth
 
 	case "mha", "multi_head_attention":
-		config.Type = LayerMultiHeadAttention
-		config.DModel = def.DModel
-		config.NumHeads = def.NumHeads
+		// Use InitMHABrain to properly initialize weights
+		numHeads := def.NumHeads
+		if numHeads == 0 {
+			numHeads = 8 // Default
+		}
+		config = InitMHABrain(def.DModel, numHeads, 0.5)
 		config.SeqLength = def.SeqLength
-		config.HeadDim = def.DModel / def.NumHeads
+		if config.SeqLength == 0 {
+			config.SeqLength = 1
+		}
 
 	case "rnn":
-		config.Type = LayerRNN
+		// Use InitRNNBrain to properly initialize weights
+		dModel := def.HiddenSize
+		if dModel == 0 {
+			dModel = def.InputSize
+		}
+		config = InitRNNBrain(dModel, 0.5)
 		config.RNNInputSize = def.InputSize
-		config.HiddenSize = def.HiddenSize
-		config.SeqLength = def.SeqLength
 
 	case "lstm":
-		config.Type = LayerLSTM
+		// Use InitLSTMBrain to properly initialize weights
+		dModel := def.HiddenSize
+		if dModel == 0 {
+			dModel = def.InputSize
+		}
+		config = InitLSTMBrain(dModel, 0.5)
 		config.RNNInputSize = def.InputSize
-		config.HiddenSize = def.HiddenSize
-		config.SeqLength = def.SeqLength
 
 	case "softmax":
 		config.Type = LayerSoftmax
@@ -1232,31 +1313,44 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		config.EntmaxAlpha = def.EntmaxAlpha
 
 	case "layer_norm", "layernorm":
+		// Initialize LayerNorm with gamma=1 and beta=0
 		config.Type = LayerNorm
 		config.NormSize = def.NormSize
 		if def.Epsilon == 0 {
-			config.Epsilon = 1e-5 // Default epsilon
+			config.Epsilon = 1e-5
 		} else {
 			config.Epsilon = def.Epsilon
+		}
+		// Initialize weights
+		config.Gamma = make([]float32, def.NormSize)
+		config.Beta = make([]float32, def.NormSize)
+		for i := range config.Gamma {
+			config.Gamma[i] = 1.0
 		}
 
 	case "rms_norm", "rmsnorm":
+		// Initialize RMSNorm with gamma=1
 		config.Type = LayerRMSNorm
 		config.NormSize = def.NormSize
 		if def.Epsilon == 0 {
-			config.Epsilon = 1e-5 // Default epsilon
+			config.Epsilon = 1e-5
 		} else {
 			config.Epsilon = def.Epsilon
 		}
+		// Initialize weights
+		config.Gamma = make([]float32, def.NormSize)
+		for i := range config.Gamma {
+			config.Gamma[i] = 1.0
+		}
 
 	case "swiglu":
-		config.Type = LayerSwiGLU
-		// Use InputSize/OutputSize for SwiGLU if Width/Height aren't specified
-		if def.InputSize > 0 {
-			config.InputHeight = def.InputSize
-		} else if def.InputHeight > 0 {
-			config.InputHeight = def.InputHeight
+		// Use InitSwiGLUBrain to properly initialize weights
+		inSize := def.InputSize
+		if inSize == 0 {
+			inSize = def.InputHeight
 		}
+		config = InitSwiGLUBrain(inSize, 0.5)
+		config.OutputHeight = def.OutputHeight
 
 		if def.OutputSize > 0 {
 			config.OutputHeight = def.OutputSize
@@ -1302,6 +1396,34 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 			}
 			config.ParallelBranches[i] = branchConfig
 		}
+
+	case "sequential":
+		config.Type = LayerSequential
+		// Build sequential layer configurations (processed in order)
+		config.ParallelBranches = make([]LayerConfig, len(def.Branches))
+		for i, branchDef := range def.Branches {
+			branchConfig, err := buildLayerConfig(branchDef)
+			if err != nil {
+				return config, fmt.Errorf("sequential layer %d: %w", i, err)
+			}
+			config.ParallelBranches[i] = branchConfig
+		}
+
+	case "embedding":
+		// Use InitEmbeddingLayer to properly initialize weights
+		config = InitEmbeddingLayer(def.VocabSize, def.EmbeddingDim)
+
+	case "conv1d":
+		// Use InitConv1DLayer to properly initialize weights
+		seqLen := def.InputLength
+		if seqLen == 0 {
+			seqLen = def.InputHeight // Fallback to InputHeight
+		}
+		inChannels := def.InputChannels
+		if inChannels == 0 {
+			inChannels = 1 // Default to 1 channel
+		}
+		config = InitConv1DLayer(seqLen, inChannels, def.KernelSize, def.Stride, def.Padding, def.Filters, stringToActivation(def.Activation))
 
 	default:
 		return config, fmt.Errorf("unknown layer type: %s", def.Type)
