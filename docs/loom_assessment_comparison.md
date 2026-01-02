@@ -220,3 +220,14 @@ This table compares framework support for different numerical types across major
 *   **Choose GoMLX** if you need **High-Performance Training in Go** and can tolerate CGo/C++ dependencies.
 *   **Choose Core ML** if you are targeting **iOS/macOS** exclusively.
 *   **Choose Loom** if you need **Pure Go-Native Embedding** (Cloud/CLI/Server), want a single binary with zero dependencies, need **High-Performance Python Bindings** (via `welvet`) that run identically on every platform, want to experiment with the **Neural Tweening** training paradigm, or need unique features like **Step-Based Forward Pass** for real-time inference and **Dynamic Architecture Generation** for automated model exploration.
+
+---
+
+## See Also
+
+- [**Main README**](../README.md) - Framework overview and quick start
+- [**Python Bindings**](../python/README.md) - PyPI package documentation
+- [**TypeScript/WASM Bindings**](../typescript/README.md) - NPM package documentation
+- [**C#/.NET Bindings**](../csharp/README.md) - NuGet package documentation
+- [**Neural Tweening Benchmarks**](step_tween_assessment.md) - Comprehensive 19-test benchmark suite
+
