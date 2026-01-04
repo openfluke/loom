@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	//"sync"
 )
 
 // =============================================================================
@@ -230,7 +231,7 @@ func (ts *GenericTweenState[T]) ComputeGaps() {
 	ts.CalculateLinkBudgets()
 }
 
-// BackwardPassChainRule: Generates float32 gradients based on T inputs
+// BackwardPassChainRule: Generates float32 gradients based on T inputs (Classification)
 func (ts *GenericTweenState[T]) BackwardPassChainRule(n *Network, targetClass int, outputSize int) {
 	outputAct := ts.ForwardActs[ts.TotalLayers]
 	if outputAct == nil {
@@ -251,6 +252,44 @@ func (ts *GenericTweenState[T]) BackwardPassChainRule(n *Network, targetClass in
 		gradOutput[i] = float32(target - actual)
 	}
 
+	ts.propagateGradients(n, gradOutput)
+}
+
+// BackwardPassRegression: Generates float32 gradients based on float32 targets (Regression)
+func (ts *GenericTweenState[T]) BackwardPassRegression(n *Network, target []float32) {
+	outputAct := ts.ForwardActs[ts.TotalLayers]
+	if outputAct == nil {
+		return
+	}
+
+	gradOutput := make([]float32, len(outputAct.Data))
+	// Set BackwardTarget for output layer as well, useful for LinkBudgets
+	targetT := NewTensor[T](len(outputAct.Data))
+
+	for i := range gradOutput {
+		actual := float64(outputAct.Data[i])
+		if IsIntegerType[T]() {
+			actual /= 100.0
+		}
+		
+		tVal := float32(0.0)
+		if i < len(target) {
+			tVal = target[i]
+		}
+		
+		gradOutput[i] = tVal - float32(actual)
+		targetT.Data[i] = T(tVal)
+		if IsIntegerType[T]() {
+			targetT.Data[i] = T(tVal * 100.0)
+		}
+	}
+	
+	ts.BackwardTargets[ts.TotalLayers] = targetT
+	ts.propagateGradients(n, gradOutput)
+}
+
+// propagateGradients propagates gradients from output to input layers
+func (ts *GenericTweenState[T]) propagateGradients(n *Network, gradOutput []float32) {
 	currentGrad := gradOutput
 	ts.ChainGradients[ts.TotalLayers] = currentGrad
 
@@ -1183,12 +1222,7 @@ func (ts *TweenState) BackwardPass(n *Network, targetClass int, outputSize int) 
 	}
 }
 
-// BackwardPassChainRule: Proper chain rule gradient propagation
-// Unlike BackwardPass which uses heuristics, this properly applies:
-// 1. Output error gradient (target - actual)
-// 2. Activation function derivatives at each layer
-// 3. Transpose weight multiplication to propagate gradients
-// 4. Depth scaling to combat vanishing gradients
+// BackwardPassChainRule: Proper chain rule gradient propagation (Classification)
 func (ts *TweenState) BackwardPassChainRule(n *Network, targetClass int, outputSize int) {
 	// Start at output: compute error gradient (target - actual)
 	actual := ts.ForwardActs[ts.TotalLayers]
@@ -1215,8 +1249,37 @@ func (ts *TweenState) BackwardPassChainRule(n *Network, targetClass int, outputS
 		}
 	}
 
-	// Propagate gradients backward using chain rule
-	currentGrad := outputGrad
+	ts.propagateGradients(n, outputGrad)
+}
+
+// BackwardPassRegression: Gradient propagation for Regression (Float targets)
+func (ts *TweenState) BackwardPassRegression(n *Network, target []float32) {
+	actual := ts.ForwardActs[ts.TotalLayers]
+	if len(actual) == 0 {
+		return
+	}
+
+	outputGrad := make([]float32, len(actual))
+	targetT := make([]float32, len(actual))
+	
+	for i := range outputGrad {
+		tVal := float32(0.0)
+		if i < len(target) {
+			tVal = target[i]
+		}
+		outputGrad[i] = tVal - actual[i]
+		targetT[i] = tVal
+	}
+	
+	ts.ChainGradients[ts.TotalLayers] = outputGrad
+	ts.BackwardTargets[ts.TotalLayers] = targetT
+	
+	ts.propagateGradients(n, outputGrad)
+}
+
+// propagateGradients propagates gradients from output to input layers
+func (ts *TweenState) propagateGradients(n *Network, gradOutput []float32) {
+	currentGrad := gradOutput
 
 	for i := ts.TotalLayers - 1; i >= 0; i-- {
 		cfg := ts.getLayerCfg(n, i)
@@ -2821,8 +2884,425 @@ func (ts *TweenState) TweenBatch(n *Network, inputs [][]float32, targetClasses [
 	ts.TweenBatchApply(n, rate)
 	return totalLoss / float32(len(inputs))
 }
+// =============================================================================
+// PARALLEL BATCH TRAINING - Multithreaded TweenBatch
+// Uses per-worker TweenState CLONES for true data parallelism.
+// Each worker runs the REAL tween algorithm independently, then gaps are merged.
+// =============================================================================
 
-// Train with early stopping
+// ParallelBatchResult holds the accumulated results from one worker
+type ParallelBatchResult struct {
+	Gaps        [][]float32 // Accumulated gaps per layer
+	LinkBudgets []float32   // Averaged link budgets
+	TotalLoss   float32
+	SampleCount int
+}
+
+// CloneTweenState creates a deep copy of TweenState for parallel processing
+// The clone shares Config (read-only) but has its own activation/target storage
+func (ts *TweenState) CloneTweenState() *TweenState {
+	clone := &TweenState{
+		ForwardActs:     make([][]float32, ts.TotalLayers+1),
+		BackwardTargets: make([][]float32, ts.TotalLayers+1),
+		LinkBudgets:     make([]float32, ts.TotalLayers),
+		Gaps:            make([]float32, ts.TotalLayers),
+		WeightVel:       make([][]float32, ts.TotalLayers), // Not copied - workers don't update momentum
+		BiasVel:         make([][]float32, ts.TotalLayers),
+		BatchGaps:       make([][]float32, ts.TotalLayers),
+		Config:          ts.Config, // Share config (read-only)
+		TotalLayers:     ts.TotalLayers,
+		ChainGradients:  make([][]float32, ts.TotalLayers+1),
+		AdaptiveRate:    1.0,
+	}
+	// Initialize link budgets to 1.0
+	for i := range clone.LinkBudgets {
+		clone.LinkBudgets[i] = 1.0
+	}
+	return clone
+}
+
+// TweenBatchParallel: TRUE parallel batch training using per-worker TweenState clones.
+// Each worker:
+//  1. Gets its own TweenState clone
+//  2. Runs the REAL ForwardPass, BackwardPassChainRule, CalculateLinkBudgets
+//  3. Accumulates gaps locally
+// Then all gaps are merged and TweenBatchApply is called once on the original network.
+func (ts *TweenState) TweenBatchParallel(n *Network, inputs [][]float32, targetClasses []int, outputSize int, rate float32, numWorkers int) float32 {
+	if len(inputs) == 0 {
+		return 0
+	}
+	if numWorkers <= 0 {
+		numWorkers = 1
+	}
+	if numWorkers > len(inputs) {
+		numWorkers = len(inputs)
+	}
+
+	// Split work into chunks
+	chunkSize := (len(inputs) + numWorkers - 1) / numWorkers
+	resultChan := make(chan ParallelBatchResult, numWorkers)
+
+	// Launch workers - each with its own TweenState clone
+	for w := 0; w < numWorkers; w++ {
+		startIdx := w * chunkSize
+		endIdx := startIdx + chunkSize
+		if endIdx > len(inputs) {
+			endIdx = len(inputs)
+		}
+		if startIdx >= len(inputs) {
+			continue
+		}
+
+	go func(workerInputs [][]float32, workerTargets []int) {
+			// Create worker's own TweenState clone AND Network clone
+			workerTS := ts.CloneTweenState()
+			workerTS.ResetBatch()
+			localNet := n.CloneForParallel() // Clone network for thread-safe activations
+
+			result := ParallelBatchResult{
+				Gaps:        make([][]float32, ts.TotalLayers),
+				LinkBudgets: make([]float32, ts.TotalLayers),
+				TotalLoss:   0,
+				SampleCount: len(workerInputs),
+			}
+
+			// Process each sample using REAL tween code with LOCAL network
+			for i := range workerInputs {
+				if i >= len(workerTargets) {
+					break
+				}
+
+				// 1. REAL ForwardPass on LOCAL network (thread-safe)
+				output := workerTS.ForwardPass(localNet, workerInputs[i])
+
+				// 2. REAL BackwardPassChainRule on LOCAL network
+				if workerTS.Config.UseChainRule {
+					workerTS.BackwardPassChainRule(localNet, workerTargets[i], outputSize)
+				} else {
+					workerTS.BackwardPass(localNet, workerTargets[i], outputSize)
+				}
+
+				// 3. REAL CalculateLinkBudgets
+				workerTS.CalculateLinkBudgets()
+
+				// 4. Accumulate gaps into local result
+				for layer := 0; layer < workerTS.TotalLayers; layer++ {
+					actual := workerTS.ForwardActs[layer+1]
+					target := workerTS.BackwardTargets[layer+1]
+
+					if len(actual) == 0 || len(target) == 0 {
+						continue
+					}
+
+					minOut := len(actual)
+					if len(target) < minOut {
+						minOut = len(target)
+					}
+
+					if result.Gaps[layer] == nil {
+						result.Gaps[layer] = make([]float32, minOut)
+					}
+
+					for j := 0; j < minOut && j < len(result.Gaps[layer]); j++ {
+						result.Gaps[layer][j] += target[j] - actual[j]
+					}
+
+					// Accumulate link budgets for averaging
+					result.LinkBudgets[layer] += workerTS.LinkBudgets[layer]
+				}
+
+				workerTS.BatchCount++
+				workerTS.TweenSteps++
+
+				// Calculate loss (Softmax + Cross-Entropy)
+				if len(output) > 0 {
+					maxVal := output[0]
+					for _, v := range output {
+						if v > maxVal {
+							maxVal = v
+						}
+					}
+
+					sumExp := float32(0.0)
+					for _, v := range output {
+						sumExp += float32(math.Exp(float64(v - maxVal)))
+					}
+
+					if workerTargets[i] >= 0 && workerTargets[i] < len(output) {
+						prob := float32(math.Exp(float64(output[workerTargets[i]]-maxVal))) / sumExp
+						if prob < 1e-10 {
+							prob = 1e-10
+						}
+						result.TotalLoss -= float32(math.Log(float64(prob)))
+					}
+				}
+			}
+
+			resultChan <- result
+		}(inputs[startIdx:endIdx], targetClasses[startIdx:endIdx])
+	}
+
+	// Collect results from all workers
+	var allResults []ParallelBatchResult
+	activeWorkers := 0
+	for w := 0; w < numWorkers; w++ {
+		if w*chunkSize < len(inputs) {
+			activeWorkers++
+		}
+	}
+	for i := 0; i < activeWorkers; i++ {
+		result := <-resultChan
+		allResults = append(allResults, result)
+	}
+	close(resultChan)
+
+	// Merge all gaps into ts.BatchGaps
+	ts.ResetBatch()
+	totalLoss := float32(0)
+	totalSamples := 0
+
+	for _, result := range allResults {
+		totalLoss += result.TotalLoss
+		totalSamples += result.SampleCount
+
+		// Merge gaps from this worker
+		for layer := 0; layer < len(result.Gaps); layer++ {
+			if result.Gaps[layer] == nil {
+				continue
+			}
+			if ts.BatchGaps[layer] == nil {
+				ts.BatchGaps[layer] = make([]float32, len(result.Gaps[layer]))
+			}
+			for j := 0; j < len(result.Gaps[layer]) && j < len(ts.BatchGaps[layer]); j++ {
+				ts.BatchGaps[layer][j] += result.Gaps[layer][j]
+			}
+
+			// Average link budgets
+			if result.SampleCount > 0 {
+				ts.LinkBudgets[layer] += result.LinkBudgets[layer] / float32(result.SampleCount)
+			}
+		}
+	}
+
+	// Normalize link budgets by number of workers
+	if activeWorkers > 0 {
+		for layer := range ts.LinkBudgets {
+			ts.LinkBudgets[layer] /= float32(activeWorkers)
+		}
+	}
+
+	ts.BatchCount = totalSamples
+
+	// Apply the REAL TweenBatchApply with the merged gaps
+	ts.TweenBatchApply(n, rate)
+
+	if totalSamples > 0 {
+		return totalLoss / float32(totalSamples)
+	}
+	return 0
+}
+
+// =============================================================================
+// TweenStepBatchParallel - TRUE Parallel TweenStep with Weight Merging
+// =============================================================================
+// This runs FULL TweenStep on cloned networks in parallel, then merges the
+// weight deltas back to the main network. This gives the benefit of full
+// TweenStep chain (forward -> backward -> link budgets -> weight update)
+// with parallel speedup.
+//
+// Algorithm:
+//   1. Snapshot original network weights
+//   2. Each worker gets a CLONED network + TweenState
+//   3. Each worker runs TweenStep on its samples (modifying clone weights)
+//   4. After workers complete, compute weight deltas (clone - original)
+//   5. Average deltas across workers and apply to main network
+
+// TweenStepBatchParallel processes a batch of samples using parallel TweenStep.
+// Each worker runs full TweenStep on cloned networks, then weight deltas are merged.
+func (ts *TweenState) TweenStepBatchParallel(n *Network, inputs [][]float32, targetClasses []int, outputSize int, rate float32, numWorkers int) float32 {
+	if len(inputs) == 0 || numWorkers < 1 {
+		return 0
+	}
+	if numWorkers > len(inputs) {
+		numWorkers = len(inputs)
+	}
+
+	totalLayers := n.TotalLayers()
+	
+	// 1. Snapshot original weights for all layers
+	originalWeights := make([][][]float32, totalLayers)
+	originalBiases := make([][]float32, totalLayers)
+	for layer := 0; layer < totalLayers; layer++ {
+		cfg := ts.getLayerCfg(n, layer)
+		if cfg == nil {
+			continue
+		}
+		// Snapshot kernel/weights
+		if cfg.Kernel != nil {
+			originalWeights[layer] = [][]float32{make([]float32, len(cfg.Kernel))}
+			copy(originalWeights[layer][0], cfg.Kernel)
+		}
+		// Snapshot bias
+		if cfg.Bias != nil {
+			originalBiases[layer] = make([]float32, len(cfg.Bias))
+			copy(originalBiases[layer], cfg.Bias)
+		}
+	}
+
+	// Worker results: deltas + losses
+	type WorkerResult struct {
+		WeightDeltas [][][]float32 // Per layer, delta weights
+		BiasDeltas   [][]float32   // Per layer, delta biases
+		TotalLoss    float32
+		SampleCount  int
+	}
+
+	resultChan := make(chan WorkerResult, numWorkers)
+	chunkSize := (len(inputs) + numWorkers - 1) / numWorkers
+
+	// 2. Launch workers in parallel
+	for w := 0; w < numWorkers; w++ {
+		startIdx := w * chunkSize
+		endIdx := startIdx + chunkSize
+		if endIdx > len(inputs) {
+			endIdx = len(inputs)
+		}
+		if startIdx >= len(inputs) {
+			continue
+		}
+
+		go func(workerInputs [][]float32, workerTargets []int) {
+			// Clone network for this worker (separate weights but same architecture)
+			localNet := n.CloneForParallel()
+			
+			// Clone TweenState for this worker (BEFORE using it to get layer configs)
+			workerTS := ts.CloneTweenState()
+
+			// Deep copy weights so we can track deltas
+			for layer := 0; layer < totalLayers; layer++ {
+				cfg := workerTS.getLayerCfg(localNet, layer)
+				if cfg == nil {
+					continue
+				}
+				// Reset to original weights
+				if originalWeights[layer] != nil && len(originalWeights[layer]) > 0 {
+					copy(cfg.Kernel, originalWeights[layer][0])
+				}
+				if originalBiases[layer] != nil {
+					copy(cfg.Bias, originalBiases[layer])
+				}
+			}
+
+
+			// 3. Run TweenStep for each sample (this updates localNet weights)
+			totalLoss := float32(0)
+			for i, input := range workerInputs {
+				if i < len(workerTargets) {
+					loss := workerTS.TweenStep(localNet, input, workerTargets[i], outputSize, rate)
+					totalLoss += loss
+				}
+			}
+
+			// 4. Compute weight deltas (localNet.weights - originalWeights)
+			result := WorkerResult{
+				WeightDeltas: make([][][]float32, totalLayers),
+				BiasDeltas:   make([][]float32, totalLayers),
+				TotalLoss:    totalLoss,
+				SampleCount:  len(workerInputs),
+			}
+
+			for layer := 0; layer < totalLayers; layer++ {
+				cfg := workerTS.getLayerCfg(localNet, layer)
+				if cfg == nil {
+					continue
+				}
+				// Weight deltas
+				if cfg.Kernel != nil && originalWeights[layer] != nil && len(originalWeights[layer]) > 0 {
+					delta := make([]float32, len(cfg.Kernel))
+					for j := range cfg.Kernel {
+						delta[j] = cfg.Kernel[j] - originalWeights[layer][0][j]
+					}
+					result.WeightDeltas[layer] = [][]float32{delta}
+				}
+				// Bias deltas
+				if cfg.Bias != nil && originalBiases[layer] != nil {
+					delta := make([]float32, len(cfg.Bias))
+					for j := range cfg.Bias {
+						delta[j] = cfg.Bias[j] - originalBiases[layer][j]
+					}
+					result.BiasDeltas[layer] = delta
+				}
+			}
+
+			resultChan <- result
+		}(inputs[startIdx:endIdx], targetClasses[startIdx:endIdx])
+	}
+
+	// 5. Collect results from all workers
+	var allResults []WorkerResult
+	activeWorkers := 0
+	for w := 0; w < numWorkers; w++ {
+		if w*chunkSize < len(inputs) {
+			activeWorkers++
+		}
+	}
+	for i := 0; i < activeWorkers; i++ {
+		result := <-resultChan
+		allResults = append(allResults, result)
+	}
+	close(resultChan)
+
+	// 6. Merge weight deltas and apply to main network
+	totalLoss := float32(0)
+	totalSamples := 0
+	for _, result := range allResults {
+		totalLoss += result.TotalLoss
+		totalSamples += result.SampleCount
+	}
+
+	// Average and apply deltas
+	if activeWorkers > 0 {
+		scale := float32(1.0) / float32(activeWorkers)
+		for layer := 0; layer < totalLayers; layer++ {
+			cfg := ts.getLayerCfg(n, layer)
+			if cfg == nil {
+				continue
+			}
+
+			// Merge weight deltas
+			if cfg.Kernel != nil {
+				for _, result := range allResults {
+					if result.WeightDeltas[layer] != nil && len(result.WeightDeltas[layer]) > 0 {
+						delta := result.WeightDeltas[layer][0]
+						for j := 0; j < len(cfg.Kernel) && j < len(delta); j++ {
+							cfg.Kernel[j] += delta[j] * scale
+						}
+					}
+				}
+			}
+
+			// Merge bias deltas
+			if cfg.Bias != nil {
+				for _, result := range allResults {
+					if result.BiasDeltas[layer] != nil {
+						for j := 0; j < len(cfg.Bias) && j < len(result.BiasDeltas[layer]); j++ {
+							cfg.Bias[j] += result.BiasDeltas[layer][j] * scale
+						}
+					}
+				}
+			}
+		}
+	}
+
+	ts.TweenSteps += totalSamples
+
+	if totalSamples > 0 {
+		return totalLoss / float32(totalSamples)
+	}
+	return 0
+}
+
+
 func (ts *TweenState) Train(n *Network, inputs [][]float32, expected []float64, epochs int, rate float32,
 	callback func(epoch int, avgLoss float32, metrics *DeviationMetrics)) {
 

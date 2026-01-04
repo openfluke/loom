@@ -758,3 +758,47 @@ func (n *Network) InitializeWeights() {
 		n.SetLayer(row, col, layer, *cfg)
 	}
 }
+
+// CloneForParallel creates a copy of the Network for parallel processing.
+// The clone has its own activation buffers (to avoid race conditions during forward pass)
+// but SHARES the weight pointers (Kernel, Bias, etc.) with the original for memory efficiency.
+// This is thread-safe because weights are only READ during forward pass.
+func (n *Network) CloneForParallel() *Network {
+	totalLayers := n.TotalLayers()
+
+	clone := &Network{
+		GridRows:        n.GridRows,
+		GridCols:        n.GridCols,
+		LayersPerCell:   n.LayersPerCell,
+		InputSize:       n.InputSize,
+		BatchSize:       n.BatchSize,
+		Layers:          make([]LayerConfig, len(n.Layers)),
+		activations:     make([][]float32, totalLayers+1),
+		preActivations:  make([][]float32, totalLayers),
+		kernelGradients: nil, // Workers don't accumulate gradients
+		biasGradients:   nil,
+		learningRate:    n.learningRate,
+		// Don't copy optimizer or GPU resources - worker uses CPU only
+	}
+
+	// Copy layer configs - weights are SHARED (pointers), but that's safe for read-only forward pass
+	for i, layer := range n.Layers {
+		// Shallow copy the struct (shares weight slice pointers)
+		clone.Layers[i] = layer
+	}
+
+	// Activation buffers will be allocated during ForwardCPU
+	// Pre-allocate if sizes are known
+	for i := 0; i <= totalLayers; i++ {
+		if i < len(n.activations) && n.activations[i] != nil {
+			clone.activations[i] = make([]float32, len(n.activations[i]))
+		}
+	}
+	for i := 0; i < totalLayers; i++ {
+		if i < len(n.preActivations) && n.preActivations[i] != nil {
+			clone.preActivations[i] = make([]float32, len(n.preActivations[i]))
+		}
+	}
+
+	return clone
+}
