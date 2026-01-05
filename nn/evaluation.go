@@ -142,6 +142,8 @@ type DeviationMetrics struct {
 	Failures         int                         `json:"failures"`      // Count of 100%+ deviations
 	Results          []PredictionResult          `json:"results"`       // All individual results
 	AverageDeviation float64                     `json:"avg_deviation"` // Mean deviation across all samples
+	CorrectCount     int                         `json:"correct_count"` // Number of exact matches
+	Accuracy         float64                     `json:"accuracy"`      // Percentage of exact matches
 }
 
 // NewDeviationMetrics initializes an empty metrics struct
@@ -218,6 +220,11 @@ func (dm *DeviationMetrics) UpdateMetrics(result PredictionResult) {
 
 	// Compute score: lower deviations contribute more positively
 	dm.Score += math.Max(0, 100-result.Deviation)
+	
+	// Exact match tracking (for classification accuracy)
+	if result.ActualOutput == result.ExpectedOutput {
+		dm.CorrectCount++
+	}
 }
 
 // ComputeFinalMetrics calculates final scores and averages
@@ -237,6 +244,9 @@ func (dm *DeviationMetrics) ComputeFinalMetrics() {
 		totalDeviation += result.Deviation
 	}
 	dm.AverageDeviation = totalDeviation / float64(dm.TotalSamples)
+	
+	// Accuracy
+	dm.Accuracy = float64(dm.CorrectCount) / float64(dm.TotalSamples)
 }
 
 // EvaluateModel evaluates model performance on a batch of predictions

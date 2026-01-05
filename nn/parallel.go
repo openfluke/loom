@@ -40,6 +40,21 @@ func ParallelForward[T Numeric](
 				branchCfg.KernelSize, branchCfg.Stride, branchCfg.Padding, branchCfg.Filters,
 				branchCfg.OutputHeight, branchCfg.OutputWidth, batchSize, branchCfg.Activation)
 
+		case LayerConv1D:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DKernel, len(branchCfg.Conv1DKernel)))
+			bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DBias, len(branchCfg.Conv1DBias)))
+			
+			// Use InputHeight as seqLen
+			seqLen := branchCfg.InputHeight
+			if seqLen <= 0 {
+				seqLen = len(input.Data) / (branchCfg.Conv1DInChannels * batchSize)
+			}
+			
+			preAct, postAct = Conv1DForward(input, weights, bias,
+				seqLen, branchCfg.Conv1DInChannels,
+				branchCfg.Conv1DKernelSize, branchCfg.Conv1DStride, branchCfg.Conv1DPadding,
+				branchCfg.Conv1DFilters, batchSize, branchCfg.Activation)
+
 		case LayerMultiHeadAttention:
 			weights := &AttentionWeights[T]{
 				QWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.QWeights, len(branchCfg.QWeights))),
@@ -338,6 +353,8 @@ func ParallelBackward[T Numeric](
 				size = batchSize * branchCfg.OutputHeight
 			case LayerConv2D:
 				size = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
+			case LayerConv1D:
+				size = batchSize * branchCfg.OutputHeight * branchCfg.Conv1DFilters
 			default:
 				size = len(input.Data)
 			}
@@ -386,6 +403,19 @@ func ParallelBackward[T Numeric](
 		case LayerResidual:
 			gIn, _ := ResidualBackward(gradBranch)
 			subGradInput = gIn
+
+		case LayerConv1D:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DKernel, len(branchCfg.Conv1DKernel)))
+			
+			seqLen := branchCfg.InputHeight
+			if seqLen <= 0 {
+				seqLen = len(input.Data) / (branchCfg.Conv1DInChannels * batchSize)
+			}
+			
+			subGradInput, _, _ = Conv1DBackward(gradBranch, input, intermediate, weights,
+				seqLen, branchCfg.Conv1DInChannels,
+				branchCfg.Conv1DKernelSize, branchCfg.Conv1DStride, branchCfg.Conv1DPadding,
+				branchCfg.Conv1DFilters, batchSize, branchCfg.Activation)
 
 		case LayerParallel:
 			// Nested parallel backward
@@ -456,6 +486,20 @@ func ParallelBackwardFiltered[T Numeric](
 		case LayerDense:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Kernel, len(branchCfg.Kernel)))
 			subGradInput, _, _ = DenseBackward(scaledGrad, input, input.Clone(), weights, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize, branchCfg.Activation)
+		
+		case LayerConv1D:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DKernel, len(branchCfg.Conv1DKernel)))
+			
+			seqLen := branchCfg.InputHeight
+			if seqLen <= 0 {
+				seqLen = len(input.Data) / (branchCfg.Conv1DInChannels * batchSize)
+			}
+			
+			subGradInput, _, _ = Conv1DBackward(scaledGrad, input, input.Clone(), weights,
+				seqLen, branchCfg.Conv1DInChannels,
+				branchCfg.Conv1DKernelSize, branchCfg.Conv1DStride, branchCfg.Conv1DPadding,
+				branchCfg.Conv1DFilters, batchSize, branchCfg.Activation)
+			
 		default:
 			subGradInput = scaledGrad.Clone()
 		}
@@ -530,6 +574,8 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 			preAct, postAct = denseForwardCPU(input, branchCfg, batchSize)
 		case LayerConv2D:
 			preAct, postAct = conv2DForwardCPU(input, branchCfg, batchSize)
+		case LayerConv1D:
+			preAct, postAct = conv1DForwardCPU(input, branchCfg, batchSize)
 		case LayerMultiHeadAttention:
 			preAct, postAct = MultiHeadAttentionForwardCPU(input, branchCfg, batchSize)
 		case LayerRNN:
