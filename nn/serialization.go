@@ -112,8 +112,8 @@ type EncodedWeights struct {
 // WeightsData represents the actual weight values
 // Type field indicates the numeric type used for weights
 type WeightsData struct {
-	Type   string         `json:"type"`   // "float32", "float64", etc.
-	DType  string         `json:"dtype"`  // DType enum value as string (for multi-type support)
+	Type   string         `json:"type"`  // "float32", "float64", etc.
+	DType  string         `json:"dtype"` // DType enum value as string (for multi-type support)
 	Layers []LayerWeights `json:"layers"`
 }
 
@@ -1040,6 +1040,8 @@ func layerTypeToString(lt LayerType) string {
 		return "dense"
 	case LayerConv2D:
 		return "conv2d"
+	case LayerConv1D:
+		return "conv1d"
 	case LayerMultiHeadAttention:
 		return "multi_head_attention"
 	case LayerRNN:
@@ -1054,6 +1056,8 @@ func layerTypeToString(lt LayerType) string {
 		return "rms_norm"
 	case LayerSwiGLU:
 		return "swiglu"
+	case LayerEmbedding:
+		return "embedding"
 	case LayerResidual:
 		return "residual"
 	case LayerParallel:
