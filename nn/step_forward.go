@@ -131,15 +131,11 @@ func StepForwardGeneric[T Numeric](
 					case LayerNorm, LayerRMSNorm:
 						size = config.NormSize
 					case LayerResidual, LayerSoftmax:
-						// These usually preserve size, but if prev layer output is unknown... 
-						// Fallback to 1 or try to infer? 
-						// For Residual, it matches input. 
-						// If this is the *first* layer (unlikely for residual), 1 is bad.
-						// But usually these follow another layer.
-						// If following layer has nil output (start of sim), we need to know size.
-						// Best guess: 1 or config.InputHeight if available.
 						if config.InputHeight > 0 {
 							size = config.InputHeight
+						} else if layerIdx > 0 && layerIdx-1 < len(n.Layers) {
+							// Infer size from previous layer's output
+							size = n.Layers[layerIdx-1].OutputHeight
 						}
 					}
 					if size <= 0 {
@@ -288,19 +284,24 @@ func StepForwardGeneric[T Numeric](
 						// Skip connection from previous layer
 						var skipInput *Tensor[T]
 						if layerIdx > 0 {
-							skipInput = state.LayerData[layerIdx-1] // Is this logically right? 
-							// In GenericForwardPass we used activations[layerIdx-1]. LayerData[0] is input. LayerData[i] is input to layer i?
-							// Wait, LayerData[0] is network input.
-							// loop layerIdx=0..N.
-							// input = LayerData[layerIdx].
-							// newOutputs[layerIdx+1] = postAct.
-							// So LayerData[i] IS the output of layer i-1.
-							// So LayerData[layerIdx] is input to current layer.
-							// Skip connection usually means input to *previous* layer.
-							// Similar to GenericForwardPass
+							skipInput = state.LayerData[layerIdx-1]
 						}
 						postAct = ResidualForward(input, skipInput)
 						context = nil
+
+					case LayerConv1D:
+						kernel := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DBias, len(config.Conv1DBias)))
+						seqLen := config.InputHeight
+						if seqLen <= 0 {
+							seqLen = len(input.Data) / (config.Conv1DInChannels * n.BatchSize)
+						}
+						pre, post := Conv1DForward(input, kernel, bias,
+							seqLen, config.Conv1DInChannels,
+							config.Conv1DKernelSize, config.Conv1DStride, config.Conv1DPadding,
+							config.Conv1DFilters, n.BatchSize, config.Activation)
+						postAct = post
+						context = pre
 
 					default:
 						// Apply activation using backend
@@ -532,6 +533,9 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 				case LayerConv2D:
 					preAct, postAct = conv2DForwardCPU(input, config, n.BatchSize)
 
+				case LayerConv1D:
+					preAct, postAct = conv1DForwardCPU(input, config, n.BatchSize)
+
 				case LayerMultiHeadAttention:
 					preAct, postAct = MultiHeadAttentionForwardCPU(input, config, n.BatchSize)
 
@@ -623,6 +627,15 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 					// Store intermediates? (Limited support in StepForward for introspection inside Seq)
 					preAct = make([]float32, len(output)) // Dummy preAct
 					postAct = output
+
+				case LayerResidual:
+					var skipInput []float32
+					if layerIdx > 0 {
+						skipInput = state.layerData[layerIdx-1]
+					}
+					postAct = ResidualForwardCPU(input, skipInput)
+					preAct = make([]float32, len(postAct)) // Dummy preAct
+					copy(preAct, postAct)
 
 				case LayerParallel:
 					output, branchPreActs, err := parallelForwardCPU(input, config, n.BatchSize, "step")

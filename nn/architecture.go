@@ -256,14 +256,20 @@ func InitConv2DBrain(inputSize int, scale float32) LayerConfig {
 func InitConv1DBrain(dModel int, scale float32) LayerConfig {
 	// Conv1D with kernel size 3, 2 filters
 	conv := LayerConfig{
-		Type:       LayerConv1D,
-		KernelSize: 3,
-		Stride:     1,
-		Padding:    1,
-		Filters:    2,
-		Activation: ActivationLeakyReLU,
+		Type:             LayerConv1D,
+		Conv1DKernelSize: 3,
+		Conv1DStride:     1,
+		Conv1DPadding:    1,
+		Conv1DFilters:    2,
+		Conv1DInChannels: 1,      // Assume 1 input channel (sequence of scalars)
+		InputHeight:      dModel, // Sequence length
+		OutputHeight:     dModel, // Preserves length with padding=1, stride=1, k=3
+		Activation:       ActivationLeakyReLU,
 	}
 	// Initialize kernel: filters × kernelSize × inputChannels
+	// filters=2, k=3, in=1 => 6 weights
+	// Initialize kernel: filters × kernelSize × inputChannels
+	// filters=2, k=3, in=1 => 6 weights
 	conv.Kernel = make([]float32, 2*3*1)
 	for i := range conv.Kernel {
 		conv.Kernel[i] = (rand.Float32()*2 - 1) * scale
@@ -620,7 +626,12 @@ func buildSimpleConv1DNetwork(config SimpleNetworkConfig) *Network {
 	net.SetLayer(0, 0, 0, l0)
 
 	// Simple projection to HiddenSize
-	l1 := InitDenseLayer(config.HiddenSize, config.HiddenSize, ActivationLeakyReLU)
+	// Conv1D output size = Filters * SeqLen
+	// Filters = 2 (hardcoded in InitConv1DBrain), SeqLen = InputSize
+	convOutLen := config.InputSize // Stride=1, Pad=1, K=3 puts us back to InputSize
+	convOutputSize := 2 * convOutLen
+
+	l1 := InitDenseLayer(convOutputSize, config.HiddenSize, ActivationLeakyReLU)
 	scaleWeights(l1.Kernel, config.InitScale)
 	net.SetLayer(0, 0, 1, l1)
 
@@ -632,21 +643,30 @@ func buildSimpleConv1DNetwork(config SimpleNetworkConfig) *Network {
 }
 
 func buildSimpleResidualNetwork(config SimpleNetworkConfig) *Network {
-	net := NewNetwork(config.InputSize, 1, 1, 3)
+	net := NewNetwork(config.InputSize, 1, 1, 4) // Increased to 4 layers
 	net.BatchSize = 1
 
-	// Input projection
+	// L0: Input projection (Input -> Hidden)
 	l0 := InitDenseLayer(config.InputSize, config.HiddenSize, ActivationLeakyReLU)
 	scaleWeights(l0.Kernel, config.InitScale)
 	net.SetLayer(0, 0, 0, l0)
 
-	// Residual connection
-	l1 := InitResidualBrain()
+	// L1: Intermediate processing (Hidden -> Hidden)
+	// This ensures the Residual layer at L2 sees Hidden-sized input from L1
+	// and skips to L1's input (which is L0's output, also Hidden-sized)
+	l1 := InitDenseLayer(config.HiddenSize, config.HiddenSize, ActivationLeakyReLU)
+	scaleWeights(l1.Kernel, config.InitScale)
 	net.SetLayer(0, 0, 1, l1)
 
-	l2 := InitDenseLayer(config.HiddenSize, config.OutputSize, ActivationSigmoid)
-	scaleWeights(l2.Kernel, config.InitScale)
+	// L2: Residual connection
+	// Adds L1 Output (Hidden) + L1 Input (Hidden)
+	l2 := InitResidualBrain()
 	net.SetLayer(0, 0, 2, l2)
+
+	// L3: Output projection (Hidden -> Output)
+	l3 := InitDenseLayer(config.HiddenSize, config.OutputSize, ActivationSigmoid)
+	scaleWeights(l3.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 3, l3)
 
 	return net
 }

@@ -810,32 +810,120 @@ func (ts *GenericTweenState[T]) chainRuleUpdateEmbeddingGeneric(cfg *LayerConfig
 
 // chainRuleUpdateConv1DGeneric applies gradient update to Conv1D layer
 func (ts *GenericTweenState[T]) chainRuleUpdateConv1DGeneric(cfg *LayerConfig, input *Tensor[T], outputGrad []float32, rate, mom float32, layerIdx int) {
-	avgInput := float32(0)
-	for _, v := range input.Data {
-		val := float32(v)
+	// Dimensions
+	batchSize := ts.Config.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	inChannels := cfg.Conv1DInChannels
+	kernelSize := cfg.Conv1DKernelSize
+	stride := cfg.Conv1DStride
+	padding := cfg.Conv1DPadding
+	filters := cfg.Conv1DFilters
+	
+	// Infer input sequence length
+	inputLen := len(input.Data)
+	seqLen := cfg.InputHeight
+	if seqLen <= 0 {
+		seqLen = inputLen / (inChannels * batchSize)
+	}
+
+	// Calculate output length
+	outLen := (seqLen + 2*padding - kernelSize)/stride + 1
+	outputSize := batchSize * filters * outLen
+
+	// Validation
+	if len(outputGrad) != outputSize {
+		// Mismatch, possibly due to rounding or different batch size handling?
+		// Try to adapt or just return to avoid panic
+		return
+	}
+
+	// Helper for input value access
+	getMediaVal := func(idx int) float32 {
+		val := float32(input.Data[idx])
 		if IsIntegerType[T]() {
 			val /= 100.0
 		}
-		avgInput += val
-	}
-	if len(input.Data) > 0 {
-		avgInput /= float32(len(input.Data))
+		return val
 	}
 
-	avgGrad := float32(0)
-	for _, g := range outputGrad {
-		avgGrad += g
-	}
-	if len(outputGrad) > 0 {
-		avgGrad /= float32(len(outputGrad))
+	// Accumulate gradients for kernel and bias
+	// This mirrors Conv1DBackward logic for weights
+	// We accumulate updates into a temporary buffer or apply directly with momentum?
+	// Dense update applies momentum per weight.
+	// Here we can iterate weights?
+	// Or iterate output and accumulate to weights. 
+	// Iterating weights is outer loop?
+	// Conv1DBackward iterates batch -> filters -> outLen -> inChannels -> kernelSize.
+	// Inside the inner loop it updates gradKernel at specific index.
+	
+	// We need buffers for weight gradients to apply momentum correctly
+	// If we update directly inside the loop, we might update the same weight multiple times per batch? 
+	// Yes, weights are shared. 
+	// So we MUST accumulate gradient first, then update weights.
+	
+	gradKernel := make([]float32, len(cfg.Kernel))
+	gradBias := make([]float32, len(cfg.Bias))
+
+	for b := 0; b < batchSize; b++ {
+		for f := 0; f < filters; f++ {
+			for o := 0; o < outLen; o++ {
+				outputIdx := b*filters*outLen + f*outLen + o
+				if outputIdx >= len(outputGrad) {
+					continue
+				}
+				
+				// Gradient at this output position
+				gOut := outputGrad[outputIdx]
+				
+				// Bias gradient
+				gradBias[f] += gOut
+
+				// Kernel gradients
+				for ic := 0; ic < inChannels; ic++ {
+					for k := 0; k < kernelSize; k++ {
+						inPos := o*stride + k - padding
+
+						if inPos >= 0 && inPos < seqLen {
+							inputIdx := b*inChannels*seqLen + ic*seqLen + inPos
+							kernelIdx := f*inChannels*kernelSize + ic*kernelSize + k
+							
+							if inputIdx < inputLen && kernelIdx < len(gradKernel) {
+								inVal := getMediaVal(inputIdx)
+								gradKernel[kernelIdx] += gOut * inVal
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
-	delta := clipGradGeneric(rate*avgInput*avgGrad, 0.1)
-	for i := range cfg.Conv1DKernel {
-		cfg.Conv1DKernel[i] += delta
+	// Apply updates with momentum
+	// Normalize gradients by batch size? 
+	// Dense update didn't seem to normalize explicitly by batch size but iterated input.
+	// But usually gradient is average over batch.
+	// Let's stick to raw sum scaled by rate, assuming rate accounts for it or it's SGD.
+	
+	// Update Kernel
+	for i := range cfg.Kernel {
+		delta := rate * gradKernel[i]
+		delta = clipGradGeneric(delta, 1.0)
+		
+		if layerIdx < len(ts.WeightVel) && i < len(ts.WeightVel[layerIdx]) {
+			ts.WeightVel[layerIdx][i] = mom*ts.WeightVel[layerIdx][i] + (1-mom)*delta
+			cfg.Kernel[i] += ts.WeightVel[layerIdx][i]
+		} else {
+			cfg.Kernel[i] += delta
+		}
 	}
-	for i := range cfg.Conv1DBias {
-		cfg.Conv1DBias[i] += clipGradGeneric(rate*avgGrad, 0.1)
+
+	// Update Bias
+	for i := range cfg.Bias {
+		delta := rate * gradBias[i]
+		delta = clipGradGeneric(delta, 1.0)
+		cfg.Bias[i] += delta
 	}
 }
 

@@ -205,8 +205,8 @@ func GenericForwardPass[T Numeric](
 						context = nil // Embedding backward needs token IDs (stored in activations[layerIdx])
 
 					case LayerConv1D:
-						kernel := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel)))
-						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DBias, len(config.Conv1DBias)))
+						kernel := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
 						seqLen := config.InputHeight // Using InputHeight for sequence length
 						if seqLen <= 0 {
 							seqLen = len(data.Data) / (config.Conv1DInChannels * n.BatchSize)

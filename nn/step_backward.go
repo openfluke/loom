@@ -179,11 +179,44 @@ func StepBackwardGeneric[T Numeric](
 			kernelGrads[layerIdx] = gWeights
 
 		case LayerResidual:
-			gInput, gSkip := ResidualBackward(gradOut)
-			accumulateGradient(grads, layerIdx, gInput)
+			gradInput, gSkip := ResidualBackward(gradOut)
+			accumulateGradient(grads, layerIdx, gradInput)
+			
+			// Only propagate to skip connection if dimensions matched in forward pass
+			// (meaning forward pass wasn't Identity fallback)
 			if layerIdx > 0 {
-				accumulateGradient(grads, layerIdx-1, gSkip)
+				inputLen := len(input.Data)
+				skipLayerInput := state.LayerData[layerIdx-1]
+				if skipLayerInput != nil && len(skipLayerInput.Data) == inputLen {
+					accumulateGradient(grads, layerIdx-1, gSkip)
+				}
 			}
+
+			
+			// Residual layer has no trainable weights
+			kernelGrads[layerIdx] = nil
+			biasGrads[layerIdx] = nil
+
+		case LayerConv1D:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+			preAct, _ := context.(*Tensor[T])
+			
+			seqLen := config.InputHeight 
+			if seqLen <= 0 {
+				seqLen = len(input.Data) / (config.Conv1DInChannels * n.BatchSize)
+			}
+			
+			gInput, gKernel, gBias := Conv1DBackward(gradOut, input, preAct, weights,
+				seqLen, config.Conv1DInChannels,
+				config.Conv1DKernelSize, config.Conv1DStride, config.Conv1DPadding,
+				config.Conv1DFilters, n.BatchSize, config.Activation)
+				
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = gKernel
+			biasGrads[layerIdx] = gBias
+			
+
+
 
 		case LayerParallel:
 			branchIntermediates, _ := context.([]*Tensor[T])
@@ -230,8 +263,22 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 
 	totalLayers := n.TotalLayers()
 
+	var pendingSkipGrad []float32
+	var pendingSkipTarget int = -1
+
 	// Backpropagate through grid in reverse order
 	for layerIdx := totalLayers - 1; layerIdx >= 0; layerIdx-- {
+		// Apply pending skip gradient if this is the target layer (Output of N-2)
+		// Since input(N-1) == output(N-2), target is N-2.
+		if pendingSkipTarget != -1 && layerIdx == pendingSkipTarget {
+			if len(grad) == len(pendingSkipGrad) {
+				for i := range grad {
+					grad[i] += pendingSkipGrad[i]
+				}
+			}
+			pendingSkipGrad = nil
+			pendingSkipTarget = -1
+		}
 		// Calculate grid position
 		row := layerIdx / (n.GridCols * n.LayersPerCell)
 		remainder := layerIdx % (n.GridCols * n.LayersPerCell)
@@ -256,6 +303,9 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 		switch config.Type {
 		case LayerConv2D:
 			gradInput, kernelGrads, biasGrads = conv2DBackwardCPU(grad, input, preAct, config, n.BatchSize)
+
+		case LayerConv1D:
+			gradInput, kernelGrads, biasGrads = conv1DBackwardCPU(grad, input, preAct, config, n.BatchSize)
 
 		case LayerMultiHeadAttention:
 			var gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB []float32
@@ -392,6 +442,21 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 					}
 					gradInput[i] = sum
 				}
+			}
+
+		case LayerResidual:
+			// Residual layer backward pass for StepBackward (float32)
+			// Ideally we should route gradient to skipped layer, but StepBackward linearizes execution.
+			// Passing gradient through (Identity) assumes dy/dx portion of residual y = x + skip.
+			gradInput = make([]float32, len(grad))
+			copy(gradInput, grad)
+
+			// Schedule skip gradient addition for Output(N-2)
+			// Skip source is Input(N-1) which comes from Output(N-2)
+			if layerIdx >= 2 {
+				pendingSkipGrad = make([]float32, len(grad))
+				copy(pendingSkipGrad, grad)
+				pendingSkipTarget = layerIdx - 2
 			}
 
 		default:

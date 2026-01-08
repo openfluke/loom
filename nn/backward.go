@@ -208,9 +208,12 @@ func GenericBackwardPass[T Numeric](
 			// ResidualBackward
 			gInput, gSkip := ResidualBackward(gradOut)
 			accumulateGradient(grads, layerIdx, gInput)
-			// Apply skip gradient to previous layer
+			// Apply skip gradient to previous layer if dimensions match
 			if layerIdx > 0 {
-				accumulateGradient(grads, layerIdx-1, gSkip)
+				prevInput := activations[layerIdx-1]
+				if prevInput != nil && len(prevInput.Data) == len(input.Data) {
+					accumulateGradient(grads, layerIdx-1, gSkip)
+				}
 			}
 			kernelGrads[layerIdx] = nil
 			biasGrads[layerIdx] = nil
@@ -244,7 +247,7 @@ func GenericBackwardPass[T Numeric](
 
 		case LayerConv1D:
 			// Conv1DBackward
-			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel)))
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
 			preAct, _ := context.(*Tensor[T])
 			
 			seqLen := config.InputHeight 
