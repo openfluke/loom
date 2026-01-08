@@ -53,6 +53,48 @@ Pre-compiled binaries for:
 
 ---
 
+## Recommended Configurations
+
+Based on exhaustive benchmarks (300+ combinations tested), here are the optimal configurations:
+
+### Training Mode Selection
+
+| Scenario | Recommended Mode | Why |
+|:---------|:-----------------|:----|
+| **Real-time / Robotics** | `StepBP` or `StepTweenChain` | 100% availability, 0ms blocking |
+| **Noisy / Adversarial Data** | `StepTweenChain` | 94% robustness vs 86% for NormalBP |
+| **Offline Batch Training** | `NormalBP` | Highest accuracy when blocking is acceptable |
+| **Multi-Agent Systems** | `StepBP` | 12x better coordination vs blocked training |
+| **Continuous Adaptation** | `StepTweenChain` | Maintains competence during distribution shift |
+
+### Layer × Training Mode (float32)
+
+| Layer | Best Mode | Score | Accuracy | Availability |
+|:------|:----------|------:|:---------|:-------------|
+| **Conv2D** | StepTweenChain | **1187** | 98.7% | 100% |
+| **Conv2D** | StepTween | 1012 | 98.7% | 100% |
+| **Attention** | StepTween | 830 | 90.1% | 100% |
+| **RNN** | StepTween | 663 | 76.5% | 100% |
+| **Dense** | StepTween | 379 | 42.5% | 100% |
+| **LSTM** | NormalBP | 49 | 53.6% | 28.7% |
+
+> [!TIP]
+> **Conv2D + StepTweenChain + float32** is the optimal configuration for most real-time scenarios, achieving 98.7% accuracy with 100% availability.
+
+### Numeric Type Selection
+
+| Type | Best For | Notes |
+|:-----|:---------|:------|
+| **float32** | Most use cases | 18/30 benchmark wins, best accuracy |
+| **float64** | Scientific computing | Higher precision, slower, wins with NormalBP |
+| **int16** | LSTM layers | Only type that works for step-based LSTM |
+| **uint16** | Edge/embedded | Good balance of range and speed |
+
+> [!NOTE]
+> Integer types (`int8`, `uint8`, etc.) work but achieve only ~13-23% accuracy on adaptive tasks. Use floats for training, integers for quantized inference.
+
+---
+
 ## What's New
 
 > 🎉 **Transformer Inference**: SmolLM2-135M-Instruct runs entirely in browser WASM with pure Go implementation.
