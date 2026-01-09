@@ -8,16 +8,16 @@ import (
 type DType int
 
 const (
-	DTypeFloat32 DType = 0 // Standard 32-bit float (default)
-	DTypeFloat64 DType = 1 // 64-bit float (high precision)
-	DTypeFloat16 DType = 2 // 16-bit float storage (computation upcasts to F32)
-	DTypeInt8    DType = 3 // 8-bit int (quantized, requires scale factor)
-	DTypeInt16   DType = 4 // 16-bit int
-	DTypeInt32   DType = 5 // 32-bit int
-	DTypeInt64   DType = 6 // 64-bit int
-	DTypeUint8   DType = 7 // 8-bit unsigned int
-	DTypeUint16  DType = 8 // 16-bit unsigned int
-	DTypeUint32  DType = 9 // 32-bit unsigned int
+	DTypeFloat32 DType = 0  // Standard 32-bit float (default)
+	DTypeFloat64 DType = 1  // 64-bit float (high precision)
+	DTypeFloat16 DType = 2  // 16-bit float storage (computation upcasts to F32)
+	DTypeInt8    DType = 3  // 8-bit int (quantized, requires scale factor)
+	DTypeInt16   DType = 4  // 16-bit int
+	DTypeInt32   DType = 5  // 32-bit int
+	DTypeInt64   DType = 6  // 64-bit int
+	DTypeUint8   DType = 7  // 8-bit unsigned int
+	DTypeUint16  DType = 8  // 16-bit unsigned int
+	DTypeUint32  DType = 9  // 32-bit unsigned int
 	DTypeUint64  DType = 10 // 64-bit unsigned int
 )
 
@@ -314,13 +314,13 @@ type LayerConfig struct {
 	EmbeddingWeights []float32 // Embedding lookup table [VocabSize * EmbeddingDim]
 
 	// Conv1D specific parameters (for audio/sequence data)
-	Conv1DFilters     int       // Number of output filters
-	Conv1DKernelSize  int       // Size of 1D kernel
-	Conv1DStride      int       // Stride for convolution
-	Conv1DPadding     int       // Padding for convolution
-	Conv1DKernel      []float32 // Kernel weights [filters][inChannels][kernelSize]
-	Conv1DBias        []float32 // Bias terms [filters]
-	Conv1DInChannels  int       // Input channels
+	Conv1DFilters    int       // Number of output filters
+	Conv1DKernelSize int       // Size of 1D kernel
+	Conv1DStride     int       // Stride for convolution
+	Conv1DPadding    int       // Padding for convolution
+	Conv1DKernel     []float32 // Kernel weights [filters][inChannels][kernelSize]
+	Conv1DBias       []float32 // Bias terms [filters]
+	Conv1DInChannels int       // Input channels
 
 	// Parallel layer specific parameters
 	ParallelBranches []LayerConfig  // Sub-layers to run in parallel
@@ -409,6 +409,13 @@ type Network struct {
 	InputSize     int // Total input size
 	BatchSize     int // Batch size for Conv2D layers
 	deviceInfo    *GPUDeviceInfo
+
+	// GPU acceleration (new integration)
+	GPU           bool        // Enable GPU mode for forward/backward
+	gpuLayers     interface{} // []gpu.GPULayer (interface{} to avoid import cycle)
+	gpuCtx        interface{} // *gpu.Context (interface{} to avoid import cycle)
+	gpuMounted    bool        // True if weights are currently on GPU
+	gpuOutputSize int         // Size of final layer output for GPU
 
 	// Layer configuration for each position in the grid
 	// Indexed by flattened position: row*GridCols*LayersPerCell + col*LayersPerCell + layer

@@ -41,7 +41,7 @@ func GenericForwardPass[T Numeric](
 		for col := 0; col < n.GridCols; col++ {
 			for layer := 0; layer < n.LayersPerCell; layer++ {
 				config := n.GetLayer(row, col, layer)
-				
+
 				// Context for this layer
 				var context any
 
@@ -150,22 +150,22 @@ func GenericForwardPass[T Numeric](
 
 					case LayerMultiHeadAttention:
 						weights := &AttentionWeights[T]{
-							QWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
-							QBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
-							KWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
-							KBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
-							VWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
-							VBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
+							QWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
+							QBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
+							KWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
+							KBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
+							VWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
+							VBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
 							OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputWeight, len(config.OutputWeight))),
 							OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputBias, len(config.OutputBias))),
-							DModel: config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
+							DModel:       config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
 						}
 						output := MultiHeadAttentionForward(data, weights, 10000.0)
 						data = output
 						activations[layerIdx+1] = output
 						context = nil // Backward recomputes simply or doesn't need context stored here
 
-				case LayerParallel:
+					case LayerParallel:
 						// Convert config.ParallelBranches ([]LayerConfig) to []*LayerConfig
 						branches := make([]*LayerConfig, len(config.ParallelBranches))
 						for i := range config.ParallelBranches {
@@ -220,7 +220,7 @@ func GenericForwardPass[T Numeric](
 						context = pre // Store pre-activation
 
 					case LayerResidual:
-						// Residual connects current input to something? 
+						// Residual connects current input to something?
 						// Current design: Residual layer takes input, assumes it's added to *previous* layer input.
 						// Wait, standard residual is: y = x + f(x).
 						// But if LayerResidual is a separate layer in grid, it implies:
@@ -233,7 +233,7 @@ func GenericForwardPass[T Numeric](
 						// This implies Residual adds activations[layerIdx] + activations[layerIdx-1]?
 						// Let's assume ResidualForward adds input + skipInput.
 						// We need skipInput.
-						
+
 						// GenericForwardPass loop structure:
 						// activations[layerIdx] is input to CURRENT layer.
 						// activations[layerIdx+1] will be output.
@@ -241,10 +241,10 @@ func GenericForwardPass[T Numeric](
 						// If we assume skip from layerIdx-1 (input to previous layer):
 						var skipInput *Tensor[T]
 						if layerIdx > 0 {
-							skipInput = activations[layerIdx-1] 
+							skipInput = activations[layerIdx-1]
 						}
 						// If layerIdx=0, skip is nil
-						
+
 						output := ResidualForward(data, skipInput)
 						data = output
 						activations[layerIdx+1] = output
@@ -254,10 +254,10 @@ func GenericForwardPass[T Numeric](
 						// Apply activation using backend
 						data = backend.Activate(data, config.Activation)
 						activations[layerIdx+1] = data.Clone()
-						context = nil 
+						context = nil
 					}
 				}
-				
+
 				backwardContext[layerIdx] = context
 				layerIdx++
 			}
@@ -271,9 +271,18 @@ func GenericForwardPass[T Numeric](
 // Original float32 Implementation
 // =============================================================================
 
-
 // ForwardCPU executes the grid network on CPU and stores intermediate activations for backprop
 func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
+	// GPU auto-routing: if GPU mode is enabled and weights are mounted, use GPU
+	if n.GPU && n.gpuMounted {
+		start := time.Now()
+		output, err := n.forwardGPU(input)
+		if err == nil {
+			return output, time.Since(start)
+		}
+		// Fall back to CPU on GPU error
+	}
+
 	start := time.Now()
 
 	// Store input
@@ -486,14 +495,14 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 						fmt.Printf("Sequential layer error: %v\n", err)
 						output = data
 					}
-					
+
 					// Store intermediates (simplified)
 					// We can flatten intermediates similar to Parallel layer if we wanted,
 					// but for now let's just use the output as "pre-activation" effectively since we don't fully support backward yet.
 					n.preActivations[layerIdx] = make([]float32, 1) // Dummy
-					
+
 					data = output
-					
+
 				} else if config.Type == LayerEmbedding {
 					// Embedding lookup layer
 					output := embeddingForwardCPU(data, config)
