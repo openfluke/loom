@@ -1,0 +1,417 @@
+package gpu
+
+import (
+	"fmt"
+
+	"github.com/openfluke/webgpu/wgpu"
+)
+
+// Conv1DSpec defines configuration for 1D Convolution layer
+type Conv1DSpec struct {
+	InChannels  int       // Input channels
+	OutChannels int       // Output channels (filters)
+	KernelSize  int       // Kernel/filter size
+	Stride      int       // Stride (default 1)
+	Padding     int       // Padding (default 0)
+	SeqLen      int       // Input sequence length
+	Weights     []float32 // [OutChannels * InChannels * KernelSize]
+	Bias        []float32 // [OutChannels]
+}
+
+// Conv1DLayer holds GPU resources for 1D Convolution
+type Conv1DLayer struct {
+	Spec Conv1DSpec
+
+	pipeline  *wgpu.ComputePipeline
+	bindGroup *wgpu.BindGroup
+
+	InputBuffer   *wgpu.Buffer
+	OutputBuffer  *wgpu.Buffer
+	StagingBuffer *wgpu.Buffer
+	WeightBuffer  *wgpu.Buffer
+	BiasBuffer    *wgpu.Buffer
+
+	InputGradientBuffer  *wgpu.Buffer
+	WeightGradientBuffer *wgpu.Buffer
+	BiasGradientBuffer   *wgpu.Buffer
+
+	bwPipeline  *wgpu.ComputePipeline
+	bwBindGroup *wgpu.BindGroup
+
+	outputLen int
+}
+
+func (l *Conv1DLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
+func (l *Conv1DLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
+func (l *Conv1DLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
+func (l *Conv1DLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *Conv1DLayer) computeOutputLen() int {
+	stride := l.Spec.Stride
+	if stride < 1 {
+		stride = 1
+	}
+	return (l.Spec.SeqLen+2*l.Spec.Padding-l.Spec.KernelSize)/stride + 1
+}
+
+func (l *Conv1DLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
+	var err error
+
+	l.outputLen = l.computeOutputLen()
+	inputSize := l.Spec.SeqLen * l.Spec.InChannels
+	outputSize := l.outputLen * l.Spec.OutChannels
+
+	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_In",
+		Size:  uint64(inputSize * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+
+	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_Out",
+		Size:  uint64(outputSize * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+
+	weightSize := l.Spec.OutChannels * l.Spec.InChannels * l.Spec.KernelSize
+	if len(l.Spec.Weights) > 0 {
+		l.WeightBuffer, err = NewFloatBuffer(l.Spec.Weights, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst|wgpu.BufferUsageCopySrc)
+	} else {
+		placeholder := make([]float32, weightSize)
+		l.WeightBuffer, err = NewFloatBuffer(placeholder, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst|wgpu.BufferUsageCopySrc)
+	}
+	if err != nil {
+		return err
+	}
+
+	bias := l.Spec.Bias
+	if len(bias) == 0 {
+		bias = make([]float32, l.Spec.OutChannels)
+	}
+	l.BiasBuffer, err = NewFloatBuffer(bias, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst|wgpu.BufferUsageCopySrc)
+	if err != nil {
+		return err
+	}
+
+	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_Staging",
+		Size:  uint64(outputSize * 4),
+		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
+	})
+	return err
+}
+
+func (l *Conv1DLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
+	var err error
+
+	inputSize := l.Spec.SeqLen * l.Spec.InChannels
+	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_InGrad",
+		Size:  uint64(inputSize * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+
+	weightSize := l.Spec.OutChannels * l.Spec.InChannels * l.Spec.KernelSize
+	l.WeightGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_WGrad",
+		Size:  uint64(weightSize * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+
+	l.BiasGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_BGrad",
+		Size:  uint64(l.Spec.OutChannels * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	return err
+}
+
+func (l *Conv1DLayer) GenerateShader() string {
+	stride := l.Spec.Stride
+	if stride < 1 {
+		stride = 1
+	}
+	outputLen := l.computeOutputLen()
+
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> input : array<f32>;
+		@group(0) @binding(1) var<storage, read> weights : array<f32>;
+		@group(0) @binding(2) var<storage, read> bias : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> output : array<f32>;
+
+		const SEQ_LEN: u32 = %du;
+		const IN_CH: u32 = %du;
+		const OUT_CH: u32 = %du;
+		const KERNEL_SIZE: u32 = %du;
+		const STRIDE: u32 = %du;
+		const PADDING: u32 = %du;
+		const OUT_LEN: u32 = %du;
+
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			let total = OUT_LEN * OUT_CH;
+			if (idx >= total) { return; }
+
+			let out_pos = idx / OUT_CH;
+			let out_c = idx %% OUT_CH;
+
+			var sum: f32 = bias[out_c];
+			
+			for (var k: u32 = 0u; k < KERNEL_SIZE; k++) {
+				let in_pos_signed = i32(out_pos * STRIDE + k) - i32(PADDING);
+				if (in_pos_signed >= 0 && u32(in_pos_signed) < SEQ_LEN) {
+					let in_pos = u32(in_pos_signed);
+					for (var in_c: u32 = 0u; in_c < IN_CH; in_c++) {
+						let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
+						let i_idx = in_pos * IN_CH + in_c;
+						sum += input[i_idx] * weights[w_idx];
+					}
+				}
+			}
+
+			output[idx] = sum;
+		}
+	`, l.Spec.SeqLen, l.Spec.InChannels, l.Spec.OutChannels, l.Spec.KernelSize, stride, l.Spec.Padding, outputLen)
+}
+
+func (l *Conv1DLayer) GenerateBackwardShader() string {
+	stride := l.Spec.Stride
+	if stride < 1 {
+		stride = 1
+	}
+	outputLen := l.computeOutputLen()
+
+	// Backward pass computes:
+	// 1. dInput via transposed convolution
+	// 2. dWeights and dBias via accumulation (using atomics)
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
+		@group(0) @binding(1) var<storage, read> input : array<f32>;
+		@group(0) @binding(2) var<storage, read> weights : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> d_input : array<f32>;
+		@group(0) @binding(4) var<storage, read_write> d_weights : array<atomic<u32>>;
+		@group(0) @binding(5) var<storage, read_write> d_bias : array<atomic<u32>>;
+
+		const SEQ_LEN: u32 = %du;
+		const IN_CH: u32 = %du;
+		const OUT_CH: u32 = %du;
+		const KERNEL_SIZE: u32 = %du;
+		const STRIDE: u32 = %du;
+		const PADDING: u32 = %du;
+		const OUT_LEN: u32 = %du;
+
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			let in_total = SEQ_LEN * IN_CH;
+			if (idx >= in_total) { return; }
+
+			let in_pos = idx / IN_CH;
+			let in_c = idx %% IN_CH;
+
+			// Compute d_input[in_pos, in_c]
+			var grad: f32 = 0.0;
+
+			// For each output position that this input contributed to
+			for (var out_pos: u32 = 0u; out_pos < OUT_LEN; out_pos++) {
+				for (var k: u32 = 0u; k < KERNEL_SIZE; k++) {
+					let in_pos_check = i32(out_pos * STRIDE + k) - i32(PADDING);
+					if (u32(in_pos_check) == in_pos && in_pos_check >= 0) {
+						for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
+							let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
+							let do_idx = out_pos * OUT_CH + out_c;
+							grad += d_output[do_idx] * weights[w_idx];
+						}
+					}
+				}
+			}
+			d_input[idx] = grad;
+
+			// Also accumulate weight gradients (each thread contributes)
+			// For efficiency, we only accumulate for one weight per thread
+			if (in_pos < OUT_LEN) {
+				let out_pos = in_pos;
+				for (var k: u32 = 0u; k < KERNEL_SIZE; k++) {
+					let src_pos = i32(out_pos * STRIDE + k) - i32(PADDING);
+					if (src_pos >= 0 && u32(src_pos) < SEQ_LEN) {
+						for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
+							let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
+							let contrib = d_output[out_pos * OUT_CH + out_c] * input[u32(src_pos) * IN_CH + in_c];
+							
+							var old_val: u32 = atomicLoad(&d_weights[w_idx]);
+							loop {
+								let old_f32 = bitcast<f32>(old_val);
+								let new_f32 = old_f32 + contrib;
+								let new_val = bitcast<u32>(new_f32);
+								let result = atomicCompareExchangeWeak(&d_weights[w_idx], old_val, new_val);
+								if (result.exchanged) { break; }
+								old_val = result.old_value;
+							}
+						}
+					}
+				}
+
+				// Bias gradient
+				if (in_c == 0u) {
+					for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
+						let bias_contrib = d_output[out_pos * OUT_CH + out_c];
+						var old_val: u32 = atomicLoad(&d_bias[out_c]);
+						loop {
+							let old_f32 = bitcast<f32>(old_val);
+							let new_f32 = old_f32 + bias_contrib;
+							let new_val = bitcast<u32>(new_f32);
+							let result = atomicCompareExchangeWeak(&d_bias[out_c], old_val, new_val);
+							if (result.exchanged) { break; }
+							old_val = result.old_value;
+						}
+					}
+				}
+			}
+		}
+	`, l.Spec.SeqLen, l.Spec.InChannels, l.Spec.OutChannels, l.Spec.KernelSize, stride, l.Spec.Padding, outputLen)
+}
+
+func (l *Conv1DLayer) Compile(ctx *Context, labelPrefix string) error {
+	mod, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_Shader",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: l.GenerateShader()},
+	})
+	if err != nil {
+		return err
+	}
+	l.pipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label:   labelPrefix + "_Pipe",
+		Compute: wgpu.ProgrammableStageDescriptor{Module: mod, EntryPoint: "main"},
+	})
+	return err
+}
+
+func (l *Conv1DLayer) CompileBackward(ctx *Context, labelPrefix string) error {
+	mod, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_BwdShader",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: l.GenerateBackwardShader()},
+	})
+	if err != nil {
+		return err
+	}
+	l.bwPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label:   labelPrefix + "_BwdPipe",
+		Compute: wgpu.ProgrammableStageDescriptor{Module: mod, EntryPoint: "main"},
+	})
+	return err
+}
+
+func (l *Conv1DLayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
+	var err error
+	l.bindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  labelPrefix + "_Bind",
+		Layout: l.pipeline.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
+			{Binding: 1, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
+			{Binding: 2, Buffer: l.BiasBuffer, Size: l.BiasBuffer.GetSize()},
+			{Binding: 3, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+		},
+	})
+	return err
+}
+
+func (l *Conv1DLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
+	var err error
+	l.bwBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  labelPrefix + "_BwdBind",
+		Layout: l.bwPipeline.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
+			{Binding: 1, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
+			{Binding: 2, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
+			{Binding: 3, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
+			{Binding: 4, Buffer: l.WeightGradientBuffer, Size: l.WeightGradientBuffer.GetSize()},
+			{Binding: 5, Buffer: l.BiasGradientBuffer, Size: l.BiasGradientBuffer.GetSize()},
+		},
+	})
+	return err
+}
+
+func (l *Conv1DLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
+	pass.SetPipeline(l.pipeline)
+	pass.SetBindGroup(0, l.bindGroup, nil)
+	total := l.outputLen * l.Spec.OutChannels
+	pass.DispatchWorkgroups(uint32((total+255)/256), 1, 1)
+}
+
+func (l *Conv1DLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(l.bwPipeline)
+	pass.SetBindGroup(0, l.bwBindGroup, nil)
+	total := l.Spec.SeqLen * l.Spec.InChannels
+	pass.DispatchWorkgroups(uint32((total+255)/256), 1, 1)
+	pass.End()
+}
+
+func (l *Conv1DLayer) UploadWeights(ctx *Context) {
+	if len(l.Spec.Weights) > 0 {
+		ctx.Queue.WriteBuffer(l.WeightBuffer, 0, wgpu.ToBytes(l.Spec.Weights))
+	}
+	if len(l.Spec.Bias) > 0 {
+		ctx.Queue.WriteBuffer(l.BiasBuffer, 0, wgpu.ToBytes(l.Spec.Bias))
+	}
+}
+
+func (l *Conv1DLayer) DownloadWeights(ctx *Context) ([]float32, []float32, error) {
+	wSize := l.Spec.OutChannels * l.Spec.InChannels * l.Spec.KernelSize
+	w, err := ReadBuffer(l.WeightBuffer, wSize)
+	if err != nil {
+		return nil, nil, err
+	}
+	b, err := ReadBuffer(l.BiasBuffer, l.Spec.OutChannels)
+	return w, b, err
+}
+
+func (l *Conv1DLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []float32, error) {
+	wSize := l.Spec.OutChannels * l.Spec.InChannels * l.Spec.KernelSize
+	wGrad, err := ReadBuffer(l.WeightGradientBuffer, wSize)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	bGrad, err := ReadBuffer(l.BiasGradientBuffer, l.Spec.OutChannels)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	iGrad, err := ReadBuffer(l.InputGradientBuffer, l.Spec.SeqLen*l.Spec.InChannels)
+	return wGrad, bGrad, iGrad, err
+}
+
+func (l *Conv1DLayer) Cleanup() {
+	bufs := []*wgpu.Buffer{l.InputBuffer, l.OutputBuffer, l.StagingBuffer, l.WeightBuffer, l.BiasBuffer, l.InputGradientBuffer, l.WeightGradientBuffer, l.BiasGradientBuffer}
+	for _, b := range bufs {
+		if b != nil {
+			b.Destroy()
+		}
+	}
+	if l.pipeline != nil {
+		l.pipeline.Release()
+	}
+	if l.bindGroup != nil {
+		l.bindGroup.Release()
+	}
+	if l.bwPipeline != nil {
+		l.bwPipeline.Release()
+	}
+	if l.bwBindGroup != nil {
+		l.bwBindGroup.Release()
+	}
+}

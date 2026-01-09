@@ -358,7 +358,6 @@ func (l *DenseLayer) Compile(ctx *Context, labelPrefix string) error {
 	}
 
 	l.WorkgroupsX = uint32((l.Spec.OutputSize + 255) / 256)
-	fmt.Printf("DEBUG: Layer %s OutputSize=%d WorkgroupsX=%d\n", labelPrefix, l.Spec.OutputSize, l.WorkgroupsX)
 	return nil
 }
 

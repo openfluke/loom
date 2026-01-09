@@ -6,16 +6,18 @@ import (
 	"github.com/openfluke/webgpu/wgpu"
 )
 
-type LayerNormSpec struct {
+// RMSNormSpec defines configuration for RMS Normalization layer
+// RMSNorm is simpler than LayerNorm - only gamma, no beta, no mean subtraction
+type RMSNormSpec struct {
 	NormSize  int
 	BatchSize int // Number of vectors to normalize (default 1)
 	Epsilon   float32
-	Gamma     []float32 // [NormSize]
-	Beta      []float32 // [NormSize]
+	Gamma     []float32 // [NormSize] - scale parameters
 }
 
-type LayerNormLayer struct {
-	Spec LayerNormSpec
+// RMSNormLayer holds GPU resources for RMS Normalization
+type RMSNormLayer struct {
+	Spec RMSNormSpec
 
 	pipeline  *wgpu.ComputePipeline
 	bindGroup *wgpu.BindGroup
@@ -24,36 +26,31 @@ type LayerNormLayer struct {
 	OutputBuffer  *wgpu.Buffer
 	StagingBuffer *wgpu.Buffer
 	GammaBuffer   *wgpu.Buffer
-	BetaBuffer    *wgpu.Buffer
 
 	// Backward
 	GammaGradientBuffer *wgpu.Buffer
-	BetaGradientBuffer  *wgpu.Buffer
 	InputGradientBuffer *wgpu.Buffer
 
 	bwPipeline  *wgpu.ComputePipeline
 	bwBindGroup *wgpu.BindGroup
-
-	WorkgroupsX uint32
 }
 
-// Implement GPULayer Interface
-func (l *LayerNormLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
-func (l *LayerNormLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
-func (l *LayerNormLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
-func (l *LayerNormLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+// Interface implementations
+func (l *RMSNormLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
+func (l *RMSNormLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
+func (l *RMSNormLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
+func (l *RMSNormLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
 
-func (l *LayerNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
+func (l *RMSNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
-	// Ensure batch size is at least 1
 	batch := l.Spec.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
 	totalSize := batch * l.Spec.NormSize
 
-	// Input: batch * normSize elements
+	// Input/Output buffers
 	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_In",
 		Size:  uint64(totalSize * 4),
@@ -63,7 +60,6 @@ func (l *LayerNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error
 		return err
 	}
 
-	// Output: batch * normSize elements
 	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
 		Size:  uint64(totalSize * 4),
@@ -73,34 +69,17 @@ func (l *LayerNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error
 		return err
 	}
 
-	// Gamma: shared across batch (just normSize)
+	// Gamma buffer
 	if len(l.Spec.Gamma) > 0 {
 		l.GammaBuffer, err = NewFloatBuffer(l.Spec.Gamma, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst|wgpu.BufferUsageCopySrc)
-		if err != nil {
-			return err
-		}
 	} else {
-		// Provide dummy 1-element buffer to satisfy binding layout if missing
 		l.GammaBuffer, err = NewFloatBuffer([]float32{1.0}, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst|wgpu.BufferUsageCopySrc)
-		if err != nil {
-			return err
-		}
+	}
+	if err != nil {
+		return err
 	}
 
-	// Beta: shared across batch (just normSize)
-	if len(l.Spec.Beta) > 0 {
-		l.BetaBuffer, err = NewFloatBuffer(l.Spec.Beta, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst|wgpu.BufferUsageCopySrc)
-		if err != nil {
-			return err
-		}
-	} else {
-		l.BetaBuffer, err = NewFloatBuffer([]float32{0.0}, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst|wgpu.BufferUsageCopySrc)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Staging: batch * normSize elements
+	// Staging buffer
 	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(totalSize * 4),
@@ -109,17 +88,16 @@ func (l *LayerNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error
 	return err
 }
 
-func (l *LayerNormLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
+func (l *RMSNormLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
-	// Ensure batch size is at least 1
 	batch := l.Spec.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
 	totalSize := batch * l.Spec.NormSize
 
-	// Input Grad: batch * normSize elements
+	// Input gradient buffer
 	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_InGrad",
 		Size:  uint64(totalSize * 4),
@@ -129,7 +107,7 @@ func (l *LayerNormLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix strin
 		return err
 	}
 
-	// Gamma Grad: shared across batch (just normSize)
+	// Gamma gradient buffer (atomic for accumulation)
 	sz := len(l.Spec.Gamma)
 	if sz == 0 {
 		sz = 1
@@ -139,50 +117,26 @@ func (l *LayerNormLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix strin
 		Size:  uint64(sz * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
-	if err != nil {
-		return err
-	}
-
-	// Beta Grad: shared across batch (just normSize)
-	sz = len(l.Spec.Beta)
-	if sz == 0 {
-		sz = 1
-	}
-	l.BetaGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_BetaGrad",
-		Size:  uint64(sz * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
-func (l *LayerNormLayer) GenerateShader() string {
-	// Optimized LayerNorm using workgroup_size(256) with shared memory reductions
-	// Each workgroup handles one batch sample
-	// 256 threads collaborate to compute mean/variance using parallel reduction
+func (l *RMSNormLayer) GenerateShader() string {
+	// Optimized RMSNorm using workgroup_size(256) with shared memory reductions
+	// RMSNorm: y = x * gamma / sqrt(mean(x^2) + eps)
 
-	// Calculate iterations per thread (ceiling division)
 	elemsPerThread := (l.Spec.NormSize + 255) / 256
 
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
 		@group(0) @binding(1) var<storage, read_write> output : array<f32>;
 		@group(0) @binding(2) var<storage, read> gamma : array<f32>;
-		@group(0) @binding(3) var<storage, read> beta : array<f32>;
 
 		const N: u32 = %du;
 		const EPS: f32 = %f;
 		const ELEMS_PER_THREAD: u32 = %du;
 
-		// Shared memory for parallel reductions
-		var<workgroup> shared_sum: array<f32, 256>;
 		var<workgroup> shared_sq: array<f32, 256>;
-		var<workgroup> wg_mean: f32;
-		var<workgroup> wg_invstd: f32;
+		var<workgroup> wg_inv_rms: f32;
 
 		@compute @workgroup_size(256)
 		fn main(
@@ -193,46 +147,19 @@ func (l *LayerNormLayer) GenerateShader() string {
 			let tid = local_id.x;
 			let offset = batch * N;
 
-			// Phase 1: Each thread sums its chunk of elements
-			var local_sum: f32 = 0.0;
-			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
-				let idx = tid + i * 256u;
-				if (idx < N) {
-					local_sum += input[offset + idx];
-				}
-			}
-			shared_sum[tid] = local_sum;
-			workgroupBarrier();
-
-			// Parallel reduction for sum (log2 steps)
-			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
-				if (tid < s) {
-					shared_sum[tid] = shared_sum[tid] + shared_sum[tid + s];
-				}
-				workgroupBarrier();
-			}
-
-			// Thread 0 computes mean
-			if (tid == 0u) {
-				wg_mean = shared_sum[0] / f32(N);
-			}
-			workgroupBarrier();
-
-			let mean = wg_mean;
-
-			// Phase 2: Each thread sums squared differences
+			// Phase 1: Each thread sums squares of its elements
 			var local_sq: f32 = 0.0;
 			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
 				let idx = tid + i * 256u;
 				if (idx < N) {
-					let diff = input[offset + idx] - mean;
-					local_sq += diff * diff;
+					let val = input[offset + idx];
+					local_sq += val * val;
 				}
 			}
 			shared_sq[tid] = local_sq;
 			workgroupBarrier();
 
-			// Parallel reduction for variance
+			// Parallel reduction for sum of squares
 			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
 				if (tid < s) {
 					shared_sq[tid] = shared_sq[tid] + shared_sq[tid + s];
@@ -240,40 +167,34 @@ func (l *LayerNormLayer) GenerateShader() string {
 				workgroupBarrier();
 			}
 
-			// Thread 0 computes inverse std
+			// Thread 0 computes inverse RMS
 			if (tid == 0u) {
-				let variance = shared_sq[0] / f32(N);
-				wg_invstd = 1.0 / sqrt(variance + EPS);
+				let mean_sq = shared_sq[0] / f32(N);
+				wg_inv_rms = 1.0 / sqrt(mean_sq + EPS);
 			}
 			workgroupBarrier();
 
-			let invstd = wg_invstd;
+			let inv_rms = wg_inv_rms;
 
-			// Phase 3: All threads normalize their elements in parallel
+			// Phase 2: Normalize each element
 			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
 				let idx = tid + i * 256u;
 				if (idx < N) {
 					let val = input[offset + idx];
-					let norm = (val - mean) * invstd;
+					let norm = val * inv_rms;
 					
 					var g: f32 = 1.0;
 					if (arrayLength(&gamma) >= N) { g = gamma[idx]; }
-					
-					var bt: f32 = 0.0;
-					if (arrayLength(&beta) >= N) { bt = beta[idx]; }
 
-					output[offset + idx] = norm * g + bt;
+					output[offset + idx] = norm * g;
 				}
 			}
 		}
 	`, l.Spec.NormSize, l.Spec.Epsilon, elemsPerThread)
 }
 
-func (l *LayerNormLayer) GenerateBackwardShader() string {
-	// Optimized backward pass using workgroup_size(256) with shared memory reductions
-	// Each workgroup handles one batch sample
-	// 256 threads collaborate using parallel reduction
-
+func (l *RMSNormLayer) GenerateBackwardShader() string {
+	// RMSNorm backward: compute dGamma and dInput
 	elemsPerThread := (l.Spec.NormSize + 255) / 256
 
 	return fmt.Sprintf(`
@@ -283,19 +204,14 @@ func (l *LayerNormLayer) GenerateBackwardShader() string {
 		
 		@group(0) @binding(3) var<storage, read_write> d_input : array<f32>;
 		@group(0) @binding(4) var<storage, read_write> d_gamma : array<atomic<u32>>;
-		@group(0) @binding(5) var<storage, read_write> d_beta : array<atomic<u32>>;
 
 		const N: u32 = %du;
 		const EPS: f32 = %f;
 		const ELEMS_PER_THREAD: u32 = %du;
 
-		// Shared memory for reductions
-		var<workgroup> shared_sum: array<f32, 256>;
 		var<workgroup> shared_sq: array<f32, 256>;
-		var<workgroup> wg_mean: f32;
-		var<workgroup> wg_invstd: f32;
-		var<workgroup> wg_sum_dxhat: f32;
-		var<workgroup> wg_sum_dxhat_xhat: f32;
+		var<workgroup> wg_inv_rms: f32;
+		var<workgroup> wg_sum_dxhat_x: f32;
 
 		@compute @workgroup_size(256)
 		fn main(
@@ -306,75 +222,38 @@ func (l *LayerNormLayer) GenerateBackwardShader() string {
 			let tid = local_id.x;
 			let offset = batch * N;
 			
-			// Phase 1: Compute mean using parallel reduction
-			var local_sum: f32 = 0.0;
-			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
-				let idx = tid + i * 256u;
-				if (idx < N) {
-					local_sum += input[offset + idx];
-				}
-			}
-			shared_sum[tid] = local_sum;
-			workgroupBarrier();
-
-			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
-				if (tid < s) {
-					shared_sum[tid] = shared_sum[tid] + shared_sum[tid + s];
-				}
-				workgroupBarrier();
-			}
-			if (tid == 0u) { wg_mean = shared_sum[0] / f32(N); }
-			workgroupBarrier();
-			let mean = wg_mean;
-
-			// Phase 2: Compute variance using parallel reduction
+			// Phase 1: Compute RMS
 			var local_sq: f32 = 0.0;
 			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
 				let idx = tid + i * 256u;
 				if (idx < N) {
-					let diff = input[offset + idx] - mean;
-					local_sq += diff * diff;
+					let val = input[offset + idx];
+					local_sq += val * val;
 				}
 			}
 			shared_sq[tid] = local_sq;
 			workgroupBarrier();
 
 			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
-				if (tid < s) {
-					shared_sq[tid] = shared_sq[tid] + shared_sq[tid + s];
-				}
+				if (tid < s) { shared_sq[tid] = shared_sq[tid] + shared_sq[tid + s]; }
 				workgroupBarrier();
 			}
 			if (tid == 0u) {
-				let variance = shared_sq[0] / f32(N);
-				wg_invstd = 1.0 / sqrt(variance + EPS);
+				let mean_sq = shared_sq[0] / f32(N);
+				wg_inv_rms = 1.0 / sqrt(mean_sq + EPS);
 			}
 			workgroupBarrier();
-			let invStd = wg_invstd;
+			let inv_rms = wg_inv_rms;
 			
-			// Phase 3: Accumulate d_gamma/d_beta (atomic) and compute sum_dxhat, sum_dxhat_xhat
-			var local_sum_dxhat: f32 = 0.0;
-			var local_sum_dxhat_xhat: f32 = 0.0;
+			// Phase 2: Accumulate d_gamma and compute sum for d_input
+			var local_sum_dxhat_x: f32 = 0.0;
 			
 			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
 				let idx = tid + i * 256u;
 				if (idx < N) {
 					let val = input[offset + idx];
 					let dout = d_output[offset + idx];
-					let x_hat = (val - mean) * invStd;
-					
-					// Atomic add for d_beta
-					{
-						var old_val: u32 = atomicLoad(&d_beta[idx]);
-						loop {
-							let old_f32 = bitcast<f32>(old_val);
-							let new_f32 = old_f32 + dout;
-							let new_val = bitcast<u32>(new_f32);
-							let result = atomicCompareExchangeWeak(&d_beta[idx], old_val, new_val);
-							if (result.exchanged) { break; }
-							old_val = result.old_value;
-						}
-					}
+					let x_hat = val * inv_rms;
 					
 					// Atomic add for d_gamma
 					{
@@ -392,50 +271,35 @@ func (l *LayerNormLayer) GenerateBackwardShader() string {
 					
 					var g: f32 = 1.0;
 					if (arrayLength(&gamma) >= N) { g = gamma[idx]; }
-					let d_xhat = dout * g;
 					
-					local_sum_dxhat += d_xhat;
-					local_sum_dxhat_xhat += d_xhat * x_hat;
+					local_sum_dxhat_x += dout * g * val;
 				}
 			}
 			
-			// Reduce sum_dxhat
-			shared_sum[tid] = local_sum_dxhat;
-			workgroupBarrier();
-			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
-				if (tid < s) { shared_sum[tid] = shared_sum[tid] + shared_sum[tid + s]; }
-				workgroupBarrier();
-			}
-			if (tid == 0u) { wg_sum_dxhat = shared_sum[0]; }
-			workgroupBarrier();
-			
-			// Reduce sum_dxhat_xhat
-			shared_sq[tid] = local_sum_dxhat_xhat;
+			// Reduce sum_dxhat_x
+			shared_sq[tid] = local_sum_dxhat_x;
 			workgroupBarrier();
 			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
 				if (tid < s) { shared_sq[tid] = shared_sq[tid] + shared_sq[tid + s]; }
 				workgroupBarrier();
 			}
-			if (tid == 0u) { wg_sum_dxhat_xhat = shared_sq[0]; }
+			if (tid == 0u) { wg_sum_dxhat_x = shared_sq[0]; }
 			workgroupBarrier();
 			
-			let sum_dxhat = wg_sum_dxhat;
-			let sum_dxhat_xhat = wg_sum_dxhat_xhat;
+			let inv_rms3 = inv_rms * inv_rms * inv_rms;
+			let term2 = wg_sum_dxhat_x * inv_rms3 / f32(N);
 			
-			// Phase 4: Compute d_input for each element
+			// Phase 3: Compute d_input
 			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
 				let idx = tid + i * 256u;
 				if (idx < N) {
 					let val = input[offset + idx];
-					let x_hat = (val - mean) * invStd;
+					let dout = d_output[offset + idx];
 					
 					var g: f32 = 1.0;
 					if (arrayLength(&gamma) >= N) { g = gamma[idx]; }
 					
-					let dout = d_output[offset + idx];
-					let d_xhat = dout * g;
-					
-					let dx = invStd * (d_xhat - (sum_dxhat / f32(N)) - x_hat * (sum_dxhat_xhat / f32(N)));
+					let dx = (dout * g * inv_rms) - (val * term2);
 					d_input[offset + idx] = dx;
 				}
 			}
@@ -443,7 +307,7 @@ func (l *LayerNormLayer) GenerateBackwardShader() string {
 	`, l.Spec.NormSize, l.Spec.Epsilon, elemsPerThread)
 }
 
-func (l *LayerNormLayer) Compile(ctx *Context, labelPrefix string) error {
+func (l *RMSNormLayer) Compile(ctx *Context, labelPrefix string) error {
 	shader := l.GenerateShader()
 	module, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:          labelPrefix + "_Shader",
@@ -460,7 +324,7 @@ func (l *LayerNormLayer) Compile(ctx *Context, labelPrefix string) error {
 	return err
 }
 
-func (l *LayerNormLayer) CompileBackward(ctx *Context, labelPrefix string) error {
+func (l *RMSNormLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	shader := l.GenerateBackwardShader()
 	module, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:          labelPrefix + "_BwdShader",
@@ -477,18 +341,12 @@ func (l *LayerNormLayer) CompileBackward(ctx *Context, labelPrefix string) error
 	return err
 }
 
-func (l *LayerNormLayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
+func (l *RMSNormLayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 	var err error
-
-	/*fmt.Printf("[DEBUG] LN CreateBindGroup: In=%d Out=%d Gam=%d Bet=%d\n",
-	l.InputBuffer.GetSize(), l.OutputBuffer.GetSize(),
-	l.GammaBuffer.GetSize(), l.BetaBuffer.GetSize())*/
-
 	entries := []wgpu.BindGroupEntry{
 		{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
 		{Binding: 1, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
 		{Binding: 2, Buffer: l.GammaBuffer, Size: l.GammaBuffer.GetSize()},
-		{Binding: 3, Buffer: l.BetaBuffer, Size: l.BetaBuffer.GetSize()},
 	}
 	l.bindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:   labelPrefix + "_Bind",
@@ -498,7 +356,7 @@ func (l *LayerNormLayer) CreateBindGroup(ctx *Context, labelPrefix string) error
 	return err
 }
 
-func (l *LayerNormLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
+func (l *RMSNormLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
 	var err error
 	entries := []wgpu.BindGroupEntry{
 		{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
@@ -506,7 +364,6 @@ func (l *LayerNormLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix strin
 		{Binding: 2, Buffer: l.GammaBuffer, Size: l.GammaBuffer.GetSize()},
 		{Binding: 3, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
 		{Binding: 4, Buffer: l.GammaGradientBuffer, Size: l.GammaGradientBuffer.GetSize()},
-		{Binding: 5, Buffer: l.BetaGradientBuffer, Size: l.BetaGradientBuffer.GetSize()},
 	}
 	l.bwBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:   labelPrefix + "_BwdBind",
@@ -516,10 +373,9 @@ func (l *LayerNormLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix strin
 	return err
 }
 
-func (l *LayerNormLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
+func (l *RMSNormLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.SetPipeline(l.pipeline)
 	pass.SetBindGroup(0, l.bindGroup, nil)
-	// Launch one workgroup per batch sample
 	batch := l.Spec.BatchSize
 	if batch < 1 {
 		batch = 1
@@ -527,11 +383,10 @@ func (l *LayerNormLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.DispatchWorkgroups(uint32(batch), 1, 1)
 }
 
-func (l *LayerNormLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
+func (l *RMSNormLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(l.bwPipeline)
 	pass.SetBindGroup(0, l.bwBindGroup, nil)
-	// Launch one workgroup per batch sample
 	batch := l.Spec.BatchSize
 	if batch < 1 {
 		batch = 1
@@ -540,36 +395,22 @@ func (l *LayerNormLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	pass.End()
 }
 
-func (l *LayerNormLayer) UploadWeights(ctx *Context) {
+func (l *RMSNormLayer) UploadWeights(ctx *Context) {
 	if len(l.Spec.Gamma) > 0 {
 		ctx.Queue.WriteBuffer(l.GammaBuffer, 0, wgpu.ToBytes(l.Spec.Gamma))
 	}
-	if len(l.Spec.Beta) > 0 {
-		ctx.Queue.WriteBuffer(l.BetaBuffer, 0, wgpu.ToBytes(l.Spec.Beta))
-	}
 }
 
-// ZeroGradients zeroes gradient buffers before backward pass (required for atomic accumulation)
-func (l *LayerNormLayer) ZeroGradients(ctx *Context) {
-	// Zero gamma gradient buffer
+func (l *RMSNormLayer) ZeroGradients(ctx *Context) {
 	sz := len(l.Spec.Gamma)
 	if sz == 0 {
 		sz = 1
 	}
 	zeros := make([]float32, sz)
 	ctx.Queue.WriteBuffer(l.GammaGradientBuffer, 0, wgpu.ToBytes(zeros))
-
-	// Zero beta gradient buffer
-	sz = len(l.Spec.Beta)
-	if sz == 0 {
-		sz = 1
-	}
-	zeros = make([]float32, sz)
-	ctx.Queue.WriteBuffer(l.BetaGradientBuffer, 0, wgpu.ToBytes(zeros))
 }
 
-func (l *LayerNormLayer) DownloadWeights(ctx *Context) ([]float32, []float32, error) {
-	// Gamma
+func (l *RMSNormLayer) DownloadWeights(ctx *Context) ([]float32, []float32, error) {
 	sz := len(l.Spec.Gamma)
 	if sz == 0 {
 		sz = 1
@@ -578,25 +419,10 @@ func (l *LayerNormLayer) DownloadWeights(ctx *Context) ([]float32, []float32, er
 	if err != nil {
 		return nil, nil, err
 	}
-
-	// Beta
-	sz = len(l.Spec.Beta)
-	if sz == 0 {
-		sz = 1
-	}
-	beta, err := ReadBuffer(l.BetaBuffer, sz)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return gamma, beta, nil
+	return gamma, nil, nil // RMSNorm has no beta
 }
 
-func (l *LayerNormLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []float32, error) {
-	// Verify signatures match main.go expectation
-	// wGrad, bGrad, iGrad
-
-	// Gamma Grad
+func (l *RMSNormLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []float32, error) {
 	sz := len(l.Spec.Gamma)
 	if sz == 0 {
 		sz = 1
@@ -606,26 +432,19 @@ func (l *LayerNormLayer) DownloadGradients(ctx *Context) ([]float32, []float32, 
 		return nil, nil, nil, err
 	}
 
-	// Beta Grad
-	sz = len(l.Spec.Beta)
-	if sz == 0 {
-		sz = 1
+	batch := l.Spec.BatchSize
+	if batch < 1 {
+		batch = 1
 	}
-	bGrad, err := ReadBuffer(l.BetaGradientBuffer, sz)
+	iGrad, err := ReadBuffer(l.InputGradientBuffer, batch*l.Spec.NormSize)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	// Input Grad
-	iGrad, err := ReadBuffer(l.InputGradientBuffer, l.Spec.NormSize) // Batch=1 assumed
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	return gGrad, bGrad, iGrad, nil
+	return gGrad, nil, iGrad, nil // No beta gradients
 }
 
-func (l *LayerNormLayer) Cleanup() {
+func (l *RMSNormLayer) Cleanup() {
 	if l.InputBuffer != nil {
 		l.InputBuffer.Destroy()
 	}
@@ -638,17 +457,11 @@ func (l *LayerNormLayer) Cleanup() {
 	if l.GammaBuffer != nil {
 		l.GammaBuffer.Destroy()
 	}
-	if l.BetaBuffer != nil {
-		l.BetaBuffer.Destroy()
-	}
 	if l.InputGradientBuffer != nil {
 		l.InputGradientBuffer.Destroy()
 	}
 	if l.GammaGradientBuffer != nil {
 		l.GammaGradientBuffer.Destroy()
-	}
-	if l.BetaGradientBuffer != nil {
-		l.BetaGradientBuffer.Destroy()
 	}
 	if l.pipeline != nil {
 		l.pipeline.Release()

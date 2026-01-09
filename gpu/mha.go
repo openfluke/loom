@@ -1,0 +1,616 @@
+package gpu
+
+import (
+	"fmt"
+
+	"github.com/openfluke/webgpu/wgpu"
+)
+
+// MHASpec defines configuration for Multi-Head Attention layer
+type MHASpec struct {
+	DModel   int       // Model dimension (embedding size)
+	NumHeads int       // Number of attention heads
+	SeqLen   int       // Sequence length
+	HeadDim  int       // Dimension per head (DModel / NumHeads)
+	QWeights []float32 // Query projection [DModel * DModel]
+	KWeights []float32 // Key projection [DModel * DModel]
+	VWeights []float32 // Value projection [DModel * DModel]
+	OWeights []float32 // Output projection [DModel * DModel]
+	QBias    []float32 // [DModel]
+	KBias    []float32 // [DModel]
+	VBias    []float32 // [DModel]
+	OBias    []float32 // [DModel]
+}
+
+// MHALayer holds GPU resources for Multi-Head Attention
+type MHALayer struct {
+	Spec MHASpec
+
+	// Q/K/V projection pipeline (combined)
+	pipelineQKV  *wgpu.ComputePipeline
+	bindGroupQKV *wgpu.BindGroup
+
+	// Attention scores pipeline
+	pipelineAttn  *wgpu.ComputePipeline
+	bindGroupAttn *wgpu.BindGroup
+
+	// Output projection pipeline
+	pipelineOut  *wgpu.ComputePipeline
+	bindGroupOut *wgpu.BindGroup
+
+	// Buffers
+	InputBuffer   *wgpu.Buffer
+	OutputBuffer  *wgpu.Buffer
+	StagingBuffer *wgpu.Buffer
+
+	QWeightBuffer *wgpu.Buffer
+	KWeightBuffer *wgpu.Buffer
+	VWeightBuffer *wgpu.Buffer
+	OWeightBuffer *wgpu.Buffer
+	QBiasBuffer   *wgpu.Buffer
+	KBiasBuffer   *wgpu.Buffer
+	VBiasBuffer   *wgpu.Buffer
+	OBiasBuffer   *wgpu.Buffer
+
+	QBuffer    *wgpu.Buffer // Projected queries
+	KBuffer    *wgpu.Buffer // Projected keys
+	VBuffer    *wgpu.Buffer // Projected values
+	AttnBuffer *wgpu.Buffer // Attention output
+
+	InputGradientBuffer *wgpu.Buffer
+	bwPipeline          *wgpu.ComputePipeline
+	bwBindGroup         *wgpu.BindGroup
+}
+
+func (l *MHALayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
+func (l *MHALayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
+func (l *MHALayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
+func (l *MHALayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
+	var err error
+	seqDim := l.Spec.SeqLen * l.Spec.DModel
+	dimSq := l.Spec.DModel * l.Spec.DModel
+
+	// Input/Output
+	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_In",
+		Size:  uint64(seqDim * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+
+	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_Out",
+		Size:  uint64(seqDim * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Q/K/V intermediate buffers
+	l.QBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_Q",
+		Size:  uint64(seqDim * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+	l.KBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_K",
+		Size:  uint64(seqDim * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+	l.VBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_V",
+		Size:  uint64(seqDim * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+	l.AttnBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_Attn",
+		Size:  uint64(seqDim * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Weight buffers
+	allocWeight := func(data []float32, size int) (*wgpu.Buffer, error) {
+		if len(data) > 0 {
+			return NewFloatBuffer(data, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+		}
+		return NewFloatBuffer(make([]float32, size), wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+	}
+
+	l.QWeightBuffer, err = allocWeight(l.Spec.QWeights, dimSq)
+	if err != nil {
+		return err
+	}
+	l.KWeightBuffer, err = allocWeight(l.Spec.KWeights, dimSq)
+	if err != nil {
+		return err
+	}
+	l.VWeightBuffer, err = allocWeight(l.Spec.VWeights, dimSq)
+	if err != nil {
+		return err
+	}
+	l.OWeightBuffer, err = allocWeight(l.Spec.OWeights, dimSq)
+	if err != nil {
+		return err
+	}
+
+	allocBias := func(data []float32, size int) (*wgpu.Buffer, error) {
+		if len(data) > 0 {
+			return NewFloatBuffer(data, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+		}
+		return NewFloatBuffer(make([]float32, size), wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+	}
+
+	l.QBiasBuffer, err = allocBias(l.Spec.QBias, l.Spec.DModel)
+	if err != nil {
+		return err
+	}
+	l.KBiasBuffer, err = allocBias(l.Spec.KBias, l.Spec.DModel)
+	if err != nil {
+		return err
+	}
+	l.VBiasBuffer, err = allocBias(l.Spec.VBias, l.Spec.DModel)
+	if err != nil {
+		return err
+	}
+	l.OBiasBuffer, err = allocBias(l.Spec.OBias, l.Spec.DModel)
+	if err != nil {
+		return err
+	}
+
+	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_Staging",
+		Size:  uint64(seqDim * 4),
+		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
+	})
+	return err
+}
+
+func (l *MHALayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
+	var err error
+	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_InGrad",
+		Size:  uint64(l.Spec.SeqLen * l.Spec.DModel * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	return err
+}
+
+func (l *MHALayer) GenerateQKVShader() string {
+	// Combined Q/K/V linear projections
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> input : array<f32>;
+		@group(0) @binding(1) var<storage, read> q_w : array<f32>;
+		@group(0) @binding(2) var<storage, read> k_w : array<f32>;
+		@group(0) @binding(3) var<storage, read> v_w : array<f32>;
+		@group(0) @binding(4) var<storage, read> q_b : array<f32>;
+		@group(0) @binding(5) var<storage, read> k_b : array<f32>;
+		@group(0) @binding(6) var<storage, read> v_b : array<f32>;
+		@group(0) @binding(7) var<storage, read_write> q_out : array<f32>;
+		@group(0) @binding(8) var<storage, read_write> k_out : array<f32>;
+		@group(0) @binding(9) var<storage, read_write> v_out : array<f32>;
+
+		const SEQ_LEN: u32 = %du;
+		const D_MODEL: u32 = %du;
+
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			let total = SEQ_LEN * D_MODEL;
+			if (idx >= total) { return; }
+
+			let seq = idx / D_MODEL;
+			let d = idx %% D_MODEL;
+			let in_offset = seq * D_MODEL;
+
+			// Q projection
+			var q_sum: f32 = q_b[d];
+			for (var j: u32 = 0u; j < D_MODEL; j++) {
+				q_sum += input[in_offset + j] * q_w[j * D_MODEL + d];
+			}
+			q_out[idx] = q_sum;
+
+			// K projection
+			var k_sum: f32 = k_b[d];
+			for (var j: u32 = 0u; j < D_MODEL; j++) {
+				k_sum += input[in_offset + j] * k_w[j * D_MODEL + d];
+			}
+			k_out[idx] = k_sum;
+
+			// V projection
+			var v_sum: f32 = v_b[d];
+			for (var j: u32 = 0u; j < D_MODEL; j++) {
+				v_sum += input[in_offset + j] * v_w[j * D_MODEL + d];
+			}
+			v_out[idx] = v_sum;
+		}
+	`, l.Spec.SeqLen, l.Spec.DModel)
+}
+
+func (l *MHALayer) GenerateAttnShader() string {
+	// Simplified attention: for each position, attend to all positions
+	headDim := l.Spec.DModel / l.Spec.NumHeads
+	scale := 1.0 / float32(headDim)
+
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> q : array<f32>;
+		@group(0) @binding(1) var<storage, read> k : array<f32>;
+		@group(0) @binding(2) var<storage, read> v : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> attn_out : array<f32>;
+
+		const SEQ_LEN: u32 = %du;
+		const D_MODEL: u32 = %du;
+		const NUM_HEADS: u32 = %du;
+		const HEAD_DIM: u32 = %du;
+		const SCALE: f32 = %f;
+
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			let total = SEQ_LEN * D_MODEL;
+			if (idx >= total) { return; }
+
+			let seq_i = idx / D_MODEL;
+			let d = idx %% D_MODEL;
+			let head = d / HEAD_DIM;
+			let head_d = d %% HEAD_DIM;
+
+			// Compute attention weights and weighted sum of V
+			var sum: f32 = 0.0;
+			var max_score: f32 = -1e10;
+
+			// First pass: find max for stability
+			for (var seq_j: u32 = 0u; seq_j < SEQ_LEN; seq_j++) {
+				var score: f32 = 0.0;
+				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
+					let q_idx = seq_i * D_MODEL + head * HEAD_DIM + hd;
+					let k_idx = seq_j * D_MODEL + head * HEAD_DIM + hd;
+					score += q[q_idx] * k[k_idx];
+				}
+				score *= SCALE;
+				max_score = max(max_score, score);
+			}
+
+			// Second pass: compute softmax and weighted V sum
+			var exp_sum: f32 = 0.0;
+			for (var seq_j: u32 = 0u; seq_j < SEQ_LEN; seq_j++) {
+				var score: f32 = 0.0;
+				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
+					let q_idx = seq_i * D_MODEL + head * HEAD_DIM + hd;
+					let k_idx = seq_j * D_MODEL + head * HEAD_DIM + hd;
+					score += q[q_idx] * k[k_idx];
+				}
+				score = exp(score * SCALE - max_score);
+				exp_sum += score;
+				sum += score * v[seq_j * D_MODEL + d];
+			}
+
+			attn_out[idx] = sum / exp_sum;
+		}
+	`, l.Spec.SeqLen, l.Spec.DModel, l.Spec.NumHeads, headDim, scale)
+}
+
+func (l *MHALayer) GenerateOutShader() string {
+	// Output projection
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> attn_out : array<f32>;
+		@group(0) @binding(1) var<storage, read> o_w : array<f32>;
+		@group(0) @binding(2) var<storage, read> o_b : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> output : array<f32>;
+
+		const SEQ_LEN: u32 = %du;
+		const D_MODEL: u32 = %du;
+
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			let total = SEQ_LEN * D_MODEL;
+			if (idx >= total) { return; }
+
+			let seq = idx / D_MODEL;
+			let d = idx %% D_MODEL;
+			let in_offset = seq * D_MODEL;
+
+			var sum: f32 = o_b[d];
+			for (var j: u32 = 0u; j < D_MODEL; j++) {
+				sum += attn_out[in_offset + j] * o_w[j * D_MODEL + d];
+			}
+			output[idx] = sum;
+		}
+	`, l.Spec.SeqLen, l.Spec.DModel)
+}
+
+func (l *MHALayer) GenerateBackwardShader() string {
+	// Backward through all 3 stages (simplified - computes input gradient only)
+	// 1. d_attn = d_output @ O_w.T
+	// 2. For each position: backprop through attention (complex - simplified here)
+	// 3. d_input = d_q @ Q_w.T + d_k @ K_w.T + d_v @ V_w.T
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
+		@group(0) @binding(1) var<storage, read> o_w : array<f32>;
+		@group(0) @binding(2) var<storage, read> q_w : array<f32>;
+		@group(0) @binding(3) var<storage, read> k_w : array<f32>;
+		@group(0) @binding(4) var<storage, read> v_w : array<f32>;
+		@group(0) @binding(5) var<storage, read_write> d_input : array<f32>;
+
+		const SEQ_LEN: u32 = %du;
+		const D_MODEL: u32 = %du;
+
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			let total = SEQ_LEN * D_MODEL;
+			if (idx >= total) { return; }
+
+			let seq = idx / D_MODEL;
+			let j = idx %% D_MODEL;
+
+			// Step 1: d_attn = d_output @ O_w.T
+			// Then simplified: assume attention is identity for gradient flow
+			// d_qkv = d_attn (this is a simplification)
+			// d_input = d_qkv @ (Q_w + K_w + V_w).T
+
+			var d_in: f32 = 0.0;
+
+			for (var d: u32 = 0u; d < D_MODEL; d++) {
+				// d_attn[seq, d] = sum_k(d_output[seq, k] * o_w[d, k])
+				var d_attn: f32 = 0.0;
+				for (var k: u32 = 0u; k < D_MODEL; k++) {
+					d_attn += d_output[seq * D_MODEL + k] * o_w[d * D_MODEL + k];
+				}
+				
+				// Use d_attn as d_q, d_k, d_v (simplified)
+				// d_input[seq, j] += d_attn * (q_w[j,d] + k_w[j,d] + v_w[j,d])
+				d_in += d_attn * (q_w[j * D_MODEL + d] + k_w[j * D_MODEL + d] + v_w[j * D_MODEL + d]);
+			}
+
+			d_input[idx] = d_in;
+		}
+	`, l.Spec.SeqLen, l.Spec.DModel)
+}
+
+func (l *MHALayer) Compile(ctx *Context, labelPrefix string) error {
+	var err error
+
+	// QKV pipeline
+	mod1, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_QKV",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: l.GenerateQKVShader()},
+	})
+	if err != nil {
+		return err
+	}
+	l.pipelineQKV, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label:   labelPrefix + "_QKVPipe",
+		Compute: wgpu.ProgrammableStageDescriptor{Module: mod1, EntryPoint: "main"},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Attention pipeline
+	mod2, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_Attn",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: l.GenerateAttnShader()},
+	})
+	if err != nil {
+		return err
+	}
+	l.pipelineAttn, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label:   labelPrefix + "_AttnPipe",
+		Compute: wgpu.ProgrammableStageDescriptor{Module: mod2, EntryPoint: "main"},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Output pipeline
+	mod3, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_Out",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: l.GenerateOutShader()},
+	})
+	if err != nil {
+		return err
+	}
+	l.pipelineOut, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label:   labelPrefix + "_OutPipe",
+		Compute: wgpu.ProgrammableStageDescriptor{Module: mod3, EntryPoint: "main"},
+	})
+	return err
+}
+
+func (l *MHALayer) CompileBackward(ctx *Context, labelPrefix string) error {
+	mod, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_Bwd",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: l.GenerateBackwardShader()},
+	})
+	if err != nil {
+		return err
+	}
+	l.bwPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label:   labelPrefix + "_BwdPipe",
+		Compute: wgpu.ProgrammableStageDescriptor{Module: mod, EntryPoint: "main"},
+	})
+	return err
+}
+
+func (l *MHALayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
+	var err error
+
+	// QKV bind group
+	l.bindGroupQKV, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  labelPrefix + "_QKVBind",
+		Layout: l.pipelineQKV.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
+			{Binding: 1, Buffer: l.QWeightBuffer, Size: l.QWeightBuffer.GetSize()},
+			{Binding: 2, Buffer: l.KWeightBuffer, Size: l.KWeightBuffer.GetSize()},
+			{Binding: 3, Buffer: l.VWeightBuffer, Size: l.VWeightBuffer.GetSize()},
+			{Binding: 4, Buffer: l.QBiasBuffer, Size: l.QBiasBuffer.GetSize()},
+			{Binding: 5, Buffer: l.KBiasBuffer, Size: l.KBiasBuffer.GetSize()},
+			{Binding: 6, Buffer: l.VBiasBuffer, Size: l.VBiasBuffer.GetSize()},
+			{Binding: 7, Buffer: l.QBuffer, Size: l.QBuffer.GetSize()},
+			{Binding: 8, Buffer: l.KBuffer, Size: l.KBuffer.GetSize()},
+			{Binding: 9, Buffer: l.VBuffer, Size: l.VBuffer.GetSize()},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Attention bind group
+	l.bindGroupAttn, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  labelPrefix + "_AttnBind",
+		Layout: l.pipelineAttn.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: l.QBuffer, Size: l.QBuffer.GetSize()},
+			{Binding: 1, Buffer: l.KBuffer, Size: l.KBuffer.GetSize()},
+			{Binding: 2, Buffer: l.VBuffer, Size: l.VBuffer.GetSize()},
+			{Binding: 3, Buffer: l.AttnBuffer, Size: l.AttnBuffer.GetSize()},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Output bind group
+	l.bindGroupOut, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  labelPrefix + "_OutBind",
+		Layout: l.pipelineOut.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: l.AttnBuffer, Size: l.AttnBuffer.GetSize()},
+			{Binding: 1, Buffer: l.OWeightBuffer, Size: l.OWeightBuffer.GetSize()},
+			{Binding: 2, Buffer: l.OBiasBuffer, Size: l.OBiasBuffer.GetSize()},
+			{Binding: 3, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+		},
+	})
+	return err
+}
+
+func (l *MHALayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
+	var err error
+	l.bwBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  labelPrefix + "_BwdBind",
+		Layout: l.bwPipeline.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
+			{Binding: 1, Buffer: l.OWeightBuffer, Size: l.OWeightBuffer.GetSize()},
+			{Binding: 2, Buffer: l.QWeightBuffer, Size: l.QWeightBuffer.GetSize()},
+			{Binding: 3, Buffer: l.KWeightBuffer, Size: l.KWeightBuffer.GetSize()},
+			{Binding: 4, Buffer: l.VWeightBuffer, Size: l.VWeightBuffer.GetSize()},
+			{Binding: 5, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
+		},
+	})
+	return err
+}
+
+func (l *MHALayer) Dispatch(pass *wgpu.ComputePassEncoder) {
+	total := l.Spec.SeqLen * l.Spec.DModel
+	wg := uint32((total + 255) / 256)
+
+	// QKV projection
+	pass.SetPipeline(l.pipelineQKV)
+	pass.SetBindGroup(0, l.bindGroupQKV, nil)
+	pass.DispatchWorkgroups(wg, 1, 1)
+}
+
+func (l *MHALayer) DispatchFull(enc *wgpu.CommandEncoder) {
+	total := l.Spec.SeqLen * l.Spec.DModel
+	wg := uint32((total + 255) / 256)
+
+	// Stage 1: QKV
+	pass1 := enc.BeginComputePass(nil)
+	pass1.SetPipeline(l.pipelineQKV)
+	pass1.SetBindGroup(0, l.bindGroupQKV, nil)
+	pass1.DispatchWorkgroups(wg, 1, 1)
+	pass1.End()
+
+	// Stage 2: Attention
+	pass2 := enc.BeginComputePass(nil)
+	pass2.SetPipeline(l.pipelineAttn)
+	pass2.SetBindGroup(0, l.bindGroupAttn, nil)
+	pass2.DispatchWorkgroups(wg, 1, 1)
+	pass2.End()
+
+	// Stage 3: Output projection
+	pass3 := enc.BeginComputePass(nil)
+	pass3.SetPipeline(l.pipelineOut)
+	pass3.SetBindGroup(0, l.bindGroupOut, nil)
+	pass3.DispatchWorkgroups(wg, 1, 1)
+	pass3.End()
+}
+
+func (l *MHALayer) DispatchBackward(enc *wgpu.CommandEncoder) {
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(l.bwPipeline)
+	pass.SetBindGroup(0, l.bwBindGroup, nil)
+	total := l.Spec.SeqLen * l.Spec.DModel
+	pass.DispatchWorkgroups(uint32((total+255)/256), 1, 1)
+	pass.End()
+}
+
+func (l *MHALayer) UploadWeights(ctx *Context) {
+	upload := func(buf *wgpu.Buffer, data []float32) {
+		if len(data) > 0 {
+			ctx.Queue.WriteBuffer(buf, 0, wgpu.ToBytes(data))
+		}
+	}
+	upload(l.QWeightBuffer, l.Spec.QWeights)
+	upload(l.KWeightBuffer, l.Spec.KWeights)
+	upload(l.VWeightBuffer, l.Spec.VWeights)
+	upload(l.OWeightBuffer, l.Spec.OWeights)
+}
+
+func (l *MHALayer) DownloadWeights(ctx *Context) ([]float32, []float32, error) {
+	return nil, nil, nil // Complex multi-weight
+}
+
+func (l *MHALayer) DownloadGradients(ctx *Context) ([]float32, []float32, []float32, error) {
+	iGrad, err := ReadBuffer(l.InputGradientBuffer, l.Spec.SeqLen*l.Spec.DModel)
+	return nil, nil, iGrad, err
+}
+
+func (l *MHALayer) Cleanup() {
+	bufs := []*wgpu.Buffer{
+		l.InputBuffer, l.OutputBuffer, l.StagingBuffer,
+		l.QWeightBuffer, l.KWeightBuffer, l.VWeightBuffer, l.OWeightBuffer,
+		l.QBiasBuffer, l.KBiasBuffer, l.VBiasBuffer, l.OBiasBuffer,
+		l.QBuffer, l.KBuffer, l.VBuffer, l.AttnBuffer,
+		l.InputGradientBuffer,
+	}
+	for _, b := range bufs {
+		if b != nil {
+			b.Destroy()
+		}
+	}
+
+	pipes := []*wgpu.ComputePipeline{l.pipelineQKV, l.pipelineAttn, l.pipelineOut, l.bwPipeline}
+	for _, p := range pipes {
+		if p != nil {
+			p.Release()
+		}
+	}
+
+	bgs := []*wgpu.BindGroup{l.bindGroupQKV, l.bindGroupAttn, l.bindGroupOut, l.bwBindGroup}
+	for _, bg := range bgs {
+		if bg != nil {
+			bg.Release()
+		}
+	}
+}
