@@ -18,6 +18,12 @@ type Context struct {
 }
 
 var ctx Context
+var preferredAdapter string
+
+// SetAdapterPreference sets a substring to look for in adapter names
+func SetAdapterPreference(name string) {
+	preferredAdapter = strings.ToLower(name)
+}
 
 // GetContext returns the singleton GPU context, initializing it if necessary
 func GetContext() (*Context, error) {
@@ -29,24 +35,59 @@ func GetContext() (*Context, error) {
 			return
 		}
 
-		// 0. Try to find NVIDIA explicitly via EnumerateAdapters
+		// 0. Explicit Selection Logic
 		adapters := ctx.Instance.EnumerateAdapters(nil)
+		var bestAdapter *wgpu.Adapter
+		bestScore := -1
+
 		for _, a := range adapters {
 			info := a.GetInfo()
-			fmt.Printf("Displaying Adapter: %s (Vendor: %s, DeviceID: 0x%X, VendorID: 0x%X, Type: %d)\n", info.Name, info.VendorName, info.DeviceId, info.VendorId, info.AdapterType)
-			isNvidia := false
-			if strings.Contains(strings.ToLower(info.Name), "nvidia") {
-				isNvidia = true
-			}
-			if strings.Contains(strings.ToLower(info.VendorName), "nvidia") {
-				isNvidia = true
+			fmt.Printf("Displaying Adapter: 0x%X (Vendor: 0x%X, DeviceID: 0x%X, Type: %d) Name: %s\n", info.DeviceId, info.VendorId, info.DeviceId, info.AdapterType, info.Name)
+
+			score := 0
+			name := strings.ToLower(info.Name)
+			// info.AdapterType: 0=Other, 1=Integrated, 2=Discrete, 3=Virtual, 4=CPU
+
+			// 1. Preference override
+			if preferredAdapter != "" && strings.Contains(name, preferredAdapter) {
+				score += 10000 // Massive boost for manual selection
 			}
 
-			if isNvidia {
-				fmt.Printf("--> Force Selecting NVIDIA Adapter: %s\n", info.Name)
-				ctx.Adapter = a
-				break
+			// 2. Hardware Tiers
+			isDiscrete := info.AdapterType == wgpu.AdapterTypeDiscreteGPU
+			isIntegrated := info.AdapterType == wgpu.AdapterTypeIntegratedGPU
+
+			// Detect "Fake" Discrete GPU (llvmpipe / Mesa software rasterizer)
+			// Vendor 0x10005 is Mesa. "llvmpipe" usually appears in name.
+			isFake := info.VendorId == 0x10005 || strings.Contains(name, "llvmpipe") || strings.Contains(name, "soft")
+
+			if isDiscrete && !isFake {
+				score += 1000 // Real Discrete GPU (Nvidia, AMD)
 			}
+			if isIntegrated {
+				score += 500 // Integrated GPU (Intel, etc.) - Better than software!
+			}
+
+			// Vendor specifics
+			if strings.Contains(name, "nvidia") || info.VendorId == 0x10DE {
+				score += 200
+			}
+
+			// Penalize Fake/Software
+			if isFake {
+				score -= 1000
+			}
+
+			if score > bestScore {
+				bestScore = score
+				bestAdapter = a
+			}
+		}
+
+		if bestAdapter != nil {
+			info := bestAdapter.GetInfo()
+			fmt.Printf("--> Selected Best Adapter: %s (Type: %d, Score: %d)\n", info.Name, info.AdapterType, bestScore)
+			ctx.Adapter = bestAdapter
 		}
 
 		// Helper to try init with an adapter option
