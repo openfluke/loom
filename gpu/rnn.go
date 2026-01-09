@@ -18,16 +18,18 @@ type RNNSpec struct {
 
 // RNNLayer holds GPU resources for RNN
 // Note: RNN is inherently sequential across time steps but parallel within each step
+// We process one time step per dispatch to avoid cross-workgroup synchronization issues
 type RNNLayer struct {
 	Spec RNNSpec
 
-	pipeline  *wgpu.ComputePipeline
-	bindGroup *wgpu.BindGroup
+	pipeline   *wgpu.ComputePipeline
+	bindGroups []*wgpu.BindGroup // One bind group per time step
 
 	InputBuffer    *wgpu.Buffer // [SeqLen * InputSize]
 	OutputBuffer   *wgpu.Buffer // [SeqLen * HiddenSize]
 	StagingBuffer  *wgpu.Buffer
-	HiddenBuffer   *wgpu.Buffer // Current hidden state [HiddenSize]
+	HiddenBuffer   *wgpu.Buffer   // Current hidden state [HiddenSize]
+	StepBuffers    []*wgpu.Buffer // Uniform buffers for each step
 	WeightIHBuffer *wgpu.Buffer
 	WeightHHBuffer *wgpu.Buffer
 	BiasBuffer     *wgpu.Buffer
@@ -139,6 +141,21 @@ func (l *RNNLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		return err
 	}
 
+	// Create step uniform buffers - one per time step
+	l.StepBuffers = make([]*wgpu.Buffer, l.Spec.SeqLen)
+	for step := 0; step < l.Spec.SeqLen; step++ {
+		stepData := []uint32{uint32(step)}
+		l.StepBuffers[step], err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: fmt.Sprintf("%s_Step%d", labelPrefix, step),
+			Size:  4, // u32
+			Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
+		})
+		if err != nil {
+			return err
+		}
+		ctx.Queue.WriteBuffer(l.StepBuffers[step], 0, wgpu.ToBytes(stepData))
+	}
+
 	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(outputTotal * 4),
@@ -159,8 +176,8 @@ func (l *RNNLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) err
 
 func (l *RNNLayer) GenerateShader() string {
 	// RNN: h' = tanh(W_ih * x + W_hh * h + b)
-	// Process all time steps sequentially, each hidden unit in parallel
-	// Note: Uses a loop over time steps since RNN has sequential dependencies
+	// Process ONE time step per dispatch - this avoids the cross-workgroup sync issue
+	// The Go code will dispatch SeqLen times, once per time step
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
 		@group(0) @binding(1) var<storage, read> w_ih : array<f32>;
@@ -168,8 +185,8 @@ func (l *RNNLayer) GenerateShader() string {
 		@group(0) @binding(3) var<storage, read> bias : array<f32>;
 		@group(0) @binding(4) var<storage, read_write> hidden : array<f32>;
 		@group(0) @binding(5) var<storage, read_write> output : array<f32>;
+		@group(0) @binding(6) var<uniform> step : u32;
 
-		const SEQ_LEN: u32 = %du;
 		const INPUT_SIZE: u32 = %du;
 		const HIDDEN_SIZE: u32 = %du;
 
@@ -178,42 +195,27 @@ func (l *RNNLayer) GenerateShader() string {
 			let h_idx = gid.x;
 			if (h_idx >= HIDDEN_SIZE) { return; }
 
-			// Initialize hidden state from buffer (already zero or pre-set)
-			var h_val: f32 = hidden[h_idx];
-
-			// Process all time steps sequentially
-			for (var step: u32 = 0u; step < SEQ_LEN; step++) {
-				let input_offset = step * INPUT_SIZE;
-				
-				// W_ih * x
-				var sum: f32 = bias[h_idx];
-				for (var i: u32 = 0u; i < INPUT_SIZE; i++) {
-					sum += input[input_offset + i] * w_ih[h_idx * INPUT_SIZE + i];
-				}
-
-				// W_hh * h (read from current h_val)
-				for (var i: u32 = 0u; i < HIDDEN_SIZE; i++) {
-					// Note: This reads the hidden state that was updated in previous iteration
-					// Each thread updates its own h_idx, so we read from hidden buffer
-					if (i == h_idx) {
-						sum += h_val * w_hh[h_idx * HIDDEN_SIZE + i];
-					} else {
-						sum += hidden[i] * w_hh[h_idx * HIDDEN_SIZE + i];
-					}
-				}
-
-				// tanh activation
-				h_val = tanh(sum);
-				
-				// Update hidden state and output
-				hidden[h_idx] = h_val;
-				output[step * HIDDEN_SIZE + h_idx] = h_val;
-				
-				// Memory barrier to ensure all threads complete this step before next
-				storageBarrier();
+			let input_offset = step * INPUT_SIZE;
+			
+			// W_ih * x
+			var sum: f32 = bias[h_idx];
+			for (var i: u32 = 0u; i < INPUT_SIZE; i++) {
+				sum += input[input_offset + i] * w_ih[h_idx * INPUT_SIZE + i];
 			}
+
+			// W_hh * h (read from hidden buffer - synchronized between dispatches)
+			for (var i: u32 = 0u; i < HIDDEN_SIZE; i++) {
+				sum += hidden[i] * w_hh[h_idx * HIDDEN_SIZE + i];
+			}
+
+			// tanh activation
+			let h_val = tanh(sum);
+			
+			// Update hidden state and output
+			hidden[h_idx] = h_val;
+			output[step * HIDDEN_SIZE + h_idx] = h_val;
 		}
-	`, l.Spec.SeqLen, l.Spec.InputSize, l.Spec.HiddenSize)
+	`, l.Spec.InputSize, l.Spec.HiddenSize)
 }
 
 func (l *RNNLayer) GenerateBackwardShader() string {
@@ -285,22 +287,28 @@ func (l *RNNLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 }
 
 func (l *RNNLayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
-	// Note: This is a simplified version without step uniform
-	// For full RNN, we'd need to update step each iteration
+	// Create one bind group per time step, each with its own step uniform buffer
+	l.bindGroups = make([]*wgpu.BindGroup, l.Spec.SeqLen)
 	var err error
-	l.bindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Label:  labelPrefix + "_Bind",
-		Layout: l.pipeline.GetBindGroupLayout(0),
-		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
-			{Binding: 1, Buffer: l.WeightIHBuffer, Size: l.WeightIHBuffer.GetSize()},
-			{Binding: 2, Buffer: l.WeightHHBuffer, Size: l.WeightHHBuffer.GetSize()},
-			{Binding: 3, Buffer: l.BiasBuffer, Size: l.BiasBuffer.GetSize()},
-			{Binding: 4, Buffer: l.HiddenBuffer, Size: l.HiddenBuffer.GetSize()},
-			{Binding: 5, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
-		},
-	})
-	return err
+	for step := 0; step < l.Spec.SeqLen; step++ {
+		l.bindGroups[step], err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  fmt.Sprintf("%s_Bind%d", labelPrefix, step),
+			Layout: l.pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
+				{Binding: 1, Buffer: l.WeightIHBuffer, Size: l.WeightIHBuffer.GetSize()},
+				{Binding: 2, Buffer: l.WeightHHBuffer, Size: l.WeightHHBuffer.GetSize()},
+				{Binding: 3, Buffer: l.BiasBuffer, Size: l.BiasBuffer.GetSize()},
+				{Binding: 4, Buffer: l.HiddenBuffer, Size: l.HiddenBuffer.GetSize()},
+				{Binding: 5, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+				{Binding: 6, Buffer: l.StepBuffers[step], Size: 4},
+			},
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (l *RNNLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
@@ -319,11 +327,14 @@ func (l *RNNLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOu
 }
 
 func (l *RNNLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
-	// Simplified: dispatch for all time steps (sequential nature handled externally)
-	pass.SetPipeline(l.pipeline)
-	pass.SetBindGroup(0, l.bindGroup, nil)
+	// Dispatch once per time step - each step processes in parallel within hidden units
+	// but steps must be sequential due to hidden state dependency
 	wg := uint32((l.Spec.HiddenSize + 255) / 256)
-	pass.DispatchWorkgroups(wg, 1, 1)
+	for step := 0; step < l.Spec.SeqLen; step++ {
+		pass.SetPipeline(l.pipeline)
+		pass.SetBindGroup(0, l.bindGroups[step], nil)
+		pass.DispatchWorkgroups(wg, 1, 1)
+	}
 }
 
 func (l *RNNLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
@@ -360,11 +371,20 @@ func (l *RNNLayer) Cleanup() {
 			b.Destroy()
 		}
 	}
+	// Clean up step buffers
+	for _, b := range l.StepBuffers {
+		if b != nil {
+			b.Destroy()
+		}
+	}
 	if l.pipeline != nil {
 		l.pipeline.Release()
 	}
-	if l.bindGroup != nil {
-		l.bindGroup.Release()
+	// Clean up per-step bind groups
+	for _, bg := range l.bindGroups {
+		if bg != nil {
+			bg.Release()
+		}
 	}
 	if l.bwPipeline != nil {
 		l.bwPipeline.Release()

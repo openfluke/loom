@@ -1304,6 +1304,10 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		}
 		config = InitRNNBrain(dModel, 0.5)
 		config.RNNInputSize = def.InputSize
+		config.HiddenSize = def.HiddenSize
+		if def.SeqLength > 0 {
+			config.SeqLength = def.SeqLength
+		}
 
 	case "lstm":
 		// Use InitLSTMBrain to properly initialize weights
@@ -1313,6 +1317,10 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		}
 		config = InitLSTMBrain(dModel, 0.5)
 		config.RNNInputSize = def.InputSize
+		config.HiddenSize = def.HiddenSize
+		if def.SeqLength > 0 {
+			config.SeqLength = def.SeqLength
+		}
 
 	case "softmax":
 		config.Type = LayerSoftmax
