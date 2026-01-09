@@ -161,6 +161,13 @@ func (l *LayerNormLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix strin
 }
 
 func (l *LayerNormLayer) GenerateShader() string {
+	// Optimized LayerNorm using workgroup_size(256) with shared memory reductions
+	// Each workgroup handles one batch sample
+	// 256 threads collaborate to compute mean/variance using parallel reduction
+
+	// Calculate iterations per thread (ceiling division)
+	elemsPerThread := (l.Spec.NormSize + 255) / 256
+
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
 		@group(0) @binding(1) var<storage, read_write> output : array<f32>;
@@ -169,59 +176,105 @@ func (l *LayerNormLayer) GenerateShader() string {
 
 		const N: u32 = %du;
 		const EPS: f32 = %f;
+		const ELEMS_PER_THREAD: u32 = %du;
 
-		@compute @workgroup_size(1)
-		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-			let b = gid.x;
-			let offset = b * N;
+		// Shared memory for parallel reductions
+		var<workgroup> shared_sum: array<f32, 256>;
+		var<workgroup> shared_sq: array<f32, 256>;
+		var<workgroup> wg_mean: f32;
+		var<workgroup> wg_invstd: f32;
 
-			var sum: f32 = 0.0;
-			for (var i: u32 = 0u; i < N; i++) {
-				sum += input[offset + i];
+		@compute @workgroup_size(256)
+		fn main(
+			@builtin(workgroup_id) wg_id: vec3<u32>,
+			@builtin(local_invocation_id) local_id: vec3<u32>
+		) {
+			let batch = wg_id.x;
+			let tid = local_id.x;
+			let offset = batch * N;
+
+			// Phase 1: Each thread sums its chunk of elements
+			var local_sum: f32 = 0.0;
+			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
+				let idx = tid + i * 256u;
+				if (idx < N) {
+					local_sum += input[offset + idx];
+				}
 			}
-			let mean = sum / f32(N);
+			shared_sum[tid] = local_sum;
+			workgroupBarrier();
 
-			var sumSq: f32 = 0.0;
-			for (var i: u32 = 0u; i < N; i++) {
-				let diff = input[offset + i] - mean;
-				sumSq += diff * diff;
+			// Parallel reduction for sum (log2 steps)
+			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
+				if (tid < s) {
+					shared_sum[tid] = shared_sum[tid] + shared_sum[tid + s];
+				}
+				workgroupBarrier();
 			}
-			let var_val = sumSq / f32(N);
-			let stdDev = sqrt(var_val + EPS);
 
-			for (var i: u32 = 0u; i < N; i++) {
-				let val = input[offset + i];
-				let norm = (val - mean) / stdDev;
-				
-				// Optional gamma lookup - assumes 0 if OOB? No, we bound buffer.
-				// If gamma array is size 1 (dummy), use 1.0. 
-				// But real implement expects array of size N.
-				// For now assumes correct size matching N.
-				var g: f32 = 1.0;
-				if (arrayLength(&gamma) >= N) { g = gamma[i]; }
-				
-				var bt: f32 = 0.0;
-				if (arrayLength(&beta) >= N) { bt = beta[i]; }
+			// Thread 0 computes mean
+			if (tid == 0u) {
+				wg_mean = shared_sum[0] / f32(N);
+			}
+			workgroupBarrier();
 
-				output[offset + i] = norm * g + bt;
+			let mean = wg_mean;
+
+			// Phase 2: Each thread sums squared differences
+			var local_sq: f32 = 0.0;
+			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
+				let idx = tid + i * 256u;
+				if (idx < N) {
+					let diff = input[offset + idx] - mean;
+					local_sq += diff * diff;
+				}
+			}
+			shared_sq[tid] = local_sq;
+			workgroupBarrier();
+
+			// Parallel reduction for variance
+			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
+				if (tid < s) {
+					shared_sq[tid] = shared_sq[tid] + shared_sq[tid + s];
+				}
+				workgroupBarrier();
+			}
+
+			// Thread 0 computes inverse std
+			if (tid == 0u) {
+				let variance = shared_sq[0] / f32(N);
+				wg_invstd = 1.0 / sqrt(variance + EPS);
+			}
+			workgroupBarrier();
+
+			let invstd = wg_invstd;
+
+			// Phase 3: All threads normalize their elements in parallel
+			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
+				let idx = tid + i * 256u;
+				if (idx < N) {
+					let val = input[offset + idx];
+					let norm = (val - mean) * invstd;
+					
+					var g: f32 = 1.0;
+					if (arrayLength(&gamma) >= N) { g = gamma[idx]; }
+					
+					var bt: f32 = 0.0;
+					if (arrayLength(&beta) >= N) { bt = beta[idx]; }
+
+					output[offset + idx] = norm * g + bt;
+				}
 			}
 		}
-	`, l.Spec.NormSize, l.Spec.Epsilon)
+	`, l.Spec.NormSize, l.Spec.Epsilon, elemsPerThread)
 }
 
 func (l *LayerNormLayer) GenerateBackwardShader() string {
-	// Need to calculate:
-	// dGamma, dBeta, dInput
-	// Inputs: dOutput, Input, Gamma, (Mean/Std recomputed or stored?)
-	// Recomputing Mean/Std is standard for memory efficiency.
+	// Optimized backward pass using workgroup_size(256) with shared memory reductions
+	// Each workgroup handles one batch sample
+	// 256 threads collaborate using parallel reduction
 
-	// Math:
-	// dBeta[i] = sum over batch (dOutput[b, i])
-	// dGamma[i] = sum over batch (dOutput[b, i] * x_hat[b, i])
-	// dInput[b, i] = ... complex ...
-
-	// For atomic float add, we use u32 atomics with bitcast
-	// d_gamma and d_beta are declared as atomic<u32> and we inline CAS loops
+	elemsPerThread := (l.Spec.NormSize + 255) / 256
 
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
@@ -234,97 +287,160 @@ func (l *LayerNormLayer) GenerateBackwardShader() string {
 
 		const N: u32 = %du;
 		const EPS: f32 = %f;
+		const ELEMS_PER_THREAD: u32 = %du;
 
-		@compute @workgroup_size(1)
-		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-			let b = gid.x;
-			let offset = b * N;
-			
-			// 1. Recompute Mean/Std/x_hat
-			var sum: f32 = 0.0;
-			for (var i: u32 = 0u; i < N; i++) {
-				sum += input[offset + i];
-			}
-			let mean = sum / f32(N);
+		// Shared memory for reductions
+		var<workgroup> shared_sum: array<f32, 256>;
+		var<workgroup> shared_sq: array<f32, 256>;
+		var<workgroup> wg_mean: f32;
+		var<workgroup> wg_invstd: f32;
+		var<workgroup> wg_sum_dxhat: f32;
+		var<workgroup> wg_sum_dxhat_xhat: f32;
 
-			var sumSq: f32 = 0.0;
-			for (var i: u32 = 0u; i < N; i++) {
-				let diff = input[offset + i] - mean;
-				sumSq += diff * diff;
-			}
-			let var_val = sumSq / f32(N);
-			let stdDev = sqrt(var_val + EPS);
-			let invStd = 1.0 / stdDev;
+		@compute @workgroup_size(256)
+		fn main(
+			@builtin(workgroup_id) wg_id: vec3<u32>,
+			@builtin(local_invocation_id) local_id: vec3<u32>
+		) {
+			let batch = wg_id.x;
+			let tid = local_id.x;
+			let offset = batch * N;
 			
-			// 2. Accumulate gradients with inline atomic adds
-			var sum_dxhat: f32 = 0.0;
-			var sum_dxhat_xhat: f32 = 0.0;
-			
-			for (var i: u32 = 0u; i < N; i++) {
-				let idx = offset + i;
-				let val = input[idx];
-				let dout = d_output[idx];
-				
-				let x_hat = (val - mean) * invStd;
-				
-				// Inline atomic add for d_beta[i]
-				{
-					var old_val: u32 = atomicLoad(&d_beta[i]);
-					loop {
-						let old_f32 = bitcast<f32>(old_val);
-						let new_f32 = old_f32 + dout;
-						let new_val = bitcast<u32>(new_f32);
-						let result = atomicCompareExchangeWeak(&d_beta[i], old_val, new_val);
-						if (result.exchanged) {
-							break;
-						}
-						old_val = result.old_value;
-					}
+			// Phase 1: Compute mean using parallel reduction
+			var local_sum: f32 = 0.0;
+			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
+				let idx = tid + i * 256u;
+				if (idx < N) {
+					local_sum += input[offset + idx];
 				}
-				
-				// Inline atomic add for d_gamma[i]
-				{
-					let gamma_contrib = dout * x_hat;
-					var old_val: u32 = atomicLoad(&d_gamma[i]);
-					loop {
-						let old_f32 = bitcast<f32>(old_val);
-						let new_f32 = old_f32 + gamma_contrib;
-						let new_val = bitcast<u32>(new_f32);
-						let result = atomicCompareExchangeWeak(&d_gamma[i], old_val, new_val);
-						if (result.exchanged) {
-							break;
-						}
-						old_val = result.old_value;
-					}
+			}
+			shared_sum[tid] = local_sum;
+			workgroupBarrier();
+
+			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
+				if (tid < s) {
+					shared_sum[tid] = shared_sum[tid] + shared_sum[tid + s];
 				}
-				
-				// Backprop to Input
-				var g: f32 = 1.0;
-				if (arrayLength(&gamma) >= N) { g = gamma[i]; }
-				
-				let d_xhat = dout * g;
-				
-				sum_dxhat += d_xhat;
-				sum_dxhat_xhat += d_xhat * x_hat;
+				workgroupBarrier();
+			}
+			if (tid == 0u) { wg_mean = shared_sum[0] / f32(N); }
+			workgroupBarrier();
+			let mean = wg_mean;
+
+			// Phase 2: Compute variance using parallel reduction
+			var local_sq: f32 = 0.0;
+			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
+				let idx = tid + i * 256u;
+				if (idx < N) {
+					let diff = input[offset + idx] - mean;
+					local_sq += diff * diff;
+				}
+			}
+			shared_sq[tid] = local_sq;
+			workgroupBarrier();
+
+			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
+				if (tid < s) {
+					shared_sq[tid] = shared_sq[tid] + shared_sq[tid + s];
+				}
+				workgroupBarrier();
+			}
+			if (tid == 0u) {
+				let variance = shared_sq[0] / f32(N);
+				wg_invstd = 1.0 / sqrt(variance + EPS);
+			}
+			workgroupBarrier();
+			let invStd = wg_invstd;
+			
+			// Phase 3: Accumulate d_gamma/d_beta (atomic) and compute sum_dxhat, sum_dxhat_xhat
+			var local_sum_dxhat: f32 = 0.0;
+			var local_sum_dxhat_xhat: f32 = 0.0;
+			
+			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
+				let idx = tid + i * 256u;
+				if (idx < N) {
+					let val = input[offset + idx];
+					let dout = d_output[offset + idx];
+					let x_hat = (val - mean) * invStd;
+					
+					// Atomic add for d_beta
+					{
+						var old_val: u32 = atomicLoad(&d_beta[idx]);
+						loop {
+							let old_f32 = bitcast<f32>(old_val);
+							let new_f32 = old_f32 + dout;
+							let new_val = bitcast<u32>(new_f32);
+							let result = atomicCompareExchangeWeak(&d_beta[idx], old_val, new_val);
+							if (result.exchanged) { break; }
+							old_val = result.old_value;
+						}
+					}
+					
+					// Atomic add for d_gamma
+					{
+						let gamma_contrib = dout * x_hat;
+						var old_val: u32 = atomicLoad(&d_gamma[idx]);
+						loop {
+							let old_f32 = bitcast<f32>(old_val);
+							let new_f32 = old_f32 + gamma_contrib;
+							let new_val = bitcast<u32>(new_f32);
+							let result = atomicCompareExchangeWeak(&d_gamma[idx], old_val, new_val);
+							if (result.exchanged) { break; }
+							old_val = result.old_value;
+						}
+					}
+					
+					var g: f32 = 1.0;
+					if (arrayLength(&gamma) >= N) { g = gamma[idx]; }
+					let d_xhat = dout * g;
+					
+					local_sum_dxhat += d_xhat;
+					local_sum_dxhat_xhat += d_xhat * x_hat;
+				}
 			}
 			
-			// 3. Compute dInput (per-batch, no accumulation needed)
-			for (var i: u32 = 0u; i < N; i++) {
-				let idx = offset + i;
-				let val = input[idx];
-				let x_hat = (val - mean) * invStd;
-				
-				var g: f32 = 1.0;
-				if (arrayLength(&gamma) >= N) { g = gamma[i]; }
-				
-				let dout = d_output[idx];
-				let d_xhat = dout * g;
-				
-				let dx = invStd * (d_xhat - (sum_dxhat / f32(N)) - x_hat * (sum_dxhat_xhat / f32(N)));
-				d_input[idx] = dx;
+			// Reduce sum_dxhat
+			shared_sum[tid] = local_sum_dxhat;
+			workgroupBarrier();
+			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
+				if (tid < s) { shared_sum[tid] = shared_sum[tid] + shared_sum[tid + s]; }
+				workgroupBarrier();
+			}
+			if (tid == 0u) { wg_sum_dxhat = shared_sum[0]; }
+			workgroupBarrier();
+			
+			// Reduce sum_dxhat_xhat
+			shared_sq[tid] = local_sum_dxhat_xhat;
+			workgroupBarrier();
+			for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
+				if (tid < s) { shared_sq[tid] = shared_sq[tid] + shared_sq[tid + s]; }
+				workgroupBarrier();
+			}
+			if (tid == 0u) { wg_sum_dxhat_xhat = shared_sq[0]; }
+			workgroupBarrier();
+			
+			let sum_dxhat = wg_sum_dxhat;
+			let sum_dxhat_xhat = wg_sum_dxhat_xhat;
+			
+			// Phase 4: Compute d_input for each element
+			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
+				let idx = tid + i * 256u;
+				if (idx < N) {
+					let val = input[offset + idx];
+					let x_hat = (val - mean) * invStd;
+					
+					var g: f32 = 1.0;
+					if (arrayLength(&gamma) >= N) { g = gamma[idx]; }
+					
+					let dout = d_output[offset + idx];
+					let d_xhat = dout * g;
+					
+					let dx = invStd * (d_xhat - (sum_dxhat / f32(N)) - x_hat * (sum_dxhat_xhat / f32(N)));
+					d_input[offset + idx] = dx;
+				}
 			}
 		}
-	`, l.Spec.NormSize, l.Spec.Epsilon)
+	`, l.Spec.NormSize, l.Spec.Epsilon, elemsPerThread)
 }
 
 func (l *LayerNormLayer) Compile(ctx *Context, labelPrefix string) error {
