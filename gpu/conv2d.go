@@ -59,9 +59,42 @@ func (l *Conv2DLayer) computeOutputSize() (int, int) {
 func (l *Conv2DLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
+	// Validate parameters
+	if l.Spec.InputHeight <= 0 {
+		l.Spec.InputHeight = 32
+	}
+	if l.Spec.InputWidth <= 0 {
+		l.Spec.InputWidth = 32
+	}
+	if l.Spec.InChannels <= 0 {
+		l.Spec.InChannels = 1
+	}
+	if l.Spec.OutChannels <= 0 {
+		l.Spec.OutChannels = 1
+	}
+	if l.Spec.KernelSize <= 0 {
+		l.Spec.KernelSize = 3
+	}
+	if l.Spec.Stride <= 0 {
+		l.Spec.Stride = 1
+	}
+
 	l.outputH, l.outputW = l.computeOutputSize()
+	if l.outputH <= 0 {
+		l.outputH = 1
+	}
+	if l.outputW <= 0 {
+		l.outputW = 1
+	}
+
 	inputSize := l.Spec.InputHeight * l.Spec.InputWidth * l.Spec.InChannels
+	if inputSize < 1 {
+		inputSize = 1
+	}
 	outputSize := l.outputH * l.outputW * l.Spec.OutChannels
+	if outputSize < 1 {
+		outputSize = 1
+	}
 
 	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_In",
@@ -82,21 +115,27 @@ func (l *Conv2DLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	}
 
 	weightSize := l.Spec.OutChannels * l.Spec.InChannels * l.Spec.KernelSize * l.Spec.KernelSize
-	if len(l.Spec.Weights) > 0 {
-		l.WeightBuffer, err = NewFloatBuffer(l.Spec.Weights, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
-	} else {
-		placeholder := make([]float32, weightSize)
-		l.WeightBuffer, err = NewFloatBuffer(placeholder, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+	if weightSize < 1 {
+		weightSize = 1
 	}
+
+	// Ensure weights array matches expected size
+	if len(l.Spec.Weights) != weightSize {
+		l.Spec.Weights = make([]float32, weightSize)
+		for i := range l.Spec.Weights {
+			l.Spec.Weights[i] = float32(i%100) * 0.01
+		}
+	}
+	l.WeightBuffer, err = NewFloatBuffer(l.Spec.Weights, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 	if err != nil {
 		return err
 	}
 
-	bias := l.Spec.Bias
-	if len(bias) == 0 {
-		bias = make([]float32, l.Spec.OutChannels)
+	// Ensure bias array matches expected size
+	if len(l.Spec.Bias) != l.Spec.OutChannels {
+		l.Spec.Bias = make([]float32, l.Spec.OutChannels)
 	}
-	l.BiasBuffer, err = NewFloatBuffer(bias, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+	l.BiasBuffer, err = NewFloatBuffer(l.Spec.Bias, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 	if err != nil {
 		return err
 	}

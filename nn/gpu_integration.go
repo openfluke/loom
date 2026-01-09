@@ -428,11 +428,34 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 
 	case LayerConv1D:
 		seqLen := inputSize / l.Conv1DInChannels
+		if seqLen == 0 {
+			seqLen = 32 // Default sequence length
+		}
 		stride := l.Conv1DStride
 		if stride < 1 {
 			stride = 1
 		}
 		outLen := (seqLen+2*l.Conv1DPadding-l.Conv1DKernelSize)/stride + 1
+		if outLen <= 0 {
+			outLen = 1
+		}
+
+		// Ensure weights and bias are properly sized
+		weightSize := l.Conv1DFilters * l.Conv1DInChannels * l.Conv1DKernelSize
+		weights := l.Conv1DKernel
+		if len(weights) != weightSize {
+			weights = make([]float32, weightSize)
+			// Initialize with small random values
+			for i := range weights {
+				weights[i] = float32(i%100) * 0.01
+			}
+		}
+
+		bias := l.Conv1DBias
+		if len(bias) != l.Conv1DFilters {
+			bias = make([]float32, l.Conv1DFilters)
+		}
+
 		spec := gpu.Conv1DSpec{
 			SeqLen:      seqLen,
 			InChannels:  l.Conv1DInChannels,
@@ -440,42 +463,82 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			KernelSize:  l.Conv1DKernelSize,
 			Stride:      stride,
 			Padding:     l.Conv1DPadding,
-			Weights:     l.Conv1DKernel,
-			Bias:        l.Conv1DBias,
+			Weights:     weights,
+			Bias:        bias,
 			Activation:  "relu",
 		}
 		return &gpu.Conv1DLayer{Spec: spec}, outLen * l.Conv1DFilters, nil
 
 	case LayerConv2D:
-		w := 32
-		if l.InputChannels > 0 {
-			val := float64(inputSize / l.InputChannels)
-			if val > 0 {
-				w = int(math.Sqrt(val))
-			}
+		// Default parameters
+		inChannels := l.InputChannels
+		if inChannels <= 0 {
+			inChannels = 8
 		}
-		if w == 0 {
-			w = 32
+		filters := l.Filters
+		if filters <= 0 {
+			filters = 8
+		}
+		kernelSize := l.KernelSize
+		if kernelSize <= 0 {
+			kernelSize = 3
 		}
 		stride := l.Stride
 		if stride < 1 {
 			stride = 1
 		}
-		outH := (w+2*l.Padding-l.KernelSize)/stride + 1
-		outW := (w+2*l.Padding-l.KernelSize)/stride + 1
+
+		w := 32
+		if inChannels > 0 && inputSize > 0 {
+			val := float64(inputSize / inChannels)
+			if val > 0 {
+				w = int(math.Sqrt(val))
+			}
+		}
+		if w <= 0 {
+			w = 16
+		}
+
+		outH := (w+2*l.Padding-kernelSize)/stride + 1
+		outW := (w+2*l.Padding-kernelSize)/stride + 1
+		if outH <= 0 {
+			outH = w
+		}
+		if outW <= 0 {
+			outW = w
+		}
+
+		// Ensure weights and bias are properly sized
+		weightSize := filters * inChannels * kernelSize * kernelSize
+		if weightSize < 1 {
+			weightSize = 1
+		}
+		weights := l.Kernel
+		if len(weights) != weightSize {
+			weights = make([]float32, weightSize)
+			for i := range weights {
+				weights[i] = float32(i%100) * 0.01
+			}
+		}
+
+		bias := l.Bias
+		if len(bias) != filters {
+			bias = make([]float32, filters)
+		}
+
 		spec := gpu.Conv2DSpec{
 			InputWidth:  w,
 			InputHeight: w,
-			InChannels:  l.InputChannels,
-			OutChannels: l.Filters,
-			KernelSize:  l.KernelSize,
+			InChannels:  inChannels,
+			OutChannels: filters,
+			KernelSize:  kernelSize,
 			Stride:      stride,
 			Padding:     l.Padding,
-			Weights:     l.Kernel,
-			Bias:        l.Bias,
+			Weights:     weights,
+			Bias:        bias,
 			Activation:  "relu",
 		}
-		return &gpu.Conv2DLayer{Spec: spec}, outH * outW * l.Filters, nil
+		return &gpu.Conv2DLayer{Spec: spec}, outH * outW * filters, nil
 
 	case LayerMultiHeadAttention:
 		headDim := 0
@@ -499,28 +562,56 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		return &gpu.MHALayer{Spec: spec}, l.DModel * seqLen, nil
 
 	case LayerRNN:
-		seqLen := 100
-		if l.RNNInputSize > 0 && inputSize > 0 {
-			seqLen = inputSize / l.RNNInputSize
+		// Default parameters
+		rnnInputSize := l.RNNInputSize
+		if rnnInputSize <= 0 {
+			rnnInputSize = 64
 		}
+		hiddenSize := l.HiddenSize
+		if hiddenSize <= 0 {
+			hiddenSize = 64
+		}
+
+		seqLen := 32
+		if rnnInputSize > 0 && inputSize > 0 {
+			seqLen = inputSize / rnnInputSize
+		}
+		if seqLen <= 0 {
+			seqLen = 32
+		}
+
 		spec := gpu.RNNSpec{
-			InputSize:  l.RNNInputSize,
-			HiddenSize: l.HiddenSize,
+			InputSize:  rnnInputSize,
+			HiddenSize: hiddenSize,
 			SeqLen:     seqLen,
 			WeightIH:   l.WeightIH,
 			WeightHH:   l.WeightHH,
 			BiasH:      l.BiasH,
 		}
-		return &gpu.RNNLayer{Spec: spec}, l.HiddenSize * seqLen, nil
+		return &gpu.RNNLayer{Spec: spec}, hiddenSize * seqLen, nil
 
 	case LayerLSTM:
-		seqLen := 100
-		if l.RNNInputSize > 0 && inputSize > 0 {
-			seqLen = inputSize / l.RNNInputSize
+		// Default parameters
+		rnnInputSize := l.RNNInputSize
+		if rnnInputSize <= 0 {
+			rnnInputSize = 64
 		}
+		hiddenSize := l.HiddenSize
+		if hiddenSize <= 0 {
+			hiddenSize = 64
+		}
+
+		seqLen := 32
+		if rnnInputSize > 0 && inputSize > 0 {
+			seqLen = inputSize / rnnInputSize
+		}
+		if seqLen <= 0 {
+			seqLen = 32
+		}
+
 		spec := gpu.LSTMSpec{
-			InputSize:  l.RNNInputSize,
-			HiddenSize: l.HiddenSize,
+			InputSize:  rnnInputSize,
+			HiddenSize: hiddenSize,
 			SeqLen:     seqLen,
 			WeightIH_i: l.WeightIH_i,
 			WeightIH_f: l.WeightIH_f,

@@ -62,8 +62,30 @@ func (l *LSTMLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradie
 func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
+	// Validate parameters
+	if l.Spec.SeqLen <= 0 {
+		l.Spec.SeqLen = 32
+	}
+	if l.Spec.InputSize <= 0 {
+		l.Spec.InputSize = 64
+	}
+	if l.Spec.HiddenSize <= 0 {
+		l.Spec.HiddenSize = 64
+	}
+
 	inputTotal := l.Spec.SeqLen * l.Spec.InputSize
+	if inputTotal < 1 {
+		inputTotal = 1
+	}
 	outputTotal := l.Spec.SeqLen * l.Spec.HiddenSize
+	if outputTotal < 1 {
+		outputTotal = 1
+	}
+
+	hiddenSize := l.Spec.HiddenSize
+	if hiddenSize < 1 {
+		hiddenSize = 1
+	}
 
 	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_In",
@@ -85,7 +107,7 @@ func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	l.HiddenBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Hidden",
-		Size:  uint64(l.Spec.HiddenSize * 4),
+		Size:  uint64(hiddenSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
 	if err != nil {
@@ -94,7 +116,7 @@ func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	l.CellBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Cell",
-		Size:  uint64(l.Spec.HiddenSize * 4),
+		Size:  uint64(hiddenSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
 	if err != nil {
@@ -111,7 +133,13 @@ func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	}
 
 	ihSize := l.Spec.HiddenSize * l.Spec.InputSize
+	if ihSize < 1 {
+		ihSize = 1
+	}
 	hhSize := l.Spec.HiddenSize * l.Spec.HiddenSize
+	if hhSize < 1 {
+		hhSize = 1
+	}
 
 	// Combine weights: i, f, g, o
 	combine := func(w1, w2, w3, w4 []float32, size int) []float32 {
@@ -146,17 +174,6 @@ func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	biasData := combine(l.Spec.BiasH_i, l.Spec.BiasH_f, l.Spec.BiasH_g, l.Spec.BiasH_o, l.Spec.HiddenSize)
 	l.CombinedBiases, err = NewFloatBuffer(biasData, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("DEBUG: LSTM %s AllocBuffers. IH: %d, HH: %d. W_IH nil? %v\n", labelPrefix, ihSize, hhSize, l.CombinedWeightsIH == nil)
-
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_Staging",
-		Size:  uint64(outputTotal * 4),
-		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
-	})
 	return err
 }
 
@@ -171,15 +188,15 @@ func (l *LSTMLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) er
 }
 
 func (l *LSTMLayer) GenerateShader() string {
-	// LSTM step: computes all 4 gates and updates h, c
-	// Note: Simplified single-step version
+	// LSTM: computes all 4 gates and updates h, c for all time steps
+	// Process all time steps sequentially, each hidden unit in parallel
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
 		@group(0) @binding(1) var<storage, read_write> hidden : array<f32>;
 		@group(0) @binding(2) var<storage, read_write> cell : array<f32>;
 		@group(0) @binding(3) var<storage, read_write> output : array<f32>;
 		
-		// Gate weights (simplified - 4 concatenated weight sets)
+		// Gate weights (4 concatenated weight sets: i, f, g, o)
 		@group(0) @binding(4) var<storage, read> w_ih : array<f32>;
 		@group(0) @binding(5) var<storage, read> w_hh : array<f32>;
 		@group(0) @binding(6) var<storage, read> bias : array<f32>;
@@ -197,69 +214,86 @@ func (l *LSTMLayer) GenerateShader() string {
 			let h_idx = gid.x;
 			if (h_idx >= HIDDEN_SIZE) { return; }
 
-			// Process first time step for simplicity
-			let step: u32 = 0u;
-			let input_offset = step * INPUT_SIZE;
+			// Initialize from buffers
+			var h_val: f32 = hidden[h_idx];
+			var c_val: f32 = cell[h_idx];
 
-			// Compute input gate
-			var i_gate: f32 = bias[h_idx];
-			for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
-				i_gate += input[input_offset + j] * w_ih[h_idx * INPUT_SIZE + j];
+			// Weight offsets for each gate
+			let IH_STRIDE: u32 = INPUT_SIZE * HIDDEN_SIZE;
+			let HH_STRIDE: u32 = HIDDEN_SIZE * HIDDEN_SIZE;
+
+			// Process all time steps
+			for (var step: u32 = 0u; step < SEQ_LEN; step++) {
+				let input_offset = step * INPUT_SIZE;
+
+				// Compute input gate (i)
+				var i_gate: f32 = bias[h_idx];
+				for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
+					i_gate += input[input_offset + j] * w_ih[h_idx * INPUT_SIZE + j];
+				}
+				for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
+					if (j == h_idx) {
+						i_gate += h_val * w_hh[h_idx * HIDDEN_SIZE + j];
+					} else {
+						i_gate += hidden[j] * w_hh[h_idx * HIDDEN_SIZE + j];
+					}
+				}
+				i_gate = sigmoid(i_gate);
+
+				// Compute forget gate (f)
+				var f_gate: f32 = bias[HIDDEN_SIZE + h_idx];
+				for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
+					f_gate += input[input_offset + j] * w_ih[IH_STRIDE + h_idx * INPUT_SIZE + j];
+				}
+				for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
+					if (j == h_idx) {
+						f_gate += h_val * w_hh[HH_STRIDE + h_idx * HIDDEN_SIZE + j];
+					} else {
+						f_gate += hidden[j] * w_hh[HH_STRIDE + h_idx * HIDDEN_SIZE + j];
+					}
+				}
+				f_gate = sigmoid(f_gate);
+
+				// Compute cell gate (g)
+				var g_gate: f32 = bias[2u * HIDDEN_SIZE + h_idx];
+				for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
+					g_gate += input[input_offset + j] * w_ih[2u * IH_STRIDE + h_idx * INPUT_SIZE + j];
+				}
+				for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
+					if (j == h_idx) {
+						g_gate += h_val * w_hh[2u * HH_STRIDE + h_idx * HIDDEN_SIZE + j];
+					} else {
+						g_gate += hidden[j] * w_hh[2u * HH_STRIDE + h_idx * HIDDEN_SIZE + j];
+					}
+				}
+				g_gate = tanh(g_gate);
+
+				// Compute output gate (o)
+				var o_gate: f32 = bias[3u * HIDDEN_SIZE + h_idx];
+				for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
+					o_gate += input[input_offset + j] * w_ih[3u * IH_STRIDE + h_idx * INPUT_SIZE + j];
+				}
+				for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
+					if (j == h_idx) {
+						o_gate += h_val * w_hh[3u * HH_STRIDE + h_idx * HIDDEN_SIZE + j];
+					} else {
+						o_gate += hidden[j] * w_hh[3u * HH_STRIDE + h_idx * HIDDEN_SIZE + j];
+					}
+				}
+				o_gate = sigmoid(o_gate);
+
+				// Update cell and hidden states
+				c_val = f_gate * c_val + i_gate * g_gate;
+				h_val = o_gate * tanh(c_val);
+
+				// Store to buffers
+				cell[h_idx] = c_val;
+				hidden[h_idx] = h_val;
+				output[step * HIDDEN_SIZE + h_idx] = h_val;
+
+				// Sync before next step
+				storageBarrier();
 			}
-			for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
-				i_gate += hidden[j] * w_hh[h_idx * HIDDEN_SIZE + j];
-			}
-			i_gate = sigmoid(i_gate);
-
-			// Compute forget gate
-			let w_ih_offset_f = INPUT_SIZE * HIDDEN_SIZE;
-			let w_hh_offset_f = HIDDEN_SIZE * HIDDEN_SIZE;
-			let bias_offset_f = HIDDEN_SIZE;
-
-			var f_gate: f32 = bias[bias_offset_f + h_idx];
-			for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
-				f_gate += input[input_offset + j] * w_ih[w_ih_offset_f + h_idx * INPUT_SIZE + j];
-			}
-			for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
-				f_gate += hidden[j] * w_hh[w_hh_offset_f + h_idx * HIDDEN_SIZE + j];
-			}
-			f_gate = sigmoid(f_gate);
-
-			// Compute cell gate
-			let w_ih_offset_g = 2u * INPUT_SIZE * HIDDEN_SIZE;
-			let w_hh_offset_g = 2u * HIDDEN_SIZE * HIDDEN_SIZE;
-			let bias_offset_g = 2u * HIDDEN_SIZE;
-
-			var g_gate: f32 = bias[bias_offset_g + h_idx];
-			for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
-				g_gate += input[input_offset + j] * w_ih[w_ih_offset_g + h_idx * INPUT_SIZE + j];
-			}
-			for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
-				g_gate += hidden[j] * w_hh[w_hh_offset_g + h_idx * HIDDEN_SIZE + j];
-			}
-			g_gate = tanh(g_gate);
-
-			// Compute output gate
-			let w_ih_offset_o = 3u * INPUT_SIZE * HIDDEN_SIZE;
-			let w_hh_offset_o = 3u * HIDDEN_SIZE * HIDDEN_SIZE;
-			let bias_offset_o = 3u * HIDDEN_SIZE;
-
-			var o_gate: f32 = bias[bias_offset_o + h_idx];
-			for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
-				o_gate += input[input_offset + j] * w_ih[w_ih_offset_o + h_idx * INPUT_SIZE + j];
-			}
-			for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
-				o_gate += hidden[j] * w_hh[w_hh_offset_o + h_idx * HIDDEN_SIZE + j];
-			}
-			o_gate = sigmoid(o_gate);
-
-			// Update cell and hidden states
-			let new_c = f_gate * cell[h_idx] + i_gate * g_gate;
-			let new_h = o_gate * tanh(new_c);
-
-			cell[h_idx] = new_c;
-			hidden[h_idx] = new_h;
-			output[step * HIDDEN_SIZE + h_idx] = new_h;
 		}
 	`, l.Spec.SeqLen, l.Spec.InputSize, l.Spec.HiddenSize)
 }

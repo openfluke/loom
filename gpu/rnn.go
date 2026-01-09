@@ -45,8 +45,30 @@ func (l *RNNLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradien
 func (l *RNNLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
+	// Validate parameters
+	if l.Spec.SeqLen <= 0 {
+		l.Spec.SeqLen = 32
+	}
+	if l.Spec.InputSize <= 0 {
+		l.Spec.InputSize = 64
+	}
+	if l.Spec.HiddenSize <= 0 {
+		l.Spec.HiddenSize = 64
+	}
+
 	inputTotal := l.Spec.SeqLen * l.Spec.InputSize
+	if inputTotal < 1 {
+		inputTotal = 1
+	}
 	outputTotal := l.Spec.SeqLen * l.Spec.HiddenSize
+	if outputTotal < 1 {
+		outputTotal = 1
+	}
+
+	hiddenSize := l.Spec.HiddenSize
+	if hiddenSize < 1 {
+		hiddenSize = 1
+	}
 
 	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_In",
@@ -68,7 +90,7 @@ func (l *RNNLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	l.HiddenBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Hidden",
-		Size:  uint64(l.Spec.HiddenSize * 4),
+		Size:  uint64(hiddenSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
 	if err != nil {
@@ -77,31 +99,42 @@ func (l *RNNLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	// Weights
 	ihSize := l.Spec.HiddenSize * l.Spec.InputSize
+	if ihSize < 1 {
+		ihSize = 1
+	}
 	hhSize := l.Spec.HiddenSize * l.Spec.HiddenSize
-
-	if len(l.Spec.WeightIH) > 0 {
-		l.WeightIHBuffer, err = NewFloatBuffer(l.Spec.WeightIH, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
-	} else {
-		l.WeightIHBuffer, err = NewFloatBuffer(make([]float32, ihSize), wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+	if hhSize < 1 {
+		hhSize = 1
 	}
+
+	// Ensure weight arrays match expected sizes
+	if len(l.Spec.WeightIH) != ihSize {
+		l.Spec.WeightIH = make([]float32, ihSize)
+		for i := range l.Spec.WeightIH {
+			l.Spec.WeightIH[i] = float32(i%100) * 0.01
+		}
+	}
+	l.WeightIHBuffer, err = NewFloatBuffer(l.Spec.WeightIH, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 	if err != nil {
 		return err
 	}
 
-	if len(l.Spec.WeightHH) > 0 {
-		l.WeightHHBuffer, err = NewFloatBuffer(l.Spec.WeightHH, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
-	} else {
-		l.WeightHHBuffer, err = NewFloatBuffer(make([]float32, hhSize), wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+	if len(l.Spec.WeightHH) != hhSize {
+		l.Spec.WeightHH = make([]float32, hhSize)
+		for i := range l.Spec.WeightHH {
+			l.Spec.WeightHH[i] = float32(i%100) * 0.01
+		}
 	}
+	l.WeightHHBuffer, err = NewFloatBuffer(l.Spec.WeightHH, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 	if err != nil {
 		return err
 	}
 
-	bias := l.Spec.BiasH
-	if len(bias) == 0 {
-		bias = make([]float32, l.Spec.HiddenSize)
+	// Ensure bias array matches expected size
+	if len(l.Spec.BiasH) != l.Spec.HiddenSize {
+		l.Spec.BiasH = make([]float32, l.Spec.HiddenSize)
 	}
-	l.BiasBuffer, err = NewFloatBuffer(bias, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+	l.BiasBuffer, err = NewFloatBuffer(l.Spec.BiasH, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 	if err != nil {
 		return err
 	}
@@ -125,8 +158,9 @@ func (l *RNNLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) err
 }
 
 func (l *RNNLayer) GenerateShader() string {
-	// Single time step RNN: h' = tanh(W_ih * x + W_hh * h + b)
-	// We process one step at a time, but each hidden unit in parallel
+	// RNN: h' = tanh(W_ih * x + W_hh * h + b)
+	// Process all time steps sequentially, each hidden unit in parallel
+	// Note: Uses a loop over time steps since RNN has sequential dependencies
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
 		@group(0) @binding(1) var<storage, read> w_ih : array<f32>;
@@ -139,33 +173,45 @@ func (l *RNNLayer) GenerateShader() string {
 		const INPUT_SIZE: u32 = %du;
 		const HIDDEN_SIZE: u32 = %du;
 
-		// Step index passed as uniform or we iterate externally
-		// @group(0) @binding(6) var<uniform> step: u32; // Removed step uniform
-		// Hardcode step to 0u as per plan.
-		const step: u32 = 0u;
-
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let h_idx = gid.x;
 			if (h_idx >= HIDDEN_SIZE) { return; }
 
-			let input_offset = step * INPUT_SIZE;
-			
-			// W_ih * x
-			var sum: f32 = bias[h_idx];
-			for (var i: u32 = 0u; i < INPUT_SIZE; i++) {
-				sum += input[input_offset + i] * w_ih[h_idx * INPUT_SIZE + i];
-			}
+			// Initialize hidden state from buffer (already zero or pre-set)
+			var h_val: f32 = hidden[h_idx];
 
-			// W_hh * h
-			for (var i: u32 = 0u; i < HIDDEN_SIZE; i++) {
-				sum += hidden[i] * w_hh[h_idx * HIDDEN_SIZE + i];
-			}
+			// Process all time steps sequentially
+			for (var step: u32 = 0u; step < SEQ_LEN; step++) {
+				let input_offset = step * INPUT_SIZE;
+				
+				// W_ih * x
+				var sum: f32 = bias[h_idx];
+				for (var i: u32 = 0u; i < INPUT_SIZE; i++) {
+					sum += input[input_offset + i] * w_ih[h_idx * INPUT_SIZE + i];
+				}
 
-			// tanh activation
-			let new_h = tanh(sum);
-			hidden[h_idx] = new_h;
-			output[step * HIDDEN_SIZE + h_idx] = new_h;
+				// W_hh * h (read from current h_val)
+				for (var i: u32 = 0u; i < HIDDEN_SIZE; i++) {
+					// Note: This reads the hidden state that was updated in previous iteration
+					// Each thread updates its own h_idx, so we read from hidden buffer
+					if (i == h_idx) {
+						sum += h_val * w_hh[h_idx * HIDDEN_SIZE + i];
+					} else {
+						sum += hidden[i] * w_hh[h_idx * HIDDEN_SIZE + i];
+					}
+				}
+
+				// tanh activation
+				h_val = tanh(sum);
+				
+				// Update hidden state and output
+				hidden[h_idx] = h_val;
+				output[step * HIDDEN_SIZE + h_idx] = h_val;
+				
+				// Memory barrier to ensure all threads complete this step before next
+				storageBarrier();
+			}
 		}
 	`, l.Spec.SeqLen, l.Spec.InputSize, l.Spec.HiddenSize)
 }

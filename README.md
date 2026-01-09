@@ -244,6 +244,51 @@ Based on exhaustive benchmarks (300+ combinations tested), here are the optimal 
 
 ---
 
+## GPU Acceleration (WebGPU)
+
+**Experimental** GPU acceleration via WebGPU compute shaders. Use with:
+
+```go
+network.GPU = true
+network.WeightsToGPU()           // Mount weights to GPU
+output, _ := network.ForwardCPU(input)  // Auto-routes to GPU!
+network.BackwardGPUNew(dOutput)  // GPU backward pass
+network.ReleaseGPUWeights()      // Cleanup
+```
+
+### Layer GPU Support
+
+| Layer | Forward | Backward | Tested | Notes |
+|:------|:-------:|:--------:|:------:|:------|
+| **Dense** | ✅ | ✅ | ✅ POD Ready | 1.9x forward, 2.2x backward speedup |
+| LayerNorm | ✅ | ✅ | ⚠️ | Needs verification |
+| RMSNorm | ✅ | ✅ | ⚠️ | Needs verification |
+| Softmax | ✅ | ✅ | ⚠️ | Needs verification |
+| Embedding | ✅ | ✅ | ⚠️ | Needs verification |
+| Conv1D | ✅ | ✅ | ⚠️ | Needs verification |
+| Conv2D | ✅ | ✅ | ⚠️ | Needs verification |
+| MultiHeadAttention | ✅ | ✅ | ⚠️ | Needs verification |
+| RNN | ✅ | ✅ | ⚠️ | Needs verification |
+| LSTM | ✅ | ✅ | ⚠️ | Needs verification |
+| SwiGLU | ✅ | ✅ | ⚠️ | Needs verification |
+| Parallel | ❌ | ❌ | — | Not yet implemented |
+| Sequential | ❌ | ❌ | — | Not yet implemented |
+
+### Training Mode GPU Support
+
+| Mode | GPU Support | Notes |
+|:-----|:-----------:|:------|
+| **Forward Pass** | ✅ | Auto-routes via `ForwardCPU()` |
+| **Backward Pass** | ✅ | Via `BackwardGPUNew()` |
+| **Step Forward** | ❌ | CPU only |
+| **Step Tween** | ❌ | CPU only |
+| **Tween Chaining** | ❌ | CPU only |
+
+> [!NOTE]
+> Dense layer has been tested and verified for production use (POD ready). Other layers have GPU implementations but need additional verification before production deployment.
+
+---
+
 ## Quick Start
 
 ### Installation
