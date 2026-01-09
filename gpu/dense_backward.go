@@ -66,7 +66,7 @@ func (s *DenseSequence) EnsureBackwardInitialized() error {
 }
 
 // Actually, let's just make two shader functions and two pipelines.
-func (l *Layer) GenerateBackwardShaderDZ() string {
+func (l *DenseLayer) GenerateBackwardShaderDZ() string {
 	// Derivative act(y) -> f'(z)
 	deriv := "return 1.0;"
 	switch l.Spec.Activation {
@@ -102,7 +102,7 @@ func (l *Layer) GenerateBackwardShaderDZ() string {
 	`, deriv, l.Spec.OutputSize)
 }
 
-func (l *Layer) GenerateBackwardShaderGrads() string {
+func (l *DenseLayer) GenerateBackwardShaderGrads() string {
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
 		@group(0) @binding(2) var<storage, read> weights : array<f32>;
@@ -146,7 +146,7 @@ func (l *Layer) GenerateBackwardShaderGrads() string {
 	`, l.Spec.InputSize, l.Spec.OutputSize)
 }
 
-func (l *Layer) CompileBackward(ctx *Context, labelPrefix string) error {
+func (l *DenseLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	// Pipeline 1: DZ
 	shader1 := l.GenerateBackwardShaderDZ()
 	mod1, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
@@ -186,7 +186,7 @@ func (l *Layer) CompileBackward(ctx *Context, labelPrefix string) error {
 	return nil
 }
 
-func (l *Layer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
+func (l *DenseLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
 	// If dOutputBuffer is nil (last layer), we need to create one?
 	// Or pass it in Dispatch? Dispatch argument is better for chaining.
 	// But BindGroup creation needs the buffer.
@@ -233,7 +233,7 @@ func (l *Layer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutpu
 	return err
 }
 
-func (l *Layer) DispatchBackward(enc *wgpu.CommandEncoder) {
+func (l *DenseLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	// Pass 1: DZ
 	{
 		pass := enc.BeginComputePass(nil)

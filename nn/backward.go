@@ -35,14 +35,14 @@ func GenericBackwardPass[T Numeric](
 	// Gradients for activations [0...totalLayers]
 	// grads[i] is gradient w.r.t. activations[i] (output of layer i-1, input to layer i)
 	grads := make([]*Tensor[T], totalLayers+1)
-	
+
 	// Initialize output gradient
 	grads[totalLayers] = gradOutput.Clone()
-	
+
 	// Storage for weight gradients
 	kernelGrads := make([]any, totalLayers)
 	biasGrads := make([]any, totalLayers)
-	
+
 	// Backpropagate through grid in reverse order
 	for layerIdx := totalLayers - 1; layerIdx >= 0; layerIdx-- {
 		// Calculate grid position for this layer
@@ -52,12 +52,12 @@ func GenericBackwardPass[T Numeric](
 		layer := remainder % n.LayersPerCell
 
 		config := n.GetLayer(row, col, layer)
-		
+
 		// Inputs and Context
 		input := activations[layerIdx] // Input to this layer
 		context := backwardContext[layerIdx]
 		gradOut := grads[layerIdx+1] // Gradient w.r.t. output of this layer
-		
+
 		if gradOut == nil {
 			// Should not happen if graph is connected
 			gradOut = NewTensor[T](len(input.Data)) // Zero gradient
@@ -76,11 +76,11 @@ func GenericBackwardPass[T Numeric](
 			preAct, ok := context.(*Tensor[T])
 			if !ok {
 				// Fallback if context missing
-				preAct = NewTensor[T](len(gradOut.Data)) 
+				preAct = NewTensor[T](len(gradOut.Data))
 			}
-			
+
 			gInput, gWeights, gBias := DenseBackward(gradOut, input, preAct, weights, config.InputHeight, config.OutputHeight, n.BatchSize, config.Activation)
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gWeights
 			biasGrads[layerIdx] = gBias
@@ -88,12 +88,12 @@ func GenericBackwardPass[T Numeric](
 		case LayerConv2D:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
 			preAct, _ := context.(*Tensor[T])
-			
+
 			gInput, gKernel, gBias := Conv2DBackward(gradOut, input, preAct, weights,
 				config.InputHeight, config.InputWidth, config.InputChannels,
 				config.KernelSize, config.Stride, config.Padding, config.Filters,
 				config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
-				
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gKernel
 			biasGrads[layerIdx] = gBias
@@ -103,9 +103,9 @@ func GenericBackwardPass[T Numeric](
 			wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
 			wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
 			hiddenStates, _ := context.(*Tensor[T])
-			
+
 			gInput, gWIH, gWHH, gBiasH := RNNBackward(gradOut, input, hiddenStates, wIH, wHH, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			// Return slice of weight grads
 			kernelGrads[layerIdx] = []*Tensor[T]{gWIH, gWHH}
@@ -128,13 +128,13 @@ func GenericBackwardPass[T Numeric](
 				WeightHH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_o, len(config.WeightHH_o))),
 				BiasH_o:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_o, len(config.BiasH_o))),
 			}
-			
+
 			gInput, gWeights := LSTMBackward(gradOut, input, states, weights, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			// Return all weight grads map
 			kernelGrads[layerIdx] = gWeights // Map
-			biasGrads[layerIdx] = nil // Biases inside map
+			biasGrads[layerIdx] = nil        // Biases inside map
 
 		case LayerSoftmax:
 			// SoftmaxBackward
@@ -150,9 +150,9 @@ func GenericBackwardPass[T Numeric](
 			// Signature: (input, residual, gradOutput, gamma, beta, normSize, batchSize, epsilon)
 			gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
 			beta := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Beta, len(config.Beta)))
-			
+
 			gInput, gGamma, gBeta := LayerNormBackward(input, nil, gradOut, gamma, beta, config.NormSize, n.BatchSize, float64(config.Epsilon))
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gGamma
 			biasGrads[layerIdx] = gBeta
@@ -162,7 +162,7 @@ func GenericBackwardPass[T Numeric](
 			// Signature: (input, residual, gradOutput, gamma, normSize, batchSize, epsilon)
 			gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
 			gInput, gGamma := RMSNormBackward(input, nil, gradOut, gamma, config.NormSize, n.BatchSize, float64(config.Epsilon))
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gGamma
 			biasGrads[layerIdx] = nil
@@ -172,15 +172,15 @@ func GenericBackwardPass[T Numeric](
 			gateW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateWeights, len(config.GateWeights)))
 			upW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpWeights, len(config.UpWeights)))
 			downW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownWeights, len(config.DownWeights)))
-			
+
 			gInput, gGateW, gUpW, gDownW, gGateB, gUpB, gDownB := SwiGLUBackward(
-				gradOut, input, 
-				gateW, upW, downW, 
+				gradOut, input,
+				gateW, upW, downW,
 				ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateBias, len(config.GateBias))),
 				ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpBias, len(config.UpBias))),
 				ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownBias, len(config.DownBias))),
 				config.InputHeight, config.OutputHeight, n.BatchSize)
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = []*Tensor[T]{gGateW, gUpW, gDownW}
 			biasGrads[layerIdx] = []*Tensor[T]{gGateB, gUpB, gDownB}
@@ -188,18 +188,18 @@ func GenericBackwardPass[T Numeric](
 		case LayerMultiHeadAttention:
 			// MultiHeadAttentionBackward
 			weights := &AttentionWeights[T]{
-				QWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
-				QBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
-				KWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
-				KBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
-				VWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
-				VBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
+				QWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
+				QBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
+				KWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
+				KBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
+				VWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
+				VBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
 				OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputWeight, len(config.OutputWeight))),
 				OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputBias, len(config.OutputBias))),
-				DModel: config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
+				DModel:       config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
 			}
 			gInput, gWeights := MultiHeadAttentionBackward(gradOut, input, weights)
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gWeights // Struct
 			biasGrads[layerIdx] = nil
@@ -221,13 +221,13 @@ func GenericBackwardPass[T Numeric](
 		case LayerParallel:
 			// ParallelBackward
 			branchIntermediates, _ := context.([]*Tensor[T])
-			
+
 			// Convert config.ParallelBranches ([]LayerConfig) to []*LayerConfig
 			branches := make([]*LayerConfig, len(config.ParallelBranches))
 			for i := range config.ParallelBranches {
 				branches[i] = &config.ParallelBranches[i]
 			}
-			
+
 			gInput, _ := ParallelBackward(gradOut, input, branches, branchIntermediates, config.CombineMode)
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = nil
@@ -239,7 +239,7 @@ func GenericBackwardPass[T Numeric](
 			// Input has shape [seqLen] (token IDs)
 			// gradOut has shape [seqLen, embeddingDim]
 			gWeights := EmbeddingBackward(gradOut, input, config.VocabSize, config.EmbeddingDim)
-			
+
 			// No gradient w.r.t. input (discrete tokens)
 			accumulateGradient(grads, layerIdx, nil)
 			kernelGrads[layerIdx] = gWeights
@@ -249,17 +249,17 @@ func GenericBackwardPass[T Numeric](
 			// Conv1DBackward
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
 			preAct, _ := context.(*Tensor[T])
-			
-			seqLen := config.InputHeight 
+
+			seqLen := config.InputHeight
 			if seqLen <= 0 {
 				seqLen = len(input.Data) / (config.Conv1DInChannels * n.BatchSize)
 			}
-			
+
 			gInput, gKernel, gBias := Conv1DBackward(gradOut, input, preAct, weights,
 				seqLen, config.Conv1DInChannels,
 				config.Conv1DKernelSize, config.Conv1DStride, config.Conv1DPadding,
 				config.Conv1DFilters, n.BatchSize, config.Activation)
-				
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gKernel
 			biasGrads[layerIdx] = gBias
@@ -274,7 +274,9 @@ func GenericBackwardPass[T Numeric](
 }
 
 func accumulateGradient[T Numeric](grads []*Tensor[T], index int, g *Tensor[T]) {
-	if g == nil { return }
+	if g == nil {
+		return
+	}
 	if grads[index] == nil {
 		grads[index] = g.Clone()
 	} else {
@@ -460,7 +462,7 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 		} else if config.Type == LayerConv1D {
 			// Conv1DBackward
 			input := n.activations[layerIdx]
-			
+
 			gradInput, gradKernel, gradBias := conv1DBackwardCPU(grad, input, preAct, config, n.BatchSize)
 
 			// Store gradients
@@ -513,6 +515,18 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 				}
 				grad = gradInput
 			}
+		} else if config.Type == LayerNorm {
+			// LayerNorm backward
+			input := n.activations[layerIdx]
+			// residual? Not stored in activations usually, unless residual layer.
+			// For standalone LayerNorm, residual is nil.
+
+			gradInput, gradGamma, gradBeta := layerNormBackwardCPU(input, nil, grad, config, n.BatchSize)
+
+			n.kernelGradients[layerIdx] = gradGamma
+			n.biasGradients[layerIdx] = gradBeta
+
+			grad = gradInput
 		} else {
 		}
 

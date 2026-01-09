@@ -24,8 +24,8 @@ type DenseLayerSpec struct {
 	Biases     []float32 // [OutputSize]
 }
 
-// GPULayerCompute holds resources for a single layer execution
-type Layer struct {
+// DenseLayer holds resources for a single layer execution
+type DenseLayer struct {
 	Spec DenseLayerSpec
 
 	pipeline  *wgpu.ComputePipeline
@@ -53,16 +53,16 @@ type Layer struct {
 
 // DenseSequence manages a sequence of dense layers executed on GPU
 type DenseSequence struct {
-	Layers   []*Layer
+	Layers   []*DenseLayer
 	Debug    bool
 	backward *BackwardResources
 }
 
 // NewDenseSequence creates a new sequence handler
 func NewDenseSequence(specs []DenseLayerSpec) *DenseSequence {
-	layers := make([]*Layer, len(specs))
+	layers := make([]*DenseLayer, len(specs))
 	for i, spec := range specs {
-		layers[i] = &Layer{Spec: spec}
+		layers[i] = &DenseLayer{Spec: spec}
 	}
 	return &DenseSequence{
 		Layers: layers,
@@ -76,7 +76,13 @@ func (s *DenseSequence) Cleanup() {
 	}
 }
 
-func (l *Layer) Cleanup() {
+// Interface Implementation
+func (l *DenseLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
+func (l *DenseLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
+func (l *DenseLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
+func (l *DenseLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *DenseLayer) Cleanup() {
 	if l.InputBuffer != nil {
 		l.InputBuffer.Destroy()
 	}
@@ -121,7 +127,7 @@ func (l *Layer) Cleanup() {
 	}
 }
 
-func (l *Layer) UploadWeights(ctx *Context) {
+func (l *DenseLayer) UploadWeights(ctx *Context) {
 	if l.WeightBuffer != nil {
 		// Weights are [Input, Output] on CPU, but need [Output, Input] on GPU.
 		transposed := transposeWeights(l.Spec.Weights, l.Spec.InputSize, l.Spec.OutputSize)
@@ -144,7 +150,7 @@ func transposeWeights(in []float32, rows, cols int) []float32 {
 	return out
 }
 
-func (l *Layer) DownloadWeights(ctx *Context) ([]float32, []float32, error) {
+func (l *DenseLayer) DownloadWeights(ctx *Context) ([]float32, []float32, error) {
 	// Weights matched [Input, Output] on CPU, but [Output, Input] on GPU.
 	// Since verification likely assumes [Input, Output] (original),
 	// we should probably untranspose if we want to inspect them?
@@ -168,7 +174,7 @@ func (l *Layer) DownloadWeights(ctx *Context) ([]float32, []float32, error) {
 	return weights, biases, nil
 }
 
-func (l *Layer) DownloadGradients(ctx *Context) ([]float32, []float32, []float32, error) {
+func (l *DenseLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []float32, error) {
 	// Weights Grads are [Output, Input] on GPU
 	rawWGrad, err := ReadBuffer(l.WeightGradientBuffer, len(l.Spec.Weights))
 	if err != nil {
@@ -193,7 +199,7 @@ func (l *Layer) DownloadGradients(ctx *Context) ([]float32, []float32, []float32
 	return wGrad, bGrad, iGrad, nil
 }
 
-func (l *Layer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
+func (l *DenseLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
 	// Weight Gradients
@@ -233,7 +239,7 @@ func (l *Layer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error 
 }
 
 // generateShaderForLayer creates WGSL for a specific layer configuration
-func (l *Layer) GenerateShader() string {
+func (l *DenseLayer) GenerateShader() string {
 	// Map activation Int to code
 	actFunc := "return x;"
 	switch l.Spec.Activation {
@@ -284,7 +290,7 @@ func (l *Layer) GenerateShader() string {
 	`, actFunc, l.Spec.OutputSize, l.Spec.InputSize)
 }
 
-func (l *Layer) AllocateBuffers(ctx *Context, labelPrefix string) error {
+func (l *DenseLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 	// Input
 	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -330,7 +336,7 @@ func (l *Layer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	return nil
 }
 
-func (l *Layer) Compile(ctx *Context, labelPrefix string) error {
+func (l *DenseLayer) Compile(ctx *Context, labelPrefix string) error {
 	shader := l.GenerateShader()
 	module, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:          labelPrefix + "_Shader",
@@ -356,7 +362,7 @@ func (l *Layer) Compile(ctx *Context, labelPrefix string) error {
 	return nil
 }
 
-func (l *Layer) CreateBindGroup(ctx *Context, labelPrefix string) error {
+func (l *DenseLayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 	var err error
 	l.bindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:  labelPrefix + "_Bind",
@@ -394,7 +400,7 @@ func (s *DenseSequence) Build() error {
 }
 
 // Dispatch records the compute pass for this layer
-func (l *Layer) Dispatch(pass *wgpu.ComputePassEncoder) {
+func (l *DenseLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.SetPipeline(l.pipeline)
 	pass.SetBindGroup(0, l.bindGroup, nil)
 	pass.DispatchWorkgroups(l.WorkgroupsX, 1, 1)
