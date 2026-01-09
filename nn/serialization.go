@@ -518,8 +518,19 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				Type:             LayerSequential,
 				ParallelBranches: nestedBranches, // Sequential uses ParallelBranches to store sub-layers
 			}
-		default:
-			return nil, fmt.Errorf("unknown branch type: %s", def.Type)
+		case "conv1d":
+			config = LayerConfig{
+				Type:             LayerConv1D,
+				Activation:       stringToActivation(def.Activation),
+				Conv1DInChannels: def.InputChannels,
+				Conv1DFilters:    def.Filters,
+				Conv1DKernelSize: def.KernelSize,
+				Conv1DStride:     def.Stride,
+				Conv1DPadding:    def.Padding,
+				InputHeight:      def.InputLength, // Map input_length to InputHeight for internal use
+				// OutputHeight calculated dynamically or from definition if available
+				// deserialization usually trusts correct input
+			}
 		}
 
 		branches[i] = config

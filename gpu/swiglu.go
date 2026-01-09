@@ -478,11 +478,22 @@ func (l *SwiGLULayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, 
 
 func (l *SwiGLULayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	interTotal := l.Spec.SeqLen * l.Spec.IntermediateSize
+	inputTotal := l.Spec.SeqLen * l.Spec.InputSize
 
 	// Stage 1: Gate + Up projections
 	pass.SetPipeline(l.pipelineGateUp)
 	pass.SetBindGroup(0, l.bindGroupGateUp, nil)
 	pass.DispatchWorkgroups(uint32((interTotal+255)/256), 1, 1)
+
+	// Stage 2: Activate
+	pass.SetPipeline(l.pipelineActivate)
+	pass.SetBindGroup(0, l.bindGroupActivate, nil)
+	pass.DispatchWorkgroups(uint32((interTotal+255)/256), 1, 1)
+
+	// Stage 3: Down projection
+	pass.SetPipeline(l.pipelineDown)
+	pass.SetBindGroup(0, l.bindGroupDown, nil)
+	pass.DispatchWorkgroups(uint32((inputTotal+255)/256), 1, 1)
 }
 
 func (l *SwiGLULayer) DispatchFull(enc *wgpu.CommandEncoder) {

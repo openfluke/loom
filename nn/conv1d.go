@@ -20,7 +20,7 @@ func Conv1DForward[T Numeric](
 	// Calculate output length
 	outLen := (seqLen+2*padding-kernelSize)/stride + 1
 	outputSize := batchSize * filters * outLen
-	
+
 	preAct = NewTensor[T](outputSize)
 	postAct = NewTensor[T](outputSize)
 
@@ -125,6 +125,9 @@ func InitConv1DLayer(
 	kernelSize, stride, padding, filters int,
 	activation ActivationType,
 ) LayerConfig {
+	if stride < 1 {
+		stride = 1
+	}
 	// Calculate output length
 	outLen := (seqLen+2*padding-kernelSize)/stride + 1
 
@@ -151,7 +154,7 @@ func InitConv1DLayer(
 		Bias:             bias,
 		Conv1DInChannels: inChannels,
 		// Store input size for computing output
-		InputHeight: seqLen, // Reuse InputHeight for sequence length
+		InputHeight:  seqLen, // Reuse InputHeight for sequence length
 		OutputHeight: outLen, // Reuse OutputHeight for output length
 	}
 }

@@ -17,6 +17,7 @@ type Conv2DSpec struct {
 	InputWidth  int       // Input width
 	Weights     []float32 // [OutChannels * InChannels * KernelSize * KernelSize]
 	Bias        []float32 // [OutChannels]
+	Activation  string    // "relu", "sigmoid", etc.
 }
 
 // Conv2DLayer holds GPU resources for 2D Convolution
@@ -119,6 +120,22 @@ func (l *Conv2DLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) 
 	return err
 }
 
+func (l *Conv2DLayer) getActivationCode(varName string) string {
+	switch l.Spec.Activation {
+	case "relu":
+		// Match CPU "ScaledReLU" behavior (1.1x scaling)
+		return fmt.Sprintf("max(%s * 1.1, 0.0)", varName)
+	case "sigmoid":
+		return fmt.Sprintf("1.0 / (1.0 + exp(-%s))", varName)
+	case "tanh":
+		return fmt.Sprintf("tanh(%s)", varName)
+	case "leaky_relu":
+		return fmt.Sprintf("select(%s, %s * 0.01, %s < 0.0)", varName, varName, varName)
+	default:
+		return varName
+	}
+}
+
 func (l *Conv2DLayer) GenerateShader() string {
 	stride := l.Spec.Stride
 	if stride < 1 {
@@ -176,10 +193,10 @@ func (l *Conv2DLayer) GenerateShader() string {
 				}
 			}
 
-			output[idx] = sum;
+			output[idx] = %s;
 		}
 	`, l.Spec.InputHeight, l.Spec.InputWidth, l.Spec.InChannels, l.Spec.OutChannels,
-		l.Spec.KernelSize, stride, l.Spec.Padding, outH, outW)
+		l.Spec.KernelSize, stride, l.Spec.Padding, outH, outW, l.getActivationCode("sum"))
 }
 
 func (l *Conv2DLayer) GenerateBackwardShader() string {

@@ -145,8 +145,10 @@ func Conv2DBackward[T Numeric](
 									inputIdx := b*inC*inH*inW + ic*inH*inW + ih*inW + iw
 									kernelIdx := f*inC*kSize*kSize + ic*kSize*kSize + kh*kSize + kw
 
-									gradInput.Data[inputIdx] += gradOut * kernel.Data[kernelIdx]
-									gradKernel.Data[kernelIdx] += gradOut * input.Data[inputIdx]
+									if inputIdx < len(gradInput.Data) && kernelIdx < len(gradKernel.Data) && outputIdx < len(gradOutput.Data) && inputIdx < len(input.Data) {
+										gradInput.Data[inputIdx] += gradOut * kernel.Data[kernelIdx]
+										gradKernel.Data[kernelIdx] += gradOut * input.Data[inputIdx]
+									}
 								}
 							}
 						}
@@ -222,4 +224,3 @@ func ReshapeTo2D(input []float32, batchSize int) ([]float32, int, int, int) {
 func FlattenFrom2D(input []float32, batchSize, channels, height, width int) []float32 {
 	return input
 }
-

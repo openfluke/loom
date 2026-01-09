@@ -43,14 +43,10 @@ type MHALayer struct {
 	OutputBuffer  *wgpu.Buffer
 	StagingBuffer *wgpu.Buffer
 
-	QWeightBuffer *wgpu.Buffer
-	KWeightBuffer *wgpu.Buffer
-	VWeightBuffer *wgpu.Buffer
-	OWeightBuffer *wgpu.Buffer
-	QBiasBuffer   *wgpu.Buffer
-	KBiasBuffer   *wgpu.Buffer
-	VBiasBuffer   *wgpu.Buffer
-	OBiasBuffer   *wgpu.Buffer
+	CombinedWeightsQKV *wgpu.Buffer
+	CombinedBiasesQKV  *wgpu.Buffer
+	OWeightBuffer      *wgpu.Buffer
+	OBiasBuffer        *wgpu.Buffer
 
 	QBuffer    *wgpu.Buffer // Projected queries
 	KBuffer    *wgpu.Buffer // Projected keys
@@ -125,51 +121,52 @@ func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		return err
 	}
 
-	// Weight buffers
-	allocWeight := func(data []float32, size int) (*wgpu.Buffer, error) {
+	// Combined weights Q, K, V
+	combine := func(w1, w2, w3 []float32, size int) []float32 {
+		res := make([]float32, size*3)
+		if len(w1) > 0 {
+			copy(res[0:size], w1)
+		}
+		if len(w2) > 0 {
+			copy(res[size:2*size], w2)
+		}
+		if len(w3) > 0 {
+			copy(res[2*size:3*size], w3)
+		}
+		return res
+	}
+
+	qkvWeights := combine(l.Spec.QWeights, l.Spec.KWeights, l.Spec.VWeights, dimSq)
+	l.CombinedWeightsQKV, err = NewFloatBuffer(qkvWeights, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+	if err != nil {
+		return err
+	}
+
+	qkvBiases := combine(l.Spec.QBias, l.Spec.KBias, l.Spec.VBias, l.Spec.DModel)
+	l.CombinedBiasesQKV, err = NewFloatBuffer(qkvBiases, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
+	if err != nil {
+		return err
+	}
+
+	// Output weights/biases remain separate
+	allocW := func(data []float32, size int) (*wgpu.Buffer, error) {
 		if len(data) > 0 {
 			return NewFloatBuffer(data, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 		}
 		return NewFloatBuffer(make([]float32, size), wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 	}
-
-	l.QWeightBuffer, err = allocWeight(l.Spec.QWeights, dimSq)
-	if err != nil {
-		return err
-	}
-	l.KWeightBuffer, err = allocWeight(l.Spec.KWeights, dimSq)
-	if err != nil {
-		return err
-	}
-	l.VWeightBuffer, err = allocWeight(l.Spec.VWeights, dimSq)
-	if err != nil {
-		return err
-	}
-	l.OWeightBuffer, err = allocWeight(l.Spec.OWeights, dimSq)
+	l.OWeightBuffer, err = allocW(l.Spec.OWeights, dimSq)
 	if err != nil {
 		return err
 	}
 
-	allocBias := func(data []float32, size int) (*wgpu.Buffer, error) {
+	allocB := func(data []float32, size int) (*wgpu.Buffer, error) {
 		if len(data) > 0 {
 			return NewFloatBuffer(data, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 		}
 		return NewFloatBuffer(make([]float32, size), wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 	}
-
-	l.QBiasBuffer, err = allocBias(l.Spec.QBias, l.Spec.DModel)
-	if err != nil {
-		return err
-	}
-	l.KBiasBuffer, err = allocBias(l.Spec.KBias, l.Spec.DModel)
-	if err != nil {
-		return err
-	}
-	l.VBiasBuffer, err = allocBias(l.Spec.VBias, l.Spec.DModel)
-	if err != nil {
-		return err
-	}
-	l.OBiasBuffer, err = allocBias(l.Spec.OBias, l.Spec.DModel)
+	l.OBiasBuffer, err = allocB(l.Spec.OBias, l.Spec.DModel)
 	if err != nil {
 		return err
 	}
@@ -196,15 +193,11 @@ func (l *MHALayer) GenerateQKVShader() string {
 	// Combined Q/K/V linear projections
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
-		@group(0) @binding(1) var<storage, read> q_w : array<f32>;
-		@group(0) @binding(2) var<storage, read> k_w : array<f32>;
-		@group(0) @binding(3) var<storage, read> v_w : array<f32>;
-		@group(0) @binding(4) var<storage, read> q_b : array<f32>;
-		@group(0) @binding(5) var<storage, read> k_b : array<f32>;
-		@group(0) @binding(6) var<storage, read> v_b : array<f32>;
-		@group(0) @binding(7) var<storage, read_write> q_out : array<f32>;
-		@group(0) @binding(8) var<storage, read_write> k_out : array<f32>;
-		@group(0) @binding(9) var<storage, read_write> v_out : array<f32>;
+		@group(0) @binding(1) var<storage, read> w_qkv : array<f32>;
+		@group(0) @binding(2) var<storage, read> b_qkv : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> q_out : array<f32>;
+		@group(0) @binding(4) var<storage, read_write> k_out : array<f32>;
+		@group(0) @binding(5) var<storage, read_write> v_out : array<f32>;
 
 		const SEQ_LEN: u32 = %du;
 		const D_MODEL: u32 = %du;
@@ -219,24 +212,28 @@ func (l *MHALayer) GenerateQKVShader() string {
 			let d = idx %% D_MODEL;
 			let in_offset = seq * D_MODEL;
 
+			let offset_k = D_MODEL * D_MODEL;
+			let offset_v = 2u * D_MODEL * D_MODEL;
+			let bias_offset = D_MODEL;
+
 			// Q projection
-			var q_sum: f32 = q_b[d];
+			var q_sum: f32 = b_qkv[d];
 			for (var j: u32 = 0u; j < D_MODEL; j++) {
-				q_sum += input[in_offset + j] * q_w[j * D_MODEL + d];
+				q_sum += input[in_offset + j] * w_qkv[j * D_MODEL + d];
 			}
 			q_out[idx] = q_sum;
 
 			// K projection
-			var k_sum: f32 = k_b[d];
+			var k_sum: f32 = b_qkv[bias_offset + d];
 			for (var j: u32 = 0u; j < D_MODEL; j++) {
-				k_sum += input[in_offset + j] * k_w[j * D_MODEL + d];
+				k_sum += input[in_offset + j] * w_qkv[offset_k + j * D_MODEL + d];
 			}
 			k_out[idx] = k_sum;
 
 			// V projection
-			var v_sum: f32 = v_b[d];
+			var v_sum: f32 = b_qkv[2u*bias_offset + d];
 			for (var j: u32 = 0u; j < D_MODEL; j++) {
-				v_sum += input[in_offset + j] * v_w[j * D_MODEL + d];
+				v_sum += input[in_offset + j] * w_qkv[offset_v + j * D_MODEL + d];
 			}
 			v_out[idx] = v_sum;
 		}
@@ -344,10 +341,9 @@ func (l *MHALayer) GenerateBackwardShader() string {
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
 		@group(0) @binding(1) var<storage, read> o_w : array<f32>;
-		@group(0) @binding(2) var<storage, read> q_w : array<f32>;
-		@group(0) @binding(3) var<storage, read> k_w : array<f32>;
-		@group(0) @binding(4) var<storage, read> v_w : array<f32>;
-		@group(0) @binding(5) var<storage, read_write> d_input : array<f32>;
+		@group(0) @binding(2) var<storage, read> w_qkv : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> d_input : array<f32>;
+
 
 		const SEQ_LEN: u32 = %du;
 		const D_MODEL: u32 = %du;
@@ -377,7 +373,17 @@ func (l *MHALayer) GenerateBackwardShader() string {
 				
 				// Use d_attn as d_q, d_k, d_v (simplified)
 				// d_input[seq, j] += d_attn * (q_w[j,d] + k_w[j,d] + v_w[j,d])
-				d_in += d_attn * (q_w[j * D_MODEL + d] + k_w[j * D_MODEL + d] + v_w[j * D_MODEL + d]);
+				// With combined weights:
+				// q_w = w_qkv[...]
+				// k_w = w_qkv[offset + ...]
+				let offset_k = D_MODEL * D_MODEL;
+				let offset_v = 2u * D_MODEL * D_MODEL;
+				
+				let w_q = w_qkv[j * D_MODEL + d];
+				let w_k = w_qkv[offset_k + j * D_MODEL + d];
+				let w_v = w_qkv[offset_v + j * D_MODEL + d];
+				
+				d_in += d_attn * (w_q + w_k + w_v);
 			}
 
 			d_input[idx] = d_in;
@@ -459,15 +465,11 @@ func (l *MHALayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 		Layout: l.pipelineQKV.GetBindGroupLayout(0),
 		Entries: []wgpu.BindGroupEntry{
 			{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
-			{Binding: 1, Buffer: l.QWeightBuffer, Size: l.QWeightBuffer.GetSize()},
-			{Binding: 2, Buffer: l.KWeightBuffer, Size: l.KWeightBuffer.GetSize()},
-			{Binding: 3, Buffer: l.VWeightBuffer, Size: l.VWeightBuffer.GetSize()},
-			{Binding: 4, Buffer: l.QBiasBuffer, Size: l.QBiasBuffer.GetSize()},
-			{Binding: 5, Buffer: l.KBiasBuffer, Size: l.KBiasBuffer.GetSize()},
-			{Binding: 6, Buffer: l.VBiasBuffer, Size: l.VBiasBuffer.GetSize()},
-			{Binding: 7, Buffer: l.QBuffer, Size: l.QBuffer.GetSize()},
-			{Binding: 8, Buffer: l.KBuffer, Size: l.KBuffer.GetSize()},
-			{Binding: 9, Buffer: l.VBuffer, Size: l.VBuffer.GetSize()},
+			{Binding: 1, Buffer: l.CombinedWeightsQKV, Size: l.CombinedWeightsQKV.GetSize()},
+			{Binding: 2, Buffer: l.CombinedBiasesQKV, Size: l.CombinedBiasesQKV.GetSize()},
+			{Binding: 3, Buffer: l.QBuffer, Size: l.QBuffer.GetSize()},
+			{Binding: 4, Buffer: l.KBuffer, Size: l.KBuffer.GetSize()},
+			{Binding: 5, Buffer: l.VBuffer, Size: l.VBuffer.GetSize()},
 		},
 	})
 	if err != nil {
@@ -511,10 +513,8 @@ func (l *MHALayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOu
 		Entries: []wgpu.BindGroupEntry{
 			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
 			{Binding: 1, Buffer: l.OWeightBuffer, Size: l.OWeightBuffer.GetSize()},
-			{Binding: 2, Buffer: l.QWeightBuffer, Size: l.QWeightBuffer.GetSize()},
-			{Binding: 3, Buffer: l.KWeightBuffer, Size: l.KWeightBuffer.GetSize()},
-			{Binding: 4, Buffer: l.VWeightBuffer, Size: l.VWeightBuffer.GetSize()},
-			{Binding: 5, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
+			{Binding: 2, Buffer: l.CombinedWeightsQKV, Size: l.CombinedWeightsQKV.GetSize()},
+			{Binding: 3, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
 		},
 	})
 	return err
@@ -571,9 +571,7 @@ func (l *MHALayer) UploadWeights(ctx *Context) {
 			ctx.Queue.WriteBuffer(buf, 0, wgpu.ToBytes(data))
 		}
 	}
-	upload(l.QWeightBuffer, l.Spec.QWeights)
-	upload(l.KWeightBuffer, l.Spec.KWeights)
-	upload(l.VWeightBuffer, l.Spec.VWeights)
+	upload(l.CombinedWeightsQKV, nil) // Already uploaded
 	upload(l.OWeightBuffer, l.Spec.OWeights)
 }
 
@@ -589,8 +587,9 @@ func (l *MHALayer) DownloadGradients(ctx *Context) ([]float32, []float32, []floa
 func (l *MHALayer) Cleanup() {
 	bufs := []*wgpu.Buffer{
 		l.InputBuffer, l.OutputBuffer, l.StagingBuffer,
-		l.QWeightBuffer, l.KWeightBuffer, l.VWeightBuffer, l.OWeightBuffer,
-		l.QBiasBuffer, l.KBiasBuffer, l.VBiasBuffer, l.OBiasBuffer,
+		l.InputBuffer, l.OutputBuffer, l.StagingBuffer,
+		l.CombinedWeightsQKV, l.CombinedBiasesQKV, l.OWeightBuffer,
+		l.OBiasBuffer,
 		l.QBuffer, l.KBuffer, l.VBuffer, l.AttnBuffer,
 		l.InputGradientBuffer,
 	}

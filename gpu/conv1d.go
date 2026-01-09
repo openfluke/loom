@@ -16,6 +16,7 @@ type Conv1DSpec struct {
 	SeqLen      int       // Input sequence length
 	Weights     []float32 // [OutChannels * InChannels * KernelSize]
 	Bias        []float32 // [OutChannels]
+	Activation  string    // "relu", "sigmoid", etc.
 }
 
 // Conv1DLayer holds GPU resources for 1D Convolution
@@ -138,6 +139,22 @@ func (l *Conv1DLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) 
 	return err
 }
 
+func (l *Conv1DLayer) getActivationCode(varName string) string {
+	switch l.Spec.Activation {
+	case "relu":
+		// Match CPU "ScaledReLU" behavior (1.1x scaling)
+		return fmt.Sprintf("max(%s * 1.1, 0.0)", varName)
+	case "sigmoid":
+		return fmt.Sprintf("1.0 / (1.0 + exp(-%s))", varName)
+	case "tanh":
+		return fmt.Sprintf("tanh(%s)", varName)
+	case "leaky_relu":
+		return fmt.Sprintf("select(%s, %s * 0.01, %s < 0.0)", varName, varName, varName)
+	default:
+		return varName
+	}
+}
+
 func (l *Conv1DLayer) GenerateShader() string {
 	stride := l.Spec.Stride
 	if stride < 1 {
@@ -182,9 +199,9 @@ func (l *Conv1DLayer) GenerateShader() string {
 				}
 			}
 
-			output[idx] = sum;
+			output[idx] = %s;
 		}
-	`, l.Spec.SeqLen, l.Spec.InChannels, l.Spec.OutChannels, l.Spec.KernelSize, stride, l.Spec.Padding, outputLen)
+	`, l.Spec.SeqLen, l.Spec.InChannels, l.Spec.OutChannels, l.Spec.KernelSize, stride, l.Spec.Padding, outputLen, l.getActivationCode("sum"))
 }
 
 func (l *Conv1DLayer) GenerateBackwardShader() string {
@@ -199,11 +216,12 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 	// 2. dWeights and dBias via accumulation (using atomics)
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
-		@group(0) @binding(1) var<storage, read> input : array<f32>;
-		@group(0) @binding(2) var<storage, read> weights : array<f32>;
-		@group(0) @binding(3) var<storage, read_write> d_input : array<f32>;
-		@group(0) @binding(4) var<storage, read_write> d_weights : array<atomic<u32>>;
-		@group(0) @binding(5) var<storage, read_write> d_bias : array<atomic<u32>>;
+		@group(0) @binding(1) var<storage, read> output : array<f32>; // Added for activation derivative
+		@group(0) @binding(2) var<storage, read> input : array<f32>;
+		@group(0) @binding(3) var<storage, read> weights : array<f32>;
+		@group(0) @binding(4) var<storage, read_write> d_input : array<f32>;
+		@group(0) @binding(5) var<storage, read_write> d_weights : array<atomic<u32>>;
+		@group(0) @binding(6) var<storage, read_write> d_bias : array<atomic<u32>>;
 
 		const SEQ_LEN: u32 = %du;
 		const IN_CH: u32 = %du;
@@ -233,7 +251,12 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 						for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
 							let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
 							let do_idx = out_pos * OUT_CH + out_c;
-							grad += d_output[do_idx] * weights[w_idx];
+							// Apply activation derivative: d_act = 1.1 if output[do_idx] > 0 else 0
+							let out_val = output[do_idx];
+							var d_act: f32 = 0.0;
+							if (out_val > 0.0) { d_act = 1.1; }
+
+							grad += d_output[do_idx] * d_act * weights[w_idx];
 						}
 					}
 				}
@@ -249,7 +272,14 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 					if (src_pos >= 0 && u32(src_pos) < SEQ_LEN) {
 						for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
 							let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
-							let contrib = d_output[out_pos * OUT_CH + out_c] * input[u32(src_pos) * IN_CH + in_c];
+							let do_idx = out_pos * OUT_CH + out_c;
+							
+							// Activation derivative
+							let out_val = output[do_idx];
+							var d_act: f32 = 0.0;
+							if (out_val > 0.0) { d_act = 1.1; }
+
+							let contrib = d_output[do_idx] * d_act * input[u32(src_pos) * IN_CH + in_c];
 							
 							var old_val: u32 = atomicLoad(&d_weights[w_idx]);
 							loop {
@@ -267,7 +297,13 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 				// Bias gradient
 				if (in_c == 0u) {
 					for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
-						let bias_contrib = d_output[out_pos * OUT_CH + out_c];
+						let do_idx = out_pos * OUT_CH + out_c;
+						// Activation derivative
+						let out_val = output[do_idx];
+						var d_act: f32 = 0.0;
+						if (out_val > 0.0) { d_act = 1.1; }
+
+						let bias_contrib = d_output[do_idx] * d_act;
 						var old_val: u32 = atomicLoad(&d_bias[out_c]);
 						loop {
 							let old_f32 = bitcast<f32>(old_val);
@@ -336,11 +372,12 @@ func (l *Conv1DLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, 
 		Layout: l.bwPipeline.GetBindGroupLayout(0),
 		Entries: []wgpu.BindGroupEntry{
 			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
-			{Binding: 1, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
-			{Binding: 2, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
-			{Binding: 3, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
-			{Binding: 4, Buffer: l.WeightGradientBuffer, Size: l.WeightGradientBuffer.GetSize()},
-			{Binding: 5, Buffer: l.BiasGradientBuffer, Size: l.BiasGradientBuffer.GetSize()},
+			{Binding: 1, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+			{Binding: 2, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
+			{Binding: 3, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
+			{Binding: 4, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
+			{Binding: 5, Buffer: l.WeightGradientBuffer, Size: l.WeightGradientBuffer.GetSize()},
+			{Binding: 6, Buffer: l.BiasGradientBuffer, Size: l.BiasGradientBuffer.GetSize()},
 		},
 	})
 	return err

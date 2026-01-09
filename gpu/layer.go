@@ -33,6 +33,7 @@ type GPULayer interface {
 	GetOutputBuffer() *wgpu.Buffer
 	GetStagingBuffer() *wgpu.Buffer
 	GetInputGradientBuffer() *wgpu.Buffer // For Backward Chaining
+	ZeroGradients(ctx *Context)
 
 	Cleanup()
 }

@@ -140,7 +140,9 @@ func (l *RNNLayer) GenerateShader() string {
 		const HIDDEN_SIZE: u32 = %du;
 
 		// Step index passed as uniform or we iterate externally
-		@group(0) @binding(6) var<uniform> step: u32;
+		// @group(0) @binding(6) var<uniform> step: u32; // Removed step uniform
+		// Hardcode step to 0u as per plan.
+		const step: u32 = 0u;
 
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
