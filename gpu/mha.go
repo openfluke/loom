@@ -526,9 +526,22 @@ func (l *MHALayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	total := l.Spec.SeqLen * l.Spec.DModel
 	wg := uint32((total + 255) / 256)
 
-	// QKV projection
+	// Stage 1: QKV projection
 	pass.SetPipeline(l.pipelineQKV)
 	pass.SetBindGroup(0, l.bindGroupQKV, nil)
+	pass.DispatchWorkgroups(wg, 1, 1)
+
+	// Stage 2: Attention
+	// Note: Ideally this should be a separate pass for memory barriers,
+	// but within the current interface we must use the same pass.
+	// We rely on implicit synchronization or lack of overlapping hazards for now.
+	pass.SetPipeline(l.pipelineAttn)
+	pass.SetBindGroup(0, l.bindGroupAttn, nil)
+	pass.DispatchWorkgroups(wg, 1, 1)
+
+	// Stage 3: Output projection
+	pass.SetPipeline(l.pipelineOut)
+	pass.SetBindGroup(0, l.bindGroupOut, nil)
 	pass.DispatchWorkgroups(wg, 1, 1)
 }
 

@@ -23,6 +23,8 @@ type Conv1DSpec struct {
 type Conv1DLayer struct {
 	Spec Conv1DSpec
 
+	BatchSize int // Number of samples per batch
+
 	pipeline  *wgpu.ComputePipeline
 	bindGroup *wgpu.BindGroup
 
@@ -36,8 +38,10 @@ type Conv1DLayer struct {
 	WeightGradientBuffer *wgpu.Buffer
 	BiasGradientBuffer   *wgpu.Buffer
 
-	bwPipeline  *wgpu.ComputePipeline
-	bwBindGroup *wgpu.BindGroup
+	bwPipeline      *wgpu.ComputePipeline
+	bwBindGroup     *wgpu.BindGroup
+	bwGradPipeline  *wgpu.ComputePipeline
+	bwGradBindGroup *wgpu.BindGroup
 
 	outputLen int
 }
@@ -75,16 +79,20 @@ func (l *Conv1DLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		l.Spec.Stride = 1
 	}
 
+	if l.BatchSize <= 0 {
+		l.BatchSize = 1
+	}
+
 	l.outputLen = l.computeOutputLen()
 	if l.outputLen <= 0 {
 		l.outputLen = 1
 	}
 
-	inputSize := l.Spec.SeqLen * l.Spec.InChannels
+	inputSize := l.Spec.SeqLen * l.Spec.InChannels * l.BatchSize
 	if inputSize < 1 {
 		inputSize = 1
 	}
-	outputSize := l.outputLen * l.Spec.OutChannels
+	outputSize := l.outputLen * l.Spec.OutChannels * l.BatchSize
 	if outputSize < 1 {
 		outputSize = 1
 	}
@@ -144,7 +152,10 @@ func (l *Conv1DLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 func (l *Conv1DLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
-	inputSize := l.Spec.SeqLen * l.Spec.InChannels
+	if l.BatchSize <= 0 {
+		l.BatchSize = 1
+	}
+	inputSize := l.Spec.SeqLen * l.Spec.InChannels * l.BatchSize
 	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_InGrad",
 		Size:  uint64(inputSize * 4),
@@ -203,6 +214,7 @@ func (l *Conv1DLayer) GenerateShader() string {
 		@group(0) @binding(2) var<storage, read> bias : array<f32>;
 		@group(0) @binding(3) var<storage, read_write> output : array<f32>;
 
+		const BATCH_SIZE: u32 = %du;
 		const SEQ_LEN: u32 = %du;
 		const IN_CH: u32 = %du;
 		const OUT_CH: u32 = %du;
@@ -214,15 +226,21 @@ func (l *Conv1DLayer) GenerateShader() string {
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let idx = gid.x;
-			let total = OUT_LEN * OUT_CH;
+			let total_per_sample = OUT_LEN * OUT_CH;
+			let total = total_per_sample * BATCH_SIZE;
 			if (idx >= total) { return; }
 
+			let batch = idx / total_per_sample;
+			let sample_idx = idx %% total_per_sample;
+
 			// Output layout: [filters][outLen] (CPU-compatible)
-			let out_c = idx / OUT_LEN;
-			let out_pos = idx %% OUT_LEN;
+			let out_c = sample_idx / OUT_LEN;
+			let out_pos = sample_idx %% OUT_LEN;
 
 			var sum: f32 = bias[out_c];
 			
+			let input_batch_offset = batch * (SEQ_LEN * IN_CH);
+
 			for (var k: u32 = 0u; k < KERNEL_SIZE; k++) {
 				let in_pos_signed = i32(out_pos * STRIDE + k) - i32(PADDING);
 				if (in_pos_signed >= 0 && u32(in_pos_signed) < SEQ_LEN) {
@@ -231,7 +249,7 @@ func (l *Conv1DLayer) GenerateShader() string {
 						// Weight layout: [out_c][in_c][k]
 						let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
 						// Input layout: [in_c][seqLen] (CPU-compatible)
-						let i_idx = in_c * SEQ_LEN + in_pos;
+						let i_idx = input_batch_offset + in_c * SEQ_LEN + in_pos;
 						sum += input[i_idx] * weights[w_idx];
 					}
 				}
@@ -239,7 +257,7 @@ func (l *Conv1DLayer) GenerateShader() string {
 
 			output[idx] = %s;
 		}
-	`, l.Spec.SeqLen, l.Spec.InChannels, l.Spec.OutChannels, l.Spec.KernelSize, stride, l.Spec.Padding, outputLen, l.getActivationCode("sum"))
+	`, l.BatchSize, l.Spec.SeqLen, l.Spec.InChannels, l.Spec.OutChannels, l.Spec.KernelSize, stride, l.Spec.Padding, outputLen, l.getActivationCode("sum"))
 }
 
 func (l *Conv1DLayer) GenerateBackwardShader() string {
@@ -251,17 +269,16 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 
 	// Backward pass computes:
 	// 1. dInput via transposed convolution
-	// 2. dWeights and dBias via accumulation (using atomics)
 	// CPU layout: input[in_c * seqLen + pos], output[out_c * outLen + pos]
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
 		@group(0) @binding(1) var<storage, read> output : array<f32>; // Added for activation derivative
-		@group(0) @binding(2) var<storage, read> input : array<f32>;
+		@group(0) @binding(2) var<storage, read> input : array<f32>;   // Not used for dInput, but kept for bind group layout consistency if needed (or we can remove)
 		@group(0) @binding(3) var<storage, read> weights : array<f32>;
 		@group(0) @binding(4) var<storage, read_write> d_input : array<f32>;
-		@group(0) @binding(5) var<storage, read_write> d_weights : array<atomic<u32>>;
-		@group(0) @binding(6) var<storage, read_write> d_bias : array<atomic<u32>>;
+		// Bindings 5 and 6 (d_weights, d_bias) removed from this shader
 
+		const BATCH_SIZE: u32 = %du;
 		const SEQ_LEN: u32 = %du;
 		const IN_CH: u32 = %du;
 		const OUT_CH: u32 = %du;
@@ -273,15 +290,21 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let idx = gid.x;
-			let in_total = SEQ_LEN * IN_CH;
-			if (idx >= in_total) { return; }
+			let in_total_per_sample = SEQ_LEN * IN_CH;
+			let total = in_total_per_sample * BATCH_SIZE;
+			if (idx >= total) { return; }
+
+			let batch = idx / in_total_per_sample;
+			let sample_idx = idx %% in_total_per_sample;
 
 			// Input/dInput layout: [in_c][seqLen] (CPU-compatible)
-			let in_c = idx / SEQ_LEN;
-			let in_pos = idx %% SEQ_LEN;
+			let in_c = sample_idx / SEQ_LEN;
+			let in_pos = sample_idx %% SEQ_LEN;
 
 			// Compute d_input[in_c, in_pos]
 			var grad: f32 = 0.0;
+			
+			let d_out_batch_offset = batch * (OUT_LEN * OUT_CH);
 
 			// For each output position that this input contributed to
 			for (var out_pos: u32 = 0u; out_pos < OUT_LEN; out_pos++) {
@@ -291,77 +314,33 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 						for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
 							let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
 							// Output layout: [out_c][outLen] (CPU-compatible)
-							let do_idx = out_c * OUT_LEN + out_pos;
+							let do_idx = d_out_batch_offset + out_c * OUT_LEN + out_pos;
+							
 							// Apply activation derivative: d_act = 1.1 if output[do_idx] > 0 else 0
+							// Ideally we should recompute pre-activation sum or store it?
+							// Here we use output value approx assuming ReLU-like monotonicity
 							let out_val = output[do_idx];
 							var d_act: f32 = 0.0;
-							if (out_val > 0.0) { d_act = 1.1; }
-
+							
+							// Activation derivative check - this needs to match forward
+							// Assuming simple ReLU or similar where >0 implies active
+							// Use generic derivative if possible or hardcode (swiglu/etc might differ)
+							// For now assuming the standard activations used (ReLU/LeakyReLU/Sigmoid/Tanh)
+							// NOTE: This derivative logic is simplified and specific to ReLU-like. 
+							// Real implementation needs proper derivative function injection.
+							if (out_val > 0.0) { d_act = 1.1; } // Matches ReLU 1.1 from forward
+							// For sigmoid/tanh, we need actual derivative based on output
+							
+							// NOTE: Simplified derivative for now to match previous logic
+							
 							grad += d_output[do_idx] * d_act * weights[w_idx];
 						}
 					}
 				}
 			}
 			d_input[idx] = grad;
-
-			// Also accumulate weight gradients (each thread contributes)
-			// For efficiency, we only accumulate for one weight per thread
-			if (in_pos < OUT_LEN) {
-				let out_pos = in_pos;
-				for (var k: u32 = 0u; k < KERNEL_SIZE; k++) {
-					let src_pos = i32(out_pos * STRIDE + k) - i32(PADDING);
-					if (src_pos >= 0 && u32(src_pos) < SEQ_LEN) {
-						for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
-							let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
-							// Output layout: [out_c][outLen]
-							let do_idx = out_c * OUT_LEN + out_pos;
-							
-							// Activation derivative
-							let out_val = output[do_idx];
-							var d_act: f32 = 0.0;
-							if (out_val > 0.0) { d_act = 1.1; }
-
-							// Input layout: [in_c][seqLen]
-							let contrib = d_output[do_idx] * d_act * input[in_c * SEQ_LEN + u32(src_pos)];
-							
-							var old_val: u32 = atomicLoad(&d_weights[w_idx]);
-							loop {
-								let old_f32 = bitcast<f32>(old_val);
-								let new_f32 = old_f32 + contrib;
-								let new_val = bitcast<u32>(new_f32);
-								let result = atomicCompareExchangeWeak(&d_weights[w_idx], old_val, new_val);
-								if (result.exchanged) { break; }
-								old_val = result.old_value;
-							}
-						}
-					}
-				}
-
-				// Bias gradient
-				if (in_c == 0u) {
-					for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
-						// Output layout: [out_c][outLen]
-						let do_idx = out_c * OUT_LEN + out_pos;
-						// Activation derivative
-						let out_val = output[do_idx];
-						var d_act: f32 = 0.0;
-						if (out_val > 0.0) { d_act = 1.1; }
-
-						let bias_contrib = d_output[do_idx] * d_act;
-						var old_val: u32 = atomicLoad(&d_bias[out_c]);
-						loop {
-							let old_f32 = bitcast<f32>(old_val);
-							let new_f32 = old_f32 + bias_contrib;
-							let new_val = bitcast<u32>(new_f32);
-							let result = atomicCompareExchangeWeak(&d_bias[out_c], old_val, new_val);
-							if (result.exchanged) { break; }
-							old_val = result.old_value;
-						}
-					}
-				}
-			}
 		}
-	`, l.Spec.SeqLen, l.Spec.InChannels, l.Spec.OutChannels, l.Spec.KernelSize, stride, l.Spec.Padding, outputLen)
+	`, l.BatchSize, l.Spec.SeqLen, l.Spec.InChannels, l.Spec.OutChannels, l.Spec.KernelSize, stride, l.Spec.Padding, outputLen)
 }
 
 func (l *Conv1DLayer) Compile(ctx *Context, labelPrefix string) error {
@@ -379,7 +358,89 @@ func (l *Conv1DLayer) Compile(ctx *Context, labelPrefix string) error {
 	return err
 }
 
+func (l *Conv1DLayer) GenerateBackwardGradsShader() string {
+	stride := l.Spec.Stride
+	if stride < 1 {
+		stride = 1
+	}
+	outputLen := l.computeOutputLen()
+
+	// Gradient shader: Computes dWeights and dBias by summing over Batch
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
+		@group(0) @binding(1) var<storage, read> output : array<f32>;
+		@group(0) @binding(2) var<storage, read> input : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> d_weights : array<f32>;
+		@group(0) @binding(4) var<storage, read_write> d_bias : array<f32>;
+
+		const BATCH_SIZE: u32 = %du;
+		const SEQ_LEN: u32 = %du;
+		const IN_CH: u32 = %du;
+		const OUT_CH: u32 = %du;
+		const KERNEL_SIZE: u32 = %du;
+		const STRIDE: u32 = %du;
+		const PADDING: u32 = %du;
+		const OUT_LEN: u32 = %du;
+
+		const WEIGHT_SIZE: u32 = %du;
+		const BIAS_SIZE: u32 = %du;
+
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			
+			// --- Bias Gradients ---
+			if (idx < BIAS_SIZE) {
+				let out_c = idx;
+				var grad_sum: f32 = 0.0;
+				for (var b: u32 = 0u; b < BATCH_SIZE; b++) {
+					let d_out_batch_offset = b * (OUT_LEN * OUT_CH);
+					for (var out_pos: u32 = 0u; out_pos < OUT_LEN; out_pos++) {
+						let do_idx = d_out_batch_offset + out_c * OUT_LEN + out_pos;
+						let out_val = output[do_idx];
+						var d_act: f32 = 0.0;
+						if (out_val > 0.0) { d_act = 1.1; }
+						grad_sum += d_output[do_idx] * d_act;
+					}
+				}
+				d_bias[idx] = grad_sum;
+			}
+
+			// --- Weight Gradients ---
+			if (idx < WEIGHT_SIZE) {
+				// idx map: [out_c][in_c][k]
+				let k = idx %% KERNEL_SIZE;
+				let tmp = idx / KERNEL_SIZE;
+				let in_c = tmp %% IN_CH;
+				let out_c = tmp / IN_CH;
+
+				var grad_sum: f32 = 0.0;
+				for (var b: u32 = 0u; b < BATCH_SIZE; b++) {
+					let d_out_batch_offset = b * (OUT_LEN * OUT_CH);
+					let input_batch_offset = b * (SEQ_LEN * IN_CH);
+					
+					for (var out_pos: u32 = 0u; out_pos < OUT_LEN; out_pos++) {
+						let src_pos = i32(out_pos * STRIDE + k) - i32(PADDING);
+						if (src_pos >= 0 && u32(src_pos) < SEQ_LEN) {
+							let do_idx = d_out_batch_offset + out_c * OUT_LEN + out_pos;
+							let out_val = output[do_idx];
+							var d_act: f32 = 0.0;
+							if (out_val > 0.0) { d_act = 1.1; }
+							
+							let i_idx = input_batch_offset + in_c * SEQ_LEN + u32(src_pos);
+							grad_sum += d_output[do_idx] * d_act * input[i_idx];
+						}
+					}
+				}
+				d_weights[idx] = grad_sum;
+			}
+		}
+	`, l.BatchSize, l.Spec.SeqLen, l.Spec.InChannels, l.Spec.OutChannels, l.Spec.KernelSize, stride, l.Spec.Padding, outputLen,
+		uint32(l.Spec.OutChannels*l.Spec.InChannels*l.Spec.KernelSize), uint32(l.Spec.OutChannels))
+}
+
 func (l *Conv1DLayer) CompileBackward(ctx *Context, labelPrefix string) error {
+	// 1. dInput Shader
 	mod, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:          labelPrefix + "_BwdShader",
 		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: l.GenerateBackwardShader()},
@@ -390,6 +451,22 @@ func (l *Conv1DLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	l.bwPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_BwdPipe",
 		Compute: wgpu.ProgrammableStageDescriptor{Module: mod, EntryPoint: "main"},
+	})
+	if err != nil {
+		return err
+	}
+
+	// 2. dGrads Shader
+	modGrad, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_BwdGradShader",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: l.GenerateBackwardGradsShader()},
+	})
+	if err != nil {
+		return err
+	}
+	l.bwGradPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label:   labelPrefix + "_BwdGradPipe",
+		Compute: wgpu.ProgrammableStageDescriptor{Module: modGrad, EntryPoint: "main"},
 	})
 	return err
 }
@@ -430,17 +507,27 @@ func (l *Conv1DLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, 
 func (l *Conv1DLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.SetPipeline(l.pipeline)
 	pass.SetBindGroup(0, l.bindGroup, nil)
-	total := l.outputLen * l.Spec.OutChannels
+	total := l.outputLen * l.Spec.OutChannels * l.BatchSize
 	pass.DispatchWorkgroups(uint32((total+255)/256), 1, 1)
 }
 
 func (l *Conv1DLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
+	// 1. dInput
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(l.bwPipeline)
 	pass.SetBindGroup(0, l.bwBindGroup, nil)
-	total := l.Spec.SeqLen * l.Spec.InChannels
-	pass.DispatchWorkgroups(uint32((total+255)/256), 1, 1)
+	totalInput := l.Spec.SeqLen * l.Spec.InChannels * l.BatchSize
+	pass.DispatchWorkgroups(uint32((totalInput+255)/256), 1, 1)
 	pass.End()
+
+	// 2. dGrads
+	passGrad := enc.BeginComputePass(nil)
+	passGrad.SetPipeline(l.bwGradPipeline)
+	passGrad.SetBindGroup(0, l.bwGradBindGroup, nil)
+
+	weightSize := l.Spec.OutChannels * l.Spec.InChannels * l.Spec.KernelSize
+	passGrad.DispatchWorkgroups(uint32((weightSize+255)/256), 1, 1)
+	passGrad.End()
 }
 
 func (l *Conv1DLayer) UploadWeights(ctx *Context) {
@@ -472,7 +559,7 @@ func (l *Conv1DLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []f
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	iGrad, err := ReadBuffer(l.InputGradientBuffer, l.Spec.SeqLen*l.Spec.InChannels)
+	iGrad, err := ReadBuffer(l.InputGradientBuffer, l.Spec.SeqLen*l.Spec.InChannels*l.BatchSize)
 	return wGrad, bGrad, iGrad, err
 }
 
@@ -494,5 +581,11 @@ func (l *Conv1DLayer) Cleanup() {
 	}
 	if l.bwBindGroup != nil {
 		l.bwBindGroup.Release()
+	}
+	if l.bwGradPipeline != nil {
+		l.bwGradPipeline.Release()
+	}
+	if l.bwGradBindGroup != nil {
+		l.bwGradBindGroup.Release()
 	}
 }
