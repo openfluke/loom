@@ -274,6 +274,7 @@ func (l *MHALayer) GenerateAttnShader() string {
 
 			// First pass: find max for stability
 			for (var seq_j: u32 = 0u; seq_j < SEQ_LEN; seq_j++) {
+				if (seq_j > seq_i) { continue; }
 				var score: f32 = 0.0;
 				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
 					let q_idx = seq_i * D_MODEL + head * HEAD_DIM + hd;
@@ -287,6 +288,7 @@ func (l *MHALayer) GenerateAttnShader() string {
 			// Second pass: compute softmax and weighted V sum
 			var exp_sum: f32 = 0.0;
 			for (var seq_j: u32 = 0u; seq_j < SEQ_LEN; seq_j++) {
+				if (seq_j > seq_i) { continue; }
 				var score: f32 = 0.0;
 				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
 					let q_idx = seq_i * D_MODEL + head * HEAD_DIM + hd;

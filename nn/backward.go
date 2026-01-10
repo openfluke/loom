@@ -291,6 +291,16 @@ func accumulateGradient[T Numeric](grads []*Tensor[T], index int, g *Tensor[T]) 
 // gradOutput: gradient flowing back from the loss (same size as network output)
 // Returns: gradient with respect to the input
 func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
+	// GPU auto-routing: if GPU mode is enabled and weights are mounted, use GPU
+	if n.GPU && n.gpuMounted {
+		start := time.Now()
+		output, err := n.backwardGPU(gradOutput)
+		if err == nil {
+			return output, time.Since(start)
+		}
+		// Fall back to CPU on GPU error
+	}
+
 	start := time.Now()
 
 	if len(n.activations) == 0 || len(n.activations[0]) == 0 {

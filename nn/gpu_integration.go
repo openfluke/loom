@@ -311,10 +311,25 @@ func (n *Network) backwardGPU(dOutput []float32) ([]float32, error) {
 	ctx.Queue.Submit(cmd)
 	pollGPU(ctx)
 
-	// Download gradients (for verification/debugging)
-	// Note: In real training, we'd apply gradients on GPU without downloading
-	for _, l := range layers {
-		l.DownloadGradients(ctx)
+	// Download gradients and store them in Network's gradient arrays
+	for i, l := range layers {
+		kernelGrad, biasGrad, _, err := l.DownloadGradients(ctx)
+		if err != nil {
+			// Non-fatal, just log
+			continue
+		}
+
+		// Store in network gradient arrays
+		if i < len(n.kernelGradients) {
+			if kernelGrad != nil {
+				n.kernelGradients[i] = kernelGrad
+			}
+		}
+		if i < len(n.biasGradients) {
+			if biasGrad != nil {
+				n.biasGradients[i] = biasGrad
+			}
+		}
 	}
 
 	return nil, nil // Input gradient could be returned if needed
