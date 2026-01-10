@@ -31,19 +31,21 @@ type LSTMSpec struct {
 }
 
 // LSTMLayer holds GPU resources for LSTM
+// Note: LSTM is inherently sequential across time steps but parallel within each step
+// We process one time step per dispatch to avoid cross-workgroup synchronization issues
 type LSTMLayer struct {
 	Spec LSTMSpec
 
-	pipeline  *wgpu.ComputePipeline
-	bindGroup *wgpu.BindGroup
+	pipeline   *wgpu.ComputePipeline
+	bindGroups []*wgpu.BindGroup // One bind group per time step
 
 	InputBuffer   *wgpu.Buffer // [SeqLen * InputSize]
 	OutputBuffer  *wgpu.Buffer // [SeqLen * HiddenSize]
 	StagingBuffer *wgpu.Buffer
-	HiddenBuffer  *wgpu.Buffer // Hidden state [HiddenSize]
-	CellBuffer    *wgpu.Buffer // Cell state [HiddenSize]
+	HiddenBuffer  *wgpu.Buffer   // Hidden state [HiddenSize]
+	CellBuffer    *wgpu.Buffer   // Cell state [HiddenSize]
+	StepBuffers   []*wgpu.Buffer // Uniform buffers for each step
 
-	// Weight buffers for each gate
 	// Combined Weight buffers (concatenated [i, f, g, o])
 	CombinedWeightsIH *wgpu.Buffer
 	CombinedWeightsHH *wgpu.Buffer
@@ -174,7 +176,26 @@ func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	biasData := combine(l.Spec.BiasH_i, l.Spec.BiasH_f, l.Spec.BiasH_g, l.Spec.BiasH_o, l.Spec.HiddenSize)
 	l.CombinedBiases, err = NewFloatBuffer(biasData, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Create step uniform buffers - one per time step
+	l.StepBuffers = make([]*wgpu.Buffer, l.Spec.SeqLen)
+	for step := 0; step < l.Spec.SeqLen; step++ {
+		stepData := []uint32{uint32(step)}
+		l.StepBuffers[step], err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: fmt.Sprintf("%s_Step%d", labelPrefix, step),
+			Size:  4, // u32
+			Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
+		})
+		if err != nil {
+			return err
+		}
+		ctx.Queue.WriteBuffer(l.StepBuffers[step], 0, wgpu.ToBytes(stepData))
+	}
+
+	return nil
 }
 
 func (l *LSTMLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
@@ -188,8 +209,9 @@ func (l *LSTMLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) er
 }
 
 func (l *LSTMLayer) GenerateShader() string {
-	// LSTM: computes all 4 gates and updates h, c for all time steps
-	// Process all time steps sequentially, each hidden unit in parallel
+	// LSTM: computes all 4 gates and updates h, c for ONE time step
+	// Process ONE time step per dispatch - this avoids the cross-workgroup sync issue
+	// The Go code will dispatch SeqLen times, once per time step
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
 		@group(0) @binding(1) var<storage, read_write> hidden : array<f32>;
@@ -200,8 +222,8 @@ func (l *LSTMLayer) GenerateShader() string {
 		@group(0) @binding(4) var<storage, read> w_ih : array<f32>;
 		@group(0) @binding(5) var<storage, read> w_hh : array<f32>;
 		@group(0) @binding(6) var<storage, read> bias : array<f32>;
+		@group(0) @binding(7) var<uniform> step : u32;
 
-		const SEQ_LEN: u32 = %du;
 		const INPUT_SIZE: u32 = %du;
 		const HIDDEN_SIZE: u32 = %du;
 
@@ -214,88 +236,66 @@ func (l *LSTMLayer) GenerateShader() string {
 			let h_idx = gid.x;
 			if (h_idx >= HIDDEN_SIZE) { return; }
 
-			// Initialize from buffers
-			var h_val: f32 = hidden[h_idx];
-			var c_val: f32 = cell[h_idx];
+			// Read current hidden and cell states
+			let h_val: f32 = hidden[h_idx];
+			let c_val: f32 = cell[h_idx];
 
 			// Weight offsets for each gate
 			let IH_STRIDE: u32 = INPUT_SIZE * HIDDEN_SIZE;
 			let HH_STRIDE: u32 = HIDDEN_SIZE * HIDDEN_SIZE;
 
-			// Process all time steps
-			for (var step: u32 = 0u; step < SEQ_LEN; step++) {
-				let input_offset = step * INPUT_SIZE;
+			let input_offset = step * INPUT_SIZE;
 
-				// Compute input gate (i)
-				var i_gate: f32 = bias[h_idx];
-				for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
-					i_gate += input[input_offset + j] * w_ih[h_idx * INPUT_SIZE + j];
-				}
-				for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
-					if (j == h_idx) {
-						i_gate += h_val * w_hh[h_idx * HIDDEN_SIZE + j];
-					} else {
-						i_gate += hidden[j] * w_hh[h_idx * HIDDEN_SIZE + j];
-					}
-				}
-				i_gate = sigmoid(i_gate);
-
-				// Compute forget gate (f)
-				var f_gate: f32 = bias[HIDDEN_SIZE + h_idx];
-				for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
-					f_gate += input[input_offset + j] * w_ih[IH_STRIDE + h_idx * INPUT_SIZE + j];
-				}
-				for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
-					if (j == h_idx) {
-						f_gate += h_val * w_hh[HH_STRIDE + h_idx * HIDDEN_SIZE + j];
-					} else {
-						f_gate += hidden[j] * w_hh[HH_STRIDE + h_idx * HIDDEN_SIZE + j];
-					}
-				}
-				f_gate = sigmoid(f_gate);
-
-				// Compute cell gate (g)
-				var g_gate: f32 = bias[2u * HIDDEN_SIZE + h_idx];
-				for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
-					g_gate += input[input_offset + j] * w_ih[2u * IH_STRIDE + h_idx * INPUT_SIZE + j];
-				}
-				for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
-					if (j == h_idx) {
-						g_gate += h_val * w_hh[2u * HH_STRIDE + h_idx * HIDDEN_SIZE + j];
-					} else {
-						g_gate += hidden[j] * w_hh[2u * HH_STRIDE + h_idx * HIDDEN_SIZE + j];
-					}
-				}
-				g_gate = tanh(g_gate);
-
-				// Compute output gate (o)
-				var o_gate: f32 = bias[3u * HIDDEN_SIZE + h_idx];
-				for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
-					o_gate += input[input_offset + j] * w_ih[3u * IH_STRIDE + h_idx * INPUT_SIZE + j];
-				}
-				for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
-					if (j == h_idx) {
-						o_gate += h_val * w_hh[3u * HH_STRIDE + h_idx * HIDDEN_SIZE + j];
-					} else {
-						o_gate += hidden[j] * w_hh[3u * HH_STRIDE + h_idx * HIDDEN_SIZE + j];
-					}
-				}
-				o_gate = sigmoid(o_gate);
-
-				// Update cell and hidden states
-				c_val = f_gate * c_val + i_gate * g_gate;
-				h_val = o_gate * tanh(c_val);
-
-				// Store to buffers
-				cell[h_idx] = c_val;
-				hidden[h_idx] = h_val;
-				output[step * HIDDEN_SIZE + h_idx] = h_val;
-
-				// Sync before next step
-				storageBarrier();
+			// Compute input gate (i)
+			var i_gate: f32 = bias[h_idx];
+			for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
+				i_gate += input[input_offset + j] * w_ih[h_idx * INPUT_SIZE + j];
 			}
+			for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
+				i_gate += hidden[j] * w_hh[h_idx * HIDDEN_SIZE + j];
+			}
+			i_gate = sigmoid(i_gate);
+
+			// Compute forget gate (f)
+			var f_gate: f32 = bias[HIDDEN_SIZE + h_idx];
+			for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
+				f_gate += input[input_offset + j] * w_ih[IH_STRIDE + h_idx * INPUT_SIZE + j];
+			}
+			for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
+				f_gate += hidden[j] * w_hh[HH_STRIDE + h_idx * HIDDEN_SIZE + j];
+			}
+			f_gate = sigmoid(f_gate);
+
+			// Compute cell gate (g)
+			var g_gate: f32 = bias[2u * HIDDEN_SIZE + h_idx];
+			for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
+				g_gate += input[input_offset + j] * w_ih[2u * IH_STRIDE + h_idx * INPUT_SIZE + j];
+			}
+			for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
+				g_gate += hidden[j] * w_hh[2u * HH_STRIDE + h_idx * HIDDEN_SIZE + j];
+			}
+			g_gate = tanh(g_gate);
+
+			// Compute output gate (o)
+			var o_gate: f32 = bias[3u * HIDDEN_SIZE + h_idx];
+			for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
+				o_gate += input[input_offset + j] * w_ih[3u * IH_STRIDE + h_idx * INPUT_SIZE + j];
+			}
+			for (var j: u32 = 0u; j < HIDDEN_SIZE; j++) {
+				o_gate += hidden[j] * w_hh[3u * HH_STRIDE + h_idx * HIDDEN_SIZE + j];
+			}
+			o_gate = sigmoid(o_gate);
+
+			// Update cell and hidden states
+			let new_c = f_gate * c_val + i_gate * g_gate;
+			let new_h = o_gate * tanh(new_c);
+
+			// Store to buffers
+			cell[h_idx] = new_c;
+			hidden[h_idx] = new_h;
+			output[step * HIDDEN_SIZE + h_idx] = new_h;
 		}
-	`, l.Spec.SeqLen, l.Spec.InputSize, l.Spec.HiddenSize)
+	`, l.Spec.InputSize, l.Spec.HiddenSize)
 }
 
 func (l *LSTMLayer) GenerateBackwardShader() string {
@@ -327,12 +327,6 @@ func (l *LSTMLayer) GenerateBackwardShader() string {
 				let h_val = output[t * HIDDEN_SIZE + h];
 				// Approximate derivative (simplified)
 				let d_h = d_output[t * HIDDEN_SIZE + h];
-				
-				// Gradient flows through all 4 gates - logic needs full update for merged weights
-				// For quick fix validation, we update logic or just let it be broken?
-				// Validation error is about Bindings. So we MUST update shader to use merged bindings.
-				// We won't fix the math perfectly here (it was approximate anyway), 
-				// but we map the bindings correctly.
 				
 				let ih_step = INPUT_SIZE * HIDDEN_SIZE;
 				
@@ -378,21 +372,29 @@ func (l *LSTMLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 }
 
 func (l *LSTMLayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
+	// Create one bind group per time step, each with its own step uniform buffer
+	l.bindGroups = make([]*wgpu.BindGroup, l.Spec.SeqLen)
 	var err error
-	l.bindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Label:  labelPrefix + "_Bind",
-		Layout: l.pipeline.GetBindGroupLayout(0),
-		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
-			{Binding: 1, Buffer: l.HiddenBuffer, Size: l.HiddenBuffer.GetSize()},
-			{Binding: 2, Buffer: l.CellBuffer, Size: l.CellBuffer.GetSize()},
-			{Binding: 3, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
-			{Binding: 4, Buffer: l.CombinedWeightsIH, Size: l.CombinedWeightsIH.GetSize()},
-			{Binding: 5, Buffer: l.CombinedWeightsHH, Size: l.CombinedWeightsHH.GetSize()},
-			{Binding: 6, Buffer: l.CombinedBiases, Size: l.CombinedBiases.GetSize()},
-		},
-	})
-	return err
+	for step := 0; step < l.Spec.SeqLen; step++ {
+		l.bindGroups[step], err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  fmt.Sprintf("%s_Bind%d", labelPrefix, step),
+			Layout: l.pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
+				{Binding: 1, Buffer: l.HiddenBuffer, Size: l.HiddenBuffer.GetSize()},
+				{Binding: 2, Buffer: l.CellBuffer, Size: l.CellBuffer.GetSize()},
+				{Binding: 3, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+				{Binding: 4, Buffer: l.CombinedWeightsIH, Size: l.CombinedWeightsIH.GetSize()},
+				{Binding: 5, Buffer: l.CombinedWeightsHH, Size: l.CombinedWeightsHH.GetSize()},
+				{Binding: 6, Buffer: l.CombinedBiases, Size: l.CombinedBiases.GetSize()},
+				{Binding: 7, Buffer: l.StepBuffers[step], Size: 4},
+			},
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (l *LSTMLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
@@ -411,10 +413,14 @@ func (l *LSTMLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dO
 }
 
 func (l *LSTMLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
-	pass.SetPipeline(l.pipeline)
-	pass.SetBindGroup(0, l.bindGroup, nil)
+	// Dispatch once per time step - each step processes in parallel within hidden units
+	// but steps must be sequential due to hidden state dependency
 	wg := uint32((l.Spec.HiddenSize + 255) / 256)
-	pass.DispatchWorkgroups(wg, 1, 1)
+	for step := 0; step < l.Spec.SeqLen; step++ {
+		pass.SetPipeline(l.pipeline)
+		pass.SetBindGroup(0, l.bindGroups[step], nil)
+		pass.DispatchWorkgroups(wg, 1, 1)
+	}
 }
 
 func (l *LSTMLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
@@ -452,11 +458,20 @@ func (l *LSTMLayer) Cleanup() {
 			b.Destroy()
 		}
 	}
+	// Clean up step buffers
+	for _, b := range l.StepBuffers {
+		if b != nil {
+			b.Destroy()
+		}
+	}
 	if l.pipeline != nil {
 		l.pipeline.Release()
 	}
-	if l.bindGroup != nil {
-		l.bindGroup.Release()
+	// Clean up per-step bind groups
+	for _, bg := range l.bindGroups {
+		if bg != nil {
+			bg.Release()
+		}
 	}
 	if l.bwPipeline != nil {
 		l.bwPipeline.Release()
