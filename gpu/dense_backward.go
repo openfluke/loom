@@ -6,258 +6,249 @@ import (
 	"github.com/openfluke/webgpu/wgpu"
 )
 
-// BackwardResources holds buffers and pipelines for backprop
-type BackwardResources struct {
-	errBufs   []*wgpu.Buffer
-	targetBuf *wgpu.Buffer
-	lrBuf     *wgpu.Buffer
-	clipBuf   *wgpu.Buffer
-}
+// DispatchBackward adds backward pass commands to encoder
+func (l *DenseLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
+	// Assumes dZ (dOutput) has been computed by generic activation backward shader and placed in dOutputBuffer (bound in CreateBackwardBindGroup).
 
-// EnsureBackwardInitialized sets up buffers for backward pass
-func (s *DenseSequence) EnsureBackwardInitialized() error {
-	if s.backward != nil {
-		return nil
-	}
-
-	c, err := GetContext()
-	if err != nil {
-		return err
-	}
-
-	br := &BackwardResources{}
-
-	// Error buffers (one per layer output)
-	for i, l := range s.Layers {
-		buf, err := c.Device.CreateBuffer(&wgpu.BufferDescriptor{
-			Label: fmt.Sprintf("Error_%d", i),
-			Size:  uint64(l.Spec.OutputSize * 4),
-			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	// Pipeline 1: Weight Gradients (dW, dB)
+	if l.backwardPipelineGrads != nil && l.backwardBindGroupGrads != nil {
+		// Workgroups: One for each output neuron (Row)
+		// Each thread loops over BatchSize to accumulate gradients.
+		gx := (uint32(l.Spec.OutputSize) + 255) / 256
+		pass := enc.BeginComputePass(&wgpu.ComputePassDescriptor{
+			Label: "Dense_Bwd_Grads",
 		})
-		if err != nil {
-			return err
+		pass.SetPipeline(l.backwardPipelineGrads)
+		pass.SetBindGroup(0, l.backwardBindGroupGrads, nil)
+		pass.DispatchWorkgroups(gx, 1, 1)
+		pass.End()
+	}
+
+	// Pipeline 2: Input Gradients (dX)
+	if l.backwardPipelineInput != nil && l.backwardBindGroupInput != nil {
+		// Workgroups: One for each input neuron PER SAMPLE.
+		// Total threads = InputSize * BatchSize.
+		batch := l.BatchSize
+		if batch <= 0 {
+			batch = 1
 		}
-		br.errBufs = append(br.errBufs, buf)
-	}
 
-	// Target buffer (sized for last layer)
-	lastSize := s.Layers[len(s.Layers)-1].Spec.OutputSize
-	br.targetBuf, err = c.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: "Targets",
-		Size:  uint64(lastSize * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
-	})
-	if err != nil {
-		return err
-	}
+		totalThreads := uint32(l.Spec.InputSize * batch)
+		gx := (totalThreads + 255) / 256
 
-	// LR & Clip
-	br.lrBuf, err = NewFloatBuffer([]float32{0.01}, wgpu.BufferUsageUniform|wgpu.BufferUsageCopyDst)
-	if err != nil {
-		return err
+		pass := enc.BeginComputePass(&wgpu.ComputePassDescriptor{
+			Label: "Dense_Bwd_Input",
+		})
+		pass.SetPipeline(l.backwardPipelineInput)
+		pass.SetBindGroup(0, l.backwardBindGroupInput, nil)
+		pass.DispatchWorkgroups(gx, 1, 1)
+		pass.End()
 	}
-	br.clipBuf, err = NewFloatBuffer([]float32{1.0, -1.0}, wgpu.BufferUsageUniform|wgpu.BufferUsageCopyDst)
-	if err != nil {
-		return err
-	}
-
-	s.backward = br
-	return nil
 }
 
-// Actually, let's just make two shader functions and two pipelines.
-func (l *DenseLayer) GenerateBackwardShaderDZ() string {
-	// Derivative act(y) -> f'(z)
-	deriv := "return 1.0;"
-	switch l.Spec.Activation {
-	case ActReLU:
-		deriv = "return select(0.0, 1.1, y > 0.0);"
-	case ActLeakyReLU:
-		deriv = "return select(0.01, 1.0, y > 0.0);" // y>0 implies z>0
-	case ActSigmoid:
-		deriv = "return y * (1.0 - y);"
-	case ActTanh:
-		deriv = "return 1.0 - y * y;"
-	}
-
-	return fmt.Sprintf(`
-		@group(0) @binding(1) var<storage, read> d_output : array<f32>;
-		@group(0) @binding(5) var<storage, read_write> d_bias : array<f32>; // stores dZ
-		@group(0) @binding(6) var<storage, read> output : array<f32>;
-
-		fn deriv(y: f32) -> f32 {
-			%s
-		}
-
-		@compute @workgroup_size(256)
-		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-			let idx = gid.x;
-			if (idx >= %du) { return; }
-			
-			let y = output[idx];
-			let dout = d_output[idx];
-			d_bias[idx] = dout * deriv(y);
-			// d_bias[idx] = 999.0; // DEBUG
-		}
-	`, deriv, l.Spec.OutputSize)
-}
-
-func (l *DenseLayer) GenerateBackwardShaderGrads() string {
-	return fmt.Sprintf(`
-		@group(0) @binding(0) var<storage, read> input : array<f32>;
-		@group(0) @binding(2) var<storage, read> weights : array<f32>;
-		
-		@group(0) @binding(3) var<storage, read_write> d_input : array<f32>;
-		@group(0) @binding(4) var<storage, read_write> d_weights : array<f32>;
-		@group(0) @binding(5) var<storage, read> d_bias : array<f32>; // dZ (computed previously)
-
-		@compute @workgroup_size(256)
-		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-			let idx = gid.x;
-			let n_in = %du;
-			let n_out = %du;
-			
-			// Map global ID to dWeights or dInput tasks?
-			// Simplest: 1D dispatch covers max(n_in, n_in*n_out).
-			// If idx < n_in * n_out: compute dW[idx]
-			// If idx < n_in: compute dInput[idx]
-			
-			// dW[j, i] = dZ[j] * input[i]
-			// weights/d_weights layout: [Output, Input] (Row-Major)
-			// idx maps to j * n_in + i
-			
-			if (idx < n_in * n_out) {
-				let j = idx / n_in; // Output index
-				let i = idx %% n_in; // Input index
-				d_weights[idx] = d_bias[j] * input[i];
-			}
-			
-			// dInput[i] = sum_j (dZ[j] * W[j, i])
-			// Only compute if idx < n_in (idx is i)
-			if (idx < n_in) {
-				var sum: f32 = 0.0;
-				for (var j: u32 = 0u; j < n_out; j++) {
-					// W[j, i] is at j * n_in + i
-					sum += d_bias[j] * weights[j * n_in + idx];
-				}
-				d_input[idx] = sum;
-			}
-		}
-	`, l.Spec.InputSize, l.Spec.OutputSize)
-}
-
+// CompileBackward creates pipelines for backward pass
 func (l *DenseLayer) CompileBackward(ctx *Context, labelPrefix string) error {
-	// Pipeline 1: DZ
-	shader1 := l.GenerateBackwardShaderDZ()
-	mod1, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
-		Label:          labelPrefix + "_BwdDZ_Shader",
-		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shader1},
+	// Shader for Gradients (dW, dB)
+	shaderGrads := l.generateBackwardGradsShader()
+	moduleGrads, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_Shader_Bwd_Grads",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shaderGrads},
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("create shader grads: %w", err)
 	}
+	defer moduleGrads.Release()
 
-	l.backwardPipelineDZ, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
-		Label:   labelPrefix + "_BwdDZ_Pipe",
-		Compute: wgpu.ProgrammableStageDescriptor{Module: mod1, EntryPoint: "main"},
-	})
-	if err != nil {
-		return err
-	}
-
-	// Pipeline 2: Grads
-	shader2 := l.GenerateBackwardShaderGrads()
-	mod2, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
-		Label:          labelPrefix + "_BwdGrads_Shader",
-		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shader2},
-	})
-	if err != nil {
-		return err
-	}
-
+	// Pipeline Gradients
 	l.backwardPipelineGrads, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
-		Label:   labelPrefix + "_BwdGrads_Pipe",
-		Compute: wgpu.ProgrammableStageDescriptor{Module: mod2, EntryPoint: "main"},
+		Label: labelPrefix + "_Pipe_Bwd_Grads",
+		Compute: wgpu.ProgrammableStageDescriptor{
+			Module:     moduleGrads,
+			EntryPoint: "main",
+		},
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("create pipeline grads: %w", err)
+	}
+
+	// Shader for Input Gradients (dX)
+	shaderInput := l.generateBackwardInputShader()
+	moduleInput, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_Shader_Bwd_Input",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shaderInput},
+	})
+	if err != nil {
+		return fmt.Errorf("create shader input: %w", err)
+	}
+	defer moduleInput.Release()
+
+	// Pipeline Input
+	l.backwardPipelineInput, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label: labelPrefix + "_Pipe_Bwd_Input",
+		Compute: wgpu.ProgrammableStageDescriptor{
+			Module:     moduleInput,
+			EntryPoint: "main",
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create pipeline input: %w", err)
 	}
 
 	return nil
 }
 
+// CreateBackwardBindGroup creates bind groups for backward pass
 func (l *DenseLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
-	// If dOutputBuffer is nil (last layer), we need to create one?
-	// Or pass it in Dispatch? Dispatch argument is better for chaining.
-	// But BindGroup creation needs the buffer.
-	// We can recreate BindGroup every frame (expensive) or create it once if topology static.
-	// Topology IS static. So dOutputBuffer (which is NextLayer.InputGradientBuffer) is known.
-
 	if dOutputBuffer == nil {
-		// Create a dummy 1-size buffer or handle external Error buffer (for last layer)
-		// For last layer, this is the "Targets" - "Output" diff usually?
-		// Or strictly dOutput passed from Loss function.
-		// Let's assume the caller provides correct buffer.
 		return fmt.Errorf("dOutputBuffer cannot be nil")
 	}
 
-	// BG 1: DZ
-	// Bindings: 1:d_out, 5:d_bias (dZ), 6:output
+	// Bind Group for Gradients (dW, dB)
 	var err error
-	l.backwardBindGroupDZ, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Label:  labelPrefix + "_BwdDZ_BG",
-		Layout: l.backwardPipelineDZ.GetBindGroupLayout(0),
+	l.backwardBindGroupGrads, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  labelPrefix + "_BG_Bwd_Grads",
+		Layout: l.backwardPipelineGrads.GetBindGroupLayout(0),
 		Entries: []wgpu.BindGroupEntry{
-			{Binding: 1, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
-			{Binding: 5, Buffer: l.BiasGradientBuffer, Size: l.BiasGradientBuffer.GetSize()},
-			{Binding: 6, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
+			{Binding: 1, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
+			{Binding: 2, Buffer: l.WeightGradientBuffer, Size: l.WeightGradientBuffer.GetSize()},
+			{Binding: 3, Buffer: l.BiasGradientBuffer, Size: l.BiasGradientBuffer.GetSize()},
 		},
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("create bg grads: %w", err)
 	}
 
-	// BG 2: Grads
-	// Bindings: 0:input, 2:weights, 3:d_input, 4:d_weights, 5:d_bias
-	l.backwardBindGroupGrads, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Label:  labelPrefix + "_BwdGrads_BG",
-		Layout: l.backwardPipelineGrads.GetBindGroupLayout(0),
+	// Bind Group for Input Gradients (dX)
+	l.backwardBindGroupInput, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  labelPrefix + "_BG_Bwd_Input",
+		Layout: l.backwardPipelineInput.GetBindGroupLayout(0),
 		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
-			{Binding: 2, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
-			{Binding: 3, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
-			{Binding: 4, Buffer: l.WeightGradientBuffer, Size: l.WeightGradientBuffer.GetSize()},
-			{Binding: 5, Buffer: l.BiasGradientBuffer, Size: l.BiasGradientBuffer.GetSize()},
+			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
+			{Binding: 1, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
+			{Binding: 2, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
 		},
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("create bg input: %w", err)
+	}
+
+	return nil
 }
 
-func (l *DenseLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
-	// Pass 1: DZ
-	{
-		pass := enc.BeginComputePass(nil)
-		pass.SetPipeline(l.backwardPipelineDZ)
-		pass.SetBindGroup(0, l.backwardBindGroupDZ, nil)
-		wgx := (l.Spec.OutputSize + 255) / 256
-		pass.DispatchWorkgroups(uint32(wgx), 1, 1) // 1D dispatch over outputs
-		pass.End()
+func (l *DenseLayer) generateBackwardGradsShader() string {
+	// Calculates dW and dB with Batch Reduction.
+	// dZ size = OutputSize * Batch
+	// Input size = InputSize * Batch
+	// dW size = OutputSize * InputSize
+	// dB size = OutputSize
+	//
+	// Thread ID x corresponds to Output Neuron Index (Row of W).
+	// One thread per output neuron.
+	// Loop over samples in batch to accumulate.
+
+	batch := l.BatchSize
+	if batch <= 0 {
+		batch = 1
 	}
 
-	// Pass 2: Grads
-	{
-		pass := enc.BeginComputePass(nil)
-		pass.SetPipeline(l.backwardPipelineGrads)
-		pass.SetBindGroup(0, l.backwardBindGroupGrads, nil)
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> dZ : array<f32>; // [Batch, Output]
+		@group(0) @binding(1) var<storage, read> input : array<f32>; // [Batch, Input]
+		@group(0) @binding(2) var<storage, read_write> dW : array<f32>; // [Output, Input]
+		@group(0) @binding(3) var<storage, read_write> dB : array<f32>; // [Output]
 
-		// Work size: max(Input, Input*Output)
-		total := l.Spec.InputSize * l.Spec.OutputSize
-		if l.Spec.InputSize > total {
-			total = l.Spec.InputSize
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let row = gid.x; // Output index
+			let n_out = %du;
+			let n_in = %du;
+			let batch_size = %du;
+
+			if (row >= n_out) {
+				return;
+			}
+			
+			// Initialize accumulators
+			var db_sum: f32 = 0.0;
+			// We need to write a whole row of dW.
+			// But wait, holding n_in accumulators in registers is too much if n_in is large.
+			// Better: This thread computes dB[row] AND dW[row, col] for all col?
+			// Inner loop over col? n_in * batch_size ops. Could be heavy.
+			// But for small n_in (2) it's fine. For large n_in (1000) it's heavy.
+			
+			// Optimization: Compute dB in one pass. dW in another?
+			// Or just handle dB here for now.
+			
+			for (var b: u32 = 0u; b < batch_size; b++) {
+				let dz_val = dZ[b * n_out + row];
+				db_sum += dz_val;
+			}
+			dB[row] = db_sum; // Or += if accumulating over multiple passes/mini-batches? Assumes overwrite.
+
+			// Compute dW[row, col]
+			// We iterate col here?
+			for (var col: u32 = 0u; col < n_in; col++) {
+				var dw_sum: f32 = 0.0;
+				for (var b: u32 = 0u; b < batch_size; b++) {
+					let dz_val = dZ[b * n_out + row];
+					let in_val = input[b * n_in + col];
+					dw_sum += dz_val * in_val;
+				}
+				// Write to dW[row, col]
+				dW[row * n_in + col] = dw_sum;
+			}
 		}
+	`, l.Spec.OutputSize, l.Spec.InputSize, batch)
+}
 
-		wgx2 := (total + 255) / 256
-		pass.DispatchWorkgroups(uint32(wgx2), 1, 1)
-		pass.End()
+func (l *DenseLayer) generateBackwardInputShader() string {
+	// Calculates dX (Input Gradient).
+	// dX[b, j] = Sum_i(dZ[b, i] * W[i, j])
+	// Parallel over Batch and Input dimension.
+	//
+	// Thread ID x corresponds to global input index [Batch * Input].
+
+	batch := l.BatchSize
+	if batch <= 0 {
+		batch = 1
 	}
+
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> dZ : array<f32>; // [Batch, Output]
+		@group(0) @binding(1) var<storage, read> weights : array<f32>; // [Output, Input]
+		@group(0) @binding(2) var<storage, read_write> dX : array<f32>; // [Batch, Input]
+
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			let n_out = %du;
+			let n_in = %du;
+			// let batch = %du;
+
+			if (idx >= arrayLength(&dX)) {
+				return;
+			}
+			
+			let sample_idx = idx / n_in;
+			let col = idx %% n_in; // Input index
+
+			var sum: f32 = 0.0;
+			
+			// Dot product of dZ[sample] vector and W column col
+			// W[row, col]
+			// dZ[sample, row]
+			
+			for (var row: u32 = 0u; row < n_out; row++) {
+				// dZ index
+				let dz_idx = sample_idx * n_out + row;
+				// Weights index
+				let w_idx = row * n_in + col;
+				
+				sum += dZ[dz_idx] * weights[w_idx];
+			}
+
+			dX[idx] = sum;
+		}
+	`, l.Spec.OutputSize, l.Spec.InputSize, batch)
 }

@@ -584,6 +584,7 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 		return n.forwardGPUMultiHeadAttention(input)
 	}
 
+	// fmt.Println("DEBUG: Starting ForwardGPU") // DEBUG
 	start := time.Now()
 
 	dev := n.deviceInfo.Device

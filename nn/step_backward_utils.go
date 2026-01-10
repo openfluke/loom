@@ -4,6 +4,12 @@ package nn
 // If an optimizer is set, it will use that optimizer's update rule
 // Otherwise, it falls back to simple SGD (w = w - lr * grad)
 func (n *Network) ApplyGradients(learningRate float32) {
+	// GPU path: apply gradients directly on GPU
+	if n.GPU && n.gpuMounted {
+		n.applyGradientsGPU(learningRate)
+		return
+	}
+
 	// Use optimizer if set
 	if n.optimizer != nil {
 		n.optimizer.Step(n, learningRate)

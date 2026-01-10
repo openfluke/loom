@@ -26,7 +26,8 @@ type DenseLayerSpec struct {
 
 // DenseLayer holds resources for a single layer execution
 type DenseLayer struct {
-	Spec DenseLayerSpec
+	Spec      DenseLayerSpec
+	BatchSize int
 
 	pipeline  *wgpu.ComputePipeline
 	bindGroup *wgpu.BindGroup
@@ -41,21 +42,27 @@ type DenseLayer struct {
 	WeightGradientBuffer *wgpu.Buffer
 	BiasGradientBuffer   *wgpu.Buffer
 	InputGradientBuffer  *wgpu.Buffer // Computed gradient w.r.t input (dL/dInput)
+	dZBuffer             *wgpu.Buffer // Gradient w.r.t pre-activation (dL/dZ)
 
 	// Context for backward pipeline
 	backwardPipelineDZ     *wgpu.ComputePipeline
 	backwardBindGroupDZ    *wgpu.BindGroup
 	backwardPipelineGrads  *wgpu.ComputePipeline
 	backwardBindGroupGrads *wgpu.BindGroup
+	backwardPipelineInput  *wgpu.ComputePipeline
+	backwardBindGroupInput *wgpu.BindGroup
+
+	// Gradient application bind groups (cached for training)
+	GradientWeightBindGroup *wgpu.BindGroup
+	GradientBiasBindGroup   *wgpu.BindGroup
 
 	WorkgroupsX uint32
 }
 
 // DenseSequence manages a sequence of dense layers executed on GPU
 type DenseSequence struct {
-	Layers   []*DenseLayer
-	Debug    bool
-	backward *BackwardResources
+	Layers []*DenseLayer
+	Debug  bool
 }
 
 // NewDenseSequence creates a new sequence handler
@@ -81,6 +88,7 @@ func (l *DenseLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffe
 func (l *DenseLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
 func (l *DenseLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
 func (l *DenseLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+func (l *DenseLayer) GetDZBuffer() *wgpu.Buffer            { return l.dZBuffer }
 
 func (l *DenseLayer) Cleanup() {
 	if l.InputBuffer != nil {
@@ -107,6 +115,9 @@ func (l *DenseLayer) Cleanup() {
 	if l.InputGradientBuffer != nil {
 		l.InputGradientBuffer.Destroy()
 	}
+	if l.dZBuffer != nil {
+		l.dZBuffer.Destroy()
+	}
 	if l.pipeline != nil {
 		l.pipeline.Release()
 	}
@@ -124,6 +135,12 @@ func (l *DenseLayer) Cleanup() {
 	}
 	if l.backwardBindGroupGrads != nil {
 		l.backwardBindGroupGrads.Release()
+	}
+	if l.backwardPipelineInput != nil {
+		l.backwardPipelineInput.Release()
+	}
+	if l.backwardBindGroupInput != nil {
+		l.backwardBindGroupInput.Release()
 	}
 }
 
@@ -202,7 +219,12 @@ func (l *DenseLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []fl
 func (l *DenseLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
-	// Weight Gradients
+	batch := l.BatchSize
+	if batch <= 0 {
+		batch = 1
+	}
+
+	// Weight Gradient (accumulated over batch)
 	l.WeightGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_WGrad",
 		Size:  uint64(len(l.Spec.Weights) * 4),
@@ -212,7 +234,7 @@ func (l *DenseLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) e
 		return err
 	}
 
-	// Bias Gradients
+	// Bias Gradient (accumulated)
 	l.BiasGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_BGrad",
 		Size:  uint64(len(l.Spec.Biases) * 4),
@@ -225,7 +247,17 @@ func (l *DenseLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) e
 	// Input Gradients (Result of backward pass for this layer)
 	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_IGrad",
-		Size:  uint64(l.Spec.InputSize * 4),
+		Size:  uint64(l.Spec.InputSize * batch * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc | wgpu.BufferUsageCopyDst,
+	})
+	if err != nil {
+		return err
+	}
+
+	// dZ Buffer (Intermediate derivative w.r.t pre-activation)
+	l.dZBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_dZ",
+		Size:  uint64(l.Spec.OutputSize * batch * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc | wgpu.BufferUsageCopyDst,
 	})
 	if err != nil {
@@ -270,32 +302,40 @@ func (l *DenseLayer) GenerateShader() string {
 			let n_out = %du;
 			let n_in = %du;
 
-			if (idx >= n_out) {
+			if (idx >= arrayLength(&output)) {
 				return;
 			}
+			
+			// Handle batch dimension mapping
+			// idx = sample_idx * n_out + out_idx
+			let sample_idx = idx / n_out;
+			let out_idx = idx %% n_out;
 
-			var sum: f32 = biases[idx];
-			// Paragon/Optimized style: weights[idx * n_in + i]
-			// Corresponds to [Output, Input] layout where Thread idx is Output row.
-			// This is strided/uncoalesced access if mapped to global memory, but follows Paragon implementation.
-			let weight_offset = idx * n_in;
+			var sum: f32 = biases[out_idx];
+			let weight_offset = out_idx * n_in;
+			let input_offset = sample_idx * n_in;
 			
 			for (var i: u32 = 0u; i < n_in; i++) {
-				sum += weights[weight_offset + i] * input[i];
+				sum += weights[weight_offset + i] * input[input_offset + i];
 			}
 
 			output[idx] = activate(sum);
-			// output[idx] = 123.45;
 		}
 	`, actFunc, l.Spec.OutputSize, l.Spec.InputSize)
 }
 
 func (l *DenseLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
+
+	batch := l.BatchSize
+	if batch <= 0 {
+		batch = 1
+	}
+
 	// Input
 	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_In",
-		Size:  uint64(l.Spec.InputSize * 4),
+		Size:  uint64(l.Spec.InputSize * batch * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
 	if err != nil {
@@ -305,7 +345,7 @@ func (l *DenseLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	// Output
 	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
-		Size:  uint64(l.Spec.OutputSize * 4),
+		Size:  uint64(l.Spec.OutputSize * batch * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
 	if err != nil {
@@ -327,7 +367,7 @@ func (l *DenseLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	// Staging
 	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
-		Size:  uint64(l.Spec.OutputSize * 4),
+		Size:  uint64(l.Spec.OutputSize * batch * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
 	if err != nil {
@@ -357,7 +397,12 @@ func (l *DenseLayer) Compile(ctx *Context, labelPrefix string) error {
 		return fmt.Errorf("pipeline create: %v", err)
 	}
 
-	l.WorkgroupsX = uint32((l.Spec.OutputSize + 255) / 256)
+	batch := l.BatchSize
+	if batch <= 0 {
+		batch = 1
+	}
+	totalThreads := uint32(l.Spec.OutputSize * batch)
+	l.WorkgroupsX = (totalThreads + 255) / 256
 	return nil
 }
 
@@ -547,6 +592,7 @@ func (s *DenseSequence) ForwardPipelined(input []float32) ([]float32, error) {
 
 		if i < len(s.Layers)-1 {
 			next := s.Layers[i+1]
+			// Copy l.OutputBuffer -> next.InputBuffer
 			enc.CopyBufferToBuffer(l.OutputBuffer, 0, next.InputBuffer, 0, l.OutputBuffer.GetSize())
 		} else {
 			// Last Layer: Copy to Staging

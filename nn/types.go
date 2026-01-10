@@ -417,6 +417,10 @@ type Network struct {
 	gpuMounted    bool        // True if weights are currently on GPU
 	gpuOutputSize int         // Size of final layer output for GPU
 
+	// Cached gradient application pipeline (created once, reused many times)
+	gpuGradPipeline *wgpu.ComputePipeline
+	gpuGradParams   *wgpu.Buffer // Uniform buffer for learning rate
+
 	// Layer configuration for each position in the grid
 	// Indexed by flattened position: row*GridCols*LayersPerCell + col*LayersPerCell + layer
 	Layers []LayerConfig
@@ -452,6 +456,14 @@ type GPUDeviceInfo struct {
 	forwardBGLs       []*wgpu.BindGroupLayout
 	backwardPipelines []*wgpu.ComputePipeline
 	backwardBGLs      []*wgpu.BindGroupLayout
+
+	// Cached persistent buffers for BackwardGPU to avoid reallocation per-step
+	backwardGradBufA    *wgpu.Buffer
+	backwardGradBufB    *wgpu.Buffer
+	backwardPreActBufs  []*wgpu.Buffer
+	backwardBindGroups  []*wgpu.BindGroup // Cached per-layer bind groups
+	backwardReadbackBuf *wgpu.Buffer      // Cached readback buffer
+	backwardCachedSize  int               // To detect if resizing is needed
 }
 
 // NewNetwork creates a new grid neural network with dense layers
@@ -577,6 +589,36 @@ func (n *Network) ReleaseGPU() {
 				}
 			}
 			n.deviceInfo.backwardBGLs = nil
+		}
+
+		// Cleanup backward persistent resources
+		if n.deviceInfo.backwardGradBufA != nil {
+			n.deviceInfo.backwardGradBufA.Release()
+			n.deviceInfo.backwardGradBufA = nil
+		}
+		if n.deviceInfo.backwardGradBufB != nil {
+			n.deviceInfo.backwardGradBufB.Release()
+			n.deviceInfo.backwardGradBufB = nil
+		}
+		if n.deviceInfo.backwardPreActBufs != nil {
+			for _, buf := range n.deviceInfo.backwardPreActBufs {
+				if buf != nil {
+					buf.Release()
+				}
+			}
+			n.deviceInfo.backwardPreActBufs = nil
+		}
+		if n.deviceInfo.backwardBindGroups != nil {
+			for _, bg := range n.deviceInfo.backwardBindGroups {
+				if bg != nil {
+					bg.Release()
+				}
+			}
+			n.deviceInfo.backwardBindGroups = nil
+		}
+		if n.deviceInfo.backwardReadbackBuf != nil {
+			n.deviceInfo.backwardReadbackBuf.Release()
+			n.deviceInfo.backwardReadbackBuf = nil
 		}
 
 		if n.deviceInfo.release != nil {

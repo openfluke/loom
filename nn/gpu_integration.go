@@ -47,6 +47,11 @@ func (n *Network) WeightsToGPU() error {
 		}
 
 		if gpuLayer != nil {
+			// Set BatchSize if supported
+			if dense, ok := gpuLayer.(*gpu.DenseLayer); ok {
+				dense.BatchSize = n.BatchSize
+			}
+
 			layers = append(layers, gpuLayer)
 			if layerOutputSize > 0 {
 				outputSize = layerOutputSize
@@ -91,6 +96,18 @@ func (n *Network) WeightsToGPU() error {
 	// Upload weights to GPU
 	for _, l := range layers {
 		l.UploadWeights(ctx)
+	}
+
+	// Create gradient application bind groups (init pipeline first)
+	// This ensures we don't do it lazily later (which would fail to create cached bind groups)
+	if err := n.EnsureGradientPipeline(ctx); err == nil {
+		for _, l := range layers {
+			if denseLayer, ok := l.(*gpu.DenseLayer); ok {
+				createGradientBindGroups(ctx, n.gpuGradPipeline, n.gpuGradParams, denseLayer)
+			}
+		}
+	} else {
+		fmt.Printf("Warning: Failed to initialize gradient pipeline: %v\n", err)
 	}
 
 	// Wait for GPU to finish
@@ -237,7 +254,11 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 
 	// Read output from staging buffer
 	lastLayer := layers[len(layers)-1]
-	output, err := readStagingBuffer(ctx, lastLayer.GetStagingBuffer(), n.gpuOutputSize)
+	batch := n.BatchSize
+	if batch <= 0 {
+		batch = 1
+	}
+	output, err := readStagingBuffer(ctx, lastLayer.GetStagingBuffer(), n.gpuOutputSize*batch)
 	if err != nil {
 		return nil, fmt.Errorf("read output: %w", err)
 	}
