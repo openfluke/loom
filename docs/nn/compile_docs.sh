@@ -31,6 +31,7 @@ fi
 FILES=(
     "overview.md"
     "layers.md"
+    "gpu_layers.md"
     "training.md"
     "optimizers.md"
     "tween.md"
