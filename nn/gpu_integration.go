@@ -441,8 +441,9 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		}
 
 		// Ensure weights and bias are properly sized
+		// Use l.Kernel and l.Bias (which is where InitConv1DLayer stores the weights)
 		weightSize := l.Conv1DFilters * l.Conv1DInChannels * l.Conv1DKernelSize
-		weights := l.Conv1DKernel
+		weights := l.Kernel
 		if len(weights) != weightSize {
 			weights = make([]float32, weightSize)
 			// Initialize with small random values
@@ -451,7 +452,7 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			}
 		}
 
-		bias := l.Conv1DBias
+		bias := l.Bias
 		if len(bias) != l.Conv1DFilters {
 			bias = make([]float32, l.Conv1DFilters)
 		}

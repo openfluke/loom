@@ -195,6 +195,8 @@ func (l *Conv1DLayer) GenerateShader() string {
 	}
 	outputLen := l.computeOutputLen()
 
+	// CPU layout: input[ic * seqLen + pos], output[f * outLen + o]
+	// Weight layout: kernel[f * inChannels * kernelSize + ic * kernelSize + k]
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
 		@group(0) @binding(1) var<storage, read> weights : array<f32>;
@@ -215,8 +217,9 @@ func (l *Conv1DLayer) GenerateShader() string {
 			let total = OUT_LEN * OUT_CH;
 			if (idx >= total) { return; }
 
-			let out_pos = idx / OUT_CH;
-			let out_c = idx %% OUT_CH;
+			// Output layout: [filters][outLen] (CPU-compatible)
+			let out_c = idx / OUT_LEN;
+			let out_pos = idx %% OUT_LEN;
 
 			var sum: f32 = bias[out_c];
 			
@@ -225,8 +228,10 @@ func (l *Conv1DLayer) GenerateShader() string {
 				if (in_pos_signed >= 0 && u32(in_pos_signed) < SEQ_LEN) {
 					let in_pos = u32(in_pos_signed);
 					for (var in_c: u32 = 0u; in_c < IN_CH; in_c++) {
+						// Weight layout: [out_c][in_c][k]
 						let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
-						let i_idx = in_pos * IN_CH + in_c;
+						// Input layout: [in_c][seqLen] (CPU-compatible)
+						let i_idx = in_c * SEQ_LEN + in_pos;
 						sum += input[i_idx] * weights[w_idx];
 					}
 				}
@@ -247,6 +252,7 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 	// Backward pass computes:
 	// 1. dInput via transposed convolution
 	// 2. dWeights and dBias via accumulation (using atomics)
+	// CPU layout: input[in_c * seqLen + pos], output[out_c * outLen + pos]
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
 		@group(0) @binding(1) var<storage, read> output : array<f32>; // Added for activation derivative
@@ -270,10 +276,11 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 			let in_total = SEQ_LEN * IN_CH;
 			if (idx >= in_total) { return; }
 
-			let in_pos = idx / IN_CH;
-			let in_c = idx %% IN_CH;
+			// Input/dInput layout: [in_c][seqLen] (CPU-compatible)
+			let in_c = idx / SEQ_LEN;
+			let in_pos = idx %% SEQ_LEN;
 
-			// Compute d_input[in_pos, in_c]
+			// Compute d_input[in_c, in_pos]
 			var grad: f32 = 0.0;
 
 			// For each output position that this input contributed to
@@ -283,7 +290,8 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 					if (u32(in_pos_check) == in_pos && in_pos_check >= 0) {
 						for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
 							let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
-							let do_idx = out_pos * OUT_CH + out_c;
+							// Output layout: [out_c][outLen] (CPU-compatible)
+							let do_idx = out_c * OUT_LEN + out_pos;
 							// Apply activation derivative: d_act = 1.1 if output[do_idx] > 0 else 0
 							let out_val = output[do_idx];
 							var d_act: f32 = 0.0;
@@ -305,14 +313,16 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 					if (src_pos >= 0 && u32(src_pos) < SEQ_LEN) {
 						for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
 							let w_idx = out_c * IN_CH * KERNEL_SIZE + in_c * KERNEL_SIZE + k;
-							let do_idx = out_pos * OUT_CH + out_c;
+							// Output layout: [out_c][outLen]
+							let do_idx = out_c * OUT_LEN + out_pos;
 							
 							// Activation derivative
 							let out_val = output[do_idx];
 							var d_act: f32 = 0.0;
 							if (out_val > 0.0) { d_act = 1.1; }
 
-							let contrib = d_output[do_idx] * d_act * input[u32(src_pos) * IN_CH + in_c];
+							// Input layout: [in_c][seqLen]
+							let contrib = d_output[do_idx] * d_act * input[in_c * SEQ_LEN + u32(src_pos)];
 							
 							var old_val: u32 = atomicLoad(&d_weights[w_idx]);
 							loop {
@@ -330,7 +340,8 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 				// Bias gradient
 				if (in_c == 0u) {
 					for (var out_c: u32 = 0u; out_c < OUT_CH; out_c++) {
-						let do_idx = out_pos * OUT_CH + out_c;
+						// Output layout: [out_c][outLen]
+						let do_idx = out_c * OUT_LEN + out_pos;
 						// Activation derivative
 						let out_val = output[do_idx];
 						var d_act: f32 = 0.0;
