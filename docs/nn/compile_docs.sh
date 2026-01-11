@@ -35,6 +35,7 @@ FILES=(
     "training.md"
     "optimizers.md"
     "tween.md"
+    "step_tween_chain.md"
     "parallel.md"
     "serialization.md"
     "introspection.md"
