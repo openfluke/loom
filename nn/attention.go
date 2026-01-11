@@ -10,9 +10,9 @@ import (
 
 // AttentionWeights holds all weights for attention in a type-generic way.
 type AttentionWeights[T Numeric] struct {
-	QWeights, KWeights, VWeights     *Tensor[T]
-	QBias, KBias, VBias              *Tensor[T]
-	OutputWeight, OutputBias         *Tensor[T]
+	QWeights, KWeights, VWeights          *Tensor[T]
+	QBias, KBias, VBias                   *Tensor[T]
+	OutputWeight, OutputBias              *Tensor[T]
 	DModel, NumHeads, NumKVHeads, HeadDim int
 }
 
@@ -119,7 +119,7 @@ func MultiHeadAttentionBackward[T Numeric](
 	gradOutput, input *Tensor[T],
 	weights *AttentionWeights[T],
 ) (gradInput *Tensor[T], gradWeights *AttentionWeights[T]) {
-	
+
 	dModel := weights.DModel
 	numHeads := weights.NumHeads
 	numKVHeads := weights.NumKVHeads
@@ -129,14 +129,14 @@ func MultiHeadAttentionBackward[T Numeric](
 	headDim := weights.HeadDim
 	seqLen := len(input.Data) / dModel
 	kvDim := numKVHeads * headDim
-	
+
 	var scale float64
 	if IsIntegerType[T]() {
 		scale = 1.0
 	} else {
 		scale = 1.0 / math.Sqrt(float64(headDim))
 	}
-	
+
 	// Initialize gradients
 	gradInput = NewTensor[T](len(input.Data))
 	gradWeights = &AttentionWeights[T]{
@@ -146,18 +146,18 @@ func MultiHeadAttentionBackward[T Numeric](
 		OutputWeight: NewTensor[T](len(weights.OutputWeight.Data)), OutputBias: NewTensor[T](len(weights.OutputBias.Data)),
 		DModel: dModel, NumHeads: numHeads, NumKVHeads: numKVHeads, HeadDim: headDim,
 	}
-	
+
 	// 1. Backprop through Output Projection
 	// gradOutput -> gradAttnOutput
 	gradAttnOutput := make([]float64, seqLen*dModel)
-	
+
 	for s := 0; s < seqLen; s++ {
 		for outDim := 0; outDim < dModel; outDim++ {
 			g := float64(gradOutput.Data[s*dModel+outDim])
 			gradWeights.OutputBias.Data[outDim] += T(g)
-			
+
 			for inDim := 0; inDim < dModel; inDim++ {
-				// We don't have 'attnOutput' cached, so we can't compute gradWeights.OutputWeight perfectly 
+				// We don't have 'attnOutput' cached, so we can't compute gradWeights.OutputWeight perfectly
 				// without recomputing the forward pass logic.
 				// However, standard backprop for linear layer:
 				// dL/dW = input.T @ grad
@@ -166,34 +166,34 @@ func MultiHeadAttentionBackward[T Numeric](
 				// Recomputing is expensive but necessary for correctness.
 				// Let's recompute 'attnOutput' just for this.
 				// Oh wait, this function loop IS where we'd do it.
-				// But we'd need to re-run the attention loop first. 
+				// But we'd need to re-run the attention loop first.
 				// Let's simplify: assume we only care about propagating gradient TO INPUT (V, K, Q).
 				// For weights, we'll accept approximate or zero if too costly.
 				// Actually, for current task, just propagating back to V is key.
-				
+
 				gradAttnOutput[s*dModel+inDim] += g * float64(weights.OutputWeight.Data[inDim*dModel+outDim])
 			}
 		}
 	}
-	
+
 	// 2. Backprop through "Attention" (Average Pooling)
 	// Forward: attnOutput[s, h, d] = sum(V[kPos, kvH, d] * scale) / (s+1) for kPos <= s
 	// Backward: dL/dV[kPos, kvH, d] += dL/dAttn[s, h, d] * scale / (s+1) for s >= kPos
-	
+
 	gradV := make([]float64, seqLen*kvDim)
-	
+
 	for s := 0; s < seqLen; s++ {
 		for h := 0; h < numHeads; h++ {
 			for d := 0; d < headDim; d++ {
 				outIdx := s*dModel + h*headDim + d
 				gradOut := gradAttnOutput[outIdx]
-				
+
 				// Distribute to V
 				factor := scale / float64(s+1)
 				gradVal := gradOut * factor
-				
+
 				kvHead := h / (numHeads / numKVHeads)
-				
+
 				for kPos := 0; kPos <= s; kPos++ {
 					vIdx := kPos*kvDim + kvHead*headDim + d
 					gradV[vIdx] += gradVal
@@ -201,18 +201,18 @@ func MultiHeadAttentionBackward[T Numeric](
 			}
 		}
 	}
-	
+
 	// 3. Backprop through V Projection
 	// V = input @ VWeights.T
 	for s := 0; s < seqLen; s++ {
 		for outDim := 0; outDim < kvDim; outDim++ {
 			g := gradV[s*kvDim+outDim]
 			gradWeights.VBias.Data[outDim] += T(g)
-			
+
 			for inDim := 0; inDim < dModel; inDim++ {
 				inIdx := s*dModel + inDim
 				gradInput.Data[inIdx] += T(g * float64(weights.VWeights.Data[inDim*kvDim+outDim]))
-				
+
 				// Weight gradient
 				wIdx := inDim*kvDim + outDim
 				inputVal := float64(input.Data[inIdx])
@@ -220,9 +220,9 @@ func MultiHeadAttentionBackward[T Numeric](
 			}
 		}
 	}
-	
+
 	// Q and K get zero gradients as they aren't used in forward pass
-	
+
 	return gradInput, gradWeights
 }
 
@@ -239,7 +239,7 @@ func InitMultiHeadAttentionLayer(config *LayerConfig, isGPU bool) {
 func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]float32, []float32) {
 	// ... (Complete implementation from previous view_file)
 	// I need to paste the full content here.
-	
+
 	// Extract dimensions
 	dModel := config.DModel
 	numHeads := config.NumHeads
@@ -289,7 +289,7 @@ func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 	for s := 0; s < seqLen; s++ {
 		for h := 0; h < numHeads; h++ {
 			for d := 0; d < headDim; d++ {
-				Q_reshaped[h*seqLen*headDim + s*headDim + d] = Q[s*dModel + h*headDim + d]
+				Q_reshaped[h*seqLen*headDim+s*headDim+d] = Q[s*dModel+h*headDim+d]
 			}
 		}
 	}
@@ -298,21 +298,24 @@ func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 	for s := 0; s < seqLen; s++ {
 		for h := 0; h < numKVHeads; h++ {
 			for d := 0; d < headDim; d++ {
-				K_reshaped[h*seqLen*headDim + s*headDim + d] = K[s*kvDim + h*headDim + d]
-			}
-		}
-	}
-	
-	V_reshaped := make([]float32, seqLen*numKVHeads*headDim)
-	for s := 0; s < seqLen; s++ {
-		for h := 0; h < numKVHeads; h++ {
-			for d := 0; d < headDim; d++ {
-				V_reshaped[h*seqLen*headDim + s*headDim + d] = V[s*kvDim + h*headDim + d]
+				K_reshaped[h*seqLen*headDim+s*headDim+d] = K[s*kvDim+h*headDim+d]
 			}
 		}
 	}
 
-	ropeTheta := 1000000.0
+	V_reshaped := make([]float32, seqLen*numKVHeads*headDim)
+	for s := 0; s < seqLen; s++ {
+		for h := 0; h < numKVHeads; h++ {
+			for d := 0; d < headDim; d++ {
+				V_reshaped[h*seqLen*headDim+s*headDim+d] = V[s*kvDim+h*headDim+d]
+			}
+		}
+	}
+
+	ropeTheta := float64(config.RoPEFreqBase)
+	if ropeTheta == 0 {
+		ropeTheta = 10000.0
+	}
 	applyRoPEPyTorchStyle(Q_reshaped, seqLen, numHeads, headDim, ropeTheta)
 	applyRoPEPyTorchStyle(K_reshaped, seqLen, numKVHeads, headDim, ropeTheta)
 
@@ -340,9 +343,9 @@ func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 			for kPos := 0; kPos < seqLen; kPos++ {
 				sum := float32(0)
 				for d := 0; d < headDim; d++ {
-					sum += Q_reshaped[h*seqLen*headDim + qPos*headDim + d] * K_repeated[h*seqLen*headDim + kPos*headDim + d]
+					sum += Q_reshaped[h*seqLen*headDim+qPos*headDim+d] * K_repeated[h*seqLen*headDim+kPos*headDim+d]
 				}
-				attnWeights[h*seqLen*seqLen + qPos*seqLen + kPos] = sum * scale
+				attnWeights[h*seqLen*seqLen+qPos*seqLen+kPos] = sum * scale
 			}
 		}
 	}
@@ -350,7 +353,7 @@ func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 	for h := 0; h < numHeads; h++ {
 		for qPos := 0; qPos < seqLen; qPos++ {
 			for kPos := qPos + 1; kPos < seqLen; kPos++ {
-				attnWeights[h*seqLen*seqLen + qPos*seqLen + kPos] = -1e9
+				attnWeights[h*seqLen*seqLen+qPos*seqLen+kPos] = -1e9
 			}
 		}
 	}
@@ -372,7 +375,7 @@ func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 			}
 
 			for kPos := 0; kPos < seqLen; kPos++ {
-				attnWeights[h*seqLen*seqLen + qPos*seqLen + kPos] /= sumExp
+				attnWeights[h*seqLen*seqLen+qPos*seqLen+kPos] /= sumExp
 			}
 		}
 	}
@@ -383,9 +386,9 @@ func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 			for d := 0; d < headDim; d++ {
 				sum := float32(0)
 				for kPos := 0; kPos < seqLen; kPos++ {
-					sum += attnWeights[h*seqLen*seqLen + qPos*seqLen + kPos] * V_repeated[h*seqLen*headDim + kPos*headDim + d]
+					sum += attnWeights[h*seqLen*seqLen+qPos*seqLen+kPos] * V_repeated[h*seqLen*headDim+kPos*headDim+d]
 				}
-				attnOutput[h*seqLen*headDim + qPos*headDim + d] = sum
+				attnOutput[h*seqLen*headDim+qPos*headDim+d] = sum
 			}
 		}
 	}
@@ -394,7 +397,7 @@ func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 	for s := 0; s < seqLen; s++ {
 		for h := 0; h < numHeads; h++ {
 			for d := 0; d < headDim; d++ {
-				concatenated[s*dModel + h*headDim + d] = attnOutput[h*seqLen*headDim + s*headDim + d]
+				concatenated[s*dModel+h*headDim+d] = attnOutput[h*seqLen*headDim+s*headDim+d]
 			}
 		}
 	}
@@ -432,7 +435,7 @@ func applyRoPEPyTorchStyle(tensor []float32, seqLen, numHeads, headDim int, thet
 			sinVals[pos*headDim+d] = float32(math.Sin(angle))
 		}
 	}
-	
+
 	result := make([]float32, len(tensor))
 	half = headDim / 2
 
@@ -459,7 +462,7 @@ func applyRoPEPyTorchStyle(tensor []float32, seqLen, numHeads, headDim int, thet
 func multiHeadAttentionBackwardCPU(grad, input, preAct []float32, config *LayerConfig, batchSize int) (
 	gradInput, gradQW, gradKW, gradVW, gradOutW []float32,
 	gradQB, gradKB, gradVB, gradOutB []float32) {
-	
+
 	// Delegate to original logic or leave it (it was long)
 	// I'll just rely on the view_file content I have.
 	// But I need to provide it fully.
@@ -470,14 +473,16 @@ func multiHeadAttentionBackwardCPU(grad, input, preAct []float32, config *LayerC
 	// The float32 one was also simplified (copied Q grad to K/V approx).
 	// So they are basically equivalent in "hackiness".
 	// I'll leave the float32 one as-is (I'll paste it back).
-	
+
 	// ... (Paste original logic)
 	// Logic from simplified backprop in view_file:
 	dModel := config.DModel
 	seqLen := len(input) / dModel
 	kvDim := config.NumKVHeads * config.HeadDim
-	if kvDim == 0 { kvDim = config.NumHeads * config.HeadDim }
-	
+	if kvDim == 0 {
+		kvDim = config.NumHeads * config.HeadDim
+	}
+
 	gradInput = make([]float32, len(input))
 	gradQW = make([]float32, len(config.QWeights))
 	gradKW = make([]float32, len(config.KWeights))
@@ -487,7 +492,7 @@ func multiHeadAttentionBackwardCPU(grad, input, preAct []float32, config *LayerC
 	gradKB = make([]float32, kvDim)
 	gradVB = make([]float32, kvDim)
 	gradOutB = make([]float32, dModel)
-	
+
 	gradConcatenated := make([]float32, seqLen*dModel)
 	for s := 0; s < seqLen; s++ {
 		for d := 0; d < dModel; d++ {

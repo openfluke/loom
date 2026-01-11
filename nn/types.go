@@ -254,6 +254,7 @@ type LayerConfig struct {
 	KBias        []float32 // Key bias [dModel or smaller for GQA]
 	VBias        []float32 // Value bias [dModel or smaller for GQA]
 	OutputBias   []float32 // Output bias [dModel]
+	RoPEFreqBase float32   // Base frequency for RoPE (default 10000.0)
 
 	// RNN/LSTM specific parameters
 	HiddenSize   int       // Hidden state size

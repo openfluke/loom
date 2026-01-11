@@ -8,18 +8,20 @@ import (
 
 // MHASpec defines configuration for Multi-Head Attention layer
 type MHASpec struct {
-	DModel   int       // Model dimension (embedding size)
-	NumHeads int       // Number of attention heads
-	SeqLen   int       // Sequence length
-	HeadDim  int       // Dimension per head (DModel / NumHeads)
-	QWeights []float32 // Query projection [DModel * DModel]
-	KWeights []float32 // Key projection [DModel * DModel]
-	VWeights []float32 // Value projection [DModel * DModel]
-	OWeights []float32 // Output projection [DModel * DModel]
-	QBias    []float32 // [DModel]
-	KBias    []float32 // [DModel]
-	VBias    []float32 // [DModel]
-	OBias    []float32 // [DModel]
+	DModel       int       // Model dimension (embedding size)
+	NumHeads     int       // Number of attention heads
+	NumKVHeads   int       // Number of key/value heads (for GQA)
+	SeqLen       int       // Sequence length
+	HeadDim      int       // Dimension per head (DModel / NumHeads)
+	QWeights     []float32 // Query projection [DModel * DModel]
+	KWeights     []float32 // Key projection [DModel * DModel]
+	VWeights     []float32 // Value projection [DModel * DModel]
+	OWeights     []float32 // Output projection [DModel * DModel]
+	QBias        []float32 // [DModel]
+	KBias        []float32 // [DModel]
+	VBias        []float32 // [DModel]
+	OBias        []float32 // [DModel]
+	RoPEFreqBase float32   // Base frequency for RoPE (default 10000.0)
 }
 
 // MHALayer holds GPU resources for Multi-Head Attention
@@ -190,7 +192,7 @@ func (l *MHALayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) err
 }
 
 func (l *MHALayer) GenerateQKVShader() string {
-	// Combined Q/K/V linear projections
+	// Combined Q/K/V linear projections + RoPE
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
 		@group(0) @binding(1) var<storage, read> w_qkv : array<f32>;
@@ -201,6 +203,8 @@ func (l *MHALayer) GenerateQKVShader() string {
 
 		const SEQ_LEN: u32 = %du;
 		const D_MODEL: u32 = %du;
+		const HEAD_DIM: u32 = %du;
+		const ROPE_BASE: f32 = %f;
 
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -216,34 +220,89 @@ func (l *MHALayer) GenerateQKVShader() string {
 			let offset_v = 2u * D_MODEL * D_MODEL;
 			let bias_offset = D_MODEL;
 
-			// Q projection
-			var q_sum: f32 = b_qkv[d];
-			for (var j: u32 = 0u; j < D_MODEL; j++) {
-				q_sum += input[in_offset + j] * w_qkv[j * D_MODEL + d];
-			}
-			q_out[idx] = q_sum;
+			// ---------------------------------------------------------
+			// 1. Compute Raw Q, K, V for this position 'd'
+			// ---------------------------------------------------------
 
-			// K projection
-			var k_sum: f32 = b_qkv[bias_offset + d];
-			for (var j: u32 = 0u; j < D_MODEL; j++) {
-				k_sum += input[in_offset + j] * w_qkv[offset_k + j * D_MODEL + d];
-			}
-			k_out[idx] = k_sum;
-
-			// V projection
+			// V projection (No RoPE)
 			var v_sum: f32 = b_qkv[2u*bias_offset + d];
 			for (var j: u32 = 0u; j < D_MODEL; j++) {
 				v_sum += input[in_offset + j] * w_qkv[offset_v + j * D_MODEL + d];
 			}
 			v_out[idx] = v_sum;
+
+			// Q projection (Raw)
+			var q_sum: f32 = b_qkv[d];
+			for (var j: u32 = 0u; j < D_MODEL; j++) {
+				q_sum += input[in_offset + j] * w_qkv[j * D_MODEL + d];
+			}
+
+			// K projection (Raw)
+			var k_sum: f32 = b_qkv[bias_offset + d];
+			for (var j: u32 = 0u; j < D_MODEL; j++) {
+				k_sum += input[in_offset + j] * w_qkv[offset_k + j * D_MODEL + d];
+			}
+
+			// ---------------------------------------------------------
+			// 2. Apply RoPE to Q and K (Rotate Half Strategy)
+			// ---------------------------------------------------------
+			
+			let d_in_head = d %% HEAD_DIM;
+			let half_dim = HEAD_DIM / 2u;
+			var pair_d: u32;
+			var theta_idx: u32;
+			var sign: f32; // -1 for low half (x), +1 for high half (y)
+
+			if (d_in_head < half_dim) {
+				pair_d = d + half_dim;
+				theta_idx = d_in_head;
+				sign = -1.0; 
+			} else {
+				pair_d = d - half_dim;
+				theta_idx = d_in_head - half_dim;
+				sign = 1.0;
+			}
+
+			// Compute angle
+			let theta = pow(ROPE_BASE, -2.0 * f32(theta_idx) / f32(HEAD_DIM));
+			let angle = f32(seq) * theta;
+			let c = cos(angle);
+			let s = sin(angle);
+
+			// We need the value of the PAIR to apply rotation
+			var q_pair: f32 = b_qkv[pair_d];
+			for (var j: u32 = 0u; j < D_MODEL; j++) {
+				q_pair += input[in_offset + j] * w_qkv[j * D_MODEL + pair_d];
+			}
+
+			var k_pair: f32 = b_qkv[bias_offset + pair_d];
+			for (var j: u32 = 0u; j < D_MODEL; j++) {
+				k_pair += input[in_offset + j] * w_qkv[offset_k + j * D_MODEL + pair_d];
+			}
+
+			// Apply rotation
+			// x' = x cos - y sin  (for low half, sign=-1: x cos + y*sign*sin => x cos - y sin)
+			// y' = y cos + x sin  (for high half, sign=+1: y cos + x*sign*sin => y cos + x sin)
+			// Wait, simple logic:
+			if (d_in_head < half_dim) {
+				q_out[idx] = q_sum * c - q_pair * s;
+				k_out[idx] = k_sum * c - k_pair * s;
+			} else {
+				q_out[idx] = q_sum * c + q_pair * s;
+				k_out[idx] = k_sum * c + k_pair * s;
+			}
 		}
-	`, l.Spec.SeqLen, l.Spec.DModel)
+	`, l.Spec.SeqLen, l.Spec.DModel, l.Spec.HeadDim, l.Spec.RoPEFreqBase)
 }
 
 func (l *MHALayer) GenerateAttnShader() string {
 	// Simplified attention: for each position, attend to all positions
 	headDim := l.Spec.DModel / l.Spec.NumHeads
 	scale := 1.0 / float32(headDim)
+	numKVHeads := l.Spec.NumKVHeads
+	if numKVHeads == 0 {
+		numKVHeads = l.Spec.NumHeads
+	}
 
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> q : array<f32>;
@@ -254,6 +313,7 @@ func (l *MHALayer) GenerateAttnShader() string {
 		const SEQ_LEN: u32 = %du;
 		const D_MODEL: u32 = %du;
 		const NUM_HEADS: u32 = %du;
+		const NUM_KV_HEADS: u32 = %du;
 		const HEAD_DIM: u32 = %du;
 		const SCALE: f32 = %f;
 
@@ -267,6 +327,10 @@ func (l *MHALayer) GenerateAttnShader() string {
 			let d = idx %% D_MODEL;
 			let head = d / HEAD_DIM;
 			let head_d = d %% HEAD_DIM;
+			
+			// GQA: Map Query head to KV head
+			let heads_per_kv = NUM_HEADS / NUM_KV_HEADS;
+			let kv_head = head / heads_per_kv;
 
 			// Compute attention weights and weighted sum of V
 			var sum: f32 = 0.0;
@@ -274,11 +338,12 @@ func (l *MHALayer) GenerateAttnShader() string {
 
 			// First pass: find max for stability
 			for (var seq_j: u32 = 0u; seq_j < SEQ_LEN; seq_j++) {
-				if (seq_j > seq_i) { continue; }
+				if (seq_j > seq_i) { continue; } // Causal mask
 				var score: f32 = 0.0;
 				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
 					let q_idx = seq_i * D_MODEL + head * HEAD_DIM + hd;
-					let k_idx = seq_j * D_MODEL + head * HEAD_DIM + hd;
+					// Read K from the correct mapped KV head
+					let k_idx = seq_j * D_MODEL + kv_head * HEAD_DIM + hd;
 					score += q[q_idx] * k[k_idx];
 				}
 				score *= SCALE;
@@ -292,17 +357,20 @@ func (l *MHALayer) GenerateAttnShader() string {
 				var score: f32 = 0.0;
 				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
 					let q_idx = seq_i * D_MODEL + head * HEAD_DIM + hd;
-					let k_idx = seq_j * D_MODEL + head * HEAD_DIM + hd;
+					let k_idx = seq_j * D_MODEL + kv_head * HEAD_DIM + hd;
 					score += q[q_idx] * k[k_idx];
 				}
 				score = exp(score * SCALE - max_score);
 				exp_sum += score;
-				sum += score * v[seq_j * D_MODEL + d];
+				
+				// Read V from the correct mapped KV head
+				let v_idx = seq_j * D_MODEL + kv_head * HEAD_DIM + head_d;
+				sum += score * v[v_idx];
 			}
 
 			attn_out[idx] = sum / exp_sum;
 		}
-	`, l.Spec.SeqLen, l.Spec.DModel, l.Spec.NumHeads, headDim, scale)
+	`, l.Spec.SeqLen, l.Spec.DModel, l.Spec.NumHeads, numKVHeads, headDim, scale)
 }
 
 func (l *MHALayer) GenerateOutShader() string {

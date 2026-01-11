@@ -560,7 +560,6 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 
 	// Check for specialized layer types and use dedicated GPU paths
 	hasConv2D := false
-	hasMHA := false
 	for i := 0; i < n.TotalLayers(); i++ {
 		row := i / (n.GridCols * n.LayersPerCell)
 		remainder := i % (n.GridCols * n.LayersPerCell)
@@ -570,18 +569,12 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 		config := n.GetLayer(row, col, layer)
 		if config.Type == LayerConv2D {
 			hasConv2D = true
-		}
-		if config.Type == LayerMultiHeadAttention {
-			hasMHA = true
+			break
 		}
 	}
 
 	if hasConv2D {
 		return n.forwardGPUConv2D(input)
-	}
-
-	if hasMHA {
-		return n.forwardGPUMultiHeadAttention(input)
 	}
 
 	// fmt.Println("DEBUG: Starting ForwardGPU") // DEBUG

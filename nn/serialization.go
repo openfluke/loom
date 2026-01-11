@@ -56,9 +56,10 @@ type LayerDefinition struct {
 	OutputWidth   int `json:"output_width,omitempty"`
 
 	// MHA fields
-	DModel    int `json:"d_model,omitempty"`
-	NumHeads  int `json:"num_heads,omitempty"`
-	SeqLength int `json:"seq_length,omitempty"`
+	DModel       int     `json:"d_model,omitempty"`
+	NumHeads     int     `json:"num_heads,omitempty"`
+	SeqLength    int     `json:"seq_length,omitempty"`
+	RoPEFreqBase float32 `json:"rope_freq_base,omitempty"`
 
 	// RNN/LSTM fields
 	HiddenSize int `json:"hidden_size,omitempty"`
@@ -239,6 +240,7 @@ func serializeBranches(branches []LayerConfig) []LayerDefinition {
 			def.DModel = branch.DModel
 			def.NumHeads = branch.NumHeads
 			def.SeqLength = branch.SeqLength
+			def.RoPEFreqBase = branch.RoPEFreqBase
 		case LayerRNN:
 			def.InputSize = branch.RNNInputSize
 			def.HiddenSize = branch.HiddenSize
@@ -400,6 +402,7 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				DModel:       def.DModel,
 				NumHeads:     def.NumHeads,
 				SeqLength:    def.SeqLength,
+				RoPEFreqBase: def.RoPEFreqBase,
 				QWeights:     w.QWeights,
 				KWeights:     w.KWeights,
 				VWeights:     w.VWeights,
@@ -408,6 +411,9 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				KBias:        w.KBias,
 				VBias:        w.VBias,
 				OutputBias:   w.OutputBias,
+			}
+			if config.RoPEFreqBase == 0 {
+				config.RoPEFreqBase = 10000.0
 			}
 		case "rnn":
 			config = LayerConfig{
@@ -1292,6 +1298,10 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		}
 		config = InitMHABrain(def.DModel, numHeads, 0.5)
 		config.SeqLength = def.SeqLength
+		config.RoPEFreqBase = def.RoPEFreqBase
+		if config.RoPEFreqBase == 0 {
+			config.RoPEFreqBase = 10000.0 // Default
+		}
 		if config.SeqLength == 0 {
 			config.SeqLength = 1
 		}

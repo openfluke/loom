@@ -20,6 +20,7 @@ type TransformerConfig struct {
 	NumKVHeads       int      `json:"num_key_value_heads"`
 	RMSNormEps       float64  `json:"rms_norm_eps"`
 	VocabSize        int      `json:"vocab_size"`
+	RoPETheta        float64  `json:"rope_theta"` // RoPE base frequency (default 10000.0)
 }
 
 // LoadTransformerFromSafetensors loads a Llama-based transformer model directly from safetensors
@@ -125,6 +126,10 @@ func LoadTransformerFromSafetensors(modelDir string) (*Network, error) {
 			VBias:        vBias,
 			OutputWeight: outWeightTransposed,
 			OutputBias:   outBias,
+			RoPEFreqBase: float32(config.RoPETheta),
+		}
+		if attnLayer.RoPEFreqBase == 0 {
+			attnLayer.RoPEFreqBase = 10000.0 // Default
 		}
 		network.Layers = append(network.Layers, attnLayer)
 
@@ -268,6 +273,10 @@ func LoadTransformerFromBytes(configData []byte, weightsData []byte) (*Network, 
 			VBias:        vBias,
 			OutputWeight: outWeightTransposed,
 			OutputBias:   outBias,
+			RoPEFreqBase: float32(config.RoPETheta),
+		}
+		if attnLayer.RoPEFreqBase == 0 {
+			attnLayer.RoPEFreqBase = 10000.0 // Default
 		}
 		network.Layers = append(network.Layers, attnLayer)
 
@@ -410,7 +419,7 @@ func validateArchitecture(config TransformerConfig) error {
 	unsupportedTypes := []string{
 		"t5", "mt5", "bart", "bert", "roberta", "encoder-decoder", "marian",
 		"detr", "yolos", "rt_detr", "yolo", // Detection models with encoder-decoder
-		"vit", "deit", "swin", "beit",      // Vision transformers (encoder-only)
+		"vit", "deit", "swin", "beit", // Vision transformers (encoder-only)
 	}
 	modelType := strings.ToLower(config.ModelType)
 

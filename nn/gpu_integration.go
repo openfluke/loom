@@ -590,16 +590,71 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			seqLen = inputSize / l.DModel
 		}
 		spec := gpu.MHASpec{
-			DModel:   l.DModel,
-			NumHeads: l.NumHeads,
-			HeadDim:  headDim,
-			SeqLen:   seqLen,
-			QWeights: l.QWeights,
-			KWeights: l.KWeights,
-			VWeights: l.VWeights,
-			OWeights: l.OutputWeight,
+			DModel:       l.DModel,
+			NumHeads:     l.NumHeads,
+			NumKVHeads:   l.NumKVHeads,
+			HeadDim:      headDim,
+			SeqLen:       seqLen,
+			QWeights:     l.QWeights,
+			KWeights:     l.KWeights,
+			VWeights:     l.VWeights,
+			OWeights:     l.OutputWeight,
+			QBias:        l.QBias,
+			KBias:        l.KBias,
+			VBias:        l.VBias,
+			OBias:        l.OutputBias,
+			RoPEFreqBase: l.RoPEFreqBase,
 		}
 		return &gpu.MHALayer{Spec: spec}, l.DModel * seqLen, nil
+
+	case LayerSwiGLU:
+		seqLen := 100
+		if l.InputHeight > 0 && inputSize > 0 {
+			seqLen = inputSize / l.InputHeight
+		}
+
+		// Ensure we have weights
+		if len(l.GateWeights) == 0 {
+			// Should not happen if loaded correctly, but handle gracefully?
+			// For now assume loaded.
+		}
+
+		spec := gpu.SwiGLUSpec{
+			InputSize:        l.InputHeight,
+			IntermediateSize: l.OutputHeight, // SwiGLU OutputHeight stored intermediate dim?
+			// Wait, in load_transformer: OutputHeight: config.IntermediateSize.
+			// But SwiGLU output dimension is usually SAME as input dimension (down projection back to hidden).
+			// Let's check load_transformer.go again.
+			// It says: OutputHeight: config.IntermediateSize.
+			// And DownWeights: [IntermediateSize * InputSize].
+			// So l.OutputHeight holds the intermediate size.
+			// The final output size is InputHeight (HiddenSize).
+			// So Spec.IntermediateSize = l.OutputHeight.
+
+			SeqLen:      seqLen,
+			GateWeights: l.GateWeights,
+			UpWeights:   l.UpWeights,
+			DownWeights: l.DownWeights,
+			GateBias:    l.GateBias,
+			UpBias:      l.UpBias,
+			DownBias:    l.DownBias,
+		}
+
+		// The output size of SwiGLU block is back to InputHeight (HiddenSize)
+		// because of the down projection.
+		// However, buildGPULayer returns `layerOutputSize`.
+		// If I return l.OutputHeight, next layer thinks input is IntermediateSize.
+		// But SwiGLU (as a block) returns HiddenSize.
+		// Let's verify SwiGLU architecture in load_transformer.
+		// DownWeights transposes from Intermediate back to Hidden.
+		// So the output of the layer is HiddenSize.
+		// But l.OutputHeight in Config was set to IntermediateSize?
+		// load_transformer.go line 154: OutputHeight: config.IntermediateSize
+		// This might be a semantic mismatch in Config usage.
+		// For GPU layer build, I should return the ACTUAL output size of the block.
+		// Which is l.InputHeight * seqLen.
+
+		return &gpu.SwiGLULayer{Spec: spec}, l.InputHeight * seqLen, nil
 
 	case LayerRNN:
 		// Default parameters
@@ -667,21 +722,6 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			BiasH_o:    l.BiasH_o,
 		}
 		return &gpu.LSTMLayer{Spec: spec}, l.HiddenSize * seqLen, nil
-
-	case LayerSwiGLU:
-		interSize := 0
-		if inputSize > 0 && len(l.GateWeights) > 0 {
-			interSize = len(l.GateWeights) / inputSize
-		}
-		spec := gpu.SwiGLUSpec{
-			InputSize:        inputSize,
-			IntermediateSize: interSize,
-			SeqLen:           1,
-			GateWeights:      l.GateWeights,
-			UpWeights:        l.UpWeights,
-			DownWeights:      l.DownWeights,
-		}
-		return &gpu.SwiGLULayer{Spec: spec}, inputSize, nil
 
 	default:
 		// Layer type not supported on GPU
