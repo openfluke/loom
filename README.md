@@ -256,7 +256,7 @@ network.BackwardGPUNew(dOutput)  // GPU backward pass
 network.ReleaseGPUWeights()      // Cleanup
 ```
 
-### Layer GPU Support
+### Layer GPU Support (In development dense/conv properly working fully)
 
 | Layer | Forward | Backward | Tested | Notes |
 |:------|:-------:|:--------:|:------:|:------|
