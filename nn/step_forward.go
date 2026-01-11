@@ -143,7 +143,7 @@ func StepForwardGeneric[T Numeric](
 					}
 					input = NewTensor[T](size * n.BatchSize)
 				}
-				
+
 				var postAct *Tensor[T]
 				var context any
 
@@ -219,7 +219,7 @@ func StepForwardGeneric[T Numeric](
 							normSize = len(input.Data)
 						}
 						postAct = LayerNormForward(input, residual, gamma, beta, normSize, n.BatchSize, float64(config.Epsilon))
-						
+
 						// Update residual tracking?
 						// In GenericForwardPass, LayerResidual is explicit.
 						context = nil
@@ -245,15 +245,15 @@ func StepForwardGeneric[T Numeric](
 
 					case LayerMultiHeadAttention:
 						weights := &AttentionWeights[T]{
-							QWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
-							QBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
-							KWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
-							KBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
-							VWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
-							VBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
+							QWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
+							QBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
+							KWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
+							KBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
+							VWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
+							VBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
 							OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputWeight, len(config.OutputWeight))),
 							OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputBias, len(config.OutputBias))),
-							DModel: config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
+							DModel:       config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
 						}
 						postAct = MultiHeadAttentionForward(input, weights, 10000.0)
 						// Store output as residual if this layer acts as residual source?
@@ -273,8 +273,26 @@ func StepForwardGeneric[T Numeric](
 						for i := range config.ParallelBranches {
 							branches[i] = &config.ParallelBranches[i]
 						}
-						output, intermediates, err := ParallelForward(input, branches, n.BatchSize, config.CombineMode)
+
+						var output *Tensor[T]
+						var intermediates []*Tensor[T]
+						var err error
+
+						if config.CombineMode == "filter" {
+							var gateWeights []float32
+							output, intermediates, gateWeights, err = ParallelForwardFiltered(input, branches, config.FilterGateConfig, config.FilterSoftmax, config.FilterTemperature, n.BatchSize)
+							// We could store gateWeights in context if we wanted to introspect them later
+							// For now, we just proceed. intermediates contains branch activations.
+
+							// Hack: Store gateWeights as an additional "intermediate" for introspection?
+							// Or just rely on the introspection strategy planned for the test.
+							_ = gateWeights
+						} else {
+							output, intermediates, err = ParallelForward(input, branches, n.BatchSize, config.CombineMode)
+						}
+
 						if err != nil {
+							fmt.Printf("Parallel layer error: %v\n", err)
 							output = input.Clone()
 						}
 						postAct = output
@@ -329,7 +347,6 @@ func StepForwardGeneric[T Numeric](
 // =============================================================================
 // Original float32 Implementation
 // =============================================================================
-
 
 // Helper to calculate output size recursively
 func getLayerOutputSize(config *LayerConfig, batchSize int) int {

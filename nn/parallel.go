@@ -43,13 +43,13 @@ func ParallelForward[T Numeric](
 		case LayerConv1D:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DKernel, len(branchCfg.Conv1DKernel)))
 			bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DBias, len(branchCfg.Conv1DBias)))
-			
+
 			// Use InputHeight as seqLen
 			seqLen := branchCfg.InputHeight
 			if seqLen <= 0 {
 				seqLen = len(input.Data) / (branchCfg.Conv1DInChannels * batchSize)
 			}
-			
+
 			preAct, postAct = Conv1DForward(input, weights, bias,
 				seqLen, branchCfg.Conv1DInChannels,
 				branchCfg.Conv1DKernelSize, branchCfg.Conv1DStride, branchCfg.Conv1DPadding,
@@ -221,7 +221,23 @@ func ParallelForward[T Numeric](
 			offset += len(branchOut.Data)
 		}
 
-	// NOTE: "filter" mode now handled by ParallelForwardFiltered function for full control
+	case "filter":
+		// Use specialized filtered forward function
+		// Note: We need to retrieve the gate config from a context or pass it in.
+		// However, ParallelForward signature doesn't include the parent config where GateConfig lives.
+		// Standard StepForwardGeneric calls this with branches only.
+		// WE NEED TO CHANGE PARALLEL FORWARD SIGNATURE OR ASSUME GATE CONFIG IS ATTACHED TO BRANCHES?
+		// Actually, FilterGateConfig is on the PARENT layer config.
+		// But ParallelForward only receives `branches []*LayerConfig`.
+
+		// CRITICAL FIX: We can't implement this cleanly without accessing properties of the PARENT config (FilterGateConfig).
+		// But we don't have the parent config here.
+		// Workaround: We will use Uniform Gating (1/N) if we can't find the gate config, OR fallback to concat?
+		// No, that breaks the "Mixture of Experts" promise.
+
+		// Better approach: The CALLER (StepForwardGeneric) has the parent config.
+		// It should call ParallelForwardFiltered directly if mode is "filter".
+		return nil, nil, fmt.Errorf("filter mode must be called via ParallelForwardFiltered, not ParallelForward")
 
 	default:
 		return nil, nil, fmt.Errorf("unknown combine mode: %s", combineMode)
@@ -287,13 +303,13 @@ func ParallelForwardFiltered[T Numeric](
 
 	// 2. Compute gate weights
 	gateLogits := make([]float32, len(branches))
-	
+
 	if gateConfig != nil && gateConfig.Type == LayerDense {
 		// Use the gate layer to compute logits
 		gateWeights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(gateConfig.Kernel, len(gateConfig.Kernel)))
 		gateBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(gateConfig.Bias, len(gateConfig.Bias)))
 		_, gateOut := DenseForward(input, gateWeights, gateBias, gateConfig.InputHeight, gateConfig.OutputHeight, batchSize, ActivationScaledReLU)
-		
+
 		// Convert gate output to float32 for softmax
 		for i := 0; i < len(gateLogits) && i < len(gateOut.Data); i++ {
 			gateLogits[i] = float32(gateOut.Data[i])
@@ -406,12 +422,12 @@ func ParallelBackward[T Numeric](
 
 		case LayerConv1D:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DKernel, len(branchCfg.Conv1DKernel)))
-			
+
 			seqLen := branchCfg.InputHeight
 			if seqLen <= 0 {
 				seqLen = len(input.Data) / (branchCfg.Conv1DInChannels * batchSize)
 			}
-			
+
 			subGradInput, _, _ = Conv1DBackward(gradBranch, input, intermediate, weights,
 				seqLen, branchCfg.Conv1DInChannels,
 				branchCfg.Conv1DKernelSize, branchCfg.Conv1DStride, branchCfg.Conv1DPadding,
@@ -486,20 +502,20 @@ func ParallelBackwardFiltered[T Numeric](
 		case LayerDense:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Kernel, len(branchCfg.Kernel)))
 			subGradInput, _, _ = DenseBackward(scaledGrad, input, input.Clone(), weights, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize, branchCfg.Activation)
-		
+
 		case LayerConv1D:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DKernel, len(branchCfg.Conv1DKernel)))
-			
+
 			seqLen := branchCfg.InputHeight
 			if seqLen <= 0 {
 				seqLen = len(input.Data) / (branchCfg.Conv1DInChannels * batchSize)
 			}
-			
+
 			subGradInput, _, _ = Conv1DBackward(scaledGrad, input, input.Clone(), weights,
 				seqLen, branchCfg.Conv1DInChannels,
 				branchCfg.Conv1DKernelSize, branchCfg.Conv1DStride, branchCfg.Conv1DPadding,
 				branchCfg.Conv1DFilters, batchSize, branchCfg.Activation)
-			
+
 		default:
 			subGradInput = scaledGrad.Clone()
 		}
@@ -533,10 +549,10 @@ func ParallelBackwardFiltered[T Numeric](
 // softmaxType: which softmax variant to use for gating
 func InitFilteredParallelLayer(branches []LayerConfig, gateInputSize int, softmaxType SoftmaxType, temperature float32) LayerConfig {
 	numBranches := len(branches)
-	
+
 	// Create gate layer: Dense(inputSize -> numBranches)
 	gateLayer := InitDenseLayer(gateInputSize, numBranches, ActivationScaledReLU)
-	
+
 	return LayerConfig{
 		Type:              LayerParallel,
 		ParallelBranches:  branches,
@@ -655,7 +671,7 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 				copy(preAct[offset:], pa)
 				offset += len(pa)
 			}
-			
+
 		default:
 			return nil, nil, fmt.Errorf("unsupported layer type %d in parallel branch %d", branchCfg.Type, i)
 		}
@@ -1204,12 +1220,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("nested sequential backward failed: %w", err)
 			}
-			
+
 			// Flatten kernel/bias grads for this branch (Sequential layer returns []Layer grads)
 			// parallelBackwardCPU expects ONE kernelGrad/biasGrad slice per BRANCH.
 			// But wait, LayerSequential inside Parallel means "this branch is a sequence".
 			// The caller of parallelBackwardCPU expects `allKernelGrads[i]` to be a FLAT slice of all weights in that branch.
-			
+
 			totalKernel := 0
 			totalBias := 0
 			for j := range nestedKernelGrads {
