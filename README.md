@@ -95,6 +95,12 @@ Based on exhaustive benchmarks (300+ combinations tested), here are the optimal 
 
 ---
 
+## Benchmarks and Repro
+
+Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/step_tween_assessment.md). Results are hardware- and build-dependent; use CPU runs as the reference baseline when comparing.
+
+---
+
 ## What's New
 
 > 🎉 **Transformer Inference**: SmolLM2-135M-Instruct runs entirely in browser WASM with pure Go implementation.
@@ -246,7 +252,7 @@ Based on exhaustive benchmarks (300+ combinations tested), here are the optimal 
 
 ## GPU Acceleration (WebGPU)
 
-**Experimental** GPU acceleration via WebGPU compute shaders. Use with:
+**Experimental** GPU acceleration via WebGPU compute shaders. Treat all GPU paths (forward and backward) as experimental for now. Use with:
 
 ```go
 network.GPU = true
@@ -256,40 +262,13 @@ network.BackwardGPUNew(dOutput)  // GPU backward pass
 network.ReleaseGPUWeights()      // Cleanup
 ```
 
-### Layer GPU Support (In development dense/conv properly working fully)
-
-| Layer | Forward | Backward | Tested | Notes |
-|:------|:-------:|:--------:|:------:|:------|
-| **Dense** | ✅ | ✅ | ✅ POD Ready | 1.9x forward, 2.2x backward speedup |
-| LayerNorm | ✅ | ✅ | ⚠️ | Needs verification |
-| RMSNorm | ✅ | ✅ | ⚠️ | Needs verification |
-| Softmax | ✅ | ✅ | ⚠️ | Needs verification |
-| Embedding | ✅ | ✅ | ⚠️ | Needs verification |
-| Conv1D | ✅ | ✅ | ⚠️ | Needs verification |
-| Conv2D | ✅ | ✅ | ⚠️ | Needs verification |
-| MultiHeadAttention | ✅ | ✅ | ⚠️ | Needs verification |
-| RNN | ✅ | ✅ | ⚠️ | Needs verification |
-| LSTM | ✅ | ✅ | ⚠️ | Needs verification |
-| SwiGLU | ✅ | ✅ | ⚠️ | Needs verification |
-| Parallel | ❌ | ❌ | — | Not yet implemented |
-| Sequential | ❌ | ❌ | — | Not yet implemented |
-
-### Training Mode GPU Support
-
-| Mode | GPU Support | Notes |
-|:-----|:-----------:|:------|
-| **Forward Pass** | ✅ | Auto-routes via `ForwardCPU()` |
-| **Backward Pass** | ✅ | Via `BackwardGPUNew()` |
-| **Step Forward** | ❌ | CPU only |
-| **Step Tween** | ❌ | CPU only |
-| **Tween Chaining** | ❌ | CPU only |
-
-> [!NOTE]
-> Dense layer has been tested and verified for production use (POD ready). Other layers have GPU implementations but need additional verification before production deployment.
-
 ---
 
 ## Quick Start
+
+Quick docs:
+- [NN Overview](docs/nn/overview.md)
+- [NN Quick Reference](docs/nn/quick_reference.md)
 
 ### Installation
 
