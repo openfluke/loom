@@ -903,6 +903,8 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				outputSize = batchSize * branchCfg.OutputHeight
 			case LayerConv2D:
 				outputSize = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
+			case LayerConv1D:
+				outputSize = batchSize * branchCfg.OutputHeight * branchCfg.Conv1DFilters
 			case LayerMultiHeadAttention:
 				outputSize = batchSize * branchCfg.SeqLength * branchCfg.DModel
 			case LayerRNN:
@@ -963,6 +965,8 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				branchOutputSize = batchSize * branchCfg.OutputHeight
 			case LayerConv2D:
 				branchOutputSize = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
+			case LayerConv1D:
+				branchOutputSize = batchSize * branchCfg.OutputHeight * branchCfg.Conv1DFilters
 			case LayerMultiHeadAttention:
 				branchOutputSize = batchSize * branchCfg.SeqLength * branchCfg.DModel
 			case LayerRNN:
@@ -1009,6 +1013,8 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				branchOutputSize = batchSize * branchCfg.OutputHeight
 			case LayerConv2D:
 				branchOutputSize = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
+			case LayerConv1D:
+				branchOutputSize = batchSize * branchCfg.OutputHeight * branchCfg.Conv1DFilters
 			case LayerMultiHeadAttention:
 				branchOutputSize = batchSize * branchCfg.SeqLength * branchCfg.DModel
 			case LayerRNN:
@@ -1056,14 +1062,55 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 		branchGrads = make([][]float32, len(cfg.ParallelBranches))
 		outputSize := len(gradOutput)
 
-		// For filter mode, each branch gets gradient scaled by its gate weight
-		// Since we don't have the exact gate weights stored, we use uniform distribution
-		// This is a simplification - ideally we'd store gate weights from forward pass
-		scale := 1.0 / float32(len(cfg.ParallelBranches))
+		// Recompute gate weights from input (same logic as forward) so backward reflects gating.
+		gateLogits := make([]float32, len(cfg.ParallelBranches))
+		if cfg.FilterGateConfig != nil && cfg.FilterGateConfig.Type == LayerDense {
+			gateWeights := cfg.FilterGateConfig.Kernel
+			gateBias := cfg.FilterGateConfig.Bias
+			gateOutSize := cfg.FilterGateConfig.OutputHeight
+			if gateOutSize == 0 {
+				gateOutSize = len(cfg.ParallelBranches)
+			}
+			inputSize := cfg.FilterGateConfig.InputHeight
+			if inputSize == 0 {
+				inputSize = len(input)
+			}
+			for o := 0; o < gateOutSize && o < len(gateLogits); o++ {
+				sum := float32(0)
+				for i := 0; i < inputSize && i < len(input); i++ {
+					wIdx := o*inputSize + i
+					if wIdx < len(gateWeights) {
+						sum += input[i] * gateWeights[wIdx]
+					}
+				}
+				if o < len(gateBias) {
+					sum += gateBias[o]
+				}
+				gateLogits[o] = sum
+			}
+		} else {
+			for i := range gateLogits {
+				gateLogits[i] = 1.0 / float32(len(cfg.ParallelBranches))
+			}
+		}
+
+		temp := cfg.FilterTemperature
+		if temp <= 0 {
+			temp = 1.0
+		}
+		gateWeights, _ := ForwardSoftmaxCPU(gateLogits, &LayerConfig{
+			SoftmaxVariant: cfg.FilterSoftmax,
+			Temperature:    temp,
+		})
+
 		for i := range branchGrads {
+			weight := float32(1.0 / float32(len(cfg.ParallelBranches)))
+			if i < len(gateWeights) {
+				weight = gateWeights[i]
+			}
 			branchGrads[i] = make([]float32, outputSize)
 			for j := range gradOutput {
-				branchGrads[i][j] = gradOutput[j] * scale
+				branchGrads[i][j] = gradOutput[j] * weight
 			}
 		}
 
@@ -1090,6 +1137,9 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 
 		case LayerConv2D:
 			branchInputGrad, kernelGrad, biasGrad = conv2DBackwardCPU(gradOut, input, preAct, branchCfg, batchSize)
+
+		case LayerConv1D:
+			branchInputGrad, kernelGrad, biasGrad = conv1DBackwardCPU(gradOut, input, preAct, branchCfg, batchSize)
 
 		case LayerMultiHeadAttention:
 			var gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB []float32
