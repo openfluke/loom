@@ -260,3 +260,86 @@ func (l *ResidualLayer) Cleanup() {
 		l.bwBindGroup.Release()
 	}
 }
+
+// InPlaceResidual performs out += skip
+type InPlaceResidual struct {
+	pipeline  *wgpu.ComputePipeline
+	bindGroup *wgpu.BindGroup
+	Size      int
+}
+
+func NewInPlaceResidual(ctx *Context, size int) (*InPlaceResidual, error) {
+	r := &InPlaceResidual{Size: size}
+	shader := fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read_write> out : array<f32>;
+		@group(0) @binding(1) var<storage, read> skip : array<f32>;
+		const SIZE: u32 = %du;
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			if (idx >= SIZE) { return; }
+			out[idx] = out[idx] + skip[idx];
+		}
+	`, size)
+
+	module, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          "InPlaceResidual_Shader",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: shader},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer module.Release()
+
+	r.pipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label:   "InPlaceResidual_Pipe",
+		Compute: wgpu.ProgrammableStageDescriptor{Module: module, EntryPoint: "main"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (r *InPlaceResidual) Dispatch(ctx *Context, pass *wgpu.ComputePassEncoder, outBuf, skipBuf *wgpu.Buffer) (*wgpu.BindGroup, error) {
+	// Create temporary bind group for this dispatch
+	bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  "InPlaceResidual_Bind",
+		Layout: r.pipeline.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: outBuf, Size: outBuf.GetSize()},
+			{Binding: 1, Buffer: skipBuf, Size: skipBuf.GetSize()},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create residual bind group: %w", err)
+	}
+	// Do NOT release here; caller must release after submission
+
+	pass.SetPipeline(r.pipeline)
+	pass.SetBindGroup(0, bg, nil)
+
+	wg := (uint32(r.Size) + 255) / 256
+	pass.DispatchWorkgroups(wg, 1, 1)
+
+	return bg, nil
+}
+
+func (r *InPlaceResidual) Cleanup() {
+	if r.pipeline != nil {
+		r.pipeline.Release()
+		r.pipeline = nil
+	}
+}
+
+func (r *InPlaceResidual) GetBindGroup(ctx *Context, outBuf, skipBuf *wgpu.Buffer) (*wgpu.BindGroup, error) {
+	// ... logic redundant if Dispatch handles it, but keep for completeness or remove
+	return ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  "InPlaceResidual_Bind",
+		Layout: r.pipeline.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: outBuf, Size: outBuf.GetSize()},
+			{Binding: 1, Buffer: skipBuf, Size: skipBuf.GetSize()},
+		},
+	})
+}

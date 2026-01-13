@@ -422,6 +422,10 @@ type Network struct {
 	gpuGradPipeline *wgpu.ComputePipeline
 	gpuGradParams   *wgpu.Buffer // Uniform buffer for learning rate
 
+	// Residual support
+	gpuResidualAdder  interface{} // *gpu.InPlaceResidual
+	gpuResidualBuffer *wgpu.Buffer
+
 	// Layer configuration for each position in the grid
 	// Indexed by flattened position: row*GridCols*LayersPerCell + col*LayersPerCell + layer
 	Layers []LayerConfig

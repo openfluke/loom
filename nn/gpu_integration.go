@@ -113,6 +113,38 @@ func (n *Network) WeightsToGPU() error {
 		fmt.Printf("Warning: Failed to initialize gradient pipeline: %v\n", err)
 	}
 
+	// Initialize Residual Buffers/Pipeline
+	// Find max buffer size (max sequence length * hidden size)
+	maxSize := 0
+	for _, l := range layers {
+		if mha, ok := l.(*gpu.MHALayer); ok {
+			size := int(mha.GetInputBuffer().GetSize() / 4)
+			if size > maxSize {
+				maxSize = size
+			}
+		} else if swiglu, ok := l.(*gpu.SwiGLULayer); ok {
+			size := int(swiglu.GetInputBuffer().GetSize() / 4)
+			if size > maxSize {
+				maxSize = size
+			}
+		}
+	}
+	if maxSize > 0 {
+		n.gpuResidualBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: "Network_ResidualBuf",
+			Size:  uint64(maxSize * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return fmt.Errorf("create residual buffer: %w", err)
+		}
+
+		n.gpuResidualAdder, err = gpu.NewInPlaceResidual(ctx, maxSize)
+		if err != nil {
+			return fmt.Errorf("create residual adder: %w", err)
+		}
+	}
+
 	// Wait for GPU to finish
 	pollGPU(ctx)
 
@@ -174,6 +206,16 @@ func (n *Network) ReleaseGPUWeights() {
 	if layers, ok := n.gpuLayers.([]gpu.GPULayer); ok {
 		n.cleanupGPULayers(layers)
 	}
+
+	if n.gpuResidualBuffer != nil {
+		n.gpuResidualBuffer.Destroy()
+		n.gpuResidualBuffer = nil
+	}
+	// InPlaceResidual (pipeline cleanup?)
+	if resAdder, ok := n.gpuResidualAdder.(*gpu.InPlaceResidual); ok {
+		resAdder.Cleanup()
+	}
+	n.gpuResidualAdder = nil
 
 	n.gpuLayers = nil
 	n.gpuCtx = nil
@@ -250,24 +292,113 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 		return nil, fmt.Errorf("create command encoder: %w", err)
 	}
 
+	// Track temporary bind groups to release after submission
+	tempBindGroups := make([]*wgpu.BindGroup, 0, len(layers))
+	defer func() {
+		for _, bg := range tempBindGroups {
+			bg.Release()
+		}
+	}()
+
+	var pass *wgpu.ComputePassEncoder
+	resAdder, _ := n.gpuResidualAdder.(*gpu.InPlaceResidual)
+
+	// Helper to ensure active pass
+	ensurePass := func() {
+		if pass == nil {
+			pass = cmdEnc.BeginComputePass(nil)
+		}
+	}
+	// Helper to end active pass
+	endPass := func() {
+		if pass != nil {
+			pass.End()
+			pass = nil
+		}
+	}
+
+	// 1. Determine Sequence Length (seqTokens)
+	// If First Layer is Embedding, input is TokenIDs (floats), so seqTokens = len(input)
+	// If First Layer is Dense/other, input is flattened vectors, so seqTokens = len(input) / InputDim
+	seqTokens := 1
+	if _, ok := layers[0].(*gpu.EmbeddingLayer); ok {
+		seqTokens = len(input)
+	} else {
+		// Fallback for non-embedding input (assuming D_MODEL of first layer logic?)
+		// We need to know InputSize. buildGPULayer uses n.InputSize.
+		// Approximating:
+		if n.InputSize > 0 {
+			seqTokens = len(input) / n.InputSize
+		}
+	}
+	if seqTokens < 1 {
+		seqTokens = 1
+	}
+
 	for i, l := range layers {
+		// 1. Pre-Layer Actions (Residual Capture, MHA Setup)
+		isMHA := false
+		var mhaLayer *gpu.MHALayer
 		if mha, ok := l.(*gpu.MHALayer); ok {
-			mha.SetActualSeqLen(ctx, len(input))
+			isMHA = true
+			mhaLayer = mha
+			// Fix A: Correct Sequence Length (Tokens vs Floats)
+			mha.SetActualSeqLen(ctx, seqTokens)
 		}
 
-		pass := cmdEnc.BeginComputePass(nil)
-		l.Dispatch(pass)
-		pass.End()
+		// Residual Start: Capture input of RMSNorm/LayerNorm
+		isNorm := false
+		if _, ok := l.(*gpu.RMSNormLayer); ok {
+			isNorm = true
+		}
+		if _, ok := l.(*gpu.LayerNormLayer); ok {
+			isNorm = true
+		}
 
+		if isNorm && n.gpuResidualBuffer != nil {
+			endPass()
+			// Copy this layer's input (which is the input to the block) to residual buffer
+			cmdEnc.CopyBufferToBuffer(l.GetInputBuffer(), 0, n.gpuResidualBuffer, 0, l.GetInputBuffer().GetSize())
+		}
+
+		// 2. Dispatch Layer
+		if isMHA {
+			endPass() // MHA uses DispatchFull
+			mhaLayer.DispatchFull(cmdEnc)
+		} else {
+			ensurePass()
+			l.Dispatch(pass)
+		}
+
+		// 3. Post-Layer Actions (Residual Add)
+		// Apply residual after MHA or SwiGLU (end of block)
+		isSwiGLU := false
+		if _, ok := l.(*gpu.SwiGLULayer); ok {
+			isSwiGLU = true
+		}
+
+		if (isMHA || isSwiGLU) && n.gpuResidualBuffer != nil && resAdder != nil {
+			// Add residual: Output = Output + ResidualBuf
+			ensurePass() // Must be in pass
+			bg, err := resAdder.Dispatch(ctx, pass, l.GetOutputBuffer(), n.gpuResidualBuffer)
+			if err != nil {
+				return nil, fmt.Errorf("residual bind group: %w", err)
+			}
+			tempBindGroups = append(tempBindGroups, bg)
+		}
+
+		// 4. Data Flow (Copy Output to Next Layer)
 		if i < len(layers)-1 {
-			// Copy output to next layer's input
 			next := layers[i+1]
+			endPass() // Copy requires encoder level
 			cmdEnc.CopyBufferToBuffer(l.GetOutputBuffer(), 0, next.GetInputBuffer(), 0, l.GetOutputBuffer().GetSize())
 		} else {
-			// Copy final output to staging
+			// Final output to staging
+			endPass()
 			cmdEnc.CopyBufferToBuffer(l.GetOutputBuffer(), 0, l.GetStagingBuffer(), 0, l.GetOutputBuffer().GetSize())
 		}
 	}
+	endPass() // Ensure closed if last layer continued pass
 
 	cmd, err := cmdEnc.Finish(nil)
 	if err != nil {
@@ -289,8 +420,17 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 
 	// Optional: slice down to the "real" output length implied by input embeddings.
 	// For transformer blocks, output length should match input length (seqLen * hidden).
-	if len(input) > 0 && len(input) <= len(output) {
-		return output[:len(input)], nil
+	// But we must compute expected size carefully.
+	if seqTokens > 0 {
+		// We don't easily know "lastLayer.OutputDim" here without casting.
+		// But usually Output matches Input for transformers.
+		// Let's assume full buffer read is safe, or slice if we are sure.
+		// Safest fix: slice to (seqTokens * n.gpuOutputSize) if known?
+		// n.gpuOutputSize was set in WeightsToGPU.
+		expected := seqTokens * n.gpuOutputSize
+		if expected > 0 && expected <= len(output) {
+			return output[:expected], nil
+		}
 	}
 	return output, nil
 }

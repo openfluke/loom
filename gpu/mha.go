@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/openfluke/webgpu/wgpu"
 )
@@ -14,12 +15,12 @@ type MHASpec struct {
 	SeqLen       int       // Sequence length
 	HeadDim      int       // Dimension per head (DModel / NumHeads)
 	QWeights     []float32 // Query projection [DModel * DModel]
-	KWeights     []float32 // Key projection [DModel * DModel]
-	VWeights     []float32 // Value projection [DModel * DModel]
+	KWeights     []float32 // Key projection [DModel * D_KV]
+	VWeights     []float32 // Value projection [DModel * D_KV]
 	OWeights     []float32 // Output projection [DModel * DModel]
 	QBias        []float32 // [DModel]
-	KBias        []float32 // [DModel]
-	VBias        []float32 // [DModel]
+	KBias        []float32 // [D_KV]
+	VBias        []float32 // [D_KV]
 	OBias        []float32 // [DModel]
 	RoPEFreqBase float32   // Base frequency for RoPE (default 10000.0)
 }
@@ -71,6 +72,11 @@ func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 	seqDim := l.Spec.SeqLen * l.Spec.DModel
 	dimSq := l.Spec.DModel * l.Spec.DModel
+	numKVHeads := l.Spec.NumKVHeads
+	if numKVHeads == 0 {
+		numKVHeads = l.Spec.NumHeads
+	}
+	dKV := numKVHeads * l.Spec.HeadDim
 
 	// Input/Output
 	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -126,27 +132,33 @@ func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	}
 
 	// Combined weights Q, K, V
-	combine := func(w1, w2, w3 []float32, size int) []float32 {
-		res := make([]float32, size*3)
-		if len(w1) > 0 {
-			copy(res[0:size], w1)
-		}
-		if len(w2) > 0 {
-			copy(res[size:2*size], w2)
-		}
-		if len(w3) > 0 {
-			copy(res[2*size:3*size], w3)
-		}
-		return res
+	qSize := dimSq
+	kvSize := l.Spec.DModel * dKV
+	qkvWeights := make([]float32, qSize+kvSize+kvSize)
+	if len(l.Spec.QWeights) > 0 {
+		copy(qkvWeights[0:qSize], l.Spec.QWeights)
 	}
-
-	qkvWeights := combine(l.Spec.QWeights, l.Spec.KWeights, l.Spec.VWeights, dimSq)
+	if len(l.Spec.KWeights) > 0 {
+		copy(qkvWeights[qSize:qSize+kvSize], l.Spec.KWeights)
+	}
+	if len(l.Spec.VWeights) > 0 {
+		copy(qkvWeights[qSize+kvSize:], l.Spec.VWeights)
+	}
 	l.CombinedWeightsQKV, err = NewFloatBuffer(qkvWeights, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 	if err != nil {
 		return err
 	}
 
-	qkvBiases := combine(l.Spec.QBias, l.Spec.KBias, l.Spec.VBias, l.Spec.DModel)
+	qkvBiases := make([]float32, l.Spec.DModel+dKV+dKV)
+	if len(l.Spec.QBias) > 0 {
+		copy(qkvBiases[0:l.Spec.DModel], l.Spec.QBias)
+	}
+	if len(l.Spec.KBias) > 0 {
+		copy(qkvBiases[l.Spec.DModel:l.Spec.DModel+dKV], l.Spec.KBias)
+	}
+	if len(l.Spec.VBias) > 0 {
+		copy(qkvBiases[l.Spec.DModel+dKV:], l.Spec.VBias)
+	}
 	l.CombinedBiasesQKV, err = NewFloatBuffer(qkvBiases, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst)
 	if err != nil {
 		return err
@@ -204,7 +216,11 @@ func (l *MHALayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) err
 }
 
 func (l *MHALayer) GenerateQKVShader() string {
-	// Combined Q/K/V linear projections + RoPE
+	numKVHeads := l.Spec.NumKVHeads
+	if numKVHeads == 0 {
+		numKVHeads = l.Spec.NumHeads
+	}
+
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> input : array<f32>;
 		@group(0) @binding(1) var<storage, read> w_qkv : array<f32>;
@@ -215,102 +231,165 @@ func (l *MHALayer) GenerateQKVShader() string {
 
 		const SEQ_LEN: u32 = %du;
 		const D_MODEL: u32 = %du;
+		const NUM_HEADS: u32 = %du;
+		const NUM_KV_HEADS: u32 = %du;
 		const HEAD_DIM: u32 = %du;
 		const ROPE_BASE: f32 = %f;
 
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			// Thread ID maps to one output element (one dimension index for one token)
 			let idx = gid.x;
 			let total = SEQ_LEN * D_MODEL;
 			if (idx >= total) { return; }
 
+			// Decompose index
 			let seq = idx / D_MODEL;
-			let d = idx %% D_MODEL;
-			let in_offset = seq * D_MODEL;
-
-			let offset_k = D_MODEL * D_MODEL;
-			let offset_v = 2u * D_MODEL * D_MODEL;
-			let bias_offset = D_MODEL;
-
-			// ---------------------------------------------------------
-			// 1. Compute Raw Q, K, V for this position 'd'
-			// ---------------------------------------------------------
-
-			// V projection (No RoPE)
-			var v_sum: f32 = b_qkv[2u*bias_offset + d];
-			for (var j: u32 = 0u; j < D_MODEL; j++) {
-				v_sum += input[in_offset + j] * w_qkv[offset_v + j * D_MODEL + d];
-			}
-			v_out[idx] = v_sum;
-
-			// Q projection (Raw)
-			var q_sum: f32 = b_qkv[d];
-			for (var j: u32 = 0u; j < D_MODEL; j++) {
-				q_sum += input[in_offset + j] * w_qkv[j * D_MODEL + d];
-			}
-
-			// K projection (Raw)
-			var k_sum: f32 = b_qkv[bias_offset + d];
-			for (var j: u32 = 0u; j < D_MODEL; j++) {
-				k_sum += input[in_offset + j] * w_qkv[offset_k + j * D_MODEL + d];
-			}
-
-			// ---------------------------------------------------------
-			// 2. Apply RoPE to Q and K (Rotate Half Strategy)
-			// ---------------------------------------------------------
+			let d = idx %% D_MODEL; // 0..D_MODEL-1
 			
-			let d_in_head = d %% HEAD_DIM;
+			// Dimensions
+			let D_KV = NUM_KV_HEADS * HEAD_DIM;
+			
+			// Input/Weight Offsets
+			let in_offset = seq * D_MODEL; // Input is flat [SEQ, D_MODEL]
+			
+			// Weight Offsets in bundled w_qkv [Q(D*D) | K(D*D_KV) | V(D*D_KV)]
+			// Q Weights: 0
+			// K Weights: D_MODEL * D_MODEL
+			// V Weights: D_MODEL * D_MODEL + D_MODEL * D_KV
+			let offset_k = D_MODEL * D_MODEL;
+			let offset_v = D_MODEL * D_MODEL + D_MODEL * D_KV;
+
+			// Bias Offsets [Q(D) | K(D_KV) | V(D_KV)]
+			let bias_offset = D_MODEL;
+			let bias_offset_v = D_MODEL + D_KV;
+
+			// ---------------------------------------------------------
+			// 1. Q Projection (Always D_MODEL size)
+			// ---------------------------------------------------------
+			var q_val: f32 = b_qkv[d]; // Bias for Q
+			for (var j: u32 = 0u; j < D_MODEL; j++) {
+				// q = x @ W_q. W_q is [D_MODEL, D_MODEL]. Stride D_MODEL.
+				q_val += input[in_offset + j] * w_qkv[j * D_MODEL + d];
+			}
+			
+			// ---------------------------------------------------------
+			// 2. K & V Projection (Gated by D_KV)
+			// ---------------------------------------------------------
+			var k_val: f32 = 0.0;
+			var v_val: f32 = 0.0;
+
+			if (d < D_KV) {
+				// Initialize with bias
+				k_val = b_qkv[bias_offset + d];
+				v_val = b_qkv[bias_offset_v + d];
+
+				for (var j: u32 = 0u; j < D_MODEL; j++) {
+					// W_k stride is D_KV
+					k_val += input[in_offset + j] * w_qkv[offset_k + j * D_KV + d];
+					
+					// W_v stride is D_KV
+					v_val += input[in_offset + j] * w_qkv[offset_v + j * D_KV + d];
+				}
+			}
+
+			// ---------------------------------------------------------
+			// 3. RoPE (Rotate Half Strategy) applied to Q and K
+			// ---------------------------------------------------------
+			// Q RoPE
+			let head = d / HEAD_DIM;
+			let head_d = d %% HEAD_DIM;
 			let half_dim = HEAD_DIM / 2u;
-			var pair_d: u32;
-			var theta_idx: u32;
-			var sign: f32; // -1 for low half (x), +1 for high half (y)
-
-			if (d_in_head < half_dim) {
-				pair_d = d + half_dim;
-				theta_idx = d_in_head;
-				sign = -1.0; 
+			
+			if (head_d < half_dim) {
+				// We are in the first half of a head. Pair is at +half_dim.
+				// x' = x cos - y sin
+				// We need 'y' (the value at d + half_dim). 
+				// We MUST recompute 'y' because we cannot access neighbor threads efficiently here.
+				let d_pair = d + half_dim;
+				
+				// Recompute Q pair
+				var q_pair: f32 = b_qkv[d_pair];
+				for (var j: u32 = 0u; j < D_MODEL; j++) {
+					q_pair += input[in_offset + j] * w_qkv[j * D_MODEL + d_pair];
+				}
+				
+				let theta = pow(ROPE_BASE, -2.0 * f32(head_d) / f32(HEAD_DIM));
+				let angle = f32(seq) * theta;
+				let c = cos(angle);
+				let s = sin(angle);
+				
+				// Store rotated Q
+				q_out[idx] = q_val * c - q_pair * s;
+				
+				// Store rotated K (if valid)
+				if (d < D_KV) {
+					// Recompute K pair
+					// Note: If d < D_KV, then d_pair < D_KV because HEAD_DIM divides both.
+					var k_pair: f32 = b_qkv[bias_offset + d_pair];
+					for (var j: u32 = 0u; j < D_MODEL; j++) {
+						k_pair += input[in_offset + j] * w_qkv[offset_k + j * D_KV + d_pair];
+					}
+					
+					k_out[idx] = k_val * c - k_pair * s;
+				}
+				
 			} else {
-				pair_d = d - half_dim;
-				theta_idx = d_in_head - half_dim;
-				sign = 1.0;
+				// We are in the second half. Pair is at -half_dim.
+				// y' = x sin + y cos (where x is the lower value, y is current)
+				// formula: y' = y cos + x sin
+				
+				let d_pair = d - half_dim;
+				
+				// Recompute Q pair (x)
+				var q_pair: f32 = b_qkv[d_pair]; // d_pair is the lower index
+				for (var j: u32 = 0u; j < D_MODEL; j++) {
+					q_pair += input[in_offset + j] * w_qkv[j * D_MODEL + d_pair];
+				}
+				
+				let theta = pow(ROPE_BASE, -2.0 * f32(d_pair %% HEAD_DIM) / f32(HEAD_DIM));
+				let angle = f32(seq) * theta;
+				let c = cos(angle);
+				let s = sin(angle);
+				
+				// Store rotated Q
+				q_out[idx] = q_val * c + q_pair * s;
+				
+				// Store rotated K (if valid)
+				if (d < D_KV) {
+					var k_pair: f32 = b_qkv[bias_offset + d_pair];
+					for (var j: u32 = 0u; j < D_MODEL; j++) {
+						k_pair += input[in_offset + j] * w_qkv[offset_k + j * D_KV + d_pair];
+					}
+					
+					k_out[idx] = k_val * c + k_pair * s;
+				}
 			}
 
-			// Compute angle
-			let theta = pow(ROPE_BASE, -2.0 * f32(theta_idx) / f32(HEAD_DIM));
-			let angle = f32(seq) * theta;
-			let c = cos(angle);
-			let s = sin(angle);
-
-			// We need the value of the PAIR to apply rotation
-			var q_pair: f32 = b_qkv[pair_d];
-			for (var j: u32 = 0u; j < D_MODEL; j++) {
-				q_pair += input[in_offset + j] * w_qkv[j * D_MODEL + pair_d];
-			}
-
-			var k_pair: f32 = b_qkv[bias_offset + pair_d];
-			for (var j: u32 = 0u; j < D_MODEL; j++) {
-				k_pair += input[in_offset + j] * w_qkv[offset_k + j * D_MODEL + pair_d];
-			}
-
-			// Apply rotation
-			// x' = x cos - y sin  (for low half, sign=-1: x cos + y*sign*sin => x cos - y sin)
-			// y' = y cos + x sin  (for high half, sign=+1: y cos + x*sign*sin => y cos + x sin)
-			// Wait, simple logic:
-			if (d_in_head < half_dim) {
-				q_out[idx] = q_sum * c - q_pair * s;
-				k_out[idx] = k_sum * c - k_pair * s;
+			// ---------------------------------------------------------
+			// 4. Output Writing
+			// ---------------------------------------------------------
+			// Q is always written (D_MODEL size)
+			// K and V written if d < D_KV, else 0 (padded part of buffer)
+			
+			// We write to K/V buffers using 'idx' (stride D_MODEL) to match what Attention Shader expects.
+			// The K/V buffers are allocated as SEQ * D_MODEL size.
+			
+			if (d >= D_KV) {
+				k_out[idx] = 0.0;
+				v_out[idx] = 0.0;
 			} else {
-				q_out[idx] = q_sum * c + q_pair * s;
-				k_out[idx] = k_sum * c + k_pair * s;
+				// k_out was written in RoPE block above
+				v_out[idx] = v_val; // V is not rotated
 			}
 		}
-	`, l.Spec.SeqLen, l.Spec.DModel, l.Spec.HeadDim, l.Spec.RoPEFreqBase)
+	`, l.Spec.SeqLen, l.Spec.DModel, l.Spec.NumHeads, numKVHeads, l.Spec.HeadDim, l.Spec.RoPEFreqBase)
 }
 
 func (l *MHALayer) GenerateAttnShader() string {
 	// Simplified attention: for each position, attend to all positions
 	headDim := l.Spec.DModel / l.Spec.NumHeads
-	scale := 1.0 / float32(headDim)
+	scale := 1.0 / float32(math.Sqrt(float64(headDim)))
 	numKVHeads := l.Spec.NumKVHeads
 	if numKVHeads == 0 {
 		numKVHeads = l.Spec.NumHeads
@@ -384,7 +463,11 @@ func (l *MHALayer) GenerateAttnShader() string {
 				sum += score * v[v_idx];
 			}
 
-			attn_out[idx] = sum / exp_sum;
+			if (exp_sum == 0.0) {
+				attn_out[idx] = 0.0;
+			} else {
+				attn_out[idx] = sum / exp_sum;
+			}
 		}
 	`, l.Spec.SeqLen, l.Spec.DModel, l.Spec.NumHeads, numKVHeads, headDim, scale)
 }
@@ -424,6 +507,10 @@ func (l *MHALayer) GenerateBackwardShader() string {
 	// 1. d_attn = d_output @ O_w.T
 	// 2. For each position: backprop through attention (complex - simplified here)
 	// 3. d_input = d_q @ Q_w.T + d_k @ K_w.T + d_v @ V_w.T
+	numKVHeads := l.Spec.NumKVHeads
+	if numKVHeads == 0 {
+		numKVHeads = l.Spec.NumHeads
+	}
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
 		@group(0) @binding(1) var<storage, read> o_w : array<f32>;
@@ -450,6 +537,12 @@ func (l *MHALayer) GenerateBackwardShader() string {
 
 			var d_in: f32 = 0.0;
 
+			let NUM_KV_HEADS: u32 = %du;
+			let HEAD_DIM: u32 = %du;
+			let D_KV: u32 = NUM_KV_HEADS * HEAD_DIM;
+			let offset_k = D_MODEL * D_MODEL;
+			let offset_v = D_MODEL * D_MODEL + D_MODEL * D_KV;
+
 			for (var d: u32 = 0u; d < D_MODEL; d++) {
 				// d_attn[seq, d] = sum_k(d_output[seq, k] * o_w[d, k])
 				var d_attn: f32 = 0.0;
@@ -462,19 +555,20 @@ func (l *MHALayer) GenerateBackwardShader() string {
 				// With combined weights:
 				// q_w = w_qkv[...]
 				// k_w = w_qkv[offset + ...]
-				let offset_k = D_MODEL * D_MODEL;
-				let offset_v = 2u * D_MODEL * D_MODEL;
-				
 				let w_q = w_qkv[j * D_MODEL + d];
-				let w_k = w_qkv[offset_k + j * D_MODEL + d];
-				let w_v = w_qkv[offset_v + j * D_MODEL + d];
+				var w_k: f32 = 0.0;
+				var w_v: f32 = 0.0;
+				if (d < D_KV) {
+					w_k = w_qkv[offset_k + j * D_KV + d];
+					w_v = w_qkv[offset_v + j * D_KV + d];
+				}
 				
 				d_in += d_attn * (w_q + w_k + w_v);
 			}
 
 			d_input[idx] = d_in;
 		}
-	`, l.Spec.SeqLen, l.Spec.DModel)
+	`, l.Spec.SeqLen, l.Spec.DModel, numKVHeads, l.Spec.HeadDim)
 }
 
 func (l *MHALayer) Compile(ctx *Context, labelPrefix string) error {
