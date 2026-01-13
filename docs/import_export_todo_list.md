@@ -7,7 +7,7 @@ This document outlines the planned support for various AI model file formats in 
 | Framework | Extension(s) | Format Type | Go Implementation Effort |
 | :--- | :--- | :--- | :--- |
 | **Hugging Face** | `.safetensors` | JSON Header + Raw Bytes | 🟢 **Easiest** |
-| **TensorFlow.js** | `.json` + `.bin` | JSON + Raw Bytes | 🟢 **Easy** |
+| **TensorFlow.js** | `.json` + `.bin` | JSON + Raw Bytes | 🟢 **Easy** (Note: Generation via Py3.13 broken) |
 | **ONNX** | `.onnx` | Protobuf | 🟡 **Medium (Standard)** |
 | **TensorFlow Lite** | `.tflite` | FlatBuffers | 🟡 **Medium** |
 | **Llama.cpp** | `.gguf` | Custom Binary | 🟡 **Medium** |

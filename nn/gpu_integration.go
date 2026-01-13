@@ -223,8 +223,30 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 			inputU32[k] = uint32(v)
 		}
 		ctx.Queue.WriteBuffer(inputBuf, 0, wgpu.ToBytes(inputU32))
+		// Pad to buffer capacity (important if compiled for MAX_SEQ_LEN)
+		capFloats := int(inputBuf.GetSize() / 4)
+		if len(input) > capFloats {
+			return nil, fmt.Errorf("GPU input too large: %d floats > buffer capacity %d floats", len(input), capFloats)
+		}
+		padded := make([]uint32, capFloats)
+		for k := 0; k < len(input); k++ {
+			padded[k] = uint32(input[k])
+		}
+		ctx.Queue.WriteBuffer(inputBuf, 0, wgpu.ToBytes(padded))
 	} else {
-		ctx.Queue.WriteBuffer(inputBuf, 0, wgpu.ToBytes(input))
+
+		// Pad to buffer capacity so unused tokens are zeroed
+		capFloats := int(inputBuf.GetSize() / 4)
+		if len(input) > capFloats {
+			return nil, fmt.Errorf("GPU input too large: %d floats > buffer capacity %d floats", len(input), capFloats)
+		}
+		if len(input) == capFloats {
+			ctx.Queue.WriteBuffer(inputBuf, 0, wgpu.ToBytes(input))
+		} else {
+			padded := make([]float32, capFloats)
+			copy(padded, input)
+			ctx.Queue.WriteBuffer(inputBuf, 0, wgpu.ToBytes(padded))
+		}
 	}
 
 	// Create command encoder and dispatch all layers
@@ -257,10 +279,8 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 
 	// Read output from staging buffer
 	lastLayer := layers[len(layers)-1]
-	batch := n.BatchSize
-	if batch <= 0 {
-		batch = 1
-	}
+
+	batch := max1(n.BatchSize)
 	output, err := readStagingBuffer(ctx, lastLayer.GetStagingBuffer(), n.gpuOutputSize*batch)
 	if err != nil {
 		return nil, fmt.Errorf("read output: %w", err)
@@ -384,6 +404,21 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		}
 	}
 
+	// Resolve a stable seqLen/batch for transformer-ish layers.
+	// Priority:
+	//  1) l.SeqLength (you set this before mounting)
+	//  2) n.BatchSize (mount-time BatchSize)
+	//  3) fallback derived guess
+	resolveSeqLen := func(derived int) int {
+		if l.SeqLength > 0 {
+			return l.SeqLength
+		}
+		if n.BatchSize > 0 {
+			return n.BatchSize
+		}
+		return max1(derived)
+	}
+
 	switch l.Type {
 	case LayerDense:
 		actCode := gpu.ActNone
@@ -414,10 +449,13 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		if pixelSize == 0 {
 			pixelSize = l.OutputHeight
 		}
-		batchSize := 1
-		if inputSize > pixelSize && pixelSize > 0 {
-			batchSize = inputSize / pixelSize
+
+		derived := 1
+		if inputSize > 0 && pixelSize > 0 {
+			derived = inputSize / pixelSize
 		}
+		batchSize := resolveSeqLen(derived)
+
 		spec := gpu.LayerNormSpec{
 			NormSize:  pixelSize,
 			BatchSize: batchSize,
@@ -432,10 +470,13 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		if pixelSize == 0 {
 			pixelSize = inputSize
 		}
-		batchSize := 1
-		if inputSize > pixelSize && pixelSize > 0 {
-			batchSize = inputSize / pixelSize
+
+		derived := 1
+		if inputSize > 0 && pixelSize > 0 {
+			derived = inputSize / pixelSize
 		}
+		batchSize := resolveSeqLen(derived)
+
 		spec := gpu.RMSNormSpec{
 			NormSize:  pixelSize,
 			BatchSize: batchSize,
@@ -451,19 +492,20 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		}
 		spec := gpu.SoftmaxSpec{
 			Size:        inputSize,
-			BatchSize:   1,
+			BatchSize:   resolveSeqLen(1),
 			Temperature: temp,
 		}
 		return &gpu.SoftmaxLayer{Spec: spec}, inputSize, nil
 
 	case LayerEmbedding:
+		seqLen := resolveSeqLen(inputSize)
 		spec := gpu.EmbeddingSpec{
 			VocabSize:    l.VocabSize,
 			EmbeddingDim: l.EmbeddingDim,
-			SeqLength:    inputSize,
+			SeqLength:    seqLen,
 			Weights:      l.EmbeddingWeights,
 		}
-		return &gpu.EmbeddingLayer{Spec: spec}, l.EmbeddingDim * inputSize, nil
+		return &gpu.EmbeddingLayer{Spec: spec}, l.EmbeddingDim * seqLen, nil
 
 	case LayerConv1D:
 		seqLen := inputSize / l.Conv1DInChannels
@@ -585,10 +627,13 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		if l.NumHeads > 0 {
 			headDim = l.DModel / l.NumHeads
 		}
-		seqLen := 100
-		if l.DModel > 0 && inputSize > 0 {
-			seqLen = inputSize / l.DModel
+
+		derived := 1
+		if inputSize > 0 && l.DModel > 0 {
+			derived = inputSize / l.DModel
 		}
+		seqLen := resolveSeqLen(derived)
+
 		spec := gpu.MHASpec{
 			DModel:       l.DModel,
 			NumHeads:     l.NumHeads,
@@ -608,10 +653,12 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		return &gpu.MHALayer{Spec: spec}, l.DModel * seqLen, nil
 
 	case LayerSwiGLU:
-		seqLen := 100
+
+		derived := 1
 		if l.InputHeight > 0 && inputSize > 0 {
-			seqLen = inputSize / l.InputHeight
+			derived = inputSize / l.InputHeight
 		}
+		seqLen := resolveSeqLen(derived)
 
 		// Ensure we have weights
 		if len(l.GateWeights) == 0 {
@@ -750,7 +797,18 @@ func readStagingBuffer(ctx *gpu.Context, buf *wgpu.Buffer, size int) ([]float32,
 	done := make(chan struct{})
 	var mapErr error
 
-	buf.MapAsync(wgpu.MapModeRead, 0, buf.GetSize(), func(status wgpu.BufferMapAsyncStatus) {
+	if size <= 0 {
+		return nil, fmt.Errorf("readStagingBuffer: invalid size %d", size)
+	}
+
+	bufFloats := int(buf.GetSize() / 4)
+	if size > bufFloats {
+		return nil, fmt.Errorf("readStagingBuffer: requested %d floats (%d bytes) but buffer holds %d floats (%d bytes)",
+			size, size*4, bufFloats, buf.GetSize())
+	}
+
+	wantBytes := uint64(size) * 4
+	buf.MapAsync(wgpu.MapModeRead, 0, wantBytes, func(status wgpu.BufferMapAsyncStatus) {
 		if status != wgpu.BufferMapAsyncStatusSuccess {
 			mapErr = fmt.Errorf("map status: %d", status)
 		}
@@ -776,7 +834,7 @@ Loop:
 		return nil, mapErr
 	}
 
-	data := buf.GetMappedRange(0, uint(size*4))
+	data := buf.GetMappedRange(0, uint(wantBytes))
 	defer buf.Unmap()
 
 	if data == nil {
@@ -784,7 +842,14 @@ Loop:
 	}
 
 	out := make([]float32, size)
-	copy(out, wgpu.FromBytes[float32](data))
+	copy(out, wgpu.FromBytes[float32](data)[:size])
 
 	return out, nil
+}
+
+func max1(v int) int {
+	if v <= 0 {
+		return 1
+	}
+	return v
 }
