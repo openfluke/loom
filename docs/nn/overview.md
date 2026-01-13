@@ -431,12 +431,12 @@ The `nn/` directory has 53 Go files. Here's how they're organized logically:
 Core Architecture (start here to understand the system):
 ├── nn.go              ← Package documentation
 ├── types.go           ← Network, LayerConfig, LayerType definitions
-├── tensor.go          ← Generic Tensor[T] implementation
 └── backend.go         ← Backend interface for compute abstraction
 
 Layer Implementations (one file per layer type):
 ├── dense.go           ← Fully-connected layers
 ├── cnn.go             ← Convolutional layers
+├── conv1d.go          ← 1D convolution for sequences
 ├── attention.go       ← Multi-head attention
 ├── rnn.go             ← Simple recurrent network
 ├── lstm.go            ← LSTM with gates
@@ -478,9 +478,18 @@ Observability:
 ├── evaluation.go      ← Accuracy metrics
 └── registry.go        ← Dynamic layer creation
 
+Utilities and Analysis:
+├── import_model.go    ← Build networks from external weights
+├── grouping.go        ← Tensor grouping for complex layers
+├── grafting.go        ← Graft parallel branches from multiple models
+├── ensemble.go        ← Complementary model matching
+├── correlation.go     ← Feature correlation analysis
+└── clustering.go      ← K-means clustering helpers
+
 GPU Acceleration:
 ├── gpu.go             ← WebGPU initialization
-├── dense_gpu.go       ← Dense GPU kernels
+├── gpu_integration.go ← Upload/download weights + GPU wiring
+├── apply_gradients_gpu.go ← GPU gradient updates
 ├── conv2d_gpu.go      ← Conv2D GPU kernels
 └── attention_gpu.go   ← Attention GPU kernels
 ```

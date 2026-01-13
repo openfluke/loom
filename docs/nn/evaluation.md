@@ -393,6 +393,69 @@ Observations:
 
 ---
 
+## Ensemble Discovery: Finding Complementary Models
+
+If you have multiple trained models, Loom can help identify **pairs that complement each other** (high combined coverage, low overlap). This is useful when you want a lightweight ensemble without stacking everything.
+
+```go
+// Build correctness masks from evaluation results
+buildMask := func(metrics *nn.DeviationMetrics) []bool {
+    mask := make([]bool, len(metrics.Results))
+    for i, r := range metrics.Results {
+        // Treat <=10% deviation as "correct" for ensemble coverage
+        mask[i] = r.Deviation <= 10
+    }
+    return mask
+}
+
+models := []nn.ModelPerformance{
+    {ModelID: "model_a", Mask: buildMask(metricsA)},
+    {ModelID: "model_b", Mask: buildMask(metricsB)},
+    {ModelID: "model_c", Mask: buildMask(metricsC)},
+}
+
+matches := nn.FindComplementaryMatches(models, 0.95) // require 95% coverage
+nn.PrintEnsembleReport(matches, 5)
+```
+
+If you want to cluster model behavior, convert masks to float vectors first:
+
+```go
+vec := nn.ConvertMaskToFloat(models[0].Mask)
+```
+
+---
+
+## Correlation Analysis: Understanding Feature Relationships
+
+For datasets or intermediate activations, Loom provides correlation helpers to spot redundancy or surprising feature relationships.
+
+```go
+labels := []string{"f0", "f1", "f2", "f3"}
+result := nn.ComputeCorrelationMatrix(data, labels)
+
+// Top correlations by absolute value
+pairs := result.GetStrongCorrelations(0.8)
+for _, p := range pairs {
+    fmt.Printf("%s vs %s: %.3f\n", p.Feature1, p.Feature2, p.Correlation)
+}
+```
+
+For monotonic-but-non-linear relationships, use Spearman:
+
+```go
+spearman := nn.ComputeSpearmanMatrix(data, labels)
+```
+
+Correlation results can be serialized for dashboards or WASM:
+
+```go
+jsonStr, _ := result.ToJSONCompact()
+restored, _ := nn.CorrelationResultFromJSON(jsonStr)
+```
+
+---
+
 ## Saving and Loading Metrics
 
 ### Save Metrics to JSON

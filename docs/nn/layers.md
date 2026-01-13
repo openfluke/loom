@@ -187,6 +187,66 @@ Input Image                 Filters                    Feature Maps
 
 ---
 
+## Conv1D Layers: Local Patterns in Sequences
+
+Conv1D is the 1D version of convolution. Instead of sliding a 2D kernel across an image, it slides a **1D kernel along a sequence** (audio, time series, token embeddings). The key idea is the same: learn a local pattern once and reuse it everywhere.
+
+```
+Input (channels × seqLen)          Kernel (channels × kernelSize)
+┌───────────────┐                 ┌───────────────┐
+│ c0: 1 2 3 4 5 │   ─────▶         │ c0: a b c     │
+│ c1: 6 7 8 9 0 │                 │ c1: d e f     │
+└───────────────┘                 └───────────────┘
+```
+
+**Output length**:
+```
+outLen = (seqLen + 2*padding - kernelSize) / stride + 1
+```
+
+Use Conv1D when:
+- Sequences have **local structure** (phonemes, n-grams, sensor spikes)
+- You want **translation invariance** along time
+- You need efficient feature extraction before RNN/Attention
+
+---
+
+## Embedding Layers: Token Lookup Tables
+
+Embeddings convert discrete IDs (tokens) into dense vectors. Think of it as a **learned dictionary**:
+
+```
+Embedding table: [vocabSize × embeddingDim]
+Token ID 42 → row 42 → vector of length embeddingDim
+```
+
+Only the rows used in the current batch receive gradients. This makes embedding updates efficient even with huge vocabularies.
+
+Use embeddings when:
+- Inputs are **categorical** (tokens, IDs, symbols)
+- You need a learned representation before sequence models
+- You want compact, trainable vector spaces
+
+---
+
+## SwiGLU: Gated MLP Blocks
+
+SwiGLU is a modern gated feedforward block used in LLMs. It uses **two projections** plus a gating nonlinearity:
+
+```
+gate = SiLU(x · W_gate + b_gate)
+up   = x · W_up + b_up
+out  = (gate ⊙ up) · W_down + b_down
+```
+
+This gating tends to train better than a plain ReLU MLP, especially in deep transformer stacks.
+
+Use SwiGLU when:
+- Building transformer-style feedforward blocks
+- You want stronger expressivity than a single dense layer
+
+---
+
 ## Multi-Head Attention: Learning What to Focus On
 
 Attention is the mechanism that powers Transformers. It lets the network decide which parts of the input are relevant for each output.

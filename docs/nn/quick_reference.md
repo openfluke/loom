@@ -37,10 +37,27 @@ config := nn.InitConv2DLayer(
 )
 ```
 
+### Conv1D
+
+```go
+config := nn.InitConv1DLayer(
+    seqLen, inChannels,       // Input
+    kernelSize, stride, padding,
+    filters,
+    activation,
+)
+```
+
 ### Multi-Head Attention
 
 ```go
 config := nn.InitMultiHeadAttentionLayer(dModel, numHeads, batchSize, seqLength)
+```
+
+### Embedding
+
+```go
+config := nn.InitEmbeddingLayer(vocabSize, embeddingDim)
 ```
 
 ### RNN / LSTM
@@ -48,6 +65,12 @@ config := nn.InitMultiHeadAttentionLayer(dModel, numHeads, batchSize, seqLength)
 ```go
 rnn := nn.InitRNNLayer(inputSize, hiddenSize, batchSize, seqLength)
 lstm := nn.InitLSTMLayer(inputSize, hiddenSize, batchSize, seqLength)
+```
+
+### SwiGLU
+
+```go
+config := nn.InitSwiGLUBrain(dModel, initScale)
 ```
 
 ### Softmax
