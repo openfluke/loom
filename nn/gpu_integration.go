@@ -218,11 +218,6 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 
 	// Handle embedding layer specially (expects uint32 token IDs)
 	if _, isEmbed := firstLayer.(*gpu.EmbeddingLayer); isEmbed {
-		inputU32 := make([]uint32, len(input))
-		for k, v := range input {
-			inputU32[k] = uint32(v)
-		}
-		ctx.Queue.WriteBuffer(inputBuf, 0, wgpu.ToBytes(inputU32))
 		// Pad to buffer capacity (important if compiled for MAX_SEQ_LEN)
 		capFloats := int(inputBuf.GetSize() / 4)
 		if len(input) > capFloats {
@@ -256,6 +251,10 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 	}
 
 	for i, l := range layers {
+		if mha, ok := l.(*gpu.MHALayer); ok {
+			mha.SetActualSeqLen(ctx, len(input))
+		}
+
 		pass := cmdEnc.BeginComputePass(nil)
 		l.Dispatch(pass)
 		pass.End()
@@ -280,12 +279,19 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 	// Read output from staging buffer
 	lastLayer := layers[len(layers)-1]
 
-	batch := max1(n.BatchSize)
-	output, err := readStagingBuffer(ctx, lastLayer.GetStagingBuffer(), n.gpuOutputSize*batch)
+	// IMPORTANT: staging buffer is already allocated to the compiled shape.
+	// Do NOT multiply by n.BatchSize here (it changes during generation).
+	outFloats := int(lastLayer.GetStagingBuffer().GetSize() / 4)
+	output, err := readStagingBuffer(ctx, lastLayer.GetStagingBuffer(), outFloats)
 	if err != nil {
 		return nil, fmt.Errorf("read output: %w", err)
 	}
 
+	// Optional: slice down to the "real" output length implied by input embeddings.
+	// For transformer blocks, output length should match input length (seqLen * hidden).
+	if len(input) > 0 && len(input) <= len(output) {
+		return output[:len(input)], nil
+	}
 	return output, nil
 }
 

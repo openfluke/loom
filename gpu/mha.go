@@ -55,6 +55,8 @@ type MHALayer struct {
 	VBuffer    *wgpu.Buffer // Projected values
 	AttnBuffer *wgpu.Buffer // Attention output
 
+	ParamsBuffer *wgpu.Buffer // Uniforms: [ActualSeqLen, ...]
+
 	InputGradientBuffer *wgpu.Buffer
 	bwPipeline          *wgpu.ComputePipeline
 	bwBindGroup         *wgpu.BindGroup
@@ -177,6 +179,16 @@ func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(seqDim * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Params Buffer (Uniforms)
+	l.ParamsBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_Params",
+		Size:  16,
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
 	})
 	return err
 }
@@ -309,6 +321,7 @@ func (l *MHALayer) GenerateAttnShader() string {
 		@group(0) @binding(1) var<storage, read> k : array<f32>;
 		@group(0) @binding(2) var<storage, read> v : array<f32>;
 		@group(0) @binding(3) var<storage, read_write> attn_out : array<f32>;
+		@group(0) @binding(4) var<storage, read> params : array<u32>; // [0] = actual_seq_len
 
 		const SEQ_LEN: u32 = %du;
 		const D_MODEL: u32 = %du;
@@ -337,7 +350,9 @@ func (l *MHALayer) GenerateAttnShader() string {
 			var max_score: f32 = -1e10;
 
 			// First pass: find max for stability
+			let actual_len = params[0];
 			for (var seq_j: u32 = 0u; seq_j < SEQ_LEN; seq_j++) {
+				if (seq_j >= actual_len) { continue; } // Padding mask
 				if (seq_j > seq_i) { continue; } // Causal mask
 				var score: f32 = 0.0;
 				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
@@ -353,6 +368,7 @@ func (l *MHALayer) GenerateAttnShader() string {
 			// Second pass: compute softmax and weighted V sum
 			var exp_sum: f32 = 0.0;
 			for (var seq_j: u32 = 0u; seq_j < SEQ_LEN; seq_j++) {
+				if (seq_j >= actual_len) { continue; } // Padding mask
 				if (seq_j > seq_i) { continue; }
 				var score: f32 = 0.0;
 				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
@@ -555,6 +571,7 @@ func (l *MHALayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 			{Binding: 1, Buffer: l.KBuffer, Size: l.KBuffer.GetSize()},
 			{Binding: 2, Buffer: l.VBuffer, Size: l.VBuffer.GetSize()},
 			{Binding: 3, Buffer: l.AttnBuffer, Size: l.AttnBuffer.GetSize()},
+			{Binding: 4, Buffer: l.ParamsBuffer, Size: l.ParamsBuffer.GetSize()},
 		},
 	})
 	if err != nil {
@@ -667,13 +684,19 @@ func (l *MHALayer) DownloadGradients(ctx *Context) ([]float32, []float32, []floa
 	return nil, nil, iGrad, err
 }
 
+func (l *MHALayer) SetActualSeqLen(ctx *Context, length int) {
+	if l.ParamsBuffer != nil {
+		ctx.Queue.WriteBuffer(l.ParamsBuffer, 0, wgpu.ToBytes([]uint32{uint32(length)}))
+	}
+}
+
 func (l *MHALayer) Cleanup() {
 	bufs := []*wgpu.Buffer{
-		l.InputBuffer, l.OutputBuffer, l.StagingBuffer,
 		l.InputBuffer, l.OutputBuffer, l.StagingBuffer,
 		l.CombinedWeightsQKV, l.CombinedBiasesQKV, l.OWeightBuffer,
 		l.OBiasBuffer,
 		l.QBuffer, l.KBuffer, l.VBuffer, l.AttnBuffer,
+		l.ParamsBuffer,
 		l.InputGradientBuffer,
 	}
 	for _, b := range bufs {

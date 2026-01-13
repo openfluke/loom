@@ -281,6 +281,7 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 			return output, time.Since(start)
 		}
 		// Fall back to CPU on GPU error
+		fmt.Printf("⚠️ GPU Forward failed, falling back to CPU: %v\n", err)
 	}
 
 	start := time.Now()
