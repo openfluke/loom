@@ -1205,9 +1205,29 @@ func BuildNetworkFromJSONWithDType(jsonConfig string) (*Network, string, error) 
 		batchSize = 1
 	}
 
+	// Determine input size from first layer configuration
+	inputSize := 1
+	if len(config.Layers) > 0 {
+		l0 := config.Layers[0]
+		if l0.InputHeight > 0 {
+			inputSize = l0.InputHeight
+		} else if l0.InputSize > 0 {
+			inputSize = l0.InputSize
+		} else if l0.InputChannels > 0 {
+			// Estimate for conv layers
+			if l0.InputHeight > 0 && l0.InputWidth > 0 {
+				inputSize = l0.InputChannels * l0.InputHeight * l0.InputWidth
+			} else if l0.InputLength > 0 {
+				inputSize = l0.InputChannels * l0.InputLength
+			} else {
+				inputSize = l0.InputChannels // Fallback
+			}
+		}
+	}
+
 	// Create network with grid structure
 	network := NewNetwork(
-		batchSize,
+		inputSize,
 		config.GridRows,
 		config.GridCols,
 		config.LayersPerCell,
