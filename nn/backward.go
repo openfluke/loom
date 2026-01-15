@@ -562,32 +562,6 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 		return nil, 0, fmt.Errorf("no forward pass data available for backward pass")
 	}
 
-	// Check for specialized layer types and use dedicated GPU paths
-	hasConv2D := false
-	hasMHA := false
-	for i := 0; i < n.TotalLayers(); i++ {
-		row := i / (n.GridCols * n.LayersPerCell)
-		remainder := i % (n.GridCols * n.LayersPerCell)
-		col := remainder / n.LayersPerCell
-		layer := remainder % n.LayersPerCell
-
-		config := n.GetLayer(row, col, layer)
-		if config.Type == LayerConv2D {
-			hasConv2D = true
-		}
-		if config.Type == LayerMultiHeadAttention {
-			hasMHA = true
-		}
-	}
-
-	if hasConv2D {
-		return n.backwardGPUConv2D(gradOutput)
-	}
-
-	if hasMHA {
-		return n.backwardGPUMultiHeadAttention(gradOutput)
-	}
-
 	start := time.Now()
 
 	dev := n.deviceInfo.Device

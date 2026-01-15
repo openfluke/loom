@@ -133,7 +133,7 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 			}
 
 			// Update weights
-			n.UpdateWeights(config.LearningRate)
+			n.ApplyGradients(config.LearningRate)
 
 			// Print batch progress if verbose
 			if config.Verbose {
@@ -364,20 +364,20 @@ func GenericTrainStep[T Numeric](
 	backend Backend[T],
 ) (*Tensor[T], float64, time.Duration) {
 	start := time.Now()
-	
+
 	// 1. Forward Pass
 	output, activations, backwardContext, _ := GenericForwardPass(n, input, backend)
-	
+
 	// 2. Calculate Loss and Grading
 	// For simplicity, implement MSE here inline or call helper
 	loss, gradOutput := computeGenericMSELoss(output, target)
-	
+
 	// 3. Backward Pass
 	_, kernelGrads, biasGrads, _ := GenericBackwardPass(n, gradOutput, activations, backwardContext)
-	
+
 	// 4. Update Weights
 	UpdateWeightsGeneric[T](n, learningRate, kernelGrads, biasGrads)
-	
+
 	return output, loss, time.Since(start)
 }
 
@@ -385,7 +385,7 @@ func computeGenericMSELoss[T Numeric](output, target *Tensor[T]) (float64, *Tens
 	grad := NewTensor[T](len(output.Data))
 	sum := 0.0
 	scale := 2.0 / float64(len(output.Data))
-	
+
 	// For integer types, standard MSE gradient (diff * 2/N) is often < 1 and truncates to 0.
 	// We should scale inputs/outputs or just handle it here.
 	// Simple fix: For integers, ensure gradient is at least 1 if diff exists, or don't scale by N here (move to LR).
@@ -396,40 +396,46 @@ func computeGenericMSELoss[T Numeric](output, target *Tensor[T]) (float64, *Tens
 		tgtVal := float64(target.Data[i])
 		diff := outVal - tgtVal
 		sum += diff * diff
-		
+
 		val := diff * scale
 		if isInt && diff != 0 && math.Abs(val) < 0.5 {
 			// If diff exists but scaling makes it 0, preserve direction
-			if val > 0 { val = 1 } else { val = -1 }
+			if val > 0 {
+				val = 1
+			} else {
+				val = -1
+			}
 		}
 		grad.Data[i] = T(val)
 	}
-	
+
 	return sum / float64(len(output.Data)), grad
 }
 
 // UpdateWeightsGeneric updates network weights using generic gradients
 func UpdateWeightsGeneric[T Numeric](n *Network, learningRate float64, kernelGrads []any, biasGrads []any) {
 	lr := learningRate
-	
+
 	totalLayers := n.TotalLayers()
 	for layerIdx := 0; layerIdx < totalLayers; layerIdx++ {
-		if layerIdx >= len(kernelGrads) { break }
-		
+		if layerIdx >= len(kernelGrads) {
+			break
+		}
+
 		// Get layer config to access weights
 		row := layerIdx / (n.GridCols * n.LayersPerCell)
 		remainder := layerIdx % (n.GridCols * n.LayersPerCell)
 		col := remainder / n.LayersPerCell
 		layer := remainder % n.LayersPerCell
 		config := n.GetLayer(row, col, layer)
-		
+
 		// Update Kernels
 		if kGrad := kernelGrads[layerIdx]; kGrad != nil {
 			switch g := kGrad.(type) {
 			case *Tensor[T]:
 				// Single tensor update (Dense, Conv2D, etc.)
 				applyUpdate(config.Kernel, g, lr)
-			
+
 			case []*Tensor[T]:
 				// Multiple tensors (RNN, SwiGLU)
 				if config.Type == LayerRNN {
@@ -444,7 +450,7 @@ func UpdateWeightsGeneric[T Numeric](n *Network, learningRate float64, kernelGra
 						applyUpdate(config.DownWeights, g[2], lr)
 					}
 				}
-				
+
 			case map[string]*Tensor[T]:
 				// Map (LSTM)
 				if config.Type == LayerLSTM {
@@ -457,7 +463,7 @@ func UpdateWeightsGeneric[T Numeric](n *Network, learningRate float64, kernelGra
 					applyUpdate(config.WeightIH_o, g["WeightIH_o"], lr)
 					applyUpdate(config.WeightHH_o, g["WeightHH_o"], lr)
 				}
-				
+
 			case *AttentionWeights[T]:
 				// Attention struct (MultiHeadAttention)
 				if config.Type == LayerMultiHeadAttention {
@@ -472,7 +478,7 @@ func UpdateWeightsGeneric[T Numeric](n *Network, learningRate float64, kernelGra
 				}
 			}
 		}
-		
+
 		// Update Biases (if separate)
 		if bGrad := biasGrads[layerIdx]; bGrad != nil {
 			switch g := bGrad.(type) {
@@ -483,7 +489,7 @@ func UpdateWeightsGeneric[T Numeric](n *Network, learningRate float64, kernelGra
 				} else {
 					applyUpdate(config.Bias, g, lr)
 				}
-				
+
 			case []*Tensor[T]:
 				if config.Type == LayerRNN && len(g) >= 1 {
 					applyUpdate(config.BiasH, g[0], lr)
@@ -494,7 +500,7 @@ func UpdateWeightsGeneric[T Numeric](n *Network, learningRate float64, kernelGra
 				}
 			}
 		}
-		
+
 		// Special handling where bias might be in kernelGrads (like Attention struct) or special types
 		if config.Type == LayerNorm {
 			// Gamma is in kernelGrads, Beta is in biasGrads

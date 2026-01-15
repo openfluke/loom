@@ -72,7 +72,14 @@ func (l *MHALayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradien
 
 func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
-	seqDim := l.Spec.SeqLen * l.Spec.DModel
+
+	// Account for batch size in buffer allocation
+	batchSize := l.BatchSize
+	if batchSize < 1 {
+		batchSize = 1
+	}
+
+	seqDim := l.Spec.SeqLen * l.Spec.DModel * batchSize
 	dimSq := l.Spec.DModel * l.Spec.DModel
 	numKVHeads := l.Spec.NumKVHeads
 	if numKVHeads == 0 {
