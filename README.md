@@ -262,7 +262,21 @@ network.BackwardGPUNew(dOutput)  // GPU backward pass
 network.ReleaseGPUWeights()      // Cleanup
 ```
 
----
+### GPU Support Matrix
+
+| Layer Type | Forward | Backward (Training) | Notes |
+|:-----------|:-------:|:-------------------:|:------|
+| **Dense** | ✅ **Stable** | ⚠️ **Experimental** | Production speedup (20x) on large layers. |
+| **Conv2D** | ✅ **Stable** | ⚠️ **Experimental** | Works well, optimized for 32+ filters. |
+| **Conv1D** | ✅ **Stable** | ⚠️ **Experimental** | Gradients implemented, accuracy tuning needed. |
+| **RNN** | ✅ **Stable** | ⚠️ **Experimental** | Weights update, but BPTT limited to batch=1. |
+| **LSTM** | ✅ **Stable** | ⚠️ **Experimental** | Same limitations as RNN. |
+| **LayerNorm** | ✅ **Stable** | ⚠️ **Experimental** | Forward is stable, backward can be numeric unstable. |
+| **RMSNorm** | ✅ **Stable** | ⚠️ **Experimental** | Same as LayerNorm. |
+| **SwiGLU** | ✅ **Stable** | ⚠️ **Experimental** | High performance. |
+| **MHA** | ✅ **Stable** | ⚠️ **Experimental** | Functional parity verified. |
+| **Softmax** | ✅ **Stable** | ⚠️ **Experimental** | Functional. |
+
 
 ## Quick Start
 

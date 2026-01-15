@@ -25,6 +25,18 @@ network.ReleaseGPUWeights()
 
 All layer types below support both CPU and GPU execution with automatic parity checking.
 
+### Supported Layers Status
+
+| Layer | Forward | Backward | Notes |
+|:------|:-------:|:--------:|:------|
+| **Dense** | ✅ **Stable** | ⚠️ **Experimental** | Best speedup (up to 20x). |
+| **Conv2D** | ✅ **Stable** | ⚠️ **Experimental** | Good for large batches/kernels. |
+| **Conv1D** | ✅ **Stable** | ⚠️ **Experimental** | Accuracy under review. |
+| **RNN / LSTM** | ✅ **Stable** | ⚠️ **Experimental** | Verified parity, BPTT limited. |
+| **SwiGLU** | ✅ **Stable** | ⚠️ **Experimental** | Works perfectly. |
+| **Norms** | ✅ **Stable** | ⚠️ **Experimental** | LayerNorm and RMSNorm supported. |
+| **MHA** | ✅ **Stable** | ⚠️ **Experimental** | Multi-Head Attention supported. |
+
 ---
 
 ## Dense Layer
