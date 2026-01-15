@@ -273,10 +273,10 @@ func (l *Conv1DLayer) GenerateBackwardShader() string {
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
 		@group(0) @binding(1) var<storage, read> output : array<f32>; // Added for activation derivative
-		@group(0) @binding(2) var<storage, read> input : array<f32>;   // Not used for dInput, but kept for bind group layout consistency if needed (or we can remove)
-		@group(0) @binding(3) var<storage, read> weights : array<f32>;
-		@group(0) @binding(4) var<storage, read_write> d_input : array<f32>;
-		// Bindings 5 and 6 (d_weights, d_bias) removed from this shader
+		// Input unused in dInput shader, removed to avoid validation error
+		@group(0) @binding(2) var<storage, read> weights : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> d_input : array<f32>;
+		// Bindings 4+ (d_weights, d_bias) removed from this shader
 
 		const BATCH_SIZE: u32 = %du;
 		const SEQ_LEN: u32 = %du;
@@ -488,16 +488,16 @@ func (l *Conv1DLayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 
 func (l *Conv1DLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
 	var err error
-	// bwBindGroup for dInput shader (bindings 0-4, no d_weights/d_bias)
+	// bwBindGroup for dInput shader (bindings 0-3, no d_weights/d_bias)
+	// Note: InputBuffer (binding 2 in original) removed as unused in dInput shader
 	l.bwBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:  labelPrefix + "_BwdBind",
 		Layout: l.bwPipeline.GetBindGroupLayout(0),
 		Entries: []wgpu.BindGroupEntry{
 			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
 			{Binding: 1, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
-			{Binding: 2, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
-			{Binding: 3, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
-			{Binding: 4, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
+			{Binding: 2, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
+			{Binding: 3, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
 		},
 	})
 	if err != nil {
