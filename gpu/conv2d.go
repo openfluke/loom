@@ -208,6 +208,26 @@ func (l *Conv2DLayer) getActivationCode(varName string) string {
 	}
 }
 
+func (l *Conv2DLayer) getActivationDerivative(varName string) string {
+	switch l.Spec.Activation {
+	case "relu":
+		// Derivative of ReLU with 1.1x scaling: 1.1 if x > 0, else 0
+		return fmt.Sprintf("select(1.1, 0.0, %s > 0.0)", varName)
+	case "sigmoid":
+		// Derivative of sigmoid: s(x) * (1 - s(x)), where varName is already sigmoid output
+		return fmt.Sprintf("(%s * (1.0 - %s))", varName, varName)
+	case "tanh":
+		// Derivative of tanh: 1 - tanh^2(x), where varName is already tanh output
+		return fmt.Sprintf("(1.0 - %s * %s)", varName, varName)
+	case "leaky_relu":
+		// Derivative of leaky ReLU: 1 if x > 0, else 0.01
+		return fmt.Sprintf("select(1.0, 0.01, %s > 0.0)", varName)
+	default:
+		// No activation, derivative is 1
+		return "1.0"
+	}
+}
+
 func (l *Conv2DLayer) GenerateShader() string {
 	stride := l.Spec.Stride
 	if stride < 1 {
@@ -294,8 +314,9 @@ func (l *Conv2DLayer) GenerateBackwardShader() string {
 	// Backward pass: compute dInput via transposed convolution
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
-		@group(0) @binding(1) var<storage, read> weights : array<f32>;
-		@group(0) @binding(2) var<storage, read_write> d_input : array<f32>;
+		@group(0) @binding(1) var<storage, read> output : array<f32>;
+		@group(0) @binding(2) var<storage, read> weights : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> d_input : array<f32>;
 
 		const IN_H: u32 = %du;
 		const IN_W: u32 = %du;
@@ -348,7 +369,12 @@ func (l *Conv2DLayer) GenerateBackwardShader() string {
 
 									// weights: [OUT_CH, IN_CH, K, K]
 									let w_idx = out_c * IN_CH * K * K + in_c * K * K + kh * K + kw;
-									grad += d_output[do_idx] * weights[w_idx];
+									
+									// Apply activation derivative
+									let out_val = output[do_idx];
+									let d_act: f32 = %s;
+									
+									grad += d_output[do_idx] * d_act * weights[w_idx];
 								}
 							}
 						}
@@ -359,7 +385,7 @@ func (l *Conv2DLayer) GenerateBackwardShader() string {
 			d_input[idx] = grad;
 		}
 	`, l.Spec.InputHeight, l.Spec.InputWidth, l.Spec.InChannels, l.Spec.OutChannels,
-		l.Spec.KernelSize, stride, l.Spec.Padding, outH, outW, l.BatchSize)
+		l.Spec.KernelSize, stride, l.Spec.Padding, outH, outW, l.BatchSize, l.getActivationDerivative("out_val"))
 }
 
 func (l *Conv2DLayer) GenerateBackwardGradsShader() string {
@@ -546,8 +572,9 @@ func (l *Conv2DLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, 
 		Layout: l.bwPipeline.GetBindGroupLayout(0),
 		Entries: []wgpu.BindGroupEntry{
 			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
-			{Binding: 1, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
-			{Binding: 2, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
+			{Binding: 1, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+			{Binding: 2, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
+			{Binding: 3, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
 		},
 	})
 	if err != nil {

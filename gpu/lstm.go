@@ -36,6 +36,8 @@ type LSTMSpec struct {
 type LSTMLayer struct {
 	Spec LSTMSpec
 
+	BatchSize int // Number of samples per batch
+
 	pipeline   *wgpu.ComputePipeline
 	bindGroups []*wgpu.BindGroup // One bind group per time step
 

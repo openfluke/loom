@@ -54,6 +54,18 @@ func (n *Network) WeightsToGPU() error {
 			if conv2d, ok := gpuLayer.(*gpu.Conv2DLayer); ok {
 				conv2d.BatchSize = n.BatchSize
 			}
+			if conv1d, ok := gpuLayer.(*gpu.Conv1DLayer); ok {
+				conv1d.BatchSize = n.BatchSize
+			}
+			if rnn, ok := gpuLayer.(*gpu.RNNLayer); ok {
+				rnn.BatchSize = n.BatchSize
+			}
+			if lstm, ok := gpuLayer.(*gpu.LSTMLayer); ok {
+				lstm.BatchSize = n.BatchSize
+			}
+			if mha, ok := gpuLayer.(*gpu.MHALayer); ok {
+				mha.BatchSize = n.BatchSize
+			}
 
 			layers = append(layers, gpuLayer)
 			if layerOutputSize > 0 {

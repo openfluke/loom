@@ -22,6 +22,8 @@ type RNNSpec struct {
 type RNNLayer struct {
 	Spec RNNSpec
 
+	BatchSize int // Number of samples per batch
+
 	pipeline   *wgpu.ComputePipeline
 	bindGroups []*wgpu.BindGroup // One bind group per time step
 
@@ -64,19 +66,14 @@ func (l *RNNLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		l.Spec.HiddenSize = 64
 	}
 
-	inputTotal := l.Spec.SeqLen * l.Spec.InputSize
-	if inputTotal < 1 {
-		inputTotal = 1
-	}
-	outputTotal := l.Spec.SeqLen * l.Spec.HiddenSize
-	if outputTotal < 1 {
-		outputTotal = 1
+	if l.BatchSize <= 0 {
+		l.BatchSize = 1
 	}
 
-	hiddenSize := l.Spec.HiddenSize
-	if hiddenSize < 1 {
-		hiddenSize = 1
-	}
+	inputTotal := l.Spec.SeqLen * l.Spec.InputSize * l.BatchSize
+	outputTotal := l.Spec.SeqLen * l.Spec.HiddenSize * l.BatchSize
+
+	hiddenSize := l.Spec.HiddenSize * l.BatchSize
 
 	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_In",
@@ -213,48 +210,65 @@ func (l *RNNLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) err
 }
 
 func (l *RNNLayer) GenerateShader() string {
-	// RNN: h' = tanh(W_ih * x + W_hh * h + b)
-	// Process ONE time step per dispatch - this avoids the cross-workgroup sync issue
-	// The Go code will dispatch SeqLen times, once per time step
-	return fmt.Sprintf(`
-		@group(0) @binding(0) var<storage, read> input : array<f32>;
-		@group(0) @binding(1) var<storage, read> w_ih : array<f32>;
-		@group(0) @binding(2) var<storage, read> w_hh : array<f32>;
-		@group(0) @binding(3) var<storage, read> bias : array<f32>;
-		@group(0) @binding(4) var<storage, read_write> hidden : array<f32>;
-		@group(0) @binding(5) var<storage, read_write> output : array<f32>;
-		@group(0) @binding(6) var<uniform> step : u32;
+// RNN: h' = tanh(W_ih * x + W_hh * h + b)
+// Process ONE time step per dispatch for ALL batches in parallel
+// Data layout matches CPU: input[b, t, i], output[b, t, h]
+return fmt.Sprintf(`
+@group(0) @binding(0) var<storage, read> input : array<f32>;
+@group(0) @binding(1) var<storage, read> w_ih : array<f32>;
+@group(0) @binding(2) var<storage, read> w_hh : array<f32>;
+@group(0) @binding(3) var<storage, read> bias : array<f32>;
+@group(0) @binding(4) var<storage, read_write> hidden : array<f32>; // [BatchSize * HiddenSize]
+@group(0) @binding(5) var<storage, read_write> output : array<f32>; // [BatchSize * SeqLen * HiddenSize]
+@group(0) @binding(6) var<uniform> step : u32;
 
-		const INPUT_SIZE: u32 = %du;
-		const HIDDEN_SIZE: u32 = %du;
+const INPUT_SIZE: u32 = %du;
+const HIDDEN_SIZE: u32 = %du;
+const BATCH_SIZE: u32 = %du;
+const SEQ_LEN: u32 = %du;
 
-		@compute @workgroup_size(256)
-		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-			let h_idx = gid.x;
-			if (h_idx >= HIDDEN_SIZE) { return; }
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+let idx = gid.x;
+let total = BATCH_SIZE * HIDDEN_SIZE;
+if (idx >= total) { return; }
 
-			let input_offset = step * INPUT_SIZE;
-			
-			// W_ih * x
-			var sum: f32 = bias[h_idx];
-			for (var i: u32 = 0u; i < INPUT_SIZE; i++) {
-				sum += input[input_offset + i] * w_ih[h_idx * INPUT_SIZE + i];
-			}
+// Decompose idx into batch and hidden unit
+let batch = idx / HIDDEN_SIZE;
+let h_idx = idx %% HIDDEN_SIZE;
 
-			// W_hh * h (read from hidden buffer - synchronized between dispatches)
-			for (var i: u32 = 0u; i < HIDDEN_SIZE; i++) {
-				sum += hidden[i] * w_hh[h_idx * HIDDEN_SIZE + i];
-			}
+// Input index: input[batch, step, :]
+// CPU layout: b*seqLength*inputSize + t*inputSize + i
+let input_offset = batch * SEQ_LEN * INPUT_SIZE + step * INPUT_SIZE;
 
-			// tanh activation
-			let h_val = tanh(sum);
-			
-			// Update hidden state and output
-			hidden[h_idx] = h_val;
-			output[step * HIDDEN_SIZE + h_idx] = h_val;
-		}
-	`, l.Spec.InputSize, l.Spec.HiddenSize)
+// W_ih * x
+var sum: f32 = bias[h_idx];
+for (var i: u32 = 0u; i < INPUT_SIZE; i++) {
+sum += input[input_offset + i] * w_ih[h_idx * INPUT_SIZE + i];
 }
+
+// W_hh * h (read from hidden buffer for this batch)
+// Hidden buffer stores current hidden state for each batch: [batch * HIDDEN_SIZE]
+let h_offset = batch * HIDDEN_SIZE;
+for (var i: u32 = 0u; i < HIDDEN_SIZE; i++) {
+sum += hidden[h_offset + i] * w_hh[h_idx * HIDDEN_SIZE + i];
+}
+
+// tanh activation
+let h_val = tanh(sum);
+
+// Update hidden state for this batch
+hidden[h_offset + h_idx] = h_val;
+
+// Update output for this batch and timestep
+// Output layout: output[batch, step, h_idx]
+// CPU layout: b*seqLength*hiddenSize + t*hiddenSize + h
+let out_offset = batch * SEQ_LEN * HIDDEN_SIZE + step * HIDDEN_SIZE;
+output[out_offset + h_idx] = h_val;
+}
+`, l.Spec.InputSize, l.Spec.HiddenSize, l.BatchSize, l.Spec.SeqLen)
+}
+
 
 func (l *RNNLayer) GenerateBackwardShader() string {
 	// Simplified BPTT: d_input = d_h @ W_ih.T where d_h = d_output * (1 - h^2)
@@ -475,15 +489,17 @@ func (l *RNNLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOu
 }
 
 func (l *RNNLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
-	// Dispatch once per time step - each step processes in parallel within hidden units
-	// but steps must be sequential due to hidden state dependency
-	wg := uint32((l.Spec.HiddenSize + 255) / 256)
-	for step := 0; step < l.Spec.SeqLen; step++ {
-		pass.SetPipeline(l.pipeline)
-		pass.SetBindGroup(0, l.bindGroups[step], nil)
-		pass.DispatchWorkgroups(wg, 1, 1)
-	}
+// Dispatch once per time step - each step processes ALL batches in parallel
+// Total threads needed: BatchSize * HiddenSize
+total := uint32(l.BatchSize * l.Spec.HiddenSize)
+wg := (total + 255) / 256
+for step := 0; step < l.Spec.SeqLen; step++ {
+pass.SetPipeline(l.pipeline)
+pass.SetBindGroup(0, l.bindGroups[step], nil)
+pass.DispatchWorkgroups(wg, 1, 1)
 }
+}
+
 
 func (l *RNNLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	// 1. dInput

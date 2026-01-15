@@ -29,6 +29,8 @@ type MHASpec struct {
 type MHALayer struct {
 	Spec MHASpec
 
+	BatchSize int // Number of samples per batch
+
 	// Q/K/V projection pipeline (combined)
 	pipelineQKV  *wgpu.ComputePipeline
 	bindGroupQKV *wgpu.BindGroup

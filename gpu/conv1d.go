@@ -199,6 +199,26 @@ func (l *Conv1DLayer) getActivationCode(varName string) string {
 	}
 }
 
+func (l *Conv1DLayer) getActivationDerivative(varName string) string {
+	switch l.Spec.Activation {
+	case "relu":
+		// Derivative of ReLU with 1.1x scaling: 1.1 if x > 0, else 0
+		return fmt.Sprintf("select(1.1, 0.0, %s > 0.0)", varName)
+	case "sigmoid":
+		// Derivative of sigmoid: s(x) * (1 - s(x)), where varName is already sigmoid output
+		return fmt.Sprintf("(%s * (1.0 - %s))", varName, varName)
+	case "tanh":
+		// Derivative of tanh: 1 - tanh^2(x), where varName is already tanh output
+		return fmt.Sprintf("(1.0 - %s * %s)", varName, varName)
+	case "leaky_relu":
+		// Derivative of leaky ReLU: 1 if x > 0, else 0.01
+		return fmt.Sprintf("select(1.0, 0.01, %s > 0.0)", varName)
+	default:
+		// No activation, derivative is 1
+		return "1.0"
+	}
+}
+
 func (l *Conv1DLayer) GenerateShader() string {
 	stride := l.Spec.Stride
 	if stride < 1 {
@@ -398,8 +418,7 @@ func (l *Conv1DLayer) GenerateBackwardGradsShader() string {
 					for (var out_pos: u32 = 0u; out_pos < OUT_LEN; out_pos++) {
 						let do_idx = d_out_batch_offset + out_c * OUT_LEN + out_pos;
 						let out_val = output[do_idx];
-						var d_act: f32 = 0.0;
-						if (out_val > 0.0) { d_act = 1.1; }
+						let d_act: f32 = %s;
 						grad_sum += d_output[do_idx] * d_act;
 					}
 				}
@@ -424,8 +443,7 @@ func (l *Conv1DLayer) GenerateBackwardGradsShader() string {
 						if (src_pos >= 0 && u32(src_pos) < SEQ_LEN) {
 							let do_idx = d_out_batch_offset + out_c * OUT_LEN + out_pos;
 							let out_val = output[do_idx];
-							var d_act: f32 = 0.0;
-							if (out_val > 0.0) { d_act = 1.1; }
+							let d_act: f32 = %s;
 							
 							let i_idx = input_batch_offset + in_c * SEQ_LEN + u32(src_pos);
 							grad_sum += d_output[do_idx] * d_act * input[i_idx];
@@ -436,7 +454,7 @@ func (l *Conv1DLayer) GenerateBackwardGradsShader() string {
 			}
 		}
 	`, l.BatchSize, l.Spec.SeqLen, l.Spec.InChannels, l.Spec.OutChannels, l.Spec.KernelSize, stride, l.Spec.Padding, outputLen,
-		uint32(l.Spec.OutChannels*l.Spec.InChannels*l.Spec.KernelSize), uint32(l.Spec.OutChannels))
+		uint32(l.Spec.OutChannels*l.Spec.InChannels*l.Spec.KernelSize), uint32(l.Spec.OutChannels), l.getActivationDerivative("out_val"), l.getActivationDerivative("out_val"))
 }
 
 func (l *Conv1DLayer) CompileBackward(ctx *Context, labelPrefix string) error {
