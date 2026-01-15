@@ -878,6 +878,36 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		}
 		return &gpu.RNNLayer{Spec: spec}, hiddenSize * seqLen, nil
 
+	case LayerParallel:
+		branches := make([]gpu.GPULayer, len(l.ParallelBranches))
+		totalOutputSize := 0
+		firstBranchSize := 0
+
+		for i := range l.ParallelBranches {
+			branchConf := &l.ParallelBranches[i]
+			// Pass idx=0 for branches as they start with the parallel layer's input
+			bl, outSize, err := n.buildGPULayer(branchConf, inputSize, 0)
+			if err != nil {
+				return nil, 0, err
+			}
+			branches[i] = bl
+
+			if i == 0 {
+				firstBranchSize = outSize
+			}
+			totalOutputSize += outSize
+		}
+
+		// Calculate final output size
+		finalSize := totalOutputSize
+		mode := l.CombineMode
+		if mode == "add" || mode == "sum" || mode == "avg" || mode == "average" {
+			finalSize = firstBranchSize
+		}
+
+		// Create ParallelLayer
+		return gpu.NewParallelLayer(branches, l.CombineMode, n.BatchSize), finalSize, nil
+
 	case LayerLSTM:
 		// Default parameters
 		rnnInputSize := l.RNNInputSize
