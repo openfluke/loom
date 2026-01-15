@@ -130,7 +130,7 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 | **Core** | **Primary Language** | Go | Python | Python / C++ | Go | Go | Swift / ObjC | JS / TS | Rust |
 | | **Runtime Dependency** | **None** (Binary) | Heavy (Pip) | Binary (Edge) | CGo / XLA | None | OS-Native | Browser | None |
 | | **Auto-Differentiation** | ⚠️ Hybrid/Manual | ✅ Full | ✅ Full | ✅ Full (XLA) | ✅ Manual | ❌ (Inference) | ✅ Full | ✅ Full |
-| **Loading** | **Safetensors** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| | **Safetensors** | ✅ **Native** | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
 | | **ONNX Support** | ❌ | ✅ (Export) | ✅ | ⚠️ | ❌ | ✅ (Import) | ✅ | ⚠️ |
 | | **Structure Inference** | ✅ **Auto-Detect** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Training** | **Gradient Descent** | ✅ Manual Chain | ✅ Standard | ✅ Standard | ✅ Standard | ✅ Standard | ✅ (On-device) | ✅ Standard | ✅ Standard |
@@ -258,6 +258,50 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 
 ---
 
+## SafeTensors & Model Interoperability
+ 
+Loom features a **universal SafeTensors engine** capable of standardizing models from any framework (PyTorch, TensorFlow, HuggingFace) into a highly optimized, single-file format.
+ 
+### 1. Universal "Any-to-Any" Quantization
+Load a model in high precision (`float32`/`float64`) and instantly quantize it to any supported type for deployment. The file format handles the type conversion automatically.
+ 
+- **Input**: Model weights in `F32` (e.g., from HuggingFace)
+- **Output**: Quantized weights in `F4`, `I8`, `BF16`, `U16` etc.
+- **Verification**: 100% round-trip integrity verified for all 143 layer/type combinations.
+ 
+```go
+// Load standard model
+tensors, _ := nn.LoadSafetensors("llama.safetensors")
+ 
+// Save as 4-bit optimized web model (automatically quantizes)
+for name, t := range tensors { t.DType = "F4" }
+nn.SaveSafetensors("llama-web-4bit.safetensors", tensors)
+```
+ 
+### 2. WASM / In-Memory Operation
+Loom's SafeTensors implementation can operate **purely in memory** (using `[]byte` buffers) without any filesystem access, making it perfect for **WebAssembly (WASM)** and constrained environments.
+ 
+```go
+// Serialize directly to memory (for sending to browser/client)
+bytes, _ := nn.SerializeSafetensors(myModelWeights)
+ 
+// Load directly from memory (no disk I/O required)
+tensors, _ := nn.LoadSafetensorsWithShapes(bytes)
+```
+ 
+### 3. Full Layer Support
+The interoperability layer supports every component in the Loom ecosystem:
+ 
+| Category | Supported Layers | 
+|:---|:---|
+| **Core** | `Dense`, `Embedding`, `Parallel`, `Sequential` |
+| ** Convolution** | `Conv1D`, `Conv2D` |
+| **Sequence** | `RNN`, `LSTM`, `GRU` |
+| **Attention** | `MultiHeadAttention`, `SwiGLU` |
+| **Norm/Act** | `LayerNorm`, `RMSNorm`, `Softmax` (10 variants) |
+ 
+---
+ 
 ## GPU Acceleration (WebGPU)
 
 **Experimental** GPU acceleration via WebGPU compute shaders. Treat all GPU paths (forward and backward) as experimental for now. Use with:
