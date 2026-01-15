@@ -1,6 +1,14 @@
 # LOOM - Layered Omni-architecture Openfluke Machine
 
-A high-performance **CPU-first** neural network framework written in Go, with **experimental** WebGPU compute shaders for GPU acceleration (in development, only select layers supported). Features WebAssembly export for browser deployment. **Now with transformer inference support!**
+**"The SQLite of AI" — A Universal Neural Runtime & Engine**
+
+Loom is a compiled, cross-platform **Neural Runtime Environment (NRE)** designed for structural interoperability and embedded intelligence. It bridges the gap between training frameworks and inference engines, acting as the **JVM for Neural Networks**:
+
+*   **Write Once:** Define architecture in JSON.
+*   **Run Anywhere:** Go, Browser (WASM), Desktop (Python/C#/.NET), Mobile.
+*   **Universal Bytecode:** The JSON model definition is the bytecode.
+
+Unlike heavy frameworks, Loom compiles to a **single binary** with zero dependencies. It features a **Virtual Execution Layer** that transparently routes operations to AVX2 (CPU) or WebGPU/Vulkan (GPU) without changing a line of user code.
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
@@ -430,6 +438,34 @@ loom/
 - [Model Conversion](model_conversion/README.md) - HuggingFace import guide
 
 **More Examples:** See [github.com/openfluke/tva](https://github.com/openfluke/tva) for additional examples and experiments.
+
+## Comprehensive Test Suite
+
+Loom includes a rigorous verification suite in `tva/muniversal_testing.go` that validates functional correctness across all layers, numeric types, and backend engines (CPU/GPU).
+
+### Coverage Summary
+
+| Test Section | Description | Status |
+|:-------------|:------------|:-------|
+| **Part 1: Core** | Forward/backward pass correctness for basic layers | ✅ Covered |
+| **Part 2: Serialization** | Save/Load permutations for all layers and types (`float32`, `int8`, `uint16`, etc.) | ✅ Covered |
+| **Part 3: Advanced** | Complex layers (MHA, Grid Softmax, K-Means) and math ops | ✅ Covered |
+| **Part 5: GPU Determinism** | Validates GPU forward pass matches CPU results | ✅ Covered |
+| **Part 6: GPU Training** | Verifies GPU learning convergence vs CPU baseline | ✅ Covered |
+
+> [!NOTE]
+> **GPU Acceleration Limits:** As of v0.0.8, WebGPU acceleration is enabled for standard `Forward/Backward` passes. 
+> The structural API `nn/step_forward.go` (Step-based execution) and `nn/tween.go` (Neural Tweening) currently run on **CPU only**.
+
+### Verified Advanced Architectures
+
+The test suite also verifies complex, production-ready architectural patterns:
+
+- **Heterogenous MoE**: Using `LayerParallel` with `CombineMode: "filter"` to route inputs to experts of different depths/types (e.g., CNN expert vs Dense expert).
+- **Stitched Experts**: Using `LayerStitch` to harmonize outputs from parallel branches with different dimensions (e.g., 5-dim output and 7-dim output stitched to common 10-dim).
+- **Neural Grafting**: Training *only* the gating mechanism of an MoE while keeping experts frozen, using `TweenStep` for precise surgical updates.
+- **Bit-Exact Determinism**: Verifying that GPU forward passes match CPU results to within machine epsilon (often exactly bit-matching for integer ops).
+
 
 ---
 

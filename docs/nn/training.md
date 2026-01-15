@@ -650,3 +650,35 @@ Key decisions:
 - **Clipping**: Use gradient clipping for stability
 
 The art of training is balancing exploration (high learning rate, quick convergence) vs precision (low learning rate, optimal solution).
+
+## Training on GPU
+
+Loom supports training on GPU using the **exact same API** as CPU training. You don't need to change your loop structure.
+
+### Enabling GPU Training
+
+Just initialize the GPU before your loop:
+
+```go
+// 1. Initialize GPU
+if err := network.InitGPU(); err != nil {
+    panic(err)
+}
+defer network.ReleaseGPU()
+
+// 2. Run your standard loop
+for epoch := 0; epoch < epochs; epoch++ {
+    // ...
+    // ForwardCPU automatically routes to GPU
+    output, _ := network.ForwardCPU(input)
+    
+    // ...
+    // BackwardCPU automatically routes to GPU
+    network.BackwardCPU(gradOutput)
+    
+    // Updates happen on GPU memory
+    network.ApplyGradients(lr)
+}
+```
+
+See [GPU Layers](./gpu_layers.md) for a list of layers that support GPU training.
