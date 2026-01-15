@@ -24,9 +24,6 @@ func (l *Conv2DLayer) ZeroGradients(ctx *Context) {}
 // ZeroGradients for RNNLayer (Empty as it overwrites)
 func (l *RNNLayer) ZeroGradients(ctx *Context) {}
 
-// ZeroGradients for LSTMLayer (Empty as it overwrites)
-func (l *LSTMLayer) ZeroGradients(ctx *Context) {}
-
 // ZeroGradients for MHALayer (Empty as it overwrites)
 func (l *MHALayer) ZeroGradients(ctx *Context) {}
 

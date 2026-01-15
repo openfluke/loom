@@ -295,74 +295,54 @@ func applyGradientsToRNNLayerBatched(ctx *gpu.Context, pipeline *wgpu.ComputePip
 	}
 }
 
+// createGradientBindGroupsForLSTM creates and caches gradient application bind groups for an LSTMLayer
+func createGradientBindGroupsForLSTM(ctx *gpu.Context, pipeline *wgpu.ComputePipeline, paramsBuffer *wgpu.Buffer, layer *gpu.LSTMLayer) {
+	// Unified Weights
+	if layer.UnifiedWeightsBuffer != nil && layer.UnifiedWeightsGradientBuffer != nil {
+		var err error
+		// Reuse GradCombinedWeightsIHBindGroup slot for the single unified bind group
+		layer.GradCombinedWeightsIHBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "LSTM_GradUnified",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.UnifiedWeightsBuffer, Size: layer.UnifiedWeightsBuffer.GetSize()},
+				{Binding: 1, Buffer: layer.UnifiedWeightsGradientBuffer, Size: layer.UnifiedWeightsGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err != nil {
+			fmt.Printf("Error creating LSTM Unified gradient bind group: %v\n", err)
+		}
+		// Clear others just in case
+		layer.GradCombinedWeightsHHBindGroup = nil
+		layer.GradCombinedBiasesBindGroup = nil
+	}
+}
+
 // applyGradientsToLSTMLayerBatched applies gradients for LSTM layer
 func applyGradientsToLSTMLayerBatched(ctx *gpu.Context, pipeline *wgpu.ComputePipeline, paramsBuffer *wgpu.Buffer, layer *gpu.LSTMLayer, enc *wgpu.CommandEncoder) {
-	// Apply Combined Weight IH gradients
-	if layer.CombinedWeightsIH != nil && layer.CombinedWeightsIHGradientBuffer != nil {
+	// Use cached bind groups from the layer (created once in WeightsToGPU)
+
+	// Unified Weights
+	if layer.UnifiedWeightsBuffer != nil && layer.UnifiedWeightsGradientBuffer != nil {
 		ihSize := layer.Spec.HiddenSize * layer.Spec.InputSize
-		totalSize := 4 * ihSize
-		workgroups := uint32((totalSize + 255) / 256)
-
-		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-			Label:  "LSTM_GradwIH",
-			Layout: pipeline.GetBindGroupLayout(0),
-			Entries: []wgpu.BindGroupEntry{
-				{Binding: 0, Buffer: layer.CombinedWeightsIH, Size: layer.CombinedWeightsIH.GetSize()},
-				{Binding: 1, Buffer: layer.CombinedWeightsIHGradientBuffer, Size: layer.CombinedWeightsIHGradientBuffer.GetSize()},
-				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
-			},
-		})
-		if err == nil {
-			pass := enc.BeginComputePass(nil)
-			pass.SetPipeline(pipeline)
-			pass.SetBindGroup(0, bg, nil)
-			pass.DispatchWorkgroups(workgroups, 1, 1)
-			pass.End()
-		}
-	}
-
-	// Apply Combined Weight HH gradients
-	if layer.CombinedWeightsHH != nil && layer.CombinedWeightsHHGradientBuffer != nil {
 		hhSize := layer.Spec.HiddenSize * layer.Spec.HiddenSize
-		totalSize := 4 * hhSize
+		bSize := layer.Spec.HiddenSize
+		totalSize := 4*ihSize + 4*hhSize + 4*bSize
 		workgroups := uint32((totalSize + 255) / 256)
 
-		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-			Label:  "LSTM_GradwHH",
-			Layout: pipeline.GetBindGroupLayout(0),
-			Entries: []wgpu.BindGroupEntry{
-				{Binding: 0, Buffer: layer.CombinedWeightsHH, Size: layer.CombinedWeightsHH.GetSize()},
-				{Binding: 1, Buffer: layer.CombinedWeightsHHGradientBuffer, Size: layer.CombinedWeightsHHGradientBuffer.GetSize()},
-				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
-			},
-		})
-		if err == nil {
+		// Create unified bind group if not cached (though createGradientBindGroupsForLSTM should have done it)
+		// Assuming helper function does its job, we just use the group.
+		// Wait, usage here assumes stored bind groups.
+		// We should use layer.GradCombinedWeightsIHBindGroup -> repurposed as GradUnifiedWeightsBindGroup
+
+		// If stored group is nil, create it effectively (handled by helper below)
+		// But here we apply.
+
+		if layer.GradCombinedWeightsIHBindGroup != nil {
 			pass := enc.BeginComputePass(nil)
 			pass.SetPipeline(pipeline)
-			pass.SetBindGroup(0, bg, nil)
-			pass.DispatchWorkgroups(workgroups, 1, 1)
-			pass.End()
-		}
-	}
-
-	// Apply Combined Bias gradients
-	if layer.CombinedBiases != nil && layer.CombinedBiasesGradientBuffer != nil {
-		totalSize := 4 * layer.Spec.HiddenSize
-		workgroups := uint32((totalSize + 255) / 256)
-
-		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-			Label:  "LSTM_GradBias",
-			Layout: pipeline.GetBindGroupLayout(0),
-			Entries: []wgpu.BindGroupEntry{
-				{Binding: 0, Buffer: layer.CombinedBiases, Size: layer.CombinedBiases.GetSize()},
-				{Binding: 1, Buffer: layer.CombinedBiasesGradientBuffer, Size: layer.CombinedBiasesGradientBuffer.GetSize()},
-				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
-			},
-		})
-		if err == nil {
-			pass := enc.BeginComputePass(nil)
-			pass.SetPipeline(pipeline)
-			pass.SetBindGroup(0, bg, nil)
+			pass.SetBindGroup(0, layer.GradCombinedWeightsIHBindGroup, nil) // Reusing this slot for unified
 			pass.DispatchWorkgroups(workgroups, 1, 1)
 			pass.End()
 		}

@@ -120,6 +120,9 @@ func (n *Network) WeightsToGPU() error {
 			if denseLayer, ok := l.(*gpu.DenseLayer); ok {
 				createGradientBindGroups(ctx, n.gpuGradPipeline, n.gpuGradParams, denseLayer)
 			}
+			if lstmLayer, ok := l.(*gpu.LSTMLayer); ok {
+				createGradientBindGroupsForLSTM(ctx, n.gpuGradPipeline, n.gpuGradParams, lstmLayer)
+			}
 		}
 	} else {
 		fmt.Printf("Warning: Failed to initialize gradient pipeline: %v\n", err)
