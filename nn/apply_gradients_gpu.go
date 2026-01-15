@@ -38,11 +38,18 @@ func (n *Network) applyGradientsGPU(learningRate float32) {
 
 	// Apply gradients to each layer's weights and biases (batched into one encoder)
 	for _, layer := range layers {
-		// Try to apply to Dense layer (has WeightBuffer and BiasBuffer)
-		if denseLayer, ok := layer.(*gpu.DenseLayer); ok {
-			applyGradientsToDenseLayerBatched(ctx, n.gpuGradPipeline, n.gpuGradParams, denseLayer, enc)
+		switch l := layer.(type) {
+		case *gpu.DenseLayer:
+			applyGradientsToDenseLayerBatched(ctx, n.gpuGradPipeline, n.gpuGradParams, l, enc)
+		case *gpu.Conv1DLayer:
+			applyGradientsToConv1DLayerBatched(ctx, n.gpuGradPipeline, n.gpuGradParams, l, enc)
+		case *gpu.Conv2DLayer:
+			applyGradientsToConv2DLayerBatched(ctx, n.gpuGradPipeline, n.gpuGradParams, l, enc)
+		case *gpu.RNNLayer:
+			applyGradientsToRNNLayerBatched(ctx, n.gpuGradPipeline, n.gpuGradParams, l, enc)
+		case *gpu.LSTMLayer:
+			applyGradientsToLSTMLayerBatched(ctx, n.gpuGradPipeline, n.gpuGradParams, l, enc)
 		}
-		// TODO: Add support for other layer types (Conv1D, Conv2D, etc.)
 	}
 
 	// Submit ALL gradient applications in one batch
@@ -120,7 +127,248 @@ func applyGradientsToDenseLayerBatched(ctx *gpu.Context, pipeline *wgpu.ComputeP
 	}
 }
 
-// EnsureGradientPipeline creates the gradient application pipeline if it doesn't exist
+// applyGradientsToConv1DLayerBatched applies gradients for Conv1D layer
+func applyGradientsToConv1DLayerBatched(ctx *gpu.Context, pipeline *wgpu.ComputePipeline, paramsBuffer *wgpu.Buffer, layer *gpu.Conv1DLayer, enc *wgpu.CommandEncoder) {
+	// Apply weight gradients
+	if layer.WeightBuffer != nil && layer.WeightGradientBuffer != nil {
+		weightSize := layer.Spec.OutChannels * layer.Spec.InChannels * layer.Spec.KernelSize
+		workgroups := uint32((weightSize + 255) / 256)
+
+		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "Conv1D_GradWeights",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.WeightBuffer, Size: layer.WeightBuffer.GetSize()},
+				{Binding: 1, Buffer: layer.WeightGradientBuffer, Size: layer.WeightGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err == nil {
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(workgroups, 1, 1)
+			pass.End()
+		}
+	}
+
+	// Apply bias gradients
+	if layer.BiasBuffer != nil && layer.BiasGradientBuffer != nil {
+		workgroups := uint32((layer.Spec.OutChannels + 255) / 256)
+
+		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "Conv1D_GradBias",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.BiasBuffer, Size: layer.BiasBuffer.GetSize()},
+				{Binding: 1, Buffer: layer.BiasGradientBuffer, Size: layer.BiasGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err == nil {
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(workgroups, 1, 1)
+			pass.End()
+		}
+	}
+}
+
+// applyGradientsToConv2DLayerBatched applies gradients for Conv2D layer
+func applyGradientsToConv2DLayerBatched(ctx *gpu.Context, pipeline *wgpu.ComputePipeline, paramsBuffer *wgpu.Buffer, layer *gpu.Conv2DLayer, enc *wgpu.CommandEncoder) {
+	// Apply weight gradients
+	if layer.WeightBuffer != nil && layer.WeightGradientBuffer != nil {
+		weightSize := layer.Spec.OutChannels * layer.Spec.InChannels * layer.Spec.KernelSize * layer.Spec.KernelSize
+		workgroups := uint32((weightSize + 255) / 256)
+
+		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "Conv2D_GradWeights",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.WeightBuffer, Size: layer.WeightBuffer.GetSize()},
+				{Binding: 1, Buffer: layer.WeightGradientBuffer, Size: layer.WeightGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err == nil {
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(workgroups, 1, 1)
+			pass.End()
+		}
+	}
+
+	// Apply bias gradients
+	if layer.BiasBuffer != nil && layer.BiasGradientBuffer != nil {
+		workgroups := uint32((layer.Spec.OutChannels + 255) / 256)
+
+		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "Conv2D_GradBias",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.BiasBuffer, Size: layer.BiasBuffer.GetSize()},
+				{Binding: 1, Buffer: layer.BiasGradientBuffer, Size: layer.BiasGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err == nil {
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(workgroups, 1, 1)
+			pass.End()
+		}
+	}
+}
+
+// applyGradientsToRNNLayerBatched applies gradients for RNN layer
+func applyGradientsToRNNLayerBatched(ctx *gpu.Context, pipeline *wgpu.ComputePipeline, paramsBuffer *wgpu.Buffer, layer *gpu.RNNLayer, enc *wgpu.CommandEncoder) {
+	// Apply WeightIH gradients
+	if layer.WeightIHBuffer != nil && layer.WeightIHGradientBuffer != nil {
+		size := layer.Spec.HiddenSize * layer.Spec.InputSize
+		workgroups := uint32((size + 255) / 256)
+
+		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "RNN_GradwIH",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.WeightIHBuffer, Size: layer.WeightIHBuffer.GetSize()},
+				{Binding: 1, Buffer: layer.WeightIHGradientBuffer, Size: layer.WeightIHGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err == nil {
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(workgroups, 1, 1)
+			pass.End()
+		}
+	}
+
+	// Apply WeightHH gradients
+	if layer.WeightHHBuffer != nil && layer.WeightHHGradientBuffer != nil {
+		size := layer.Spec.HiddenSize * layer.Spec.HiddenSize
+		workgroups := uint32((size + 255) / 256)
+
+		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "RNN_GradwHH",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.WeightHHBuffer, Size: layer.WeightHHBuffer.GetSize()},
+				{Binding: 1, Buffer: layer.WeightHHGradientBuffer, Size: layer.WeightHHGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err == nil {
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(workgroups, 1, 1)
+			pass.End()
+		}
+	}
+
+	// Apply Bias gradients
+	if layer.BiasBuffer != nil && layer.BiasGradientBuffer != nil {
+		size := layer.Spec.HiddenSize
+		workgroups := uint32((size + 255) / 256)
+
+		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "RNN_GradBias",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.BiasBuffer, Size: layer.BiasBuffer.GetSize()},
+				{Binding: 1, Buffer: layer.BiasGradientBuffer, Size: layer.BiasGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err == nil {
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(workgroups, 1, 1)
+			pass.End()
+		}
+	}
+}
+
+// applyGradientsToLSTMLayerBatched applies gradients for LSTM layer
+func applyGradientsToLSTMLayerBatched(ctx *gpu.Context, pipeline *wgpu.ComputePipeline, paramsBuffer *wgpu.Buffer, layer *gpu.LSTMLayer, enc *wgpu.CommandEncoder) {
+	// Apply Combined Weight IH gradients
+	if layer.CombinedWeightsIH != nil && layer.CombinedWeightsIHGradientBuffer != nil {
+		ihSize := layer.Spec.HiddenSize * layer.Spec.InputSize
+		totalSize := 4 * ihSize
+		workgroups := uint32((totalSize + 255) / 256)
+
+		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "LSTM_GradwIH",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.CombinedWeightsIH, Size: layer.CombinedWeightsIH.GetSize()},
+				{Binding: 1, Buffer: layer.CombinedWeightsIHGradientBuffer, Size: layer.CombinedWeightsIHGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err == nil {
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(workgroups, 1, 1)
+			pass.End()
+		}
+	}
+
+	// Apply Combined Weight HH gradients
+	if layer.CombinedWeightsHH != nil && layer.CombinedWeightsHHGradientBuffer != nil {
+		hhSize := layer.Spec.HiddenSize * layer.Spec.HiddenSize
+		totalSize := 4 * hhSize
+		workgroups := uint32((totalSize + 255) / 256)
+
+		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "LSTM_GradwHH",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.CombinedWeightsHH, Size: layer.CombinedWeightsHH.GetSize()},
+				{Binding: 1, Buffer: layer.CombinedWeightsHHGradientBuffer, Size: layer.CombinedWeightsHHGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err == nil {
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(workgroups, 1, 1)
+			pass.End()
+		}
+	}
+
+	// Apply Combined Bias gradients
+	if layer.CombinedBiases != nil && layer.CombinedBiasesGradientBuffer != nil {
+		totalSize := 4 * layer.Spec.HiddenSize
+		workgroups := uint32((totalSize + 255) / 256)
+
+		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+			Label:  "LSTM_GradBias",
+			Layout: pipeline.GetBindGroupLayout(0),
+			Entries: []wgpu.BindGroupEntry{
+				{Binding: 0, Buffer: layer.CombinedBiases, Size: layer.CombinedBiases.GetSize()},
+				{Binding: 1, Buffer: layer.CombinedBiasesGradientBuffer, Size: layer.CombinedBiasesGradientBuffer.GetSize()},
+				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
+			},
+		})
+		if err == nil {
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(workgroups, 1, 1)
+			pass.End()
+		}
+	}
+}
+
 func (n *Network) EnsureGradientPipeline(ctx *gpu.Context) error {
 	if n.gpuGradPipeline != nil {
 		return nil

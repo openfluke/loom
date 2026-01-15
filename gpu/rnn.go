@@ -34,9 +34,15 @@ type RNNLayer struct {
 	WeightHHBuffer *wgpu.Buffer
 	BiasBuffer     *wgpu.Buffer
 
-	InputGradientBuffer *wgpu.Buffer
-	bwPipeline          *wgpu.ComputePipeline
-	bwBindGroup         *wgpu.BindGroup
+	InputGradientBuffer    *wgpu.Buffer
+	WeightIHGradientBuffer *wgpu.Buffer
+	WeightHHGradientBuffer *wgpu.Buffer
+	BiasGradientBuffer     *wgpu.Buffer
+
+	bwPipeline      *wgpu.ComputePipeline
+	bwBindGroup     *wgpu.BindGroup
+	bwGradPipeline  *wgpu.ComputePipeline
+	bwGradBindGroup *wgpu.BindGroup
 }
 
 func (l *RNNLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
@@ -166,9 +172,41 @@ func (l *RNNLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 func (l *RNNLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
+
+	// Input gradients
 	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_InGrad",
 		Size:  uint64(l.Spec.SeqLen * l.Spec.InputSize * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Weight IH gradients [HiddenSize * InputSize]
+	l.WeightIHGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_WIHGrad",
+		Size:  uint64(l.Spec.HiddenSize * l.Spec.InputSize * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Weight HH gradients [HiddenSize * HiddenSize]
+	l.WeightHHGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_WHHGrad",
+		Size:  uint64(l.Spec.HiddenSize * l.Spec.HiddenSize * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Bias gradients [HiddenSize]
+	l.BiasGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_BGrad",
+		Size:  uint64(l.Spec.HiddenSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
 	return err
@@ -256,6 +294,81 @@ func (l *RNNLayer) GenerateBackwardShader() string {
 	`, l.Spec.SeqLen, l.Spec.InputSize, l.Spec.HiddenSize)
 }
 
+func (l *RNNLayer) GenerateBackwardGradsShader() string {
+	// Weight gradients for RNN:
+	// dW_ih[h, i] = Sum over t of: d_h[t, h] * x[t, i]
+	// dW_hh[h, h'] = Sum over t of: d_h[t, h] * h_prev[t-1, h']
+	// dBias[h] = Sum over t of: d_h[t, h]
+	// where d_h = d_output * (1 - h^2) for tanh
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
+		@group(0) @binding(1) var<storage, read> output : array<f32>;
+		@group(0) @binding(2) var<storage, read> input : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> d_w_ih : array<f32>;
+		@group(0) @binding(4) var<storage, read_write> d_w_hh : array<f32>;
+		@group(0) @binding(5) var<storage, read_write> d_bias : array<f32>;
+
+		const SEQ_LEN: u32 = %du;
+		const INPUT_SIZE: u32 = %du;
+		const HIDDEN_SIZE: u32 = %du;
+		
+		const WIH_SIZE: u32 = %du;  // HIDDEN * INPUT
+		const WHH_SIZE: u32 = %du;  // HIDDEN * HIDDEN
+
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			
+			// --- Bias Gradients ---
+			if (idx < HIDDEN_SIZE) {
+				let h = idx;
+				var sum: f32 = 0.0;
+				for (var t: u32 = 0u; t < SEQ_LEN; t++) {
+					let h_val = output[t * HIDDEN_SIZE + h];
+					let d_tanh = 1.0 - h_val * h_val;
+					sum += d_output[t * HIDDEN_SIZE + h] * d_tanh;
+				}
+				d_bias[idx] = sum;
+			}
+			
+			// --- W_ih Gradients ---
+			if (idx < WIH_SIZE) {
+				// idx maps to [h, i]
+				let i = idx %% INPUT_SIZE;
+				let h = idx / INPUT_SIZE;
+				
+				var sum: f32 = 0.0;
+				for (var t: u32 = 0u; t < SEQ_LEN; t++) {
+					let h_val = output[t * HIDDEN_SIZE + h];
+					let d_tanh = 1.0 - h_val * h_val;
+					let d_h = d_output[t * HIDDEN_SIZE + h] * d_tanh;
+					sum += d_h * input[t * INPUT_SIZE + i];
+				}
+				d_w_ih[idx] = sum;
+			}
+			
+			// --- W_hh Gradients --- 
+			if (idx < WHH_SIZE) {
+				// idx maps to [h, h']
+				let h_prime = idx %% HIDDEN_SIZE;
+				let h = idx / HIDDEN_SIZE;
+				
+				var sum: f32 = 0.0;
+				for (var t: u32 = 1u; t < SEQ_LEN; t++) {  // Start from t=1
+					let h_val = output[t * HIDDEN_SIZE + h];
+					let d_tanh = 1.0 - h_val * h_val;
+					let d_h = d_output[t * HIDDEN_SIZE + h] * d_tanh;
+					// h_prev is output[t-1]
+					let h_prev = output[(t - 1u) * HIDDEN_SIZE + h_prime];
+					sum += d_h * h_prev;
+				}
+				d_w_hh[idx] = sum;
+			}
+		}
+	`, l.Spec.SeqLen, l.Spec.InputSize, l.Spec.HiddenSize,
+		l.Spec.HiddenSize*l.Spec.InputSize,
+		l.Spec.HiddenSize*l.Spec.HiddenSize)
+}
 func (l *RNNLayer) Compile(ctx *Context, labelPrefix string) error {
 	mod, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:          labelPrefix + "_Shader",
@@ -272,6 +385,7 @@ func (l *RNNLayer) Compile(ctx *Context, labelPrefix string) error {
 }
 
 func (l *RNNLayer) CompileBackward(ctx *Context, labelPrefix string) error {
+	// 1. dInput shader
 	mod, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:          labelPrefix + "_BwdShader",
 		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: l.GenerateBackwardShader()},
@@ -282,6 +396,22 @@ func (l *RNNLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	l.bwPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_BwdPipe",
 		Compute: wgpu.ProgrammableStageDescriptor{Module: mod, EntryPoint: "main"},
+	})
+	if err != nil {
+		return err
+	}
+
+	// 2. dWeights/dBias shader
+	modGrad, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_BwdGradShader",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: l.GenerateBackwardGradsShader()},
+	})
+	if err != nil {
+		return err
+	}
+	l.bwGradPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label:   labelPrefix + "_BwdGradPipe",
+		Compute: wgpu.ProgrammableStageDescriptor{Module: modGrad, EntryPoint: "main"},
 	})
 	return err
 }
@@ -313,6 +443,7 @@ func (l *RNNLayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 
 func (l *RNNLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
 	var err error
+	// dInput bind group
 	l.bwBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:  labelPrefix + "_BwdBind",
 		Layout: l.bwPipeline.GetBindGroupLayout(0),
@@ -321,6 +452,23 @@ func (l *RNNLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOu
 			{Binding: 1, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
 			{Binding: 2, Buffer: l.WeightIHBuffer, Size: l.WeightIHBuffer.GetSize()},
 			{Binding: 3, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// dWeights/dBias bind group
+	l.bwGradBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  labelPrefix + "_BwdGradBind",
+		Layout: l.bwGradPipeline.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
+			{Binding: 1, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+			{Binding: 2, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
+			{Binding: 3, Buffer: l.WeightIHGradientBuffer, Size: l.WeightIHGradientBuffer.GetSize()},
+			{Binding: 4, Buffer: l.WeightHHGradientBuffer, Size: l.WeightHHGradientBuffer.GetSize()},
+			{Binding: 5, Buffer: l.BiasGradientBuffer, Size: l.BiasGradientBuffer.GetSize()},
 		},
 	})
 	return err
@@ -338,12 +486,27 @@ func (l *RNNLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 }
 
 func (l *RNNLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
+	// 1. dInput
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(l.bwPipeline)
 	pass.SetBindGroup(0, l.bwBindGroup, nil)
 	total := l.Spec.SeqLen * l.Spec.InputSize
 	pass.DispatchWorkgroups(uint32((total+255)/256), 1, 1)
 	pass.End()
+
+	// 2. dWeights/dBias
+	passGrad := enc.BeginComputePass(nil)
+	passGrad.SetPipeline(l.bwGradPipeline)
+	passGrad.SetBindGroup(0, l.bwGradBindGroup, nil)
+	// Dispatch over the larger of WIH, WHH, Bias
+	ihSize := l.Spec.HiddenSize * l.Spec.InputSize
+	hhSize := l.Spec.HiddenSize * l.Spec.HiddenSize
+	maxSize := ihSize
+	if hhSize > maxSize {
+		maxSize = hhSize
+	}
+	passGrad.DispatchWorkgroups(uint32((maxSize+255)/256), 1, 1)
+	passGrad.End()
 }
 
 func (l *RNNLayer) UploadWeights(ctx *Context) {
@@ -360,12 +523,27 @@ func (l *RNNLayer) DownloadWeights(ctx *Context) ([]float32, []float32, error) {
 }
 
 func (l *RNNLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []float32, error) {
+	// Weight IH gradients
+	wihGrad, err := ReadBuffer(l.WeightIHGradientBuffer, l.Spec.HiddenSize*l.Spec.InputSize)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// Bias gradients
+	bGrad, err := ReadBuffer(l.BiasGradientBuffer, l.Spec.HiddenSize)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// Input gradients
 	iGrad, err := ReadBuffer(l.InputGradientBuffer, l.Spec.SeqLen*l.Spec.InputSize)
-	return nil, nil, iGrad, err
+	return wihGrad, bGrad, iGrad, err
 }
 
 func (l *RNNLayer) Cleanup() {
-	bufs := []*wgpu.Buffer{l.InputBuffer, l.OutputBuffer, l.StagingBuffer, l.HiddenBuffer, l.WeightIHBuffer, l.WeightHHBuffer, l.BiasBuffer, l.InputGradientBuffer}
+	bufs := []*wgpu.Buffer{
+		l.InputBuffer, l.OutputBuffer, l.StagingBuffer, l.HiddenBuffer,
+		l.WeightIHBuffer, l.WeightHHBuffer, l.BiasBuffer,
+		l.InputGradientBuffer, l.WeightIHGradientBuffer, l.WeightHHGradientBuffer, l.BiasGradientBuffer,
+	}
 	for _, b := range bufs {
 		if b != nil {
 			b.Destroy()
@@ -391,5 +569,11 @@ func (l *RNNLayer) Cleanup() {
 	}
 	if l.bwBindGroup != nil {
 		l.bwBindGroup.Release()
+	}
+	if l.bwGradPipeline != nil {
+		l.bwGradPipeline.Release()
+	}
+	if l.bwGradBindGroup != nil {
+		l.bwGradBindGroup.Release()
 	}
 }

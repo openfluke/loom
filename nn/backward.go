@@ -941,11 +941,134 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 			// Dispatch Dense Backward
 			denseL.DispatchBackward(enc)
 
+		} else if conv2dL, ok := gpuLayer.(*gpu.Conv2DLayer); ok {
+			// Conv2D Layer Backward
+			// Conv2D handles its own activation backward internally
+			// It just needs the backward resources initialized once
+
+			if n.deviceInfo.backwardBindGroups[layerIdx] == nil {
+				// Init Conv2D Backward Resources (one-time)
+				ctx := n.gpuCtx.(*gpu.Context)
+				if err := conv2dL.AllocateBackwardBuffers(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("allocate conv2d bwd buffers %d: %w", layerIdx, err)
+				}
+				if err := conv2dL.CompileBackward(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("compile conv2d bwd %d: %w", layerIdx, err)
+				}
+				// gradIn is the dOutput for this layer
+				if err := conv2dL.CreateBackwardBindGroup(ctx, fmt.Sprintf("L%d_Bwd", layerIdx), gradIn); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create conv2d bwd bg %d: %w", layerIdx, err)
+				}
+				// Mark as initialized (use a sentinel BindGroup to avoid recreating)
+				// Create a minimal dummy bind group as a marker
+				dummyBGL, _ := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+					Label:   fmt.Sprintf("conv2d_bwd_marker_%d", layerIdx),
+					Entries: []wgpu.BindGroupLayoutEntry{},
+				})
+				marker, _ := dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
+					Label:   fmt.Sprintf("conv2d_bwd_marker_bg_%d", layerIdx),
+					Layout:  dummyBGL,
+					Entries: []wgpu.BindGroupEntry{},
+				})
+				n.deviceInfo.backwardBindGroups[layerIdx] = marker
+			}
+
+			// Dispatch Conv2D Backward
+			conv2dL.DispatchBackward(enc)
+
+		} else if conv1dL, ok := gpuLayer.(*gpu.Conv1DLayer); ok {
+			// Conv1D Layer Backward
+			if n.deviceInfo.backwardBindGroups[layerIdx] == nil {
+				ctx := n.gpuCtx.(*gpu.Context)
+				if err := conv1dL.AllocateBackwardBuffers(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("allocate conv1d bwd buffers %d: %w", layerIdx, err)
+				}
+				if err := conv1dL.CompileBackward(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("compile conv1d bwd %d: %w", layerIdx, err)
+				}
+				if err := conv1dL.CreateBackwardBindGroup(ctx, fmt.Sprintf("L%d_Bwd", layerIdx), gradIn); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create conv1d bwd bg %d: %w", layerIdx, err)
+				}
+				dummyBGL, _ := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+					Label:   fmt.Sprintf("conv1d_bwd_marker_%d", layerIdx),
+					Entries: []wgpu.BindGroupLayoutEntry{},
+				})
+				marker, _ := dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
+					Label:   fmt.Sprintf("conv1d_bwd_marker_bg_%d", layerIdx),
+					Layout:  dummyBGL,
+					Entries: []wgpu.BindGroupEntry{},
+				})
+				n.deviceInfo.backwardBindGroups[layerIdx] = marker
+			}
+			conv1dL.DispatchBackward(enc)
+
+		} else if rnnL, ok := gpuLayer.(*gpu.RNNLayer); ok {
+			// RNN Layer Backward
+			if n.deviceInfo.backwardBindGroups[layerIdx] == nil {
+				ctx := n.gpuCtx.(*gpu.Context)
+				if err := rnnL.AllocateBackwardBuffers(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("allocate rnn bwd buffers %d: %w", layerIdx, err)
+				}
+				if err := rnnL.CompileBackward(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("compile rnn bwd %d: %w", layerIdx, err)
+				}
+				if err := rnnL.CreateBackwardBindGroup(ctx, fmt.Sprintf("L%d_Bwd", layerIdx), gradIn); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create rnn bwd bg %d: %w", layerIdx, err)
+				}
+				dummyBGL, _ := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+					Label:   fmt.Sprintf("rnn_bwd_marker_%d", layerIdx),
+					Entries: []wgpu.BindGroupLayoutEntry{},
+				})
+				marker, _ := dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
+					Label:   fmt.Sprintf("rnn_bwd_marker_bg_%d", layerIdx),
+					Layout:  dummyBGL,
+					Entries: []wgpu.BindGroupEntry{},
+				})
+				n.deviceInfo.backwardBindGroups[layerIdx] = marker
+			}
+			rnnL.DispatchBackward(enc)
+
+		} else if lstmL, ok := gpuLayer.(*gpu.LSTMLayer); ok {
+			// LSTM Layer Backward
+			if n.deviceInfo.backwardBindGroups[layerIdx] == nil {
+				ctx := n.gpuCtx.(*gpu.Context)
+				if err := lstmL.AllocateBackwardBuffers(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("allocate lstm bwd buffers %d: %w", layerIdx, err)
+				}
+				if err := lstmL.CompileBackward(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("compile lstm bwd %d: %w", layerIdx, err)
+				}
+				if err := lstmL.CreateBackwardBindGroup(ctx, fmt.Sprintf("L%d_Bwd", layerIdx), gradIn); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create lstm bwd bg %d: %w", layerIdx, err)
+				}
+				dummyBGL, _ := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+					Label:   fmt.Sprintf("lstm_bwd_marker_%d", layerIdx),
+					Entries: []wgpu.BindGroupLayoutEntry{},
+				})
+				marker, _ := dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
+					Label:   fmt.Sprintf("lstm_bwd_marker_bg_%d", layerIdx),
+					Layout:  dummyBGL,
+					Entries: []wgpu.BindGroupEntry{},
+				})
+				n.deviceInfo.backwardBindGroups[layerIdx] = marker
+			}
+			lstmL.DispatchBackward(enc)
+
 		} else {
-			// Fallback for non-Dense layers?
-			// Just use Generic Activation backward (assume ping-pong needed?)
-			// But we broke ping-pong logic.
-			// For now, assuming only Dense Layers.
+			// Other layers (Softmax, etc.) - no backward implementation yet
+			// Gradient passes through unchanged
 		}
 	}
 

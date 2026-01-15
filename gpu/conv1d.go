@@ -488,6 +488,7 @@ func (l *Conv1DLayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 
 func (l *Conv1DLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOutputBuffer *wgpu.Buffer) error {
 	var err error
+	// bwBindGroup for dInput shader (bindings 0-4, no d_weights/d_bias)
 	l.bwBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:  labelPrefix + "_BwdBind",
 		Layout: l.bwPipeline.GetBindGroupLayout(0),
@@ -497,8 +498,22 @@ func (l *Conv1DLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, 
 			{Binding: 2, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
 			{Binding: 3, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
 			{Binding: 4, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
-			{Binding: 5, Buffer: l.WeightGradientBuffer, Size: l.WeightGradientBuffer.GetSize()},
-			{Binding: 6, Buffer: l.BiasGradientBuffer, Size: l.BiasGradientBuffer.GetSize()},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// bwGradBindGroup for dGrads shader (bindings 0-4, different buffers)
+	l.bwGradBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:  labelPrefix + "_BwdGradBind",
+		Layout: l.bwGradPipeline.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
+			{Binding: 1, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+			{Binding: 2, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
+			{Binding: 3, Buffer: l.WeightGradientBuffer, Size: l.WeightGradientBuffer.GetSize()},
+			{Binding: 4, Buffer: l.BiasGradientBuffer, Size: l.BiasGradientBuffer.GetSize()},
 		},
 	})
 	return err
