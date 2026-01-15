@@ -413,12 +413,9 @@ func (l *LSTMLayer) GenerateBackwardGradsShader() string {
 		@group(0) @binding(0) var<storage, read> d_output : array<f32>;
 		@group(0) @binding(1) var<storage, read> output : array<f32>; // h history
 		@group(0) @binding(2) var<storage, read> input : array<f32>;
-		@group(0) @binding(3) var<storage, read> hidden_state : array<f32>; // h[t-1] (not strictly needed if we have output, but useful check)
-		@group(0) @binding(4) var<storage, read> cell_state : array<f32>;   // c history
-		
-		@group(0) @binding(5) var<storage, read_write> d_w_ih : array<f32>;
-		@group(0) @binding(6) var<storage, read_write> d_w_hh : array<f32>;
-		@group(0) @binding(7) var<storage, read_write> d_bias : array<f32>;
+		@group(0) @binding(3) var<storage, read_write> d_w_ih : array<f32>;
+		@group(0) @binding(4) var<storage, read_write> d_w_hh : array<f32>;
+		@group(0) @binding(5) var<storage, read_write> d_bias : array<f32>;
 
 		const SEQ_LEN: u32 = %du;
 		const INPUT_SIZE: u32 = %du;
@@ -644,11 +641,10 @@ func (l *LSTMLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dO
 			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
 			{Binding: 1, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
 			{Binding: 2, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
-			{Binding: 3, Buffer: l.HiddenBuffer, Size: l.HiddenBuffer.GetSize()},
-			{Binding: 4, Buffer: l.CellBuffer, Size: l.CellBuffer.GetSize()},
-			{Binding: 5, Buffer: l.CombinedWeightsIHGradientBuffer, Size: l.CombinedWeightsIHGradientBuffer.GetSize()},
-			{Binding: 6, Buffer: l.CombinedWeightsHHGradientBuffer, Size: l.CombinedWeightsHHGradientBuffer.GetSize()},
-			{Binding: 7, Buffer: l.CombinedBiasesGradientBuffer, Size: l.CombinedBiasesGradientBuffer.GetSize()},
+			// Bindings 3 (Hidden) and 4 (Cell) are unused in shader, so removed
+			{Binding: 3, Buffer: l.CombinedWeightsIHGradientBuffer, Size: l.CombinedWeightsIHGradientBuffer.GetSize()},
+			{Binding: 4, Buffer: l.CombinedWeightsHHGradientBuffer, Size: l.CombinedWeightsHHGradientBuffer.GetSize()},
+			{Binding: 5, Buffer: l.CombinedBiasesGradientBuffer, Size: l.CombinedBiasesGradientBuffer.GetSize()},
 		},
 	})
 	return err
