@@ -222,40 +222,54 @@ func writeTensorData(dest []byte, tensor TensorWithShape) (int, error) {
 // float32ToFP4 converts a float32 to 4-bit float (E2M1 format) for SafeTensors
 // FP4 E2M1: 1 sign bit, 2 exponent bits, 1 mantissa bit
 func float32ToFP4(f32 float32) uint8 {
+	if f32 == 0 {
+		return 0
+	}
 	bits := math.Float32bits(f32)
 	sign := uint8((bits >> 31) & 0x1)
-
-	// Extract exponent and mantissa
-	exp := int32((bits >> 23) & 0xFF)
-	mant := bits & 0x7FFFFF
-
-	// Handle special cases
-	if exp == 0xFF || math.IsNaN(float64(f32)) || math.IsInf(float64(f32), 0) {
-		// Inf or NaN -> max exponent
-		return (sign << 3) | 0x6 | uint8((mant>>22)&0x1)
+	absF32 := f32
+	if absF32 < 0 {
+		absF32 = -absF32
 	}
 
-	if exp == 0 || f32 == 0 {
-		// Zero or subnormal
-		return sign << 3
+	// FP4 E2M1 (Bias 1)
+	// Smallest subnormal: 2^(-1) * 0.5 = 0.25
+	// Smallest normal: 2^(1-1) * 1.0 = 1.0
+	// Largest normal: 2^(2-1) * 1.5 = 3.0
+
+	// Handle range [0, 0.625) -> map to Zero or Subnormal (0.125 threshold)
+	if absF32 < 0.625 {
+		if absF32 < 0.125 {
+			return sign << 3
+		}
+		return (sign << 3) | 1 // Subnormal 0.25
 	}
 
-	// Rebias: F32 bias=127, FP4 bias=1
-	exp = exp - 127 + 1
+	// Normal numbers
+	exp := int32((math.Float32bits(absF32) >> 23) & 0xFF)
+	mant := math.Float32bits(absF32) & 0x7FFFFF
 
-	// Clamp to FP4 range
-	var fp4Exp uint8
-	if exp <= 0 {
-		fp4Exp = 0 // Subnormal/zero
-	} else if exp >= 3 {
-		fp4Exp = 3 // Inf
-	} else {
-		fp4Exp = uint8(exp)
+	e := exp - 127 + 1
+	if e >= 3 {
+		return (sign << 3) | 0x7 // Saturated Max/Inf
 	}
-	// Round mantissa to 1 bit
-	fp4Mant := uint8((mant + 0x400000) >> 23)
+	if e < 1 { // Should be covered by subnormal check above
+		return (sign << 3) | 1
+	}
 
-	return (sign << 3) | (fp4Exp << 1) | fp4Mant
+	// Round mantissa (1 bit)
+	// Bias 0.5 in the next bit
+	m := uint8((mant + 0x400000) >> 23)
+	if m > 1 {
+		m = 0
+		e++
+	}
+
+	if e >= 3 {
+		return (sign << 3) | 0x7
+	}
+
+	return (sign << 3) | (uint8(e) << 1) | m
 }
 
 // SaveWeightsToSafetensors saves the network weights to a safetensors file
