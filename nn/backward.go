@@ -288,10 +288,8 @@ func accumulateGradient[T Numeric](grads []*Tensor[T], index int, g *Tensor[T]) 
 	}
 }
 
-// BackwardCPU computes gradients via backpropagation on CPU through the grid
-// gradOutput: gradient flowing back from the loss (same size as network output)
-// Returns: gradient with respect to the input
-func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
+// Backward computes gradients via backpropagation, automatically selecting GPU or CPU backend
+func (n *Network) Backward(gradOutput []float32) ([]float32, time.Duration) {
 	// GPU auto-routing: if GPU mode is enabled and weights are mounted, use GPU
 	if n.GPU && n.gpuMounted {
 		start := time.Now()
@@ -300,7 +298,15 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 			return output, time.Since(start)
 		}
 		// Fall back to CPU on GPU error
+		fmt.Printf("⚠️ GPU Backward failed, falling back to CPU: %v\n", err)
 	}
+	return n.BackwardCPU(gradOutput)
+}
+
+// BackwardCPU computes gradients via backpropagation on CPU through the grid
+// gradOutput: gradient flowing back from the loss (same size as network output)
+// Returns: gradient with respect to the input
+func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 
 	start := time.Now()
 

@@ -271,8 +271,8 @@ func GenericForwardPass[T Numeric](
 // Original float32 Implementation
 // =============================================================================
 
-// ForwardCPU executes the grid network on CPU and stores intermediate activations for backprop
-func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
+// Forward executes the network forward pass, automatically selecting GPU or CPU backend
+func (n *Network) Forward(input []float32) ([]float32, time.Duration) {
 	// GPU auto-routing: if GPU mode is enabled and weights are mounted, use GPU
 	if n.GPU && n.gpuMounted {
 		start := time.Now()
@@ -283,6 +283,11 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 		// Fall back to CPU on GPU error
 		fmt.Printf("⚠️ GPU Forward failed, falling back to CPU: %v\n", err)
 	}
+	return n.ForwardCPU(input)
+}
+
+// ForwardCPU executes the grid network on CPU and stores intermediate activations for backprop
+func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 	start := time.Now()
 
@@ -375,10 +380,29 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					data = output
 				} else if config.Type == LayerSoftmax {
 					// Softmax layer
-					probs, err := ForwardSoftmaxCPU(data, config)
-					if err != nil {
-						// If error, fall back to standard softmax
-						probs = softmaxStandard(data, 1.0)
+					// Function `ForwardSoftmaxCPU` computes softmax over the entire input slice.
+					// We must handle batching manually here.
+					inputSize := len(data)
+					if n.BatchSize > 0 {
+						inputSize = len(data) / n.BatchSize
+					}
+
+					probs := make([]float32, len(data))
+
+					// Apply softmax per sample
+					for i := 0; i < n.BatchSize; i++ {
+						start := i * inputSize
+						end := start + inputSize
+						if end > len(data) {
+							break // Should not happen if size is aligned
+						}
+
+						sampleProbs, err := ForwardSoftmaxCPU(data[start:end], config)
+						if err != nil {
+							// Fallback to standard softmax on error
+							sampleProbs = softmaxStandard(data[start:end], 1.0)
+						}
+						copy(probs[start:end], sampleProbs)
 					}
 
 					// Store input as pre-activation (logits)
@@ -557,25 +581,6 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) {
 	if n.deviceInfo == nil {
 		return nil, 0, fmt.Errorf("GPU not initialized, call InitGPU first")
-	}
-
-	// Check for specialized layer types and use dedicated GPU paths
-	hasConv2D := false
-	for i := 0; i < n.TotalLayers(); i++ {
-		row := i / (n.GridCols * n.LayersPerCell)
-		remainder := i % (n.GridCols * n.LayersPerCell)
-		col := remainder / n.LayersPerCell
-		layer := remainder % n.LayersPerCell
-
-		config := n.GetLayer(row, col, layer)
-		if config.Type == LayerConv2D {
-			hasConv2D = true
-			break
-		}
-	}
-
-	if hasConv2D {
-		return n.forwardGPUConv2D(input)
 	}
 
 	// fmt.Println("DEBUG: Starting ForwardGPU") // DEBUG
@@ -825,65 +830,6 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 	readback.Unmap()
 
 	return output, time.Since(start), nil
-}
-
-// forwardGPUConv2D executes networks containing Conv2D layers on GPU
-// This uses specialized pipelines for Conv2D layers
-func (n *Network) forwardGPUConv2D(input []float32) ([]float32, time.Duration, error) {
-	start := time.Now()
-
-	dev := n.deviceInfo.Device
-	q := n.deviceInfo.Queue
-
-	// Store input
-	n.activations[0] = make([]float32, len(input))
-	copy(n.activations[0], input)
-
-	data := input
-	layerIdx := 0
-
-	// Forward through grid
-	for row := 0; row < n.GridRows; row++ {
-		for col := 0; col < n.GridCols; col++ {
-			for layer := 0; layer < n.LayersPerCell; layer++ {
-				config := n.GetLayer(row, col, layer)
-
-				if config.Type == LayerConv2D {
-					// GPU Conv2D
-					output, err := conv2DForwardGPU(dev, q, data, config, n.BatchSize)
-					if err != nil {
-						// Fall back to CPU on error
-						cpuOut, _ := n.ForwardCPU(input)
-						return cpuOut, time.Since(start), nil
-					}
-
-					// Store pre-activation (output before activation)
-					n.preActivations[layerIdx] = make([]float32, len(output))
-					copy(n.preActivations[layerIdx], output)
-
-					// Apply activation
-					postAct := make([]float32, len(output))
-					for i := 0; i < len(output); i++ {
-						postAct[i] = activateCPU(output[i], config.Activation)
-					}
-
-					data = postAct
-				} else {
-					// Fallback to CPU for other layer types
-					cpuOut, _ := n.ForwardCPU(input)
-					return cpuOut, time.Since(start), nil
-				}
-
-				// Store post-activation
-				n.activations[layerIdx+1] = make([]float32, len(data))
-				copy(n.activations[layerIdx+1], data)
-
-				layerIdx++
-			}
-		}
-	}
-
-	return data, time.Since(start), nil
 }
 
 // Helper functions for GPU resource cleanup

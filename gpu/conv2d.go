@@ -412,6 +412,7 @@ func (l *Conv2DLayer) GenerateBackwardGradsShader() string {
 		@group(0) @binding(1) var<storage, read> d_output : array<f32>;
 		@group(0) @binding(2) var<storage, read_write> d_weights : array<f32>;
 		@group(0) @binding(3) var<storage, read_write> d_bias : array<f32>;
+		@group(0) @binding(4) var<storage, read> output : array<f32>;
 
 		const IN_H: u32 = %du;
 		const IN_W: u32 = %du;
@@ -443,7 +444,12 @@ func (l *Conv2DLayer) GenerateBackwardGradsShader() string {
 					for (var h: u32 = 0u; h < OUT_H; h++) {
 						for (var w: u32 = 0u; w < OUT_W; w++) {
 							let do_idx = batch_offset + h * (OUT_W * OUT_CH) + w * OUT_CH + out_c;
-							sum += d_output[do_idx];
+							
+							// Apply activation derivative
+							let out_val = output[do_idx];
+							let d_act: f32 = %s;
+
+							sum += d_output[do_idx] * d_act;
 						}
 					}
 				}
@@ -451,10 +457,6 @@ func (l *Conv2DLayer) GenerateBackwardGradsShader() string {
 			}
 			
 			// --- Weight Gradients ---
-			// We can use the same dispatch if we offset the index, or check if idx valid for weights
-			// But WeightSize is much larger than BiasSize.
-			// Let's run weights logic if idx < WEIGHT_SIZE
-			
 			if (idx < WEIGHT_SIZE) {
 				// Map idx to [out_c, in_c, kh, kw]
 				let kw = idx %% K;
@@ -463,9 +465,6 @@ func (l *Conv2DLayer) GenerateBackwardGradsShader() string {
 				let out_c = idx / (IN_CH * K * K);
 				
 				var dw: f32 = 0.0;
-				
-				// dW = Sum(d_output * input)
-				// input needs to be shifted by stride/padding relative to output
 				
 				for (var b: u32 = 0u; b < BATCH_SIZE; b++) {
 					let input_batch_offset = b * (IN_H * IN_W * IN_CH);
@@ -487,7 +486,11 @@ func (l *Conv2DLayer) GenerateBackwardGradsShader() string {
 								let in_idx = input_batch_offset + in_h * (IN_W * IN_CH) + in_w * IN_CH + in_c;
 								let do_idx = do_batch_offset + out_h * (OUT_W * OUT_CH) + out_w * OUT_CH + out_c;
 								
-								dw += d_output[do_idx] * input[in_idx];
+								// Apply activation derivative
+								let out_val = output[do_idx];
+								let d_act: f32 = %s; // Reusing same format string
+
+								dw += d_output[do_idx] * d_act * input[in_idx];
 							}
 						}
 					}
@@ -498,7 +501,9 @@ func (l *Conv2DLayer) GenerateBackwardGradsShader() string {
 	`, l.Spec.InputHeight, l.Spec.InputWidth, l.Spec.InChannels, l.Spec.OutChannels,
 		l.Spec.KernelSize, stride, l.Spec.Padding, outH, outW, l.BatchSize,
 		l.Spec.OutChannels*l.Spec.InChannels*l.Spec.KernelSize*l.Spec.KernelSize,
-		l.Spec.OutChannels)
+		l.Spec.OutChannels,
+		l.getActivationDerivative("out_val"),
+		l.getActivationDerivative("out_val"))
 }
 
 func (l *Conv2DLayer) Compile(ctx *Context, labelPrefix string) error {
@@ -590,6 +595,7 @@ func (l *Conv2DLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, 
 			{Binding: 1, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},                   // d_output
 			{Binding: 2, Buffer: l.WeightGradientBuffer, Size: l.WeightGradientBuffer.GetSize()}, // d_weights
 			{Binding: 3, Buffer: l.BiasGradientBuffer, Size: l.BiasGradientBuffer.GetSize()},     // d_bias
+			{Binding: 4, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},                 // output (for activation deriv)
 		},
 	})
 	return err

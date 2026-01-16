@@ -529,3 +529,153 @@ func InferLayerType(shape []int) string {
 		return "unknown"
 	}
 }
+
+// LoadWeightsFromSafetensors loads weights from a safetensors file into the network
+// It expects keys matching "layers.{index}.{param}" or recursive names
+func (n *Network) LoadWeightsFromSafetensors(filepath string) error {
+	tensors, err := LoadSafetensors(filepath)
+	if err != nil {
+		return err
+	}
+
+	var loadLayer func(prefix string, l *LayerConfig)
+	loadLayer = func(prefix string, l *LayerConfig) {
+		if w, ok := tensors[prefix+".weight"]; ok {
+			switch l.Type {
+			case LayerDense, LayerConv2D, LayerConv1D:
+				l.Kernel = w
+			case LayerEmbedding:
+				l.EmbeddingWeights = w
+			}
+		}
+
+		if b, ok := tensors[prefix+".bias"]; ok {
+			l.Bias = b
+		}
+
+		if g, ok := tensors[prefix+".gamma"]; ok {
+			l.Gamma = g
+		}
+
+		if b, ok := tensors[prefix+".beta"]; ok {
+			l.Beta = b
+		}
+
+		// RNN/LSTM specific
+		if w, ok := tensors[prefix+".weight_ih"]; ok {
+			l.WeightIH = w
+		}
+		if w, ok := tensors[prefix+".weight_hh"]; ok {
+			l.WeightHH = w
+		}
+		if b, ok := tensors[prefix+".bias_h"]; ok {
+			l.BiasH = b
+		}
+
+		// LSTM Gates
+		if w, ok := tensors[prefix+".weight_ih_i"]; ok {
+			l.WeightIH_i = w
+		}
+		if w, ok := tensors[prefix+".weight_hh_i"]; ok {
+			l.WeightHH_i = w
+		}
+		if b, ok := tensors[prefix+".bias_i"]; ok {
+			l.BiasH_i = b
+		}
+
+		if w, ok := tensors[prefix+".weight_ih_f"]; ok {
+			l.WeightIH_f = w
+		}
+		if w, ok := tensors[prefix+".weight_hh_f"]; ok {
+			l.WeightHH_f = w
+		}
+		if b, ok := tensors[prefix+".bias_f"]; ok {
+			l.BiasH_f = b
+		}
+
+		if w, ok := tensors[prefix+".weight_ih_g"]; ok {
+			l.WeightIH_g = w
+		}
+		if w, ok := tensors[prefix+".weight_hh_g"]; ok {
+			l.WeightHH_g = w
+		}
+		if b, ok := tensors[prefix+".bias_g"]; ok {
+			l.BiasH_g = b
+		}
+
+		if w, ok := tensors[prefix+".weight_ih_o"]; ok {
+			l.WeightIH_o = w
+		}
+		if w, ok := tensors[prefix+".weight_hh_o"]; ok {
+			l.WeightHH_o = w
+		}
+		if b, ok := tensors[prefix+".bias_o"]; ok {
+			l.BiasH_o = b
+		}
+
+		// MHA
+		if w, ok := tensors[prefix+".q_weight"]; ok {
+			l.QWeights = w
+		}
+		if w, ok := tensors[prefix+".k_weight"]; ok {
+			l.KWeights = w
+		}
+		if w, ok := tensors[prefix+".v_weight"]; ok {
+			l.VWeights = w
+		}
+		if w, ok := tensors[prefix+".o_weight"]; ok {
+			l.OutputWeight = w
+		}
+
+		if b, ok := tensors[prefix+".q_bias"]; ok {
+			l.QBias = b
+		}
+		if b, ok := tensors[prefix+".k_bias"]; ok {
+			l.KBias = b
+		}
+		if b, ok := tensors[prefix+".v_bias"]; ok {
+			l.VBias = b
+		}
+		if b, ok := tensors[prefix+".o_bias"]; ok {
+			l.OutputBias = b
+		}
+
+		// SwiGLU
+		if w, ok := tensors[prefix+".gate_weight"]; ok {
+			l.GateWeights = w
+		}
+		if w, ok := tensors[prefix+".up_weight"]; ok {
+			l.UpWeights = w
+		}
+		if w, ok := tensors[prefix+".down_weight"]; ok {
+			l.DownWeights = w
+		}
+		if b, ok := tensors[prefix+".gate_bias"]; ok {
+			l.GateBias = b
+		}
+		if b, ok := tensors[prefix+".up_bias"]; ok {
+			l.UpBias = b
+		}
+		if b, ok := tensors[prefix+".down_bias"]; ok {
+			l.DownBias = b
+		}
+
+		// Recursive for Nested Layers
+		if l.Type == LayerParallel || l.Type == LayerSequential {
+			for b := range l.ParallelBranches {
+				branchPrefix := fmt.Sprintf("%s.branches.%d", prefix, b)
+				loadLayer(branchPrefix, &l.ParallelBranches[b])
+			}
+
+			// Handle FilterGateConfig
+			if l.FilterGateConfig != nil {
+				loadLayer(prefix+".filter_gate", l.FilterGateConfig)
+			}
+		}
+	}
+
+	for i := range n.Layers {
+		loadLayer(fmt.Sprintf("layers.%d", i), &n.Layers[i])
+	}
+	return nil
+}

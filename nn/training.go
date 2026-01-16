@@ -55,17 +55,26 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 		config = DefaultTrainingConfig()
 	}
 
-	// Initialize GPU if requested
-	if config.UseGPU && n.deviceInfo == nil {
-		if config.Verbose {
-			fmt.Println("Initializing GPU...")
+	// Initialize GPU if requested and not already mounted
+	if config.UseGPU {
+		n.GPU = true
+		if !n.gpuMounted {
+			if config.Verbose {
+				fmt.Println("Initializing GPU (WeightsToGPU)...")
+			}
+			// Try WeightsToGPU (New System)
+			if err := n.WeightsToGPU(); err != nil {
+				// Fallback or error?
+				// If WeightsToGPU fails, maybe try legacy InitGPU?
+				// But let's prefer erroring or falling back to CPU logic if user didn't setup
+				return nil, fmt.Errorf("WeightsToGPU failed: %w", err)
+			}
+			if config.Verbose {
+				fmt.Println("✓ GPU initialized")
+			}
 		}
-		if err := n.InitGPU(); err != nil {
-			return nil, fmt.Errorf("GPU initialization failed: %w", err)
-		}
-		if config.Verbose {
-			fmt.Println("✓ GPU initialized")
-		}
+	} else {
+		n.GPU = false
 	}
 
 	result := &TrainingResult{
@@ -82,7 +91,7 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 		fmt.Printf("Learning Rate: %.6f\n", config.LearningRate)
 		fmt.Printf("Batches per Epoch: %d\n", len(batches))
 		fmt.Printf("Samples per Epoch: %d\n", totalSamples)
-		fmt.Printf("Backend: %s\n", map[bool]string{true: "GPU", false: "CPU"}[config.UseGPU])
+		fmt.Printf("Backend: %s\n", map[bool]string{true: "GPU", false: "CPU"}[n.GPU])
 		fmt.Printf("Loss Function: %s\n", config.LossType)
 		if config.GradientClip > 0 {
 			fmt.Printf("Gradient Clipping: %.2f\n", config.GradientClip)
@@ -97,18 +106,8 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 
 		for batchIdx, batch := range batches {
 			// Forward pass
-			var output []float32
-			var err error
-
-			if config.UseGPU {
-				output, _, err = n.ForwardGPU(batch.Input)
-			} else {
-				output, _ = n.ForwardCPU(batch.Input)
-			}
-
-			if err != nil {
-				return nil, fmt.Errorf("forward pass failed at epoch %d, batch %d: %w", epoch, batchIdx, err)
-			}
+			output, duration := n.Forward(batch.Input)
+			_ = duration // metrics
 
 			// Calculate loss
 			loss := n.calculateLoss(output, batch.Target, config.LossType)
@@ -117,15 +116,7 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 			// Backward pass
 			gradOutput := n.calculateGradient(output, batch.Target, config.LossType)
 
-			if config.UseGPU {
-				_, _, err = n.BackwardGPU(gradOutput)
-			} else {
-				_, _ = n.BackwardCPU(gradOutput)
-			}
-
-			if err != nil {
-				return nil, fmt.Errorf("backward pass failed at epoch %d, batch %d: %w", epoch, batchIdx, err)
-			}
+			n.Backward(gradOutput)
 
 			// Gradient clipping if enabled
 			if config.GradientClip > 0 {

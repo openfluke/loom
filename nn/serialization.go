@@ -1310,6 +1310,18 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		config.OutputHeight = def.OutputHeight
 		config.OutputWidth = def.OutputWidth
 
+		// Calculate output dimensions if not provided
+		if config.OutputHeight == 0 || config.OutputWidth == 0 {
+			if config.InputHeight > 0 && config.InputWidth > 0 && config.KernelSize > 0 {
+				str := config.Stride
+				if str < 1 {
+					str = 1
+				}
+				config.OutputHeight = (config.InputHeight+2*config.Padding-config.KernelSize)/str + 1
+				config.OutputWidth = (config.InputWidth+2*config.Padding-config.KernelSize)/str + 1
+			}
+		}
+
 	case "mha", "multi_head_attention":
 		// Use InitMHABrain to properly initialize weights
 		numHeads := def.NumHeads

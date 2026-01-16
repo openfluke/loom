@@ -252,9 +252,125 @@ func float32ToFP4(f32 float32) uint8 {
 	} else {
 		fp4Exp = uint8(exp)
 	}
-
 	// Round mantissa to 1 bit
 	fp4Mant := uint8((mant + 0x400000) >> 23)
 
 	return (sign << 3) | (fp4Exp << 1) | fp4Mant
+}
+
+// SaveWeightsToSafetensors saves the network weights to a safetensors file
+// It uses a consistent naming scheme: "layers.{index}.{param}"
+// For nested layers (Parallel/Sequential), it uses "layers.{i}.branches.{b}.layers.{j}..." or similar
+func (n *Network) SaveWeightsToSafetensors(filepath string) error {
+	tensors := make(map[string]TensorWithShape)
+
+	var extractLayer func(prefix string, l *LayerConfig)
+	extractLayer = func(prefix string, l *LayerConfig) {
+		if l.IsDisabled {
+			return
+		}
+
+		// Helper to add tensor
+		add := func(name string, data []float32, shape ...int) {
+			if len(data) == 0 {
+				return
+			}
+			tensors[prefix+"."+name] = TensorWithShape{
+				DType:  "F32",
+				Shape:  shape,
+				Values: data,
+			}
+		}
+
+		switch l.Type {
+		case LayerDense:
+			add("weight", l.Kernel, l.OutputHeight, l.InputHeight)
+			add("bias", l.Bias, l.OutputHeight)
+
+		case LayerConv2D:
+			add("weight", l.Kernel, l.Filters, l.InputChannels, l.KernelSize, l.KernelSize)
+			add("bias", l.Bias, l.Filters)
+
+		case LayerConv1D:
+			add("weight", l.Kernel, l.Conv1DFilters, l.Conv1DInChannels, l.Conv1DKernelSize)
+			add("bias", l.Bias, l.Conv1DFilters)
+
+		case LayerNorm, LayerRMSNorm:
+			add("gamma", l.Gamma, l.NormSize)
+			add("beta", l.Beta, l.NormSize)
+
+		case LayerEmbedding:
+			add("weight", l.EmbeddingWeights, l.VocabSize, l.EmbeddingDim)
+
+		case LayerRNN:
+			add("weight_ih", l.WeightIH, l.HiddenSize, l.RNNInputSize)
+			add("weight_hh", l.WeightHH, l.HiddenSize, l.HiddenSize)
+			add("bias_h", l.BiasH, l.HiddenSize)
+
+		case LayerLSTM:
+			// Gates: i, f, g, o
+			add("weight_ih_i", l.WeightIH_i, l.HiddenSize, l.RNNInputSize)
+			add("weight_hh_i", l.WeightHH_i, l.HiddenSize, l.HiddenSize)
+			add("bias_i", l.BiasH_i, l.HiddenSize)
+
+			add("weight_ih_f", l.WeightIH_f, l.HiddenSize, l.RNNInputSize)
+			add("weight_hh_f", l.WeightHH_f, l.HiddenSize, l.HiddenSize)
+			add("bias_f", l.BiasH_f, l.HiddenSize)
+
+			add("weight_ih_g", l.WeightIH_g, l.HiddenSize, l.RNNInputSize)
+			add("weight_hh_g", l.WeightHH_g, l.HiddenSize, l.HiddenSize)
+			add("bias_g", l.BiasH_g, l.HiddenSize)
+
+			add("weight_ih_o", l.WeightIH_o, l.HiddenSize, l.RNNInputSize)
+			add("weight_hh_o", l.WeightHH_o, l.HiddenSize, l.HiddenSize)
+			add("bias_o", l.BiasH_o, l.HiddenSize)
+
+		case LayerMultiHeadAttention:
+			add("q_weight", l.QWeights, l.DModel, l.DModel)
+			add("k_weight", l.KWeights, l.DModel, l.DModel) // Or smaller if GQA
+			add("v_weight", l.VWeights, l.DModel, l.DModel) // Or smaller if GQA
+			add("o_weight", l.OutputWeight, l.DModel, l.DModel)
+
+			add("q_bias", l.QBias, l.DModel)
+			add("k_bias", l.KBias, l.DModel)
+			add("v_bias", l.VBias, l.DModel)
+			add("o_bias", l.OutputBias, l.DModel)
+
+		case LayerSwiGLU:
+			// Gate, Up, Down
+			// Assuming shapes are stored flat but conceptually matrices
+			// Logic usually: Gate/Up [Hidden, Inter], Down [Inter, Hidden]?
+			// Need to verify dimensions from Config struct if possible, but assuming flat
+			// we rely on implied shape. `l.GateWeights` is a slice.
+			// Let's assume Dense-like shapes if sizes known?
+			// SwiGLU forward code likely has sizes.
+			// For now, save as flat 1D if shapes unclear, OR assume standard Dense.
+			// Assuming simply [len] for now to avoid crashes if dimensions unavailable.
+			add("gate_weight", l.GateWeights, len(l.GateWeights))
+			add("up_weight", l.UpWeights, len(l.UpWeights))
+			add("down_weight", l.DownWeights, len(l.DownWeights))
+			add("gate_bias", l.GateBias, len(l.GateBias))
+			add("up_bias", l.UpBias, len(l.UpBias))
+			add("down_bias", l.DownBias, len(l.DownBias))
+
+		case LayerParallel, LayerSequential:
+			// Recurse into branches
+			// ParallelBranches is []LayerConfig
+			for b, branch := range l.ParallelBranches {
+				branchPrefix := fmt.Sprintf("%s.branches.%d", prefix, b)
+				extractLayer(branchPrefix, &branch)
+			}
+
+			// Handle FilterGateConfig for MoE (Filter combine mode)
+			if l.FilterGateConfig != nil {
+				extractLayer(prefix+".filter_gate", l.FilterGateConfig)
+			}
+		}
+	}
+
+	for i := range n.Layers {
+		extractLayer(fmt.Sprintf("layers.%d", i), &n.Layers[i])
+	}
+
+	return SaveSafetensors(filepath, tensors)
 }

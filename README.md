@@ -119,6 +119,10 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 
 > 🧠 **Neural Tweening**: Train and run simultaneously with 100% accuracy on shallow networks, never crashes to 0% during task changes. [Benchmarks →](docs/step_tween_assessment.md)
 
+> 📦 **Recursive Safetensors**: Full support for deeply nested architectures (MoE, Sequential, Parallel) with 100% bitwise save/load consistency. Verified with `tva/testing/safetensors_recursive.go`.
+
+> 🔢 **MNIST Verification**: New end-to-end demo `tva/demo/mnist/main.go` proving exact CPU/GPU consistency and training convergence.
+
 ---
 
 ## Framework Comparison
@@ -260,7 +264,7 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 
 ## SafeTensors & Model Interoperability
  
-Loom features a **universal SafeTensors engine** capable of standardizing models from any framework (PyTorch, TensorFlow, HuggingFace) into a highly optimized, single-file format.
+Loom features a **universal SafeTensors engine** capable of standardizing models from any framework (PyTorch, TensorFlow, HuggingFace) into a highly optimized, single-file format. It proactively handles complex **nested architectures** (like Mixture-of-Experts within Parallel layers) via recursive serialization.
  
 ### 1. Universal "Any-to-Any" Quantization
 Load a model in high precision (`float32`/`float64`) and instantly quantize it to any supported type for deployment. The file format handles the type conversion automatically.
@@ -309,8 +313,8 @@ The interoperability layer supports every component in the Loom ecosystem:
 ```go
 network.GPU = true
 network.WeightsToGPU()           // Mount weights to GPU
-output, _ := network.ForwardCPU(input)  // Auto-routes to GPU!
-network.BackwardGPUNew(dOutput)  // GPU backward pass
+output, _ := network.Forward(input)  // Auto-routes to GPU!
+network.Backward(dOutput)     // GPU backward pass
 network.ReleaseGPUWeights()      // Cleanup
 ```
 
@@ -391,7 +395,7 @@ loadedNet, err := nn.LoadModelFromString(jsonString, "my_model")
 | Function | Go | Python | TypeScript | C# | C |
 |:---------|:---|:-------|:-----------|:---|:--|
 | Create | `BuildNetworkFromJSON()` | `create_network_from_json()` | `createNetworkFromJSON()` | `CreateLoomNetwork()` | `CreateLoomNetwork()` |
-| Forward | `ForwardCPU()` | `forward_simple()` | `forward()` | `LoomForward()` | `LoomForward()` |
+| Forward | `Forward()` | `forward_simple()` | `forward()` | `LoomForward()` | `LoomForward()` |
 | Train | `Train()` | `train_simple()` | `train()` | `LoomTrain()` | `LoomTrain()` |
 | Save | `SaveModelToString()` | `save_model_simple()` | `saveModel()` | `LoomSaveModel()` | `LoomSaveModel()` |
 | Load | `LoadModelFromString()` | `load_model_simple()` | `loadLoomNetwork()` | `LoomLoadModel()` | `LoomLoadModel()` |
@@ -428,7 +432,7 @@ import { init, createNetworkFromJSON } from "@openfluke/welvet";
 
 await init();
 const network = createNetworkFromJSON(JSON.stringify(config));
-const output = network.ForwardCPU(JSON.stringify([[0.1, 0.2, 0.3, 0.4]]));
+const output = network.Forward(JSON.stringify([[0.1, 0.2, 0.3, 0.4]]));
 ```
 
 See [typescript/README.md](typescript/README.md) for complete documentation.
@@ -509,6 +513,18 @@ The test suite also verifies complex, production-ready architectural patterns:
 - **Stitched Experts**: Using `LayerStitch` to harmonize outputs from parallel branches with different dimensions (e.g., 5-dim output and 7-dim output stitched to common 10-dim).
 - **Neural Grafting**: Training *only* the gating mechanism of an MoE while keeping experts frozen, using `TweenStep` for precise surgical updates.
 - **Bit-Exact Determinism**: Verifying that GPU forward passes match CPU results to within machine epsilon (often exactly bit-matching for integer ops).
+
+### Runnable Demos
+
+- **MNIST Consistency (`tva/demo/mnist/main.go`)**:
+  - Trains a digit classifier on MNIST.
+  - Saves model to JSON and Safetensors.
+  - Reloads model and verifies **0.000000000 max difference** in predictions.
+  - Proves robustness of `SaveWeightsToSafetensors` / `LoadWeightsFromSafetensors`.
+
+- **Recursive Safetensors (`tva/testing/safetensors_recursive.go`)**:
+  - Constructs a complex nested Network: `MoE (Gate) -> [Parallel -> [Dense, Sequential -> [Conv1D, RNN]]]`.
+  - Saves and reloads to prove structural integrity of serialization for arbitrary depths.
 
 
 ---

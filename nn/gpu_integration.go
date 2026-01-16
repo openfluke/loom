@@ -540,20 +540,6 @@ func (n *Network) backwardGPU(dOutput []float32) ([]float32, error) {
 	return nil, nil // Input gradient could be returned if needed
 }
 
-// BackwardGPUNew runs backward pass on GPU if mounted, otherwise falls back to CPU
-// This is the public API for GPU backward pass using the new integration
-func (n *Network) BackwardGPUNew(dOutput []float32) ([]float32, time.Duration, error) {
-	if !n.GPU || !n.gpuMounted {
-		// Fall back to CPU
-		dInput, cpuTime := n.BackwardCPU(dOutput)
-		return dInput, cpuTime, nil
-	}
-
-	start := time.Now()
-	dInput, err := n.backwardGPU(dOutput)
-	return dInput, time.Since(start), err
-}
-
 // buildGPULayer constructs a GPU layer from an nn.LayerConfig
 func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gpu.GPULayer, int, error) {
 	inputSize := prevOutputSize
@@ -731,24 +717,30 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			stride = 1
 		}
 
-		w := 32
-		if inChannels > 0 && inputSize > 0 {
+		// Determine Input Dimensions
+		inH := 32
+		inW := 32
+
+		if l.InputHeight > 0 && l.InputWidth > 0 {
+			inH = l.InputHeight
+			inW = l.InputWidth
+		} else if inChannels > 0 && inputSize > 0 {
+			// Fallback: assume square input from flattened size
 			val := float64(inputSize / inChannels)
 			if val > 0 {
-				w = int(math.Sqrt(val))
+				side := int(math.Sqrt(val))
+				inH = side
+				inW = side
 			}
 		}
-		if w <= 0 {
-			w = 16
-		}
 
-		outH := (w+2*l.Padding-kernelSize)/stride + 1
-		outW := (w+2*l.Padding-kernelSize)/stride + 1
+		outH := (inH+2*l.Padding-kernelSize)/stride + 1
+		outW := (inW+2*l.Padding-kernelSize)/stride + 1
 		if outH <= 0 {
-			outH = w
+			outH = 1
 		}
 		if outW <= 0 {
-			outW = w
+			outW = 1
 		}
 
 		// Ensure weights and bias are properly sized
@@ -770,8 +762,8 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		}
 
 		spec := gpu.Conv2DSpec{
-			InputWidth:  w,
-			InputHeight: w,
+			InputWidth:  inW,
+			InputHeight: inH,
 			InChannels:  inChannels,
 			OutChannels: filters,
 			KernelSize:  kernelSize,
