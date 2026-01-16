@@ -186,55 +186,8 @@ func BackwardKMeansCPU(gradOutput []float32, config *LayerConfig, input []float3
 	// Backpropagate gradient through sub-network
 	gradInput, _ := config.SubNetwork.BackwardCPU(gradFeatures)
 
-	// Apply updates to sub-network layers (SGD approximation)
-	if net, ok := config.SubNetwork.(*Network); ok {
-		// Iterate over layers to apply gradients
-		// Access grid for Layer 0,0,0
-		layerConfig := net.GetLayer(0, 0, 0)
-		layerIdx := 0 // For single layer network in sub-network
-
-		if layerIdx < len(net.kernelGradients) && net.kernelGradients[layerIdx] != nil {
-			kGrad := net.kernelGradients[layerIdx]
-
-			// Dense/Conv uses Kernel/Bias
-			if len(layerConfig.Kernel) > 0 && len(kGrad) > 0 {
-				for i := range layerConfig.Kernel {
-					if i < len(kGrad) {
-						layerConfig.Kernel[i] -= learningRate * kGrad[i]
-					}
-				}
-			}
-			// Norm uses Gamma
-			if len(layerConfig.Gamma) > 0 && len(kGrad) > 0 {
-				for i := range layerConfig.Gamma {
-					if i < len(kGrad) {
-						layerConfig.Gamma[i] -= learningRate * kGrad[i]
-					}
-				}
-			}
-		}
-
-		if layerIdx < len(net.biasGradients) && net.biasGradients[layerIdx] != nil {
-			bGrad := net.biasGradients[layerIdx]
-
-			// Bias
-			if len(layerConfig.Bias) > 0 && len(bGrad) > 0 {
-				for i := range layerConfig.Bias {
-					if i < len(bGrad) {
-						layerConfig.Bias[i] -= learningRate * bGrad[i]
-					}
-				}
-			}
-			// Norm Beta
-			if len(layerConfig.Beta) > 0 && len(bGrad) > 0 {
-				for i := range layerConfig.Beta {
-					if i < len(bGrad) {
-						layerConfig.Beta[i] -= learningRate * bGrad[i]
-					}
-				}
-			}
-		}
-	}
+	// Apply updates to sub-network layers
+	config.SubNetwork.ApplyGradients(learningRate)
 
 	return gradInput, nil
 }

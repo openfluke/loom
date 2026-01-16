@@ -373,6 +373,7 @@ type LayerConfig struct {
 	SubNetwork interface { // Interface to avoid circular type dependency if Network is defined elsewhere
 		ForwardCPU(input []float32) ([]float32, time.Duration)
 		BackwardCPU(gradOutput []float32) ([]float32, time.Duration)
+		ApplyGradients(learningRate float32)
 	}
 }
 

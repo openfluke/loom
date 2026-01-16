@@ -192,7 +192,7 @@ All platforms share the same simple API with identical behavior:
 
 ## 📜 Research Portfolio
 
-Loom contains implementations of **5 distinct, publishable research contributions**. Each has a dedicated README with full documentation:
+Loom contains implementations of **7 distinct, publishable research contributions**. Each has a dedicated README with full documentation:
 
 | # | Paper | Venue | README |
 |---|-------|-------|--------|
@@ -201,6 +201,8 @@ Loom contains implementations of **5 distinct, publishable research contribution
 | 3 | Heterogeneous MoE via Stitched Routing | CVPR/ICCV | [research_paper_3_heterogeneous_moe.md](research_paper_3_heterogeneous_moe.md) |
 | 4 | Native Integer Training | TinyML | [research_paper_4_integer_training.md](research_paper_4_integer_training.md) |
 | 5 | Spatially-Adaptive Stitching for ARC | AAAI | [research_paper_5_arc_stitching.md](research_paper_5_arc_stitching.md) |
+| 6 | Bridging the Precision Gap | SysML | [research_paper_6_universal_precision.md](research_paper_6_universal_precision.md) |
+| 7 | Recursive Neuro-Symbolic Architecture | NeurIPS/ICLR | [research_paper_7_recursive_neuro_symbolic.md](research_paper_7_recursive_neuro_symbolic.md) |
 
 ---
 
