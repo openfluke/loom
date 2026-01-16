@@ -74,10 +74,8 @@ func LoadSafetensors(filepath string) (map[string][]float32, error) {
 		}
 
 		dtype, _ := infoMap["dtype"].(string)
-		if dtype != "F32" && dtype != "F16" && dtype != "BF16" {
-			fmt.Printf("Warning: skipping tensor %s with unsupported dtype %s\n", name, dtype)
-			continue
-		}
+		// Check supported types handled below
+		// if dtype != "F32" && dtype != "F16" && dtype != "BF16" { ... }
 
 		shapeList, _ := infoMap["shape"].([]interface{})
 		offsetList, _ := infoMap["data_offsets"].([]interface{})
@@ -119,6 +117,72 @@ func LoadSafetensors(filepath string) (map[string][]float32, error) {
 				offset := startOffset + i*2
 				bf16bits := binary.LittleEndian.Uint16(allData[offset : offset+2])
 				tensorData[i] = bfloat16ToFloat32(bf16bits)
+			}
+		} else if dtype == "F64" {
+			// Convert from float64 to float32
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*8
+				bits := binary.LittleEndian.Uint64(allData[offset : offset+8])
+				tensorData[i] = float32(math.Float64frombits(bits))
+			}
+		} else if dtype == "I64" || dtype == "U64" {
+			// Convert from int64/uint64 to float32
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*8
+				// We treat both as uint64 bits for reading, then cast
+				bits := binary.LittleEndian.Uint64(allData[offset : offset+8])
+				if dtype == "I64" {
+					tensorData[i] = float32(int64(bits))
+				} else {
+					tensorData[i] = float32(bits)
+				}
+			}
+		} else if dtype == "I32" || dtype == "U32" {
+			// Convert from int32/uint32 to float32
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*4
+				bits := binary.LittleEndian.Uint32(allData[offset : offset+4])
+				if dtype == "I32" {
+					tensorData[i] = float32(int32(bits))
+				} else {
+					tensorData[i] = float32(bits)
+				}
+			}
+		} else if dtype == "I16" || dtype == "U16" {
+			// Convert from int16/uint16 to float32
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*2
+				bits := binary.LittleEndian.Uint16(allData[offset : offset+2])
+				if dtype == "I16" {
+					tensorData[i] = float32(int16(bits))
+				} else {
+					tensorData[i] = float32(bits)
+				}
+			}
+		} else if dtype == "I8" || dtype == "U8" {
+			// Convert from int8/uint8 to float32
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i
+				b := allData[offset]
+				if dtype == "I8" {
+					tensorData[i] = float32(int8(b))
+				} else {
+					tensorData[i] = float32(b)
+				}
+			}
+		} else if dtype == "F4" {
+			// 4-bit float (E2M1) packed 2 per byte
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i/2
+				b := allData[offset]
+				var nibble uint8
+				if i%2 == 0 {
+					nibble = b & 0x0F // Lower 4 bits
+				} else {
+					nibble = (b >> 4) & 0x0F // Upper 4 bits
+				}
+				// Decode E2M1
+				tensorData[i] = fp4ToFloat32(nibble)
 			}
 		}
 
@@ -167,10 +231,8 @@ func LoadSafetensorsFromBytes(data []byte) (map[string][]float32, error) {
 		}
 
 		dtype, _ := infoMap["dtype"].(string)
-		if dtype != "F32" && dtype != "F16" && dtype != "BF16" {
-			fmt.Printf("Warning: skipping tensor %s with unsupported dtype %s\n", name, dtype)
-			continue
-		}
+		// Check supported types handled below
+		// if dtype != "F32" && dtype != "F16" && dtype != "BF16" { ... }
 
 		shapeList, _ := infoMap["shape"].([]interface{})
 		offsetList, _ := infoMap["data_offsets"].([]interface{})
@@ -220,6 +282,82 @@ func LoadSafetensorsFromBytes(data []byte) (map[string][]float32, error) {
 				}
 				bf16bits := binary.LittleEndian.Uint16(allData[offset : offset+2])
 				tensorData[i] = bfloat16ToFloat32(bf16bits)
+			}
+		} else if dtype == "F64" {
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*8
+				if offset+8 > len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				bits := binary.LittleEndian.Uint64(allData[offset : offset+8])
+				tensorData[i] = float32(math.Float64frombits(bits))
+			}
+		} else if dtype == "I64" || dtype == "U64" {
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*8
+				if offset+8 > len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				bits := binary.LittleEndian.Uint64(allData[offset : offset+8])
+				if dtype == "I64" {
+					tensorData[i] = float32(int64(bits))
+				} else {
+					tensorData[i] = float32(bits)
+				}
+			}
+		} else if dtype == "I32" || dtype == "U32" {
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*4
+				if offset+4 > len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				bits := binary.LittleEndian.Uint32(allData[offset : offset+4])
+				if dtype == "I32" {
+					tensorData[i] = float32(int32(bits))
+				} else {
+					tensorData[i] = float32(bits)
+				}
+			}
+		} else if dtype == "I16" || dtype == "U16" {
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i*2
+				if offset+2 > len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				bits := binary.LittleEndian.Uint16(allData[offset : offset+2])
+				if dtype == "I16" {
+					tensorData[i] = float32(int16(bits))
+				} else {
+					tensorData[i] = float32(bits)
+				}
+			}
+		} else if dtype == "I8" || dtype == "U8" {
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i
+				if offset >= len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				b := allData[offset]
+				if dtype == "I8" {
+					tensorData[i] = float32(int8(b))
+				} else {
+					tensorData[i] = float32(b)
+				}
+			}
+		} else if dtype == "F4" {
+			for i := 0; i < numElements; i++ {
+				offset := startOffset + i/2
+				if offset >= len(allData) {
+					return nil, fmt.Errorf("tensor %s: data out of bounds", name)
+				}
+				b := allData[offset]
+				var nibble uint8
+				if i%2 == 0 {
+					nibble = b & 0x0F
+				} else {
+					nibble = (b >> 4) & 0x0F
+				}
+				tensorData[i] = fp4ToFloat32(nibble)
 			}
 		}
 
