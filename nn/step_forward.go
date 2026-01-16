@@ -130,7 +130,7 @@ func StepForwardGeneric[T Numeric](
 						size = config.DModel
 					case LayerNorm, LayerRMSNorm:
 						size = config.NormSize
-					case LayerResidual, LayerSoftmax:
+					case LayerResidual, LayerSoftmax, LayerKMeans:
 						if config.InputHeight > 0 {
 							size = config.InputHeight
 						} else if layerIdx > 0 && layerIdx-1 < len(n.Layers) {
@@ -418,6 +418,11 @@ func getLayerOutputSize(config *LayerConfig, batchSize int) int {
 		}
 		// Return size of the last layer in sequence
 		return getLayerOutputSize(&config.ParallelBranches[len(config.ParallelBranches)-1], batchSize)
+	} else if config.Type == LayerKMeans {
+		if config.KMeansOutputMode == "probabilities" {
+			return config.NumClusters
+		}
+		return config.ClusterDim
 	}
 
 	// Default: Try to use OutputHeight if available
@@ -599,6 +604,17 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 
 				case LayerDense:
 					preAct, postAct = denseForwardCPU(input, config, n.BatchSize)
+
+				case LayerKMeans:
+					// KMeans layer forward (CPU only for now)
+					output, err := ForwardKMeansCPU(input, config)
+					if err != nil {
+						fmt.Printf("KMeans forward error: %v\n", err)
+						output = make([]float32, getLayerOutputSize(config, n.BatchSize))
+					}
+					// PreActivations (sub-network features) are already stored in config by ForwardKMeansCPU
+					preAct = config.PreActivations
+					postAct = output
 
 				case LayerSwiGLU:
 					preAct, postAct = SwiGLUForwardCPU(input, config, n.BatchSize)

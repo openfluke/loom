@@ -94,6 +94,14 @@ type LayerDefinition struct {
 	GridOutputRows   int               `json:"grid_output_rows,omitempty"`
 	GridOutputCols   int               `json:"grid_output_cols,omitempty"`
 	GridOutputLayers int               `json:"grid_output_layers,omitempty"`
+
+	// KMeans fields
+	NumClusters        int     `json:"num_clusters,omitempty"`
+	DistanceMetric     string  `json:"distance_metric,omitempty"`
+	KMeansTemperature  float32 `json:"kmeans_temperature,omitempty"`
+	KMeansOutputMode   string  `json:"kmeans_output_mode,omitempty"`
+	KMeansLearningRate float32 `json:"kmeans_learning_rate,omitempty"`
+	ClusterDim         int     `json:"cluster_dim,omitempty"`
 }
 
 // GridPositionDef is the JSON representation of a grid position
@@ -174,6 +182,9 @@ type LayerWeights struct {
 
 	// Parallel layer branch weights (recursive)
 	BranchWeights []LayerWeights `json:"branch_weights,omitempty"`
+
+	// KMeans weights
+	ClusterCenters []float32 `json:"cluster_centers,omitempty"`
 }
 
 // SaveModel saves a single model to a file
@@ -289,6 +300,23 @@ func serializeBranches(branches []LayerConfig) []LayerDefinition {
 		case LayerSequential:
 			// Sequential layers store their sub-layers in ParallelBranches (processed in order)
 			def.Branches = serializeBranches(branch.ParallelBranches) // Recursive call
+		case LayerKMeans:
+			def.NumClusters = branch.NumClusters
+			def.DistanceMetric = branch.DistanceMetric
+			def.KMeansTemperature = branch.KMeansTemperature
+			def.KMeansOutputMode = branch.KMeansOutputMode
+			def.KMeansLearningRate = branch.KMeansLearningRate
+			def.ClusterDim = branch.ClusterDim
+
+			// Serialize sub-network if it's a Network
+			if subNet, ok := branch.SubNetwork.(*Network); ok {
+				// We can't easily put a full Network into LayerDefinition branches
+				// but we can serialize its layers as branches for now?
+				// Actually, InitKMeansLayer creates a small network.
+				if subNet != nil {
+					def.Branches = serializeBranches(subNet.Layers)
+				}
+			}
 		}
 
 		defs[i] = def
@@ -353,6 +381,13 @@ func serializeBranchWeights(branches []LayerConfig) []LayerWeights {
 		case LayerSequential:
 			// Recursively serialize nested sequential layer weights
 			w.BranchWeights = serializeBranchWeights(branch.ParallelBranches)
+		case LayerKMeans:
+			w.ClusterCenters = branch.ClusterCenters
+			if subNet, ok := branch.SubNetwork.(*Network); ok {
+				if subNet != nil {
+					w.BranchWeights = serializeBranchWeights(subNet.Layers)
+				}
+			}
 		}
 
 		weights[i] = w
@@ -537,6 +572,29 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				// OutputHeight calculated dynamically or from definition if available
 				// deserialization usually trusts correct input
 			}
+		case "kmeans":
+			config = LayerConfig{
+				Type:               LayerKMeans,
+				NumClusters:        def.NumClusters,
+				DistanceMetric:     def.DistanceMetric,
+				KMeansTemperature:  def.KMeansTemperature,
+				KMeansOutputMode:   def.KMeansOutputMode,
+				KMeansLearningRate: def.KMeansLearningRate,
+				ClusterDim:         def.ClusterDim,
+				ClusterCenters:     w.ClusterCenters,
+			}
+			// Reconstruct sub-network from branches
+			if len(def.Branches) > 0 {
+				subLayers, err := deserializeBranches(def.Branches, w.BranchWeights)
+				if err == nil {
+					// Create a sub-network
+					// We need to know input size, but it's often 1 for these small nets?
+					// Use 1 for now, it will resize.
+					subNet := NewNetwork(1, 1, 1, len(subLayers))
+					subNet.Layers = subLayers
+					config.SubNetwork = subNet
+				}
+			}
 		}
 
 		branches[i] = config
@@ -697,6 +755,24 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 			// Serialize sequential layers (stored in ParallelBranches)
 			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
 			layerWeights.BranchWeights = serializeBranchWeights(layerConfig.ParallelBranches)
+
+		case LayerKMeans:
+			layerDef.NumClusters = layerConfig.NumClusters
+			layerDef.DistanceMetric = layerConfig.DistanceMetric
+			layerDef.KMeansTemperature = layerConfig.KMeansTemperature
+			layerDef.KMeansOutputMode = layerConfig.KMeansOutputMode
+			layerDef.KMeansLearningRate = layerConfig.KMeansLearningRate
+			layerDef.ClusterDim = layerConfig.ClusterDim
+
+			layerWeights.ClusterCenters = layerConfig.ClusterCenters
+
+			// Serialize sub-network
+			if subNet, ok := layerConfig.SubNetwork.(*Network); ok {
+				if subNet != nil {
+					layerDef.Branches = serializeBranches(subNet.Layers)
+					layerWeights.BranchWeights = serializeBranchWeights(subNet.Layers)
+				}
+			}
 		}
 
 		config.Layers = append(config.Layers, layerDef)
@@ -1489,6 +1565,21 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 			inChannels = 1 // Default to 1 channel
 		}
 		config = InitConv1DLayer(seqLen, inChannels, def.KernelSize, def.Stride, def.Padding, def.Filters, stringToActivation(def.Activation))
+
+	case "kmeans":
+		// Small default net if not specified
+		dummyLayer := LayerConfig{Type: LayerDense, InputHeight: 1, OutputHeight: 1}
+		config = InitKMeansLayer(def.NumClusters, dummyLayer, def.KMeansOutputMode)
+		config.DistanceMetric = def.DistanceMetric
+		config.KMeansTemperature = def.KMeansTemperature
+		config.KMeansLearningRate = def.KMeansLearningRate
+		config.ClusterDim = def.ClusterDim
+
+		// If branches are provided, they will be handled by deserializeBranches caller
+		// but wait, buildLayerConfig is called by BuildNetworkFromJSON loop.
+		// BuildNetworkFromJSON calls buildLayerConfig(layerDef) which doesn't have weights.
+		// Higher level deserializeBranches handles weights.
+		// So this is just for the structure.
 
 	default:
 		return config, fmt.Errorf("unknown layer type: %s", def.Type)
