@@ -482,6 +482,153 @@ fmt.Printf("Quality Score: %.2f\n", loaded.Score)
 
 ---
 
+## Numerical Type Benchmarking
+
+When deploying models to different environments (mobile, web, embedded), storage size and numerical precision become critical trade-offs. Loom's **BenchmarkNumericalTypes** function helps you evaluate these trade-offs.
+
+### Supported Types
+
+| Type | Bits | Scale | Best For |
+|:-----|:-----|:------|:---------|
+| **F64** | 64 | 1.0 | Scientific computing, maximum precision |
+| **F32** | 32 | 1.0 | Standard training and inference |
+| **F16** | 16 | 1.0 | Mobile/web deployment |
+| **BF16** | 16 | 1.0 | GPU training (brain float) |
+| **F4** | 4 | 8.0 | Extreme compression |
+| **I64** | 64 | 1000000.0 | Integer-only hardware |
+| **I32** | 32 | 1000000.0 | Integer math |
+| **I16** | 16 | 1000.0 | Embedded systems |
+| **I8** | 8 | 100.0 | Edge devices |
+| **U64/U32/U16/U8** | varies | varies | Unsigned variations |
+
+> [!NOTE]
+> Integer types require scaling factors because neural network weights are typically small (0.001 to 0.5). The scale maps these into the integer range.
+
+### Using BenchmarkNumericalTypes
+
+```go
+// Define types and their scales
+dtypes := []string{"F32", "F16", "BF16", "I8", "U8"}
+scales := []float32{1.0, 1.0, 1.0, 100.0, 100.0}
+
+// Prepare test data
+testInputs := make([][]float32, 100)
+expectedOutputs := make([]float64, 100)
+for i := 0; i < 100; i++ {
+    testInputs[i] = testData[i].Image
+    expectedOutputs[i] = float64(testData[i].Label)
+}
+
+// Run benchmark
+benchmark, err := nn.BenchmarkNumericalTypes(
+    trainedNetwork,
+    dtypes,
+    scales,
+    testInputs,
+    expectedOutputs,
+)
+
+// Print comparison table
+benchmark.PrintNumericalTypeSummary()
+```
+
+Output:
+```
+=== NUMERICAL TYPE COMPARISON SUMMARY ===
+
+DType     Quality Score    Avg Deviation    Memory           Scale
+--------  ---------------  ---------------  ---------------  ------------
+F32              100.00%         0.0000%          2.92 MB           1.0
+F16              100.00%         0.0006%          1.46 MB           1.0
+BF16             100.00%         0.0009%          1.46 MB           1.0
+I8                99.61%         0.3855%        747.70 KB         100.0
+U8                99.61%         0.3855%        747.70 KB         100.0
+```
+
+### What It Measures
+
+The benchmark compares the **quantized network's outputs** against the **original network's outputs**:
+
+- **Quality Score**: 100% means identical behavior to original
+- **Avg Deviation**: Percentage difference in output values
+- **Memory**: File size when saved as safetensors
+
+This is different from model accuracy—it measures the **cost of quantization**, not task performance.
+
+### Finding Best Trade-offs
+
+```go
+// Get recommendations
+if best := benchmark.GetBestByQuality(); best != nil {
+    fmt.Printf("Best Quality: %s (%.2f%%)\n", best.DType, best.QualityScore)
+}
+
+if smallest := benchmark.GetSmallest(); smallest != nil {
+    fmt.Printf("Smallest Size: %s (%d bytes)\n", smallest.DType, smallest.MemoryBytes)
+}
+
+if tradeoff := benchmark.GetBestTradeoff(); tradeoff != nil {
+    fmt.Printf("Best Tradeoff: %s (%.2f%% quality, %d bytes)\n",
+        tradeoff.DType, tradeoff.QualityScore, tradeoff.MemoryBytes)
+}
+```
+
+---
+
+## Save/Load Consistency Verification
+
+When deploying models across platforms, you need confidence that serialization doesn't corrupt weights. **VerifySaveLoadConsistency** validates that a model produces identical outputs after being saved and reloaded.
+
+### Usage
+
+```go
+// Prepare test inputs (representative samples)
+verifyInputs := make([][]float32, 10)
+for i := 0; i < 10; i++ {
+    verifyInputs[i] = testData[i].Image
+}
+
+// Verify JSON format
+result, err := nn.VerifySaveLoadConsistency(
+    trainedNetwork,
+    "json",          // Format: "json" or "safetensors"
+    verifyInputs,
+    1e-6,            // Tolerance
+)
+
+result.PrintConsistencyResult()
+```
+
+Output:
+```
+=== Save/Load Consistency Verification ===
+Format: json
+Test Samples: 10
+Max Difference: 0.000000000
+Avg Difference: 0.000000000
+Tolerance: 0.000001000
+✓ Consistency PASSED
+```
+
+### WASM Compatibility
+
+Both `BenchmarkNumericalTypes` and `VerifySaveLoadConsistency` are **100% in-memory** and WASM-compatible:
+
+- No filesystem access (`os.ReadFile`/`os.WriteFile`)
+- Uses `[]byte` buffers for serialization
+- Pure Go computation
+- Works in browser environments
+
+```go
+// Serialize to memory (no disk)
+bytes, _ := nn.SerializeSafetensors(tensorMap)
+
+// Load from memory
+tensors, _ := nn.LoadSafetensorsWithShapes(bytes)
+```
+
+---
+
 ## Summary
 
 Loom's evaluation system provides:
@@ -501,4 +648,15 @@ Loom's evaluation system provides:
 - Tracks task changes and recovery time
 - Compares multiple models/modes
 
+**NumericalTypeBenchmark** - Quantization analysis
+- Compares network behavior across numerical types
+- Measures quality loss from quantization
+- Helps choose optimal precision for deployment
+
+**SaveLoadConsistency** - Serialization verification
+- Validates model integrity after save/load
+- Supports JSON and safetensors formats
+- WASM-compatible, fully in-memory
+
 Use these tools to understand not just *if* your model works, but *how well* and *where it struggles*.
+

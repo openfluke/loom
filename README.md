@@ -121,7 +121,9 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 
 > 📦 **Recursive Safetensors**: Full support for deeply nested architectures (MoE, Sequential, Parallel) with 100% bitwise save/load consistency. Verified with `tva/testing/safetensors_recursive.go`.
 
-> 🔢 **MNIST Verification**: New end-to-end demo `tva/demo/mnist/main.go` proving exact CPU/GPU consistency and training convergence.
+> 🔢 **Numerical Type Benchmarking**: Compare network behavior across 13 numerical types (F64, F32, F16, BF16, F4, I64, I32, I16, I8, U64, U32, U16, U8) with in-memory quantization. WASM-compatible for browser deployment testing.
+
+> 🧪 **MNIST Verification**: End-to-end demo `tva/demo/conv2d-mnist/main.go` proving exact CPU/GPU consistency, training convergence, and multi-precision save/load integrity.
 
 ---
 
@@ -478,6 +480,7 @@ loom/
 
 - [Neural Network Package](nn/README.md) - Detailed API documentation
 - [Neural Tweening Benchmarks](docs/step_tween_assessment.md) - 19-test comprehensive benchmark
+- [Evaluation & Metrics](docs/nn/evaluation.md) - Deviation metrics, numerical type benchmarking, WASM-compatible verification
 - [Python Bindings](python/README.md) - PyPI package docs
 - [TypeScript Bindings](typescript/README.md) - NPM package docs
 - [C# Bindings](csharp/README.md) - NuGet package docs
@@ -516,10 +519,11 @@ The test suite also verifies complex, production-ready architectural patterns:
 
 ### Runnable Demos
 
-- **MNIST Consistency (`tva/demo/mnist/main.go`)**:
+- **MNIST Consistency (`tva/demo/conv2d-mnist/main.go`)**:
   - Trains a digit classifier on MNIST.
   - Saves model to JSON and Safetensors.
   - Reloads model and verifies **0.000000000 max difference** in predictions.
+  - Benchmarks all 13 numerical types (F64→U8) for quantization quality.
   - Proves robustness of `SaveWeightsToSafetensors` / `LoadWeightsFromSafetensors`.
 
 - **Recursive Safetensors (`tva/testing/safetensors_recursive.go`)**:

@@ -1,6 +1,8 @@
 package nn
 
 import (
+	"time"
+
 	"github.com/openfluke/webgpu/wgpu"
 )
 
@@ -202,6 +204,7 @@ const (
 	LayerEmbedding          LayerType = 11 // Embedding lookup table (token/position -> vector)
 	LayerConv1D             LayerType = 12 // 1D Convolutional layer (for audio/sequence data)
 	LayerSequential         LayerType = 13 // Sequential layer (runs multiple sub-layers in sequence)
+	LayerKMeans             LayerType = 14 // Learnable K-Means clustering with attached sub-network
 )
 
 // SoftmaxType defines the variant of softmax to use
@@ -336,6 +339,18 @@ type LayerConfig struct {
 	FilterSoftmax     SoftmaxType  // Softmax variant for gating (default: SoftmaxStandard)
 	FilterTemperature float32      // Temperature for softmax (lower = sharper selection)
 
+	// KMeans layer specific parameters (learnable clustering)
+	NumClusters        int          // Number of clusters (K)
+	ClusterCenters     []float32    // Learnable cluster centers [NumClusters * ClusterDim]
+	ClusterGradients   []float32    // Gradients for cluster centers (same size as ClusterCenters)
+	ClusterDim         int          // Dimension of each cluster center
+	AttachedLayer      *LayerConfig // Sub-network for feature transformation before clustering
+	DistanceMetric     string       // Distance metric: "euclidean", "cosine", "manhattan"
+	KMeansTemperature  float32      // Temperature for soft assignments (default 1.0)
+	KMeansOutputMode   string       // Output mode: "probabilities" (K values) or "features" (ClusterDim values)
+	KMeansLearningRate float32      // Learning rate for cluster center updates (default 0.01)
+	KMeansUpdateCount  int          // Count of forward passes (for diagnostics)
+
 	// Observer for debugging/recording (nil = no observation)
 	Observer LayerObserver
 
@@ -350,6 +365,15 @@ type LayerConfig struct {
 
 	// Training control
 	Frozen bool // If true, weights in this layer will not be updated during training
+
+	// Transient state (for sub-layers like AttachedLayer in KMeans)
+	PreActivations []float32 // Stored pre-activations for backpropagation
+
+	// Sub-network support (Network-in-Network)
+	SubNetwork interface { // Interface to avoid circular type dependency if Network is defined elsewhere
+		ForwardCPU(input []float32) ([]float32, time.Duration)
+		BackwardCPU(gradOutput []float32) ([]float32, time.Duration)
+	}
 }
 
 // GridPosition specifies where a parallel branch output should be placed in the grid

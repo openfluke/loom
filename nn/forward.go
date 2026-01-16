@@ -547,6 +547,27 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 					// Use post-activation for next layer
 					data = postAct
+				} else if config.Type == LayerKMeans {
+					// Learnable K-Means clustering layer
+					output, err := ForwardKMeansCPU(data, config)
+					if err != nil {
+						fmt.Printf("KMeans layer error: %v\n", err)
+						// On error, pass through unchanged
+						output = data
+					}
+
+					// Store features from attached layer (needed for backward)
+					// ForwardKMeansCPU stores features in config.PreActivations
+					if len(config.PreActivations) > 0 {
+						// Store usage of features for backward pass
+						n.preActivations[layerIdx] = config.PreActivations
+					} else {
+						// Fallback if something went wrong or legacy
+						n.preActivations[layerIdx] = make([]float32, 1) // Dummy
+					}
+
+					// Use KMeans output for next layer
+					data = output
 				} else {
 					// Default: element-wise activation only
 					// Store pre-activation values

@@ -544,6 +544,56 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 			n.biasGradients[layerIdx] = gradBeta
 
 			grad = gradInput
+		} else if config.Type == LayerKMeans {
+			// K-Means layer backward
+			input := n.activations[layerIdx]
+			features := n.preActivations[layerIdx] // Features from attached layer
+
+			// Recompute assignments for gradient computation
+			assignments := make([]float32, config.NumClusters)
+			if len(features) > 0 && len(config.ClusterCenters) > 0 {
+				// Compute distances to each cluster center
+				distances := make([]float32, config.NumClusters)
+				for k := 0; k < config.NumClusters; k++ {
+					centerOffset := k * config.ClusterDim
+					switch config.DistanceMetric {
+					case "cosine":
+						distances[k] = cosineDistance(features, config.ClusterCenters[centerOffset:centerOffset+config.ClusterDim])
+					case "manhattan":
+						distances[k] = manhattanDistance(features, config.ClusterCenters[centerOffset:centerOffset+config.ClusterDim])
+					default: // "euclidean"
+						distances[k] = euclideanDistance(features, config.ClusterCenters[centerOffset:centerOffset+config.ClusterDim])
+					}
+				}
+
+				// Convert to soft assignments
+				temp := config.KMeansTemperature
+				if temp == 0 {
+					temp = 1.0
+				}
+				for i := range distances {
+					distances[i] = -distances[i] / temp
+				}
+				assignments = softmaxSimple(distances)
+			}
+
+			// Learning rate for cluster center updates
+			learningRate := config.KMeansLearningRate
+			if learningRate == 0 {
+				learningRate = 0.01
+			}
+
+			gradInput, err := BackwardKMeansCPU(grad, config, input, features, assignments, learningRate)
+			if err != nil {
+				fmt.Printf("KMeans backward error: %v\n", err)
+				gradInput = make([]float32, len(input))
+			}
+
+			// No kernel/bias gradients for KMeans (centers updated in-place during backward)
+			n.kernelGradients[layerIdx] = nil
+			n.biasGradients[layerIdx] = nil
+
+			grad = gradInput
 		} else {
 		}
 
