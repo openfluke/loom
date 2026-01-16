@@ -16,8 +16,8 @@ if err != nil {
     log.Fatal("GPU not available:", err)
 }
 
-// Now ForwardCPU will use GPU (name is historical)
-output, duration := network.ForwardCPU(input)
+// Forward automatically routes to GPU
+output, duration := network.Forward(input)
 
 // When done, release GPU resources
 network.ReleaseGPUWeights()
@@ -29,8 +29,8 @@ All layer types below support both CPU and GPU execution with automatic parity c
 
 | Layer | Forward | Backward | Notes |
 |:------|:-------:|:--------:|:------|
-| **Dense** | ✅ **Stable** | ⚠️ **Experimental** | Best speedup (up to 20x). |
-| **Conv2D** | ✅ **Stable** | ⚠️ **Experimental** | Good for large batches/kernels. |
+| **Dense** | ✅ **Stable** | ✅ **Stable** | Best speedup (up to 20x). |
+| **Conv2D** | ✅ **Stable** | ✅ **Stable** | Good for large batches/kernels. |
 | **Conv1D** | ✅ **Stable** | ⚠️ **Experimental** | Accuracy under review. |
 | **RNN / LSTM** | ✅ **Stable** | ⚠️ **Experimental** | Verified parity, BPTT limited. |
 | **SwiGLU** | ✅ **Stable** | ⚠️ **Experimental** | Works perfectly. |
@@ -484,13 +484,14 @@ func main() {
     }
     
     // CPU forward pass
-    cpuOutput, cpuTime := network.ForwardCPU(input)
+    network.GPU = false
+    cpuOutput, cpuTime := network.Forward(input)
     fmt.Printf("CPU: %v\n", cpuTime)
     
     // GPU forward pass
     network.GPU = true
     network.WeightsToGPU()
-    gpuOutput, gpuTime := network.ForwardCPU(input)  // Same API, uses GPU
+    gpuOutput, gpuTime := network.Forward(input)  // Same API, uses GPU
     fmt.Printf("GPU: %v (%.2fx speedup)\n", gpuTime, float64(cpuTime)/float64(gpuTime))
     
     // Verify parity

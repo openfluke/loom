@@ -1,6 +1,27 @@
 # Practical Examples and Use Cases
 
-This guide walks through real-world usage patterns for Loom, showing how the concepts from the other documentation files come together in practice.
+Loom is used across a variety of domains, from gaming AI to medical imaging and large language models. This guide walks through real-world usage patterns, showing how the concepts from the other documentation files come together in practice.
+
+---
+
+## Featured Example: MNIST Convolutional Neural Network
+
+The [MNIST demo](file:///home/samuel/git/loom/tva/demo/mnist/main.go) is the definitive example of using Loom for spatial computer vision tasks. It demonstrates **training parity (CPU vs GPU)**, **multi-precision serialization**, and **high-fidelity quantization**.
+
+### Key Features Demonstrated:
+1. **Conv2D Layers**: Building a standard LeNet-style architecture.
+2. **Unified Training**: Using `network.Train()` to automatically accelerate on GPU.
+3. **Safetensors Benchmarking**: Testing all 13 supported dtypes.
+
+### Numerical Type Comparison Summary
+The following table from the demo results showcases Loom's versatility in precision vs. compression:
+
+| DType | Quality Score | Avg Dev | File Size | RAM Usage |
+|-------|---------------|---------|-----------|-----------|
+| **F32** | 100.00% | 0.0000% | 2.92 MB | 5.86 MB |
+| **BF16**| 100.00% | 0.0009% | 1.46 MB | 4.40 MB |
+| **F4 (FP4)** | **99.40%** | **0.6029%** | **374 KB** | **3.30 MB** |
+| **I8**  | 99.61% | 0.3855% | 747 KB | 3.67 MB |
 
 ---
 
@@ -430,7 +451,7 @@ const network = loom.LoadNetworkFromString(modelJSON, "mnist_v1");
 
 // Run inference
 const pixels = getImagePixels();  // 784 float values
-const probabilities = network.ForwardCPU(pixels);
+const probabilities = network.Forward(pixels);
 
 const digit = argmax(probabilities);
 console.log(`Predicted: ${digit}`);
@@ -449,7 +470,7 @@ network = welvet.load_model_from_string(model_json, "mnist_v1")
 # Run inference
 import numpy as np
 pixels = np.array(image_data, dtype=np.float32)
-probabilities = network.forward_cpu(pixels)
+probabilities = network.forward(pixels)
 
 digit = np.argmax(probabilities)
 print(f"Predicted: {digit}")

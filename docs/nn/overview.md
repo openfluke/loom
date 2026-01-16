@@ -44,7 +44,7 @@ Loom's Grid Architecture:
 
 ## How Data Flows Through the Grid
 
-When you call `ForwardCPU(input)`, here's what actually happens:
+When you call `Forward(input)`, here's what actually happens:
 
 1. **Your input enters cell (0,0)**—the top-left corner
 2. **Data flows through all layers in that cell** from bottom to top
@@ -186,7 +186,7 @@ LSTM Layer:
 
 ## The Forward Pass: What Happens Inside
 
-Let's trace through exactly what happens when you call `network.ForwardCPU(input)`:
+Let's trace through exactly what happens when you call `network.Forward(input)`:
 
 ### Step 1: Start the Clock
 ```go

@@ -227,3 +227,4 @@ This eliminates the "Python tax" for production AI systems while maintaining res
 - [Paper 3: Heterogeneous MoE](research_paper_3_heterogeneous_moe.md)
 - [Paper 4: Native Integer Training](research_paper_4_integer_training.md)
 - [Paper 5: Spatially-Adaptive Stitching](research_paper_5_arc_stitching.md)
+- [Paper 6: Universal Precision & WebGPU](research_paper_6_universal_precision.md)

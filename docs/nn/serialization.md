@@ -213,22 +213,31 @@ disk access and want persistence.             you need to move models
 
 ---
 
-## Multi-Precision Weights
-
-Not all weights need to be 32-bit floats. Loom supports multiple precisions:
-
 ### Precision Options
+
+Loom supports the full spectrum of **13 Safetensors DTypes**, ranging from double-precision to 4-bit quantization:
 
 ```
 Precision     Size    Range                 Use case
 ─────────────────────────────────────────────────────────────────
-float64       8 bytes ±10^308               High-precision research
-float32       4 bytes ±10^38                Standard training
-float16       2 bytes ±65504                Inference, GPU
-int32         4 bytes ±2 billion            Integer networks
-int16         2 bytes ±32767                Quantized models
-int8          1 byte  ±127                  Edge devices, mobile
+float64 (F64) 8 bytes ±10^308               High-precision research
+float32 (F32) 4 bytes ±10^38                Standard training
+float16 (F16) 2 bytes ±65504                Standard inference, GPU
+bfloat16 (BF16) 2 bytes ±10^38               Modern LLM inference
+float4 (F4)   0.5 bytes [0.25, 3.0]         High-compression (8x vs F32)
+int64 (I64)   8 bytes ±9 quintillion        Large integer networks
+int32 (I32)   4 bytes ±2 billion            Standard integer networks
+int16 (I16)   2 bytes ±32767                Quantized models
+int8 (I8)     1 byte  ±127                  Edge devices, mobile
+uint64 (U64)  8 bytes 0 to 18 quintillion   Unsigned offsets
+uint32 (U32)  4 bytes 0 to 4 billion        Unsigned indices
+uint16 (U16)  2 bytes 0 to 65535            Unsigned textures/images
+uint8 (U8)    1 byte  0 to 255              Standard image data
 ```
+
+### FP4 (4-bit Float) Support
+
+Loom implements the **E2M1** (1 sign bit, 2 exponent bits, 1 mantissa bit) format for extreme model compression. By utilizing a "Shift-and-Scale" quantization strategy, it can maintain **>99% quality** while using only 0.5 bytes per parameter.
 
 ### How It Works
 
@@ -307,14 +316,20 @@ SafeTensors File Structure:
 └───────────────────────────────────────────────────────┘
 ```
 
-### Loading SafeTensors
+### Loading & Saving Network Weights
+
+While `LoadSafeTensors` handles raw tensors, the `Network` object provides high-level methods to directly save and load model weights using the Safetensors format.
 
 ```go
-tensors, err := nn.LoadSafeTensors("model.safetensors")
+// 1. Save network weights with specific precision
+// Supported: "F32", "F64", "F16", "BF16", "F4", "I8", etc.
+err := network.SaveWeightsToSafetensors("model.safetensors")
 
-// Access individual tensors by name
-embeddingWeights := tensors["model.embed_tokens.weight"]
+// 2. Load weights back into an existing network architecture
+err := network.LoadWeightsFromSafetensors("model.safetensors")
 ```
+
+These methods are the preferred way to handle model persistence in Loom, as they handle byte conversion and layer mapping automatically.
 
 ### Data Type Handling
 

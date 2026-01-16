@@ -89,4 +89,4 @@ go run tva/test_0_0_7.go
 
 ---
 
-**Related:** [Paper 1](research_paper_1_polyglot_runtime.md) | [Paper 2](research_paper_2_steptween.md) | [Paper 3](research_paper_3_heterogeneous_moe.md) | [Paper 4](research_paper_4_integer_training.md)
+**Related:** [Paper 1](research_paper_1_polyglot_runtime.md) | [Paper 2](research_paper_2_steptween.md) | [Paper 3](research_paper_3_heterogeneous_moe.md) | [Paper 4](research_paper_4_integer_training.md) | [Paper 6](research_paper_6_universal_precision.md)

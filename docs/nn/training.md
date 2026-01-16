@@ -57,12 +57,12 @@ Let's break down each step.
 
 ---
 
-## Step 1: Forward Pass
+### Unified Forward Pass
 
-The forward pass computes what the network predicts given some input.
+The forward pass computes what the network predicts. Loom uses a unified `Forward` method that automatically routes to GPU if available.
 
 ```go
-output, duration := network.ForwardCPU(input)
+output, duration := network.Forward(input)
 ```
 
 What happens internally:
@@ -168,6 +168,12 @@ The key property: **Cross-entropy heavily penalizes confident wrong answers**.
 ---
 
 ## Step 3: Backward Pass
+
+Loom uses a unified `Backward` method that automatically propagates gradients through all layers, using GPU acceleration where supported.
+
+```go
+network.Backward(gradOutput)
+```
 
 The backward pass figures out **how to change each weight to reduce the loss**. This is where calculus comes in—specifically, the chain rule.
 
@@ -634,51 +640,59 @@ network.SetObserver(observer)
 
 ---
 
-## Summary
+## High-Level Training API
 
-Training is a loop of:
-1. **Forward**: Compute predictions
-2. **Loss**: Measure error
-3. **Backward**: Compute gradients (who's responsible?)
-4. **Update**: Adjust weights (fix the responsible parts)
-
-Key decisions:
-- **Loss function**: MSE for regression, CrossEntropy for classification
-- **Optimizer**: AdamW is a safe default, SGD+Momentum for CNNs
-- **Learning rate**: Start around 0.001, adjust based on results
-- **Schedule**: Warmup + decay for large models
-- **Clipping**: Use gradient clipping for stability
-
-The art of training is balancing exploration (high learning rate, quick convergence) vs precision (low learning rate, optimal solution).
-
-## Training on GPU
-
-Loom supports training on GPU using the **exact same API** as CPU training. You don't need to change your loop structure.
-
-### Enabling GPU Training
-
-Just initialize the GPU before your loop:
+For most users, the direct `Train()` method is the preferred way to train models. It handles the training loop, loss computation, backpropagation, and optimization in a single call, with automatic GPU support.
 
 ```go
-// 1. Initialize GPU
-if err := network.InitGPU(); err != nil {
-    panic(err)
+// 1. Prepare data
+batches := []nn.TrainingBatch{
+    {Input: [...], Target: [...]},
 }
-defer network.ReleaseGPU()
 
-// 2. Run your standard loop
-for epoch := 0; epoch < epochs; epoch++ {
-    // ...
-    // ForwardCPU automatically routes to GPU
-    output, _ := network.ForwardCPU(input)
+// 2. Configure training
+config := nn.TrainingConfig{
+    Epochs:       10,
+    LearningRate: 0.001,
+    UseGPU:       true,
+    LossType:     "cross_entropy",
+    Verbose:      true,
+}
+
+// 3. Train
+metrics, err := network.Train(batches, config)
+```
+
+## Manual Training Loop (Advanced)
+
+If you need custom logic (e.g., custom schedulers, unique data augmentation), you can write a manual loop.
+
+```go
+func train(network *nn.Network, data []Sample, epochs int) {
+    // 1. Setup GPU if desired
+    network.InitGPU() 
     
-    // ...
-    // BackwardCPU automatically routes to GPU
-    network.BackwardCPU(gradOutput)
-    
-    // Updates happen on GPU memory
-    network.ApplyGradients(lr)
+    // 2. Training loop
+    for epoch := 0; epoch < epochs; epoch++ {
+        for _, sample := range data {
+            // Forward pass (auto-routes to GPU)
+            output, _ := network.Forward(sample.Input)
+            
+            // Compute loss and gradient
+            loss, gradOutput := nn.CrossEntropyLossGrad(output, sample.Target)
+            
+            // Backward pass (auto-routes to GPU)
+            network.Backward(gradOutput)
+            
+            // Update weights
+            network.ApplyGradients(0.01)
+        }
+    }
 }
 ```
 
-See [GPU Layers](./gpu_layers.md) for a list of layers that support GPU training.
+## Summary
+
+Loom provides two ways to train:
+1. **High-Level `Train()`**: Best for 99% of use cases. Simple, fast, and handles GPU/CPU routing automatically.
+2. **Manual `Forward()`/`Backward()`**: Unified methods for custom loops that still benefit from automatic hardware acceleration.
