@@ -119,6 +119,21 @@ Traditional neural networks suffer from "Overconfident Hallucination" when encou
 
 ---
 
+### Experiment 4: Spurious Correlation Defense (RN4)
+**Task:** Robustness against "shortcuts." Training data includes a spurious feature (1D) perfectly correlated with labels. During testing, this feature is randomized.
+*   **Recursive Loom:** Maps input to geometric prototypes, emphasizing true spatial features.
+*   **Standard Dense:** A features-to-label mapping that easily learns the easier (but brittle) spurious signal.
+
+| Model (RN4) | Mean Accuracy (Test) | Std Dev | **Perfect (100%)** |
+|-------------|----------------------|---------|--------------------|
+| **Loom (Prototype) Net** | **95.94%** | ±3.51% | **8 Runs** |
+| **Standard Dense Net** | 47.99% | ±14.46% | 0 Runs |
+
+**Conclusion:**
+Traditional deep networks are "Lazy Learners"—they will prioritize the simplest possible mathematical correlation (a shortcut) even if it isn't semantically meaningful. When that shortcut breaks at test time, the model collapses to chance (47.99%). In contrast, the **Recursive Neuro-Symbolic Architecture** forces the network to organize data around geometric prototypes. Because the prototypes in L1 represent the "shape" of the classes (Safe vs Attack), the model naturally ignores the brittle spurious dimension, achieving **95.94% accuracy** on randomized test data. This proves that prototype-based layers are fundamentally more robust to spurious correlations than black-box dense layers.
+
+---
+
 ## Code References
 
 | Component | Path |
