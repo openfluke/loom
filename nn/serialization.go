@@ -304,6 +304,13 @@ func serializeBranches(branches []LayerConfig) []LayerDefinition {
 		case LayerSequential:
 			// Sequential layers store their sub-layers in ParallelBranches (processed in order)
 			def.Branches = serializeBranches(branch.ParallelBranches) // Recursive call
+		case LayerConv1D:
+			def.InputChannels = branch.Conv1DInChannels
+			def.Filters = branch.Conv1DFilters
+			def.KernelSize = branch.Conv1DKernelSize
+			def.Stride = branch.Conv1DStride
+			def.Padding = branch.Conv1DPadding
+			def.InputLength = branch.InputHeight
 		case LayerKMeans:
 			def.NumClusters = branch.NumClusters
 			def.DistanceMetric = branch.DistanceMetric
@@ -385,6 +392,9 @@ func serializeBranchWeights(branches []LayerConfig) []LayerWeights {
 		case LayerSequential:
 			// Recursively serialize nested sequential layer weights
 			w.BranchWeights = serializeBranchWeights(branch.ParallelBranches)
+		case LayerConv1D:
+			w.Kernel = branch.Kernel
+			w.ConvBias = branch.Bias
 		case LayerKMeans:
 			w.ClusterCenters = branch.ClusterCenters
 			if subNet, ok := branch.SubNetwork.(*Network); ok {
@@ -760,6 +770,16 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
 			layerWeights.BranchWeights = serializeBranchWeights(layerConfig.ParallelBranches)
 
+		case LayerConv1D:
+			layerDef.InputChannels = layerConfig.Conv1DInChannels
+			layerDef.Filters = layerConfig.Conv1DFilters
+			layerDef.KernelSize = layerConfig.Conv1DKernelSize
+			layerDef.Stride = layerConfig.Conv1DStride
+			layerDef.Padding = layerConfig.Conv1DPadding
+			layerDef.InputLength = layerConfig.InputHeight // Map InputHeight to input_length for JSON
+			layerWeights.Kernel = layerConfig.Kernel
+			layerWeights.ConvBias = layerConfig.Bias
+
 		case LayerKMeans:
 			layerDef.NumClusters = layerConfig.NumClusters
 			layerDef.DistanceMetric = layerConfig.DistanceMetric
@@ -1078,6 +1098,20 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				GateBias:     layerWeights.GateBias,
 				UpBias:       layerWeights.UpBias,
 				DownBias:     layerWeights.DownBias,
+			}
+
+		case "conv1d":
+			layerConfig = LayerConfig{
+				Type:             LayerConv1D,
+				Activation:       stringToActivation(layerDef.Activation),
+				Conv1DInChannels: layerDef.InputChannels,
+				Conv1DFilters:    layerDef.Filters,
+				Conv1DKernelSize: layerDef.KernelSize,
+				Conv1DStride:     layerDef.Stride,
+				Conv1DPadding:    layerDef.Padding,
+				InputHeight:      layerDef.InputLength, // Map input_length to InputHeight
+				Kernel:           layerWeights.Kernel,
+				Bias:             layerWeights.ConvBias,
 			}
 
 		case "parallel":

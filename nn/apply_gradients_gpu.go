@@ -127,14 +127,12 @@ func applyGradientsToDenseLayerBatched(ctx *gpu.Context, pipeline *wgpu.ComputeP
 	}
 }
 
-// applyGradientsToConv1DLayerBatched applies gradients for Conv1D layer
-func applyGradientsToConv1DLayerBatched(ctx *gpu.Context, pipeline *wgpu.ComputePipeline, paramsBuffer *wgpu.Buffer, layer *gpu.Conv1DLayer, enc *wgpu.CommandEncoder) {
-	// Apply weight gradients
+// createGradientBindGroupsForConv1D creates and caches gradient application bind groups for a Conv1DLayer
+func createGradientBindGroupsForConv1D(ctx *gpu.Context, pipeline *wgpu.ComputePipeline, paramsBuffer *wgpu.Buffer, layer *gpu.Conv1DLayer) {
+	// Create weight bind group
 	if layer.WeightBuffer != nil && layer.WeightGradientBuffer != nil {
-		weightSize := layer.Spec.OutChannels * layer.Spec.InChannels * layer.Spec.KernelSize
-		workgroups := uint32((weightSize + 255) / 256)
-
-		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		var err error
+		layer.GradientWeightBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 			Label:  "Conv1D_GradWeights",
 			Layout: pipeline.GetBindGroupLayout(0),
 			Entries: []wgpu.BindGroupEntry{
@@ -143,20 +141,15 @@ func applyGradientsToConv1DLayerBatched(ctx *gpu.Context, pipeline *wgpu.Compute
 				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
 			},
 		})
-		if err == nil {
-			pass := enc.BeginComputePass(nil)
-			pass.SetPipeline(pipeline)
-			pass.SetBindGroup(0, bg, nil)
-			pass.DispatchWorkgroups(workgroups, 1, 1)
-			pass.End()
+		if err != nil {
+			fmt.Printf("Error creating Conv1D weight gradient bind group: %v\n", err)
 		}
 	}
 
-	// Apply bias gradients
+	// Create bias bind group
 	if layer.BiasBuffer != nil && layer.BiasGradientBuffer != nil {
-		workgroups := uint32((layer.Spec.OutChannels + 255) / 256)
-
-		bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		var err error
+		layer.GradientBiasBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 			Label:  "Conv1D_GradBias",
 			Layout: pipeline.GetBindGroupLayout(0),
 			Entries: []wgpu.BindGroupEntry{
@@ -165,13 +158,33 @@ func applyGradientsToConv1DLayerBatched(ctx *gpu.Context, pipeline *wgpu.Compute
 				{Binding: 2, Buffer: paramsBuffer, Size: paramsBuffer.GetSize()},
 			},
 		})
-		if err == nil {
-			pass := enc.BeginComputePass(nil)
-			pass.SetPipeline(pipeline)
-			pass.SetBindGroup(0, bg, nil)
-			pass.DispatchWorkgroups(workgroups, 1, 1)
-			pass.End()
+		if err != nil {
+			fmt.Printf("Error creating Conv1D bias gradient bind group: %v\n", err)
 		}
+	}
+}
+
+// applyGradientsToConv1DLayerBatched applies gradients for Conv1D layer
+func applyGradientsToConv1DLayerBatched(ctx *gpu.Context, pipeline *wgpu.ComputePipeline, paramsBuffer *wgpu.Buffer, layer *gpu.Conv1DLayer, enc *wgpu.CommandEncoder) {
+	// Apply weight gradients
+	if layer.GradientWeightBindGroup != nil {
+		weightSize := layer.Spec.OutChannels * layer.Spec.InChannels * layer.Spec.KernelSize
+		workgroups := uint32((weightSize + 255) / 256)
+		pass := enc.BeginComputePass(nil)
+		pass.SetPipeline(pipeline)
+		pass.SetBindGroup(0, layer.GradientWeightBindGroup, nil)
+		pass.DispatchWorkgroups(workgroups, 1, 1)
+		pass.End()
+	}
+
+	// Apply bias gradients
+	if layer.GradientBiasBindGroup != nil {
+		workgroups := uint32((layer.Spec.OutChannels + 255) / 256)
+		pass := enc.BeginComputePass(nil)
+		pass.SetPipeline(pipeline)
+		pass.SetBindGroup(0, layer.GradientBiasBindGroup, nil)
+		pass.DispatchWorkgroups(workgroups, 1, 1)
+		pass.End()
 	}
 }
 

@@ -43,6 +43,10 @@ type Conv1DLayer struct {
 	bwGradPipeline  *wgpu.ComputePipeline
 	bwGradBindGroup *wgpu.BindGroup
 
+	// Gradient application bind groups (cached for training)
+	GradientWeightBindGroup *wgpu.BindGroup
+	GradientBiasBindGroup   *wgpu.BindGroup
+
 	outputLen int
 }
 
