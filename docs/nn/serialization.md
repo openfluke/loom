@@ -174,6 +174,57 @@ model.json                          Network in memory
 
 ---
 
+## JSON Configuration (Advanced)
+
+Loom allows you to define complex architectures directly in JSON using `nn.BuildNetworkFromJSON`. This is particularly useful for recursive and parallel structures.
+
+### KMeans Layer Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Must be `"kmeans"` |
+| `num_clusters` | int | Number of centroids (K) |
+| `kmeans_output_mode` | string | `"probabilities"`, `"features"`, or `"reconstruction"` |
+| `attached_layer` | object | **Recursive**: A full `LayerDefinition` for the internal sub-network |
+
+**Example**:
+```json
+{
+  "type": "kmeans",
+  "num_clusters": 8,
+  "attached_layer": {
+    "type": "dense", "input_size": 16, "output_size": 16, "activation": "tanh"
+  }
+}
+```
+
+### Parallel Layer (Gated MoE) Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Must be `"parallel"` |
+| `branches` | array | List of `LayerDefinition` objects for each expert |
+| `combine_mode` | string | `"concat"`, `"add"`, `"avg"`, `"filter"`, or `"grid_scatter"` |
+| `filter_gate` | object | **Gating**: A `LayerDefinition` for the gate network (if mode is `"filter"`) |
+| `filter_softmax` | string | Gating normalization: `"standard"`, `"sparsemax"`, etc. |
+| `filter_temperature`| float | Softness/sharpness of routing (default: 1.0) |
+
+**Example**:
+```json
+{
+  "type": "parallel",
+  "combine_mode": "filter",
+  "filter_softmax": "standard",
+  "filter_gate": { "type": "dense", "input_size": 16, "output_size": 2 },
+  "branches": [
+    { "type": "dense", "output_size": 8 },
+    { "type": "kmeans", "num_clusters": 4 }
+  ]
+}
+```
+
+---
+
 ## String-Based Serialization
 
 Sometimes you don't have a file system—for example, in WebAssembly or when sending models over a network.

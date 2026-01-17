@@ -23,7 +23,7 @@ A Parallel layer splits input, processes it through multiple "branches", then co
             └─────────────┼─────────────┘
                           │
                       Combine
-                    (concat/add/avg/filter)
+                    (concat/add/avg/filter/grid_scatter)
                           │
                           ▼
                        Output
@@ -509,6 +509,37 @@ Use when:
 - You want the network to learn conditional computation
 - Different inputs need fundamentally different processing
 - You want interpretable routing decisions
+
+#### Case Study: Parallel KMeans Experts (The RN6 Pattern)
+
+A powerful application of Parallel layers is using multiple KMeans "experts" in parallel. This is the core of the **RN6 (Recursive Neuro-Symbolic 6)** benchmark.
+
+```
+                  Input
+                    │
+          ┌─────────┴─────────┐
+          ▼                   ▼
+    ┌───────────┐       ┌───────────┐
+    │  Expert A │       │  Expert B │
+    │ (KMeans)  │       │ (KMeans)  │
+    └─────┬─────┘       └─────▼─────┘
+          │                   │
+          └─────────┬─────────┘
+                    │
+                 Combine
+             (concat/filter)
+                    │
+                    ▼
+               Dense Head
+                    │
+                    ▼
+               Classification
+```
+
+**Why do this?**
+- **Diverse Perspectives**: Each expert can learn to cluster the data differently (e.g., one focusing on spatial proximity, another on feature-based similarity).
+- **Redundancy & Reliability**: If one expert fails to capture a complex boundary, others can compensate.
+- **Interpretable MoE**: In `filter` mode, you can see exactly which "cluster" or "concept" expert the model is choosing for any given input.
 
 ---
 

@@ -524,6 +524,40 @@ Unlike vanilla RNN where gradients must pass through tanh repeatedly.
 
 ---
 
+## KMeans Layer: Learnable Concept Prototypes
+
+The KMeans layer is a differentiable clustering module that organizes data into "concepts" or "prototypes." Unlike standard layers that learn abstract weights, a KMeans layer learns **geometric centers** in a feature space.
+
+### How It Works
+
+1.  **Feature Extraction**: The input passes through an **attached sub-network** (which can be any layer: Dense, Conv, etc.) to extract features ($z$).
+2.  **Distance Calculation**: The layer computes the distance between the extracted features ($z$) and a set of learnable **cluster centers** ($C$).
+3.  **Soft Assignment**: Distances are converted into probabilities (or feature assignments) via a specialized softmax:
+    $$P(\text{cluster } k) = \frac{\exp(-\text{dist}(z, c_k) / \tau)}{\sum_j \exp(-\text{dist}(z, c_j) / \tau)}$$
+
+### The Power of Recursion
+
+KMeans layers in Loom are **recursive**. You can use a KMeans layer as the attached sub-network for *another* KMeans layer.
+
+```
+Input ──▶ [ KMeans L1: Finds "Edges" ] ──▶ [ KMeans L2: Finds "Shapes" ] ──▶ Output
+```
+
+### Output Modes
+
+- **`probabilities`**: Outputs a probability distribution over the $K$ clusters (the "assignment").
+- **`features`**: Outputs the actual feature vector extracted by the sub-network.
+- **`reconstruction`**: (Experimental) Outputs the coordinates of the nearest cluster center.
+
+### When to Use KMeans Layers
+
+- **Interpretability**: The learned cluster centers are actual points in the feature space that represent prototypical examples.
+- **Hierarchical Classification**: Building "Concept Taxonomies" (e.g., Species inside Kingdoms).
+- **Out-of-Distribution Detection**: Large distances to all learned clusters indicate "unknown" data.
+- **Neuro-Symbolic Reasoning**: Bridging continuous neural features with discrete symbolic categories.
+
+---
+
 ## Softmax: Turning Numbers into Probabilities
 
 Softmax converts a vector of arbitrary real numbers into a probability distribution (values between 0 and 1 that sum to 1).

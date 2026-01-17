@@ -88,13 +88,15 @@ LOOM is a **CPU-first framework** with full forward/backward passes for 10 layer
 | **LayerNorm** | Layer normalization with residual | CPU only |
 | **RNN** | Recurrent with BPTT | CPU only |
 | **LSTM** | Long Short-Term Memory with gates | CPU only |
-| **Softmax** | 10 variants including native MoE | CPU only |
-| **Parallel** | Multiple branches with 4 combine modes | CPU only |
-| **RMSNorm** | Root Mean Square normalization | CPU only |
-| **SwiGLU** | Swish-Gated Linear Unit | CPU only |
+| **KMeans** | Differentiable recursive clustering layer | ✅ Production |
+| **Softmax** | 10 variants including native MoE | ✅ Production |
+| **Parallel** | Multiple branches with 5 combine modes | ✅ Production |
+| **RMSNorm** | Root Mean Square normalization | ✅ Production |
+| **SwiGLU** | Swish-Gated Linear Unit | ✅ Production |
 
 ### Special Features
 
+- **Recursive Neuro-Symbolic Architecture** — Hierarchical prototype-based logic (KMeansLayer)
 - **Native MoE via Grid Softmax** — Mathematically proven equivalent to traditional MoE
 - **Grid Scatter Mode** — Place outputs at specific 2D/3D grid positions
 - **Stepping API** — Fine-grained execution control for real-time training

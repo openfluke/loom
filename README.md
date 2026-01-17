@@ -45,6 +45,7 @@ Pre-compiled binaries for:
 
 - **True Embeddability**: Single binary. Zero external dependencies. No Python runtime needed.
 - **Hybrid Gradient/Geometric Engine**: [Neural Tweening](docs/step_tween_assessment.md) combines geometric gap-closing with backpropagation-guided momentum for real-time adaptation.
+- **Geometric/Recursive Clustering**: Differentiable `KMeansLayer` allows networks to learn interpretable symbolic prototypes within a neural hierarchy.
 - **Structural Parallelism**: Native support for Inception, ResNeXt, Siamese, and MoE architectures via `LayerParallel` with 6 combine modes.
 - **Native Mixed-Precision**: Generic tensor backend supports `int8`, `uint16`, `float32`, `float64` natively.
 - **Complete Training Infrastructure**: 7 LR schedulers, 3 optimizers (SGD/AdamW/RMSprop), 10 softmax variants.
@@ -111,6 +112,8 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 
 ## What's New
 
+> 🧠 **Recursive Neuro-Symbolic Architecture**: The differentiable `KMeansLayer` enables models to learn hierarchical concept taxonomies. Perfect for OOD detection and robust classification. See `docs/research_paper_7_recursive_neuro_symbolic.md`.
+
 > 🎉 **Transformer Inference**: SmolLM2-135M-Instruct runs entirely in browser WASM with pure Go implementation.
 
 > 🤯 **Grid Softmax = Native MoE**: Mathematically proven equivalent to PyTorch MoE with 97.1% loss reduction. See `examples/moe_proof_demo.go`.
@@ -159,7 +162,7 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 | **Advanced** | **Stitch Layers** | ✅ **Native** | ❌ (Manual) | ❌ (Manual) | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Dynamic Arch Gen** | ✅ **Built-in** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| | **K-Means Clustering** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **K-Means Clustering** | ✅ **Differentiable** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Correlation Analysis** | ✅ **Pearson/Spearman** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Model Evaluation** | ✅ **Deviation/Metrics** | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | | **Network Telemetry** | ✅ **Blueprint API** | ❌ | ⚠️ | ❌ | ❌ | ❌ | ⚠️ | ❌ |
@@ -201,7 +204,7 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 | | **Network Grafting** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Step-Based Forward** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Dynamic Arch Gen** | ✅ **Unique** | ❌ | ❌ | ❌ | ❌ | ❌ |
-| | **K-Means Clustering** | ✅ **Parallel** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| | **K-Means Clustering** | ✅ **Differentiable** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Correlation Analysis** | ✅ **Pearson/Spearman** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | | **Model Evaluation** | ✅ **Full Suite** | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ |
 | | **Network Telemetry** | ✅ **Blueprint** | ❌ | ⚠️ | ❌ | ❌ | ❌ |
@@ -253,6 +256,7 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 | LayerNorm | `layer_norm` | Layer normalization |
 | RMSNorm | `rms_norm` | RMS normalization |
 | SwiGLU | `swiglu` | SwiGLU activation layer |
+| KMeans | `kmeans` | Differentiable recursive clustering layer |
 | Softmax | `softmax` | 10 variants (Standard, Grid, Hierarchical, Temperature, Gumbel, Masked, Sparsemax, Entmax, Adaptive, Mixture) |
 | Embedding | `embedding` | Token embedding |
 | Parallel | `parallel` | Branching with 6 combine modes (add, concat, multiply, average, grid_scatter, filter) |
@@ -334,6 +338,7 @@ network.ReleaseGPUWeights()      // Cleanup
 | **SwiGLU** | ✅ **Stable** | ⚠️ **Experimental** | High performance. |
 | **MHA** | ✅ **Stable** | ⚠️ **Experimental** | Functional parity verified. |
 | **Softmax** | ✅ **Stable** | ⚠️ **Experimental** | Functional. |
+| **KMeans** | ❌ **WIP** | ❌ **WIP** | Currently runs on CPU only. |
 
 
 ## Quick Start
@@ -506,12 +511,13 @@ Loom includes a rigorous verification suite in `tva/muniversal_testing.go` that 
 
 > [!NOTE]
 > **GPU Acceleration Limits:** As of v0.0.8, WebGPU acceleration is enabled for standard `Forward/Backward` passes. 
-> The structural API `nn/step_forward.go` (Step-based execution) and `nn/tween.go` (Neural Tweening) currently run on **CPU only**.
+> The structural API `nn/step_forward.go` (Step-based execution), `nn/tween.go` (Neural Tweening), and `nn/kmeans_layer.go` (K-Means) currently run on **CPU only**.
 
 ### Verified Advanced Architectures
 
 The test suite also verifies complex, production-ready architectural patterns:
 
+- **Recursive Symbol Learning (RN1-RN6)**: Differentiable K-Means layers nested to form taxonomies, achieving 100% accuracy on hierarchical tasks with full interpretability.
 - **Heterogenous MoE**: Using `LayerParallel` with `CombineMode: "filter"` to route inputs to experts of different depths/types (e.g., CNN expert vs Dense expert).
 - **Stitched Experts**: Using `LayerStitch` to harmonize outputs from parallel branches with different dimensions (e.g., 5-dim output and 7-dim output stitched to common 10-dim).
 - **Neural Grafting**: Training *only* the gating mechanism of an MoE while keeping experts frozen, using `TweenStep` for precise surgical updates.

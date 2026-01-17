@@ -562,6 +562,30 @@ network.SetLayer(0, 0, 2, nn.InitSoftmaxLayer())
 
 ---
 
+## Case Study: Hierarchical Concept Taxonomy (RN Benchmark Series)
+
+The **Recursive Neuro-Symbolic (RN)** benchmark series demonstrates Loom's ability to learn complex hierarchical taxonomies using nested `KMeansLayer` architectures. This represents a bridge between deep learning and symbolic reasoning.
+
+### The RN Suite at a Glance
+
+| Benchmark | Architecture | Concept Learned |
+|-----------|--------------|------------------|
+| **RN1** | `KMeans(4) → KMeans(2)` | Hierarchical spatial grouping. |
+| **RN2** | `KMeans(15) → KMeans(3)` | The Star-Galaxy taxonomy (clusters within clusters). |
+| **RN3** | `KMeans(8)` | Geometric Anomaly Detection (Out-of-Distribution). |
+| **RN4** | `KMeans(Prototype)` | Shortcut/Spurious correlation defense. |
+| **RN5** | `KMeans vs MLP` | Performance vs. Interpretability baseline. |
+| **RN6** | `Parallel KMeans` | Mixture of Experts (MoE) with prototype branch selection. |
+
+### Key Result: Interpretability and Reliability
+
+Unlike traditional deep networks that are "Black Boxes," the RN series proves that Loom's prototype-based layers are:
+1. **Fully Interpretable**: Each cluster center is a "Concept Prototype" that can be visualized and inspected.
+2. **Robust to Shift**: They naturally handle "shortcuts" and "short-day" OOD attacks by relying on geometric manifolds rather than brittle numeric correlations.
+3. **Recursive**: They can be stacked indefinitely to build deep hierarchies of reasoning ($p \rightarrow q \rightarrow r$).
+
+---
+
 ## Performance Tips
 
 ### 1. Batch Processing
