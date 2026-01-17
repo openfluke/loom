@@ -88,20 +88,24 @@ type LayerDefinition struct {
 	InputLength int `json:"input_length,omitempty"`
 
 	// Parallel layer fields
-	Branches         []LayerDefinition `json:"branches,omitempty"`
-	CombineMode      string            `json:"combine_mode,omitempty"` // "concat", "add", "avg", "grid_scatter"
-	GridPositions    []GridPositionDef `json:"grid_positions,omitempty"`
-	GridOutputRows   int               `json:"grid_output_rows,omitempty"`
-	GridOutputCols   int               `json:"grid_output_cols,omitempty"`
-	GridOutputLayers int               `json:"grid_output_layers,omitempty"`
+	Branches          []LayerDefinition `json:"branches,omitempty"`
+	CombineMode       string            `json:"combine_mode,omitempty"` // "concat", "add", "avg", "grid_scatter"
+	GridPositions     []GridPositionDef `json:"grid_positions,omitempty"`
+	GridOutputRows    int               `json:"grid_output_rows,omitempty"`
+	GridOutputCols    int               `json:"grid_output_cols,omitempty"`
+	GridOutputLayers  int               `json:"grid_output_layers,omitempty"`
+	FilterGateConfig  *LayerDefinition  `json:"filter_gate,omitempty"`
+	FilterSoftmax     string            `json:"filter_softmax,omitempty"`
+	FilterTemperature float32           `json:"filter_temperature,omitempty"`
 
 	// KMeans fields
-	NumClusters        int     `json:"num_clusters,omitempty"`
-	DistanceMetric     string  `json:"distance_metric,omitempty"`
-	KMeansTemperature  float32 `json:"kmeans_temperature,omitempty"`
-	KMeansOutputMode   string  `json:"kmeans_output_mode,omitempty"`
-	KMeansLearningRate float32 `json:"kmeans_learning_rate,omitempty"`
-	ClusterDim         int     `json:"cluster_dim,omitempty"`
+	NumClusters        int              `json:"num_clusters,omitempty"`
+	DistanceMetric     string           `json:"distance_metric,omitempty"`
+	KMeansTemperature  float32          `json:"kmeans_temperature,omitempty"`
+	KMeansOutputMode   string           `json:"kmeans_output_mode,omitempty"`
+	KMeansLearningRate float32          `json:"kmeans_learning_rate,omitempty"`
+	ClusterDim         int              `json:"cluster_dim,omitempty"`
+	AttachedLayer      *LayerDefinition `json:"attached_layer,omitempty"`
 }
 
 // GridPositionDef is the JSON representation of a grid position
@@ -1538,6 +1542,15 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		config.GridOutputRows = def.GridOutputRows
 		config.GridOutputCols = def.GridOutputCols
 		config.GridOutputLayers = def.GridOutputLayers
+		config.FilterSoftmax = stringToSoftmaxType(def.FilterSoftmax)
+		config.FilterTemperature = def.FilterTemperature
+		if def.FilterGateConfig != nil {
+			gateCfg, err := buildLayerConfig(*def.FilterGateConfig)
+			if err != nil {
+				return config, fmt.Errorf("filter gate config: %w", err)
+			}
+			config.FilterGateConfig = &gateCfg
+		}
 
 		// Convert GridPositionDef to GridPosition
 		if len(def.GridPositions) > 0 {
@@ -1591,9 +1604,18 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		config = InitConv1DLayer(seqLen, inChannels, def.KernelSize, def.Stride, def.Padding, def.Filters, stringToActivation(def.Activation))
 
 	case "kmeans":
-		// Small default net if not specified
-		dummyLayer := LayerConfig{Type: LayerDense, InputHeight: 1, OutputHeight: 1}
-		config = InitKMeansLayer(def.NumClusters, dummyLayer, def.KMeansOutputMode)
+		var attachedConfig LayerConfig
+		if def.AttachedLayer != nil {
+			var err error
+			attachedConfig, err = buildLayerConfig(*def.AttachedLayer)
+			if err != nil {
+				return config, fmt.Errorf("kmeans attached layer: %w", err)
+			}
+		} else {
+			// Fallback (e.g. Identity or small Dense) if not specified
+			attachedConfig = LayerConfig{Type: LayerDense, InputHeight: 1, OutputHeight: 1}
+		}
+		config = InitKMeansLayer(def.NumClusters, attachedConfig, def.KMeansOutputMode)
 		config.DistanceMetric = def.DistanceMetric
 		config.KMeansTemperature = def.KMeansTemperature
 		config.KMeansLearningRate = def.KMeansLearningRate
