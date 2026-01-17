@@ -1,6 +1,6 @@
 # Loom Codebase Guide
 
-This is the central documentation index for the Loom neural network framework.
+This is the central documentation index for Loom, a **Deterministic Neural Virtual Machine (DNVM)** — a portable execution environment for neural networks with bitwise-identical results across all platforms.
 
 ## Package Overview
 

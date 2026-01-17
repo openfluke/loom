@@ -4,6 +4,75 @@ This document explains how Loom's neural network system actually works—not jus
 
 ---
 
+## Loom as a Deterministic Neural Virtual Machine
+
+Loom is a **Deterministic Neural Virtual Machine (DNVM)** — a portable execution environment for neural networks that guarantees **bitwise-identical results** across all platforms, backends, and language bindings.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        LOOM ARCHITECTURE                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐  │
+│  │   Python    │   │  TypeScript │   │     C#      │   │    WASM     │  │
+│  │   Binding   │   │   Binding   │   │   Binding   │   │   Browser   │  │
+│  └──────┬──────┘   └──────┬──────┘   └──────┬──────┘   └──────┬──────┘  │
+│         │                 │                 │                 │         │
+│         └────────────────┬┴─────────────────┴─────────────────┘         │
+│                          ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                        C-ABI (FFI Layer)                          │  │
+│  │         Handle-based state management, JSON marshalling           │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                          │                                              │
+│                          ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                    EXECUTION ENGINE (nn/)                         │  │
+│  │   Forward/Backward passes, Optimizers, Schedulers, Tweening       │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│         │                                         │                     │
+│         ▼                                         ▼                     │
+│  ┌─────────────────┐                    ┌─────────────────────────┐     │
+│  │   CPU Backend   │                    │    GPU JIT Compiler     │     │
+│  │   (Pure Go)     │                    │   (WGSL Generation)     │     │
+│  │                 │                    │         ▼               │     │
+│  │  Deterministic  │                    │  ┌─────────────────┐    │     │
+│  │  IEEE-754 Math  │◄────────────────►  │  │  WebGPU Runtime │    │     │
+│  └─────────────────┘   Bit-identical    │  └─────────────────┘    │     │
+│                           results       └─────────────────────────┘     │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Architectural Components
+
+| Layer | Component | Role |
+|:------|:----------|:-----|
+| **IR (Bytecode)** | JSON network configs, `serialization.go` | Portable, declarative network specification |
+| **Type System** | `types.go` with `Tensor[T Numeric]` | Multi-precision tensors (F64→I8), generic operations |
+| **Execution** | `forward.go`, `backward.go` | Deterministic layer-by-layer forward/backward |
+| **JIT Backend** | `gpu/*.go` | Runtime WGSL generation → WebGPU pipelines |
+| **FFI Runtime** | `cabi/main.go` | Handle-based API, state management, memory safety |
+| **Bindings** | `python/`, `csharp/`, `typescript/`, `wasm/` | Thin wrappers exposing the C-ABI |
+
+### Determinism Guarantee
+
+Unlike typical ML runtimes that disclaim cross-platform reproducibility, Loom enforces **bit-exact determinism**:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ Testing: Dense                                                       │
+├──────────────────────────────────────────────────────────────────────┤
+│  • Max Diff:  0.0000000000 (Idx: -1)                                 │
+│  • Mean Diff: 0.0000000000                                           │
+│  ✅ [GOLD STANDARD] Exact Bit-Determinism                            │
+│     Perfect match. CPU and GPU logic are identical down to the bit.  │
+│     CPU: 0.5010004044 | GPU: 0.5010004044 | Diff: 0.0000000000       │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Verified across:** CPU (Go) ↔ GPU (WebGPU/WGSL), x86_64 ↔ ARM64 ↔ ARMv7, Linux ↔ Windows ↔ macOS ↔ Android ↔ iOS, Native ↔ WASM (Browser)
+
+---
+
 ## The Big Picture: What Makes Loom Different
 
 Most neural network frameworks organize layers in a simple chain: input flows through layer 1, then layer 2, then layer 3, and so on. Loom does something different. It organizes layers in a **2D grid**, like cells in a spreadsheet.

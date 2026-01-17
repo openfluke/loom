@@ -1,6 +1,6 @@
 # Quick Reference
 
-This is a concise reference for common operations in the `nn` package.
+Concise reference for common operations in the `nn` package — Loom's **Deterministic Neural Virtual Machine** core.
 
 ---
 
