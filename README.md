@@ -18,6 +18,7 @@ Unlike frameworks that disclaim cross-platform reproducibility, Loom **enforces 
 [![NuGet](https://img.shields.io/nuget/v/Welvet.svg)](https://www.nuget.org/packages/Welvet/)
 [![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/)
 [![.NET](https://img.shields.io/badge/.NET-9.0+-512BD4.svg)](https://dotnet.microsoft.com/)
+[![Bit-Exact Determinism](https://img.shields.io/badge/Determinism-Bit--Exact-brightgreen)]()
 
 ## 🌍 Cross-Ecosystem Compatibility
 
