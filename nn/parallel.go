@@ -152,6 +152,15 @@ func ParallelForward[T Numeric](
 			}
 			preAct = input.Clone() // Placeholder
 
+		case LayerKMeans:
+			inputF32 := ConvertSliceTToFloat32(input.Data)
+			outputF32, err := ForwardKMeansCPU(inputF32, branchCfg)
+			if err != nil {
+				return nil, nil, fmt.Errorf("kmeans branch %d failed: %w", i, err)
+			}
+			postAct = ConvertTensorFloat32ToT[T](NewTensorFromSlice(outputF32, len(outputF32)))
+			preAct = ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.PreActivations, len(branchCfg.PreActivations)))
+
 		default:
 			// For unsupported types, pass through
 			postAct = input.Clone()
@@ -282,6 +291,13 @@ func ParallelForwardFiltered[T Numeric](
 			upBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.UpBias, len(branchCfg.UpBias)))
 			downBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.DownBias, len(branchCfg.DownBias)))
 			postAct = SwiGLUForward(input, gateW, upW, downW, gateBias, upBias, downBias, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize)
+		case LayerKMeans:
+			inputF32 := ConvertSliceTToFloat32(input.Data)
+			outputF32, err := ForwardKMeansCPU(inputF32, branchCfg)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("kmeans branch %d failed: %w", i, err)
+			}
+			postAct = ConvertTensorFloat32ToT[T](NewTensorFromSlice(outputF32, len(outputF32)))
 		default:
 			// Fallback: use generic ParallelForward for this branch type
 			nestedBranches := []*LayerConfig{branchCfg}
@@ -371,6 +387,12 @@ func ParallelBackward[T Numeric](
 				size = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
 			case LayerConv1D:
 				size = batchSize * branchCfg.OutputHeight * branchCfg.Conv1DFilters
+			case LayerKMeans:
+				if branchCfg.KMeansOutputMode == "probabilities" {
+					size = batchSize * branchCfg.NumClusters
+				} else {
+					size = batchSize * branchCfg.ClusterDim
+				}
 			default:
 				size = len(input.Data)
 			}
@@ -454,6 +476,18 @@ func ParallelBackward[T Numeric](
 			// until a better state management is implemented.
 			subGradInput = SequentialBackward(gradBranch, input, nestedLayers, nil)
 
+		case LayerKMeans:
+			inputF32 := ConvertSliceTToFloat32(input.Data)
+			gradOutF32 := ConvertSliceTToFloat32(gradBranch.Data)
+			preActF32 := ConvertSliceTToFloat32(intermediate.Data)
+			assignmentsF32, _ := ForwardKMeansCPU(inputF32, branchCfg)
+			lr := branchCfg.KMeansLearningRate
+			if lr == 0 {
+				lr = 0.01
+			}
+			subGradInF32, _ := BackwardKMeansCPU(gradOutF32, branchCfg, inputF32, preActF32, assignmentsF32, lr)
+			subGradInput = ConvertTensorFloat32ToT[T](NewTensorFromSlice(subGradInF32, len(subGradInF32)))
+
 		default:
 			if len(gradBranch.Data) == len(input.Data) {
 				subGradInput = gradBranch.Clone()
@@ -515,6 +549,20 @@ func ParallelBackwardFiltered[T Numeric](
 				seqLen, branchCfg.Conv1DInChannels,
 				branchCfg.Conv1DKernelSize, branchCfg.Conv1DStride, branchCfg.Conv1DPadding,
 				branchCfg.Conv1DFilters, batchSize, branchCfg.Activation)
+
+		case LayerKMeans:
+			inputF32 := ConvertSliceTToFloat32(input.Data)
+			gradOutF32 := ConvertSliceTToFloat32(scaledGrad.Data)
+			// In Filtered mode, we might not have good intermediates for sub-network
+			// Re-running or using input as proxy:
+			assignmentsF32, _ := ForwardKMeansCPU(inputF32, branchCfg)
+			preActF32 := branchCfg.PreActivations
+			lr := branchCfg.KMeansLearningRate
+			if lr == 0 {
+				lr = 0.01
+			}
+			subGradInF32, _ := BackwardKMeansCPU(gradOutF32, branchCfg, inputF32, preActF32, assignmentsF32, lr)
+			subGradInput = ConvertTensorFloat32ToT[T](NewTensorFromSlice(subGradInF32, len(subGradInF32)))
 
 		default:
 			subGradInput = scaledGrad.Clone()
@@ -671,6 +719,14 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 				copy(preAct[offset:], pa)
 				offset += len(pa)
 			}
+
+		case LayerKMeans:
+			output, err := ForwardKMeansCPU(input, branchCfg)
+			if err != nil {
+				return nil, nil, fmt.Errorf("kmeans branch %d failed: %w", i, err)
+			}
+			postAct = output
+			preAct = branchCfg.PreActivations
 
 		default:
 			return nil, nil, fmt.Errorf("unsupported layer type %d in parallel branch %d", branchCfg.Type, i)
@@ -925,6 +981,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
 				outputSize = len(dummyOut)
+			case LayerKMeans:
+				if branchCfg.KMeansOutputMode == "probabilities" {
+					outputSize = batchSize * branchCfg.NumClusters
+				} else {
+					outputSize = batchSize * branchCfg.ClusterDim
+				}
 			default:
 				return nil, nil, nil, fmt.Errorf("cannot determine output size for layer type %d", branchCfg.Type)
 			}
@@ -987,6 +1049,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
 				branchOutputSize = len(dummyOut)
+			case LayerKMeans:
+				if branchCfg.KMeansOutputMode == "probabilities" {
+					branchOutputSize = batchSize * branchCfg.NumClusters
+				} else {
+					branchOutputSize = batchSize * branchCfg.ClusterDim
+				}
 			default:
 				return nil, nil, nil, fmt.Errorf("cannot determine output size for layer type %d", branchCfg.Type)
 			}
@@ -1035,6 +1103,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
 				branchOutputSize = len(dummyOut)
+			case LayerKMeans:
+				if branchCfg.KMeansOutputMode == "probabilities" {
+					branchOutputSize = batchSize * branchCfg.NumClusters
+				} else {
+					branchOutputSize = batchSize * branchCfg.ClusterDim
+				}
 			default:
 				return nil, nil, nil, fmt.Errorf("cannot determine output size for layer type %d", branchCfg.Type)
 			}
@@ -1292,6 +1366,16 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				copy(biasGrad[bOff:], nestedBiasGrads[j])
 				bOff += len(nestedBiasGrads[j])
 			}
+
+		case LayerKMeans:
+			assignments, _ := ForwardKMeansCPU(input, branchCfg)
+			lr := branchCfg.KMeansLearningRate
+			if lr == 0 {
+				lr = 0.01
+			}
+			branchInputGrad, _ = BackwardKMeansCPU(gradOut, branchCfg, input, preAct, assignments, lr)
+			kernelGrad = nil // KMgrads are handled in-place inside BackwardKMeansCPU
+			biasGrad = nil
 
 		default:
 			return nil, nil, nil, fmt.Errorf("unsupported layer type %d in parallel branch %d backward", branchCfg.Type, i)

@@ -1116,6 +1116,28 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				ParallelBranches: branches,
 			}
 
+		case "kmeans":
+			layerConfig = LayerConfig{
+				Type:               LayerKMeans,
+				NumClusters:        layerDef.NumClusters,
+				DistanceMetric:     layerDef.DistanceMetric,
+				KMeansTemperature:  layerDef.KMeansTemperature,
+				KMeansOutputMode:   layerDef.KMeansOutputMode,
+				KMeansLearningRate: layerDef.KMeansLearningRate,
+				ClusterDim:         layerDef.ClusterDim,
+				ClusterCenters:     layerWeights.ClusterCenters,
+			}
+			// Reconstruct sub-network from branches
+			if len(layerDef.Branches) > 0 {
+				subLayers, err := deserializeBranches(layerDef.Branches, layerWeights.BranchWeights)
+				if err == nil {
+					// Create a sub-network
+					subNet := NewNetwork(1, 1, 1, len(subLayers))
+					subNet.Layers = subLayers
+					layerConfig.SubNetwork = subNet
+				}
+			}
+
 		default:
 			return nil, fmt.Errorf("unknown layer type: %s", layerDef.Type)
 		}
@@ -1157,6 +1179,8 @@ func layerTypeToString(lt LayerType) string {
 		return "parallel"
 	case LayerSequential:
 		return "sequential"
+	case LayerKMeans:
+		return "kmeans"
 	default:
 		return "unknown"
 	}

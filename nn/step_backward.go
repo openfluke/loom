@@ -353,7 +353,11 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 
 			// For KMeans, we need to defer the actual update to ApplyGradients or handle it here.
 			// Let's call BackwardKMeansCPU with 0 learning rate to get gradInput and store grads.
-			gInput, err := BackwardKMeansCPU(grad, config, input, features, assignments, 0)
+			lr := config.KMeansLearningRate
+			if lr == 0 {
+				lr = 0.01
+			}
+			gInput, err := BackwardKMeansCPU(grad, config, input, features, assignments, lr)
 			if err != nil {
 				fmt.Printf("KMeans backward error: %v\n", err)
 				gradInput = make([]float32, len(input))
@@ -484,6 +488,59 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 				pendingSkipGrad = make([]float32, len(grad))
 				copy(pendingSkipGrad, grad)
 				pendingSkipTarget = layerIdx - 2
+			}
+
+		case LayerSequential:
+			// Unpack pre-activations (stored as preAct in sequentialForwardCPU)
+			// sequentialBackwardCPU expects [][]float32 for intermediates.
+			// However, StepBackward stores pre-activations in a linearized way sometimes?
+			// Actually, SequentialLayer's intermediates are stored as a single slice if we're not careful.
+			// Let's check how SequentialLayer.ForwardCPU stores them in state.
+			// In StepForward (the main loop), it stores the result of StepForward on the layer.
+
+			// For SequentialLayer, we need to handle the nested nature.
+			// If we are in StepMode, the sequential sub-layers were likely NOT tracked individually in StepState.
+			// Instead, the SequentialLayer itself is a single step.
+
+			// We'll call sequentialBackwardCPU which re-runs forward internally or uses intermediates.
+			// Since we have 'intermediates' (which for SequentialLayer is a list of pre-activations),
+			// we need to cast it or reconstruct it.
+
+			// Actually, let's look at how SequentialLayer.ForwardCPU (Generic) is called.
+			// In StepBackward, we have state.layerPreAct[layerIdx].
+
+			// For simplicity and speed, let's treat it as a single block for now:
+			nestedLayers := config.ParallelBranches
+			// sequentialBackwardCPU needs intermediates as [][]float32
+			// We'll assume the preAct slice contains them flattened or we re-run.
+
+			// Re-running is safer if we don't have perfect intermediate tracking:
+			var nestedK, nestedB [][]float32
+			var err error
+			gradInput, nestedK, nestedB, err = sequentialBackwardCPU(input, grad, nil, nestedLayers, n.BatchSize)
+			if err != nil {
+				fmt.Printf("Sequential Backward Error: %v\n", err)
+				gradInput = make([]float32, len(input))
+			} else {
+				// Flatten nested gradients
+				totalK, totalB := 0, 0
+				for _, g := range nestedK {
+					totalK += len(g)
+				}
+				for _, g := range nestedB {
+					totalB += len(g)
+				}
+
+				kernelGrads = make([]float32, totalK)
+				biasGrads = make([]float32, totalB)
+
+				kOff, bOff := 0, 0
+				for i := range nestedK {
+					copy(kernelGrads[kOff:], nestedK[i])
+					kOff += len(nestedK[i])
+					copy(biasGrads[bOff:], nestedB[i])
+					bOff += len(nestedB[i])
+				}
 			}
 
 		default:

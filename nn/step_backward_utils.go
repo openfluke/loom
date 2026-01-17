@@ -18,31 +18,58 @@ func (n *Network) ApplyGradients(learningRate float32) {
 
 	// Fallback to simple SGD (backward compatible)
 	for i := 0; i < n.TotalLayers(); i++ {
-		// Update Kernels
-		if len(n.Layers[i].Kernel) > 0 && len(n.kernelGradients[i]) == len(n.Layers[i].Kernel) {
-			for j := range n.Layers[i].Kernel {
-				n.Layers[i].Kernel[j] -= learningRate * n.kernelGradients[i][j]
+		layer := &n.Layers[i]
+
+		// 1. Update Kernels
+		if len(layer.Kernel) > 0 && len(n.kernelGradients[i]) == len(layer.Kernel) {
+			for j := range layer.Kernel {
+				layer.Kernel[j] -= learningRate * n.kernelGradients[i][j]
 			}
 		}
 
-		// Update Biases
-		if len(n.Layers[i].Bias) > 0 && len(n.biasGradients[i]) == len(n.Layers[i].Bias) {
-			for j := range n.Layers[i].Bias {
-				n.Layers[i].Bias[j] -= learningRate * n.biasGradients[i][j]
+		// 2. Update Biases
+		if len(layer.Bias) > 0 && len(n.biasGradients[i]) == len(layer.Bias) {
+			for j := range layer.Bias {
+				layer.Bias[j] -= learningRate * n.biasGradients[i][j]
 			}
 		}
 
-		// Update Attention Weights
-		if n.Layers[i].Type == LayerMultiHeadAttention {
-			// This is more complex because weights are split.
-			// Simplified: we concatenated them in Backward, so we need to split them back
-			// or access them via a unified view.
-			// For this example, let's assume we only support Dense/Conv2D for now
-			// or we need to implement the split logic.
-			// Given the example uses Dense, this simple loop works for Dense/Conv2D.
-			// For Attention, we would need to unpack `kernelGradients[i]`.
+		// 3. Recurse into sub-networks and nested layers
+		if layer.Type == LayerKMeans && layer.SubNetwork != nil {
+			layer.SubNetwork.ApplyGradients(learningRate)
+		}
+
+		if layer.Type == LayerSequential || layer.Type == LayerParallel {
+			for j := range layer.ParallelBranches {
+				applyGradientsToConfig(&layer.ParallelBranches[j], learningRate)
+			}
 		}
 	}
+}
+
+// applyGradientsToConfig recursively applies gradients to nested layer configurations.
+func applyGradientsToConfig(cfg *LayerConfig, lr float32) {
+	// 1. Recurse into KMeans Sub-Network
+	if cfg.Type == LayerKMeans && cfg.SubNetwork != nil {
+		cfg.SubNetwork.ApplyGradients(lr)
+	}
+
+	// 2. Recurse into Sequential/Parallel branches
+	if cfg.Type == LayerSequential || cfg.Type == LayerParallel {
+		for i := range cfg.ParallelBranches {
+			applyGradientsToConfig(&cfg.ParallelBranches[i], lr)
+		}
+		// Also update filter gate if present
+		if cfg.FilterGateConfig != nil {
+			applyGradientsToConfig(cfg.FilterGateConfig, lr)
+		}
+	}
+
+	// 3. Fallback: Update kernels/biases directly if they have them
+	// This is for nested layers that aren't top-level network layers.
+	// Since we don't have a flattened gradient pool for nested configs yet,
+	// we assume they might handle it via their own backward/ApplyGradients logic
+	// (like SubNetwork) or we'd need to extend this to support flattened sub-grads.
 }
 
 // SetOptimizer sets the optimizer to use for gradient updates
