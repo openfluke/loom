@@ -1,14 +1,15 @@
-# LOOM - Layered Omni-architecture Openfluke Machine
+# LOOM - Deterministic Neural Virtual Machine
 
-**"The SQLite of AI" — A Universal Neural Runtime & Engine**
+**"The SQLite of AI" — A Polyglot Neural VM with Bit-Exact Reproducibility**
 
-Loom is a compiled, cross-platform **Neural Runtime Environment (NRE)** designed for structural interoperability and embedded intelligence. It bridges the gap between training frameworks and inference engines, acting as the **JVM for Neural Networks**:
+Loom is a **Deterministic Neural Virtual Machine (DNVM)** — a portable execution environment for neural networks that guarantees **bitwise-identical results** across all platforms, backends, and language bindings. It combines a JIT compiler (generating WebGPU shaders at runtime) with a pure Go CPU backend to deliver the same numerical results everywhere:
 
-*   **Write Once:** Define architecture in JSON.
-*   **Run Anywhere:** Go, Browser (WASM), Desktop (Python/C#/.NET), Mobile.
-*   **Universal Bytecode:** The JSON model definition is the bytecode.
+*   **Portable IR:** JSON network configs are your "bytecode" — define once, execute anywhere.
+*   **JIT to GPU:** Runtime WGSL shader generation → WebGPU compute pipelines.
+*   **Polyglot FFI:** Single Go core exports to Python, C#, TypeScript, WASM via C-ABI.
+*   **Bit-Exact:** 0.0000000000 difference between CPU and GPU, x86 and ARM, native and browser.
 
-Unlike heavy frameworks, Loom compiles to a **single binary** with zero dependencies. It features a **Virtual Execution Layer** that transparently routes operations to AVX2 (CPU) or WebGPU/Vulkan (GPU) without changing a line of user code.
+Unlike frameworks that disclaim cross-platform reproducibility, Loom **enforces determinism by design**. It compiles to a single binary with zero dependencies, transparently routing operations to CPU or WebGPU without changing user code.
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
@@ -38,6 +39,108 @@ Pre-compiled binaries for:
 - **macOS**: Apple Silicon (M1/M2/M3), Intel, Universal
 - **Android**: ARM64, ARMv7
 - **iOS**: ARM64 (XCFramework)
+
+---
+
+## Technical Architecture
+
+### What is Loom?
+
+Loom is a **Deterministic Neural Virtual Machine (DNVM)** — a portable execution environment for neural networks that guarantees **bitwise-identical results** across all platforms, backends, and language bindings.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        LOOM ARCHITECTURE                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐  │
+│  │   Python    │   │  TypeScript │   │     C#      │   │    WASM     │  │
+│  │   Binding   │   │   Binding   │   │   Binding   │   │   Browser   │  │
+│  └──────┬──────┘   └──────┬──────┘   └──────┬──────┘   └──────┬──────┘  │
+│         │                 │                 │                 │         │
+│         └────────────────┬┴─────────────────┴─────────────────┘         │
+│                          ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                        C-ABI (FFI Layer)                          │  │
+│  │         Handle-based state management, JSON marshalling           │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                          │                                              │
+│                          ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                    EXECUTION ENGINE (nn/)                         │  │
+│  │   Forward/Backward passes, Optimizers, Schedulers, Tweening       │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│         │                                         │                     │
+│         ▼                                         ▼                     │
+│  ┌─────────────────┐                    ┌─────────────────────────┐     │
+│  │   CPU Backend   │                    │    GPU JIT Compiler     │     │
+│  │   (Pure Go)     │                    │   (WGSL Generation)     │     │
+│  │                 │                    │         ▼               │     │
+│  │  Deterministic  │                    │  ┌─────────────────┐    │     │
+│  │  IEEE-754 Math  │◄────────────────►  │  │  WebGPU Runtime │    │     │
+│  └─────────────────┘   Bit-identical    │  └─────────────────┘    │     │
+│                           results       └─────────────────────────┘     │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Classification
+
+| Term | Description |
+|:-----|:------------|
+| **Virtual Machine** | Executes a portable IR (JSON network configs) on heterogeneous backends |
+| **JIT Compiler** | Generates WGSL shaders at runtime, compiles to GPU compute pipelines |
+| **Deterministic** | Guarantees bitwise-identical results across CPU, GPU, WASM, x86, ARM |
+| **Polyglot** | Single Go core exports to Python, C#, TypeScript, WASM via C-ABI |
+
+### Architectural Layers
+
+| Layer | Component | Role |
+|:------|:----------|:-----|
+| **IR (Bytecode)** | JSON network configs, `nn/serialization.go` | Portable, declarative network specification |
+| **Type System** | `nn/types.go` with `Tensor[T Numeric]` | Multi-precision tensors (F64→I8), generic operations |
+| **Execution** | `nn/forward.go`, `nn/backward.go` | Deterministic layer-by-layer forward/backward |
+| **JIT Backend** | `gpu/*.go` | Runtime WGSL generation → WebGPU pipelines |
+| **FFI Runtime** | `cabi/main.go` | Handle-based API, state management, memory safety |
+| **Bindings** | `python/`, `csharp/`, `typescript/`, `wasm/` | Thin wrappers exposing the C-ABI |
+
+### Determinism Guarantee
+
+Unlike typical ML runtimes that disclaim cross-platform reproducibility, Loom enforces **bit-exact determinism**:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ Testing: Dense                                                       │
+├──────────────────────────────────────────────────────────────────────┤
+│  • Max Diff:  0.0000000000 (Idx: -1)                                 │
+│  • Mean Diff: 0.0000000000                                           │
+│  ✅ [GOLD STANDARD] Exact Bit-Determinism                            │
+│     Perfect match. CPU and GPU logic are identical down to the bit.  │
+│                                                                      │
+│  Output Sample:                                                      │
+│    [0] CPU: 0.5010004044 | GPU: 0.5010004044 | Diff: 0.0000000000    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Verified across:**
+- CPU (Go) ↔ GPU (WebGPU/WGSL)
+- x86_64 ↔ ARM64 ↔ ARMv7
+- Linux ↔ Windows ↔ macOS ↔ Android ↔ iOS
+- Native ↔ WASM (Browser)
+
+### Comparison to Similar Projects
+
+| Project | What It Is | How Loom Differs |
+|:--------|:-----------|:-----------------|
+| **ONNX Runtime** | Multi-backend inference engine | Loom adds *training*, *bidirectional FFI*, and *determinism guarantees* |
+| **GGML** | Quantized inference library | Loom adds *GPU JIT compilation* and *cross-platform bitwise reproducibility* |
+| **TVM** | Compiler infrastructure for ML | Loom is *simpler* (pure Go), *directly embeddable*, with *determinism* by design |
+| **WebAssembly** | Portable bytecode standard | Loom's JSON network configs are conceptually *"WASM for neural compute"* |
+
+### Why This Matters
+
+1. **Reproducible Research**: Same model, same inputs → same outputs, regardless of where it runs
+2. **Cross-Platform Deployment**: Train on Linux GPU, deploy to iOS/Android/Browser with identical behavior
+3. **Debugging**: No "works on my machine" issues from floating-point non-determinism
+4. **Verification**: Prove correctness once, trust it everywhere
 
 ---
 
