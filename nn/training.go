@@ -50,23 +50,20 @@ func DefaultTrainingConfig() *TrainingConfig {
 }
 
 // Train trains the network on provided batches
+// Train trains the network on provided batches
 func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*TrainingResult, error) {
 	if config == nil {
 		config = DefaultTrainingConfig()
 	}
 
-	// Initialize GPU if requested and not already mounted
+	// Initialize GPU if requested
 	if config.UseGPU {
 		n.GPU = true
 		if !n.gpuMounted {
 			if config.Verbose {
 				fmt.Println("Initializing GPU (WeightsToGPU)...")
 			}
-			// Try WeightsToGPU (New System)
 			if err := n.WeightsToGPU(); err != nil {
-				// Fallback or error?
-				// If WeightsToGPU fails, maybe try legacy InitGPU?
-				// But let's prefer erroring or falling back to CPU logic if user didn't setup
 				return nil, fmt.Errorf("WeightsToGPU failed: %w", err)
 			}
 			if config.Verbose {
@@ -105,43 +102,69 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 		totalLoss := 0.0
 
 		for batchIdx, batch := range batches {
-			// Forward pass
+			// 1. Forward pass (Dispatches to GPU if n.GPU is true)
 			output, duration := n.Forward(batch.Input)
 			_ = duration // metrics
 
-			// Calculate loss
-			loss := n.calculateLoss(output, batch.Target, config.LossType)
+			// 2. Calculate Loss and Initial Gradient (dL/dY)
+			// This logic mirrors gpu_training_verification.go
+			loss := 0.0
+			dOutput := make([]float32, len(output))
+
+			// Compute loss and output gradient based on LossType
+			// For MSE: dL/dY = 2/N * (Y - T)
+			// For CrossEntropy: dL/dY = (Y - T) / (N * Y) ... or similar, depending on Softmax vs LogSoftmax
+			// NOTE: gpu_training_verification.go uses explicit logic relative to batch handling.
+			// Since we receive a batch struct here, we assume batch.Input is already flattened [BatchSize * InputSize].
+			// n.Forward returns flattened output [BatchSize * OutputSize].
+
+			outputSize := len(output) / n.BatchSize
+			if outputSize == 0 {
+				// Fallback if batch size 0 or something weird
+				outputSize = len(output)
+			}
+			// Logic for loss calculation matching verification script where possible
+			if config.LossType == "cross_entropy" {
+				loss = calculateCrossEntropyLoss(output, batch.Target)
+				dOutput = calculateCrossEntropyGradient(output, batch.Target)
+			} else {
+				// Default to MSE
+				loss = calculateMSELoss(output, batch.Target) // Returns scalar avg loss
+
+				// Manual Gradient Calculation relative to Mean Squared Error
+				// dL/dY = 2/N * (Y - T)
+				// Or (Y - T) / N depending on if 1/2 factor is in loss
+				// calculateMSEGradient uses (Y-T) * 2 / N
+				dOutput = calculateMSEGradient(output, batch.Target)
+			}
 			totalLoss += loss
 
-			// Backward pass
-			gradOutput := n.calculateGradient(output, batch.Target, config.LossType)
+			// 3. Backward Pass (Dispatches to GPU if n.GPU is true)
+			n.Backward(dOutput)
 
-			n.Backward(gradOutput)
-
-			// Gradient clipping if enabled
+			// 4. Gradient Clipping
 			if config.GradientClip > 0 {
 				n.clipGradients(config.GradientClip)
 			}
 
-			// Update weights
+			// 5. Update Weights (Dispatches to GPU if n.GPU is true)
 			n.ApplyGradients(config.LearningRate)
 
 			// Print batch progress if verbose
-			if config.Verbose {
-				if config.PrintEveryBatch > 0 && batchIdx%config.PrintEveryBatch == 0 {
-					fmt.Printf("\rEpoch %d/%d - Batch %d/%d - Loss: %.6f",
-						epoch+1, config.Epochs, batchIdx+1, len(batches), loss)
-				} else if config.PrintEveryBatch == 0 {
-					// Print every batch when PrintEveryBatch is 0
-					fmt.Printf("\rEpoch %d/%d - Batch %d/%d - Loss: %.6f",
-						epoch+1, config.Epochs, batchIdx+1, len(batches), loss)
+			if config.Verbose && config.PrintEveryBatch > 0 && batchIdx%config.PrintEveryBatch == 0 {
+				backend := "CPU"
+				if n.GPU {
+					backend = "GPU"
 				}
+				fmt.Printf("\r  [%s] Epoch %d/%d - Batch %d/%d - Loss: %.4f",
+					backend, epoch+1, config.Epochs, batchIdx+1, len(batches), loss)
 			}
 		}
 
 		// Epoch summary
 		avgLoss := totalLoss / float64(len(batches))
 		epochTime := time.Since(epochStart)
+		_ = epochTime // suppressed unused error
 		result.LossHistory = append(result.LossHistory, avgLoss)
 
 		if avgLoss < result.BestLoss {
@@ -149,19 +172,21 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 		}
 
 		if config.Verbose {
-			samplesPerSec := float64(totalSamples) / epochTime.Seconds()
-			fmt.Printf("\rEpoch %d/%d - Avg Loss: %.6f (Best: %.6f) - Time: %v - Throughput: %.0f samples/sec\n",
-				epoch+1, config.Epochs, avgLoss, result.BestLoss, epochTime, samplesPerSec)
-
-			// Show gradient statistics every 5 epochs
-			/*if (epoch+1)%5 == 0 {
-				n.printGradientStats()
-			}*/
+			// samplesPerSec := float64(totalSamples) / epochTime.Seconds()
+			backend := "CPU"
+			if n.GPU {
+				backend = "GPU"
+			}
+			// Match style: "  [CPU] Epoch 1/20 - Loss: 0.6927"
+			// We can add extra detailed info if needed, but let's keep it clean as requested.
+			// Maybe add (Best: %.4f) as it's useful.
+			fmt.Printf("\r  [%s] Epoch %d/%d - Loss: %.4f (Best: %.4f)\n",
+				backend, epoch+1, config.Epochs, avgLoss, result.BestLoss)
 
 			// Evaluate on validation set if configured
 			if config.EvaluateEveryN > 0 && (epoch+1)%config.EvaluateEveryN == 0 {
 				if len(config.ValidationInputs) > 0 && len(config.ValidationTargets) > 0 {
-					fmt.Printf("\n  Running validation evaluation...\n")
+					fmt.Printf("  Running validation evaluation...\n")
 					evalMetrics, err := n.EvaluateNetwork(config.ValidationInputs, config.ValidationTargets)
 					if err != nil {
 						fmt.Printf("  Warning: Validation evaluation failed: %v\n", err)
@@ -179,13 +204,11 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 	result.TotalTime = time.Since(startTime)
 	result.AvgThroughput = float64(totalSamples*config.Epochs) / result.TotalTime.Seconds()
 
-	if config.Verbose {
-		fmt.Printf("\n✓ Training Complete!\n")
-		fmt.Printf("Final Loss: %.6f\n", result.FinalLoss)
-		fmt.Printf("Best Loss: %.6f\n", result.BestLoss)
-		fmt.Printf("Total Time: %v\n", result.TotalTime)
-		fmt.Printf("Average Throughput: %.0f samples/sec\n\n", result.AvgThroughput)
-	}
+	// Final Summary only mentions completion, no redundant stats if not needed,
+	// or keep it for overall stats.
+	/*if config.Verbose {
+		fmt.Printf("\n✓ Training Complete! Final: %.6f, Time: %v\n\n", result.FinalLoss, result.TotalTime)
+	}*/
 
 	return result, nil
 }
