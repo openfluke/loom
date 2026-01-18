@@ -258,6 +258,12 @@ _FreeLoomString = _sym("FreeLoomString")
 if _FreeLoomString:
     _FreeLoomString.argtypes = [ctypes.c_char_p]
 
+# LoomEnableGPU: enable/disable GPU (global/simple API)
+_LoomEnableGPU = _sym("LoomEnableGPU")
+if _LoomEnableGPU:
+    _LoomEnableGPU.restype = None
+    _LoomEnableGPU.argtypes = [ctypes.c_int]
+
 # ---- TweenState API ----
 
 # LoomCreateTweenState: create a tween state
@@ -2126,3 +2132,25 @@ def graft_networks(network_ids: List[int], combine_mode: str = "concat") -> dict
     finally:
         if _FreeLoomString: _FreeLoomString(res_cstr)
 
+
+def enable_gpu_global(enable: bool) -> None:
+    """
+    Enable or disable GPU globally for the simple API.
+    
+    Args:
+        enable: True to enable, False to disable
+    """
+    if _LoomEnableGPU:
+        _LoomEnableGPU(1 if enable else 0)
+
+def LoomTrain(batches_json: bytes, config_json: bytes) -> bytes:
+    """Wrapper for LoomTrain (simple API)."""
+    if _LoomTrain:
+        return _LoomTrain(batches_json, config_json)
+    return None
+
+def create_network_from_json(config_json: str) -> str:
+    """Wrapper for CreateLoomNetwork (simple API)."""
+    if _CreateLoomNetwork:
+        return _CreateLoomNetwork(config_json.encode('utf-8'))
+    return None
