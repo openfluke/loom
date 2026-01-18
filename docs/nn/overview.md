@@ -570,6 +570,7 @@ GPU Acceleration:
 Now that you understand the architecture, explore these topics in depth:
 
 - **[Layers Guide](./layers.md)** - How each layer type works internally
+- **[KMeans Layer](./kmeans.md)** - Differentiable clustering and recursive concept learning
 - **[Training Guide](./training.md)** - The complete training process
 - **[Tween Guide](./tween.md)** - The bidirectional training algorithm
 - **[Quick Reference](./quick_reference.md)** - Concise code examples

@@ -601,21 +601,28 @@ loom/
 
 ## Comprehensive Test Suite
 
-Loom includes a rigorous verification suite in `tva/muniversal_testing.go` that validates functional correctness across all layers, numeric types, and backend engines (CPU/GPU).
+Loom includes a rigorous verification suite in `tva/muniversal_testing.go` and `cabi/universal_test.c` that validates functional correctness across all layers, numeric types, and backend engines (CPU/GPU).
 
-### Coverage Summary
+### Coverage Summary (2297 tests)
 
-| Test Section | Description | Status |
-|:-------------|:------------|:-------|
-| **Part 1: Core** | Forward/backward pass correctness for basic layers | ✅ Covered |
-| **Part 2: Serialization** | Save/Load permutations for all layers and types (`float32`, `int8`, `uint16`, etc.) | ✅ Covered |
-| **Part 3: Advanced** | Complex layers (MHA, Grid Softmax, K-Means) and math ops | ✅ Covered |
-| **Part 5: GPU Determinism** | Validates GPU forward pass matches CPU results | ✅ Covered |
-| **Part 6: GPU Training** | Verifies GPU learning convergence vs CPU baseline | ✅ Covered |
+| Test Section | Tests | Description |
+|:-------------|------:|:------------|
+| **Part 1: Core** | 6 | Forward/backward pass correctness for basic layers |
+| **Part 2: Serialization** | 2100 | Save/Load for all layers × 15 dtypes + parallel permutations |
+| **Part 3: Advanced** | 11 | Complex layers (MHA, Grid Softmax, K-Means) and math ops |
+| **Part 5: GPU Determinism** | 15 | Validates GPU forward pass matches CPU results |
+| **Part 6: GPU Training** | 21 | Verifies GPU learning convergence vs CPU baseline |
+| **Part 7: In-Memory/WASM** | 144 | SafeTensors round-trip without filesystem (11 layers × 13 dtypes) |
 
 > [!NOTE]
 > **GPU Acceleration Limits:** As of v0.0.8, WebGPU acceleration is enabled for standard `Forward/Backward` passes. 
 > The structural API `nn/step_forward.go` (Step-based execution), `nn/tween.go` (Neural Tweening), and `nn/kmeans_layer.go` (K-Means) currently run on **CPU only**.
+
+
+
+### C ABI Parity
+
+The C test suite (`cabi/universal_test.c`) mirrors the Go suite with **2298 tests**, validating that all functionality is accessible through the FFI layer for Python, C#, TypeScript, and WASM bindings.
 
 ### Verified Advanced Architectures
 

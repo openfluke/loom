@@ -89,6 +89,14 @@ layerNorm := nn.InitLayerNormLayer(size, epsilon)
 rmsNorm := nn.InitRMSNormLayer(size, epsilon)
 ```
 
+### KMeans (Differentiable Clustering)
+
+```go
+attached := nn.LayerConfig{Type: nn.LayerDense, InputHeight: 64, OutputHeight: 32}
+kmeans := nn.InitKMeansLayer(numClusters, attached, "probabilities")
+network.SetLayer(row, col, layer, kmeans)
+```
+
 ### Structural
 
 ```go
