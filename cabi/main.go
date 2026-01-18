@@ -13,6 +13,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/openfluke/loom/gpu"
 	"github.com/openfluke/loom/nn"
 )
 
@@ -60,7 +61,7 @@ func LoomForward(inputs *C.float, length C.int) *C.char {
 	copy(goInputs, inputSlice)
 
 	// Forward pass
-	output, _ := currentNetwork.ForwardCPU(goInputs)
+	output, _ := currentNetwork.Forward(goInputs)
 
 	// Convert to JSON
 	result, err := json.Marshal(output)
@@ -91,7 +92,7 @@ func LoomBackward(gradients *C.float, length C.int) *C.char {
 //export LoomUpdateWeights
 func LoomUpdateWeights(learningRate C.float) {
 	if currentNetwork != nil {
-		currentNetwork.UpdateWeights(float32(learningRate))
+		currentNetwork.ApplyGradients(float32(learningRate))
 	}
 }
 
@@ -153,6 +154,40 @@ func LoomLoadModel(jsonString *C.char, modelID *C.char) *C.char {
 	currentNetwork = network
 
 	return C.CString(`{"success": true}`)
+}
+
+//export LoomSaveModelWithDType
+func LoomSaveModelWithDType(modelID *C.char, dtype *C.char) *C.char {
+	if currentNetwork == nil {
+		return C.CString(`{"error": "no network created"}`)
+	}
+
+	id := C.GoString(modelID)
+	dt := C.GoString(dtype)
+
+	jsonStr, err := currentNetwork.SaveModelWithDType(id, dt)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	return C.CString(jsonStr)
+}
+
+//export LoomLoadModelWithDType
+func LoomLoadModelWithDType(jsonString *C.char, modelID *C.char, dtype *C.char) *C.char {
+	jsonStr := C.GoString(jsonString)
+	id := C.GoString(modelID)
+	dt := C.GoString(dtype)
+
+	network, storedType, err := nn.LoadModelWithDType(jsonStr, id, dt)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	// Replace current network with loaded one
+	currentNetwork = network
+
+	return C.CString(fmt.Sprintf(`{"success": true, "stored_dtype": "%s"}`, storedType))
 }
 
 //export LoomGetNetworkInfo
@@ -638,10 +673,10 @@ func LoomGraftNetworks(networkIDsJSON *C.char, combineMode *C.char) *C.char {
 	}
 
 	result := map[string]interface{}{
-		"success":         true,
-		"type":            graftedConfig.Type,
-		"num_branches":    len(graftedConfig.ParallelBranches),
-		"combine_mode":    graftedConfig.CombineMode,
+		"success":      true,
+		"type":         graftedConfig.Type,
+		"num_branches": len(graftedConfig.ParallelBranches),
+		"combine_mode": graftedConfig.CombineMode,
 	}
 
 	resultJSON, _ := json.Marshal(result)
@@ -750,13 +785,178 @@ func LoomFindComplementaryMatches(modelsJSON *C.char, minCoverage C.float) *C.ch
 	matches := nn.FindComplementaryMatches(models, float64(minCoverage))
 
 	result := map[string]interface{}{
-		"matches":      matches,
-		"num_matches":  len(matches),
+		"matches":     matches,
+		"num_matches": len(matches),
 	}
 
 	resultJSON, _ := json.Marshal(result)
 	return C.CString(string(resultJSON))
 }
 
-func main() {}
+// ============================================================================
+// GPU Control C-ABI Exports
+// ============================================================================
 
+//export LoomSetGPUAdapterPreference
+func LoomSetGPUAdapterPreference(adapter *C.char) {
+	preference := C.GoString(adapter)
+	gpu.SetAdapterPreference(preference)
+}
+
+//export LoomEnableGPU
+func LoomEnableGPU(enable C.int) {
+	if currentNetwork != nil {
+		currentNetwork.GPU = (enable != 0)
+	}
+}
+
+// ============================================================================
+// Observer Pattern C-ABI Exports
+// ============================================================================
+
+// Global map to store recording observers
+var recordingObservers = make(map[int64]*nn.RecordingObserver)
+var recordingObserverNextID int64 = 1
+var recordingObserverMu sync.RWMutex
+
+//export LoomCreateRecordingObserver
+func LoomCreateRecordingObserver(modelID *C.char) C.longlong {
+	if currentNetwork == nil {
+		return -1
+	}
+
+	obs := nn.NewRecordingObserver(C.GoString(modelID))
+
+	// Attach to current network
+	// Note: In a real scenario we might want to attach to specific layers,
+	// but for the test we attach to all layers that support observation
+	for i := range currentNetwork.Layers {
+		currentNetwork.Layers[i].Observer = obs
+	}
+
+	recordingObserverMu.Lock()
+	id := recordingObserverNextID
+	recordingObserverNextID++
+	recordingObservers[id] = obs
+	recordingObserverMu.Unlock()
+
+	return C.longlong(id)
+}
+
+//export LoomGetRecording
+func LoomGetRecording(handle C.longlong) *C.char {
+	recordingObserverMu.RLock()
+	obs, ok := recordingObservers[int64(handle)]
+	recordingObserverMu.RUnlock()
+
+	if !ok {
+		return C.CString(`{"error": "invalid observer handle"}`)
+	}
+
+	recording := obs.GetRecording()
+	jsonBytes, err := json.Marshal(recording)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	return C.CString(string(jsonBytes))
+}
+
+//export LoomFreeRecordingObserver
+func LoomFreeRecordingObserver(handle C.longlong) {
+	recordingObserverMu.Lock()
+	delete(recordingObservers, int64(handle))
+	recordingObserverMu.Unlock()
+
+	// Detach from current network if it's still the same observer
+	if currentNetwork != nil {
+		for i := range currentNetwork.Layers {
+			// exact check is hard without pointer comparison, but this is a test environment
+			// verifying pointers in C-Go boundary is tricky.
+			// We'll just clear it if we are freezing the observer currently attached.
+			// Ideally we should track which observer is attached to which network.
+			// For this "Simple" C ABI, we assume single threaded usage.
+			currentNetwork.Layers[i].Observer = nil
+		}
+	}
+}
+
+// ============================================================================
+// SafeTensors (WASM Memory) C-ABI Exports
+// ============================================================================
+
+// Global registry for loaded tensors
+var safeTensorRegistry = make(map[int64]map[string][]float32)
+var safeTensorNextID int64 = 1
+var safeTensorMu sync.RWMutex
+
+//export LoomSafeTensorRegistryNew
+func LoomSafeTensorRegistryNew() C.longlong {
+	safeTensorMu.Lock()
+	id := safeTensorNextID
+	safeTensorNextID++
+	safeTensorRegistry[id] = make(map[string][]float32)
+	safeTensorMu.Unlock()
+	return C.longlong(id)
+}
+
+//export LoomSafeTensorRegistryLoadFromBuffer
+func LoomSafeTensorRegistryLoadFromBuffer(handle C.longlong, data *C.uchar, length C.int) *C.char {
+	safeTensorMu.RLock()
+	registry, ok := safeTensorRegistry[int64(handle)]
+	safeTensorMu.RUnlock()
+
+	if !ok {
+		return C.CString(`{"error": "invalid registry handle"}`)
+	}
+
+	// Convert C buffer to Go slice
+	// Note: We use *[1 << 30]byte because uchar is 1 byte
+	goData := C.GoBytes(unsafe.Pointer(data), length)
+
+	tensors, err := nn.LoadSafetensorsFromBytes(goData)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	// Merge into registry
+	safeTensorMu.Lock()
+	for k, v := range tensors {
+		registry[k] = v
+	}
+	safeTensorMu.Unlock()
+
+	return C.CString(fmt.Sprintf(`{"status": "success", "loaded_tensors": %d}`, len(tensors)))
+}
+
+//export LoomSafeTensorRegistryGet
+func LoomSafeTensorRegistryGet(handle C.longlong, name *C.char) *C.char {
+	safeTensorMu.RLock()
+	registry, ok := safeTensorRegistry[int64(handle)]
+	safeTensorMu.RUnlock()
+
+	if !ok {
+		return C.CString(`{"error": "invalid registry handle"}`)
+	}
+
+	tensorName := C.GoString(name)
+	if data, exists := registry[tensorName]; exists {
+		// Return as JSON array
+		jsonBytes, err := json.Marshal(data)
+		if err != nil {
+			return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+		}
+		return C.CString(string(jsonBytes))
+	}
+
+	return C.CString(`{"error": "tensor not found"}`)
+}
+
+//export LoomSafeTensorRegistryFree
+func LoomSafeTensorRegistryFree(handle C.longlong) {
+	safeTensorMu.Lock()
+	delete(safeTensorRegistry, int64(handle))
+	safeTensorMu.Unlock()
+}
+
+func main() {}
