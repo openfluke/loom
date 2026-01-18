@@ -240,9 +240,30 @@ func (l *SoftmaxLayer) Compile(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer module.Release()
+
+	// Explicit Layout
+	bgl, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Output
+		},
+	})
+	if err != nil {
+		return err
+	}
+	pl, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_PL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
+	})
+	if err != nil {
+		return err
+	}
 
 	l.pipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_Pipe",
+		Layout:  pl,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: module, EntryPoint: "main"},
 	})
 	return err
@@ -257,9 +278,31 @@ func (l *SoftmaxLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer module.Release()
+
+	// Explicit Layout Backward
+	bglBwd, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BwdBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Output
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // dOutput
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dInput
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plBwd, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_BwdPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglBwd},
+	})
+	if err != nil {
+		return err
+	}
 
 	l.bwPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_BwdPipe",
+		Layout:  plBwd,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: module, EntryPoint: "main"},
 	})
 	return err

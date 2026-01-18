@@ -29,8 +29,9 @@ type DenseLayer struct {
 	Spec      DenseLayerSpec
 	BatchSize int
 
-	pipeline  *wgpu.ComputePipeline
-	bindGroup *wgpu.BindGroup
+	pipeline        *wgpu.ComputePipeline
+	bindGroupLayout *wgpu.BindGroupLayout // Explicit layout
+	bindGroup       *wgpu.BindGroup
 
 	InputBuffer   *wgpu.Buffer
 	OutputBuffer  *wgpu.Buffer
@@ -51,6 +52,10 @@ type DenseLayer struct {
 	backwardBindGroupGrads *wgpu.BindGroup
 	backwardPipelineInput  *wgpu.ComputePipeline
 	backwardBindGroupInput *wgpu.BindGroup
+
+	// Explicit layouts for backward pass
+	backwardBindGroupLayoutGrads *wgpu.BindGroupLayout
+	backwardBindGroupLayoutInput *wgpu.BindGroupLayout
 
 	// Gradient application bind groups (cached for training)
 	GradientWeightBindGroup *wgpu.BindGroup
@@ -124,6 +129,9 @@ func (l *DenseLayer) Cleanup() {
 	if l.bindGroup != nil {
 		l.bindGroup.Release()
 	}
+	if l.bindGroupLayout != nil {
+		// l.bindGroupLayout.Release()
+	}
 	if l.backwardPipelineDZ != nil {
 		l.backwardPipelineDZ.Release()
 	}
@@ -141,6 +149,12 @@ func (l *DenseLayer) Cleanup() {
 	}
 	if l.backwardBindGroupInput != nil {
 		l.backwardBindGroupInput.Release()
+	}
+	if l.backwardBindGroupLayoutGrads != nil {
+		// l.backwardBindGroupLayoutGrads.Release()
+	}
+	if l.backwardBindGroupLayoutInput != nil {
+		// l.backwardBindGroupLayoutInput.Release()
 	}
 }
 
@@ -325,6 +339,9 @@ func (l *DenseLayer) GenerateShader() string {
 }
 
 func (l *DenseLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
+	if Debug {
+		Log("Allocating buffers for %s (Batch: %d)", labelPrefix, l.BatchSize)
+	}
 	var err error
 
 	batch := l.BatchSize
@@ -377,6 +394,9 @@ func (l *DenseLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 }
 
 func (l *DenseLayer) Compile(ctx *Context, labelPrefix string) error {
+	if Debug {
+		Log("Compiling dense layer %s", labelPrefix)
+	}
 	shader := l.GenerateShader()
 	module, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:          labelPrefix + "_Shader",
@@ -386,8 +406,32 @@ func (l *DenseLayer) Compile(ctx *Context, labelPrefix string) error {
 		return fmt.Errorf("shader compile: %v", err)
 	}
 
+	// Explicit Bind Group Layout to avoid "auto" layout issues in WASM
+	l.bindGroupLayout, err = ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Output
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Weights
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Biases
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create bgl: %v", err)
+	}
+
+	// Debug
+	pipelineLayout, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_Layout",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{l.bindGroupLayout},
+	})
+	if err != nil {
+		return fmt.Errorf("create pipeline layout: %v", err)
+	}
+
 	l.pipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
-		Label: labelPrefix + "_Pipe",
+		Label:  labelPrefix + "_Pipe",
+		Layout: pipelineLayout, // Explicit Layout!
 		Compute: wgpu.ProgrammableStageDescriptor{
 			Module:     module,
 			EntryPoint: "main",
@@ -396,6 +440,7 @@ func (l *DenseLayer) Compile(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return fmt.Errorf("pipeline create: %v", err)
 	}
+	module.Release()
 
 	batch := l.BatchSize
 	if batch <= 0 {
@@ -410,7 +455,7 @@ func (l *DenseLayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 	var err error
 	l.bindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:  labelPrefix + "_Bind",
-		Layout: l.pipeline.GetBindGroupLayout(0),
+		Layout: l.bindGroupLayout,
 		Entries: []wgpu.BindGroupEntry{
 			{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
 			{Binding: 1, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
@@ -436,15 +481,15 @@ func (s *DenseSequence) Build() error {
 		if err := l.Compile(ctx, label); err != nil {
 			return err
 		}
-		if err := l.CreateBindGroup(ctx, label); err != nil {
-			return err
-		}
 	}
 	return nil
 }
 
 // Dispatch records the compute pass for this layer
 func (l *DenseLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
+	if Debug {
+		Log("Dispatching dense layer w/ %d workgroups", l.WorkgroupsX)
+	}
 	pass.SetPipeline(l.pipeline)
 	pass.SetBindGroup(0, l.bindGroup, nil)
 	pass.DispatchWorkgroups(l.WorkgroupsX, 1, 1)

@@ -20,6 +20,22 @@ type Context struct {
 var ctx Context
 var preferredAdapter string
 
+// Debug enables verbose logging for GPU operations
+var Debug bool = false
+
+// SetDebug enables or disables verbose logging
+func SetDebug(enabled bool) {
+	Debug = enabled
+	Log("GPU Debug Mode: %v", enabled)
+}
+
+// Log prints a debug message if Debug is true
+func Log(format string, args ...interface{}) {
+	if Debug {
+		fmt.Printf("[GPU] "+format+"\n", args...)
+	}
+}
+
 // SetAdapterPreference sets a substring to look for in adapter names
 func SetAdapterPreference(name string) {
 	preferredAdapter = strings.ToLower(name)
@@ -42,7 +58,9 @@ func GetContext() (*Context, error) {
 
 		for _, a := range adapters {
 			info := a.GetInfo()
-			fmt.Printf("Displaying Adapter: 0x%X (Vendor: 0x%X, DeviceID: 0x%X, Type: %d) Name: %s\n", info.DeviceId, info.VendorId, info.DeviceId, info.AdapterType, info.Name)
+			if Debug {
+				fmt.Printf("Displaying Adapter: 0x%X (Vendor: 0x%X, DeviceID: 0x%X, Type: %d) Name: %s\n", info.DeviceId, info.VendorId, info.DeviceId, info.AdapterType, info.Name)
+			}
 
 			score := 0
 			name := strings.ToLower(info.Name)
@@ -86,7 +104,9 @@ func GetContext() (*Context, error) {
 
 		if bestAdapter != nil {
 			info := bestAdapter.GetInfo()
-			fmt.Printf("--> Selected Best Adapter: %s (Type: %d, Score: %d)\n", info.Name, info.AdapterType, bestScore)
+			if Debug {
+				fmt.Printf("--> Selected Best Adapter: %s (Type: %d, Score: %d)\n", info.Name, info.AdapterType, bestScore)
+			}
 			ctx.Adapter = bestAdapter
 		}
 
@@ -127,7 +147,9 @@ func GetContext() (*Context, error) {
 
 		// Initialize Device
 		info := ctx.Adapter.GetInfo()
-		fmt.Printf("Using GPU Adapter: %s (Vendor: %s)\n", info.Name, info.VendorName)
+		if Debug {
+			fmt.Printf("Using GPU Adapter: %s (Vendor: %s)\n", info.Name, info.VendorName)
+		}
 
 		var err error
 		// Request device with increased limits if needed

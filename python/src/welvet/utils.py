@@ -337,6 +337,91 @@ if _LoomFreeTracker:
     _LoomFreeTracker.argtypes = [ctypes.c_longlong]
 
 
+# ---- Scheduler API ----
+
+# LoomCreateConstantScheduler
+_LoomCreateConstantScheduler = _sym("LoomCreateConstantScheduler")
+if _LoomCreateConstantScheduler:
+    _LoomCreateConstantScheduler.restype = ctypes.c_longlong
+    _LoomCreateConstantScheduler.argtypes = [ctypes.c_float]
+
+# LoomCreateLinearDecayScheduler
+_LoomCreateLinearDecayScheduler = _sym("LoomCreateLinearDecayScheduler")
+if _LoomCreateLinearDecayScheduler:
+    _LoomCreateLinearDecayScheduler.restype = ctypes.c_longlong
+    _LoomCreateLinearDecayScheduler.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_int]
+
+# LoomCreateCosineScheduler
+_LoomCreateCosineScheduler = _sym("LoomCreateCosineScheduler")
+if _LoomCreateCosineScheduler:
+    _LoomCreateCosineScheduler.restype = ctypes.c_longlong
+    _LoomCreateCosineScheduler.argtypes = [ctypes.c_float, ctypes.c_float, ctypes.c_int]
+
+# LoomSchedulerGetLR
+_LoomSchedulerGetLR = _sym("LoomSchedulerGetLR")
+if _LoomSchedulerGetLR:
+    _LoomSchedulerGetLR.restype = ctypes.c_float
+    _LoomSchedulerGetLR.argtypes = [ctypes.c_longlong, ctypes.c_int]
+
+# LoomSchedulerName
+_LoomSchedulerName = _sym("LoomSchedulerName")
+if _LoomSchedulerName:
+    _LoomSchedulerName.restype = ctypes.c_char_p
+    _LoomSchedulerName.argtypes = [ctypes.c_longlong]
+
+# LoomFreeScheduler
+_LoomFreeScheduler = _sym("LoomFreeScheduler")
+if _LoomFreeScheduler:
+    _LoomFreeScheduler.argtypes = [ctypes.c_longlong]
+
+
+# ---- Stats API ----
+
+# LoomSilhouetteScore
+_LoomSilhouetteScore = _sym("LoomSilhouetteScore")
+if _LoomSilhouetteScore:
+    _LoomSilhouetteScore.restype = ctypes.c_float
+    _LoomSilhouetteScore.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+
+# LoomKMeansCluster
+_LoomKMeansCluster = _sym("LoomKMeansCluster")
+if _LoomKMeansCluster:
+    _LoomKMeansCluster.restype = ctypes.c_char_p
+    _LoomKMeansCluster.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+
+# LoomComputeCorrelation
+_LoomComputeCorrelation = _sym("LoomComputeCorrelation")
+if _LoomComputeCorrelation:
+    _LoomComputeCorrelation.restype = ctypes.c_char_p
+    _LoomComputeCorrelation.argtypes = [ctypes.c_char_p]
+
+# LoomFindComplementaryMatches
+_LoomFindComplementaryMatches = _sym("LoomFindComplementaryMatches")
+if _LoomFindComplementaryMatches:
+    _LoomFindComplementaryMatches.restype = ctypes.c_char_p
+    _LoomFindComplementaryMatches.argtypes = [ctypes.c_char_p, ctypes.c_float]
+
+
+# ---- Grafting API ----
+
+# LoomCreateNetworkForGraft
+_LoomCreateNetworkForGraft = _sym("LoomCreateNetworkForGraft")
+if _LoomCreateNetworkForGraft:
+    _LoomCreateNetworkForGraft.restype = ctypes.c_longlong
+    _LoomCreateNetworkForGraft.argtypes = [ctypes.c_char_p]
+
+# LoomGraftNetworks
+_LoomGraftNetworks = _sym("LoomGraftNetworks")
+if _LoomGraftNetworks:
+    _LoomGraftNetworks.restype = ctypes.c_char_p
+    _LoomGraftNetworks.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+
+# LoomFreeGraftNetwork
+_LoomFreeGraftNetwork = _sym("LoomFreeGraftNetwork")
+if _LoomFreeGraftNetwork:
+    _LoomFreeGraftNetwork.argtypes = [ctypes.c_longlong]
+
+
 # ---- Activation Types ----
 class Activation:
     """Neural network activation function types."""
@@ -1097,6 +1182,224 @@ def load_tokenizer_from_bytes(data: bytes) -> dict:
     return result
 
 
+def compute_silhouette_score(data: List[List[float]], assignments: List[int]) -> float:
+    """
+    Compute Silhouette Score for clustering results.
+    
+    Args:
+        data: List of data points (vectors)
+        assignments: List of cluster assignments for each point
+    
+    Returns:
+        Silhouette Score (-1.0 to 1.0)
+    """
+    if not _LoomSilhouetteScore:
+        raise RuntimeError("SilhouetteScore function not available")
+    
+    data_json = json.dumps(data).encode('utf-8')
+    assign_json = json.dumps(assignments).encode('utf-8')
+    
+    return float(_LoomSilhouetteScore(data_json, assign_json))
+
+
+def kmeans_cluster(data: List[List[float]], k: int, max_iter: int = 100) -> dict:
+    """
+    Perform K-Means clustering.
+    
+    Args:
+        data: List of data points
+        k: Number of clusters
+        max_iter: Maximum iterations
+    
+    Returns:
+        Dict with 'centroids' and 'assignments'
+    """
+    if not _LoomKMeansCluster:
+        raise RuntimeError("KMeansCluster function not available")
+        
+    data_json = json.dumps(data).encode('utf-8')
+    result_ptr = _LoomKMeansCluster(data_json, int(k), int(max_iter))
+    
+    if not result_ptr:
+        raise RuntimeError("KMeans clustering failed")
+        
+    result_json = ctypes.string_at(result_ptr).decode('utf-8')
+    _free_cstring_ptr(result_ptr)
+    
+    result = json.loads(result_json)
+    if "error" in result:
+        raise RuntimeError(f"KMeans failed: {result['error']}")
+        
+    return result
+
+
+def compute_correlation(data: List[List[float]]) -> dict:
+    """
+    Compute correlation matrix for data.
+    
+    Args:
+        data: List of data points (variables as columns)
+    
+    Returns:
+        Dict with correlation matrix info
+    """
+    if not _LoomComputeCorrelation:
+        raise RuntimeError("ComputeCorrelation function not available")
+        
+    data_json = json.dumps(data).encode('utf-8')
+    result_ptr = _LoomComputeCorrelation(data_json)
+    
+    if not result_ptr:
+        raise RuntimeError("Correlation calculation failed")
+        
+    result_json = ctypes.string_at(result_ptr).decode('utf-8')
+    _free_cstring_ptr(result_ptr)
+    
+    result = json.loads(result_json)
+    if "error" in result:
+        raise RuntimeError(f"Correlation failed: {result['error']}")
+        
+    return result
+
+
+def find_complementary_matches(models: List[dict], min_coverage: float) -> dict:
+    """
+    Find complementary model matches (Ensemble).
+    
+    Args:
+        models: List of model performance dicts
+        min_coverage: Minimum coverage threshold
+    
+    Returns:
+        Dict with matches
+    """
+    if not _LoomFindComplementaryMatches:
+        raise RuntimeError("FindComplementaryMatches function not available")
+    
+    models_json = json.dumps(models).encode('utf-8')
+    result_ptr = _LoomFindComplementaryMatches(models_json, float(min_coverage))
+    
+    if not result_ptr:
+        raise RuntimeError("Finding matches failed")
+        
+    result_json = ctypes.string_at(result_ptr).decode('utf-8')
+    _free_cstring_ptr(result_ptr)
+    
+    result = json.loads(result_json)
+    if "error" in result:
+        raise RuntimeError(f"Finding matches failed: {result['error']}")
+        
+    return result
+
+
+# ---- Grafting Wrappers ----
+
+def create_network_for_graft(json_config: str) -> int:
+    """
+    Create a network specifically for grafting (stored in separate map).
+    
+    Args:
+        json_config: Network configuration JSON
+    
+    Returns:
+        Graft handle
+    """
+    if not _LoomCreateNetworkForGraft:
+        raise RuntimeError("CreateNetworkForGraft not available")
+        
+    if isinstance(json_config, dict):
+        json_config = json.dumps(json_config)
+        
+    handle = _LoomCreateNetworkForGraft(json_config.encode('utf-8'))
+    if handle < 0:
+        raise RuntimeError("Failed to create network for grafting")
+        
+    return handle
+
+
+def graft_networks(network_ids: List[int], combine_mode: str = "concat") -> dict:
+    """
+    Graft multiple networks together.
+    
+    Args:
+        network_ids: List of graft handles
+        combine_mode: 'concat' or 'add'
+    
+    Returns:
+        New network configuration (grafted)
+    """
+    if not _LoomGraftNetworks:
+        raise RuntimeError("GraftNetworks not available")
+        
+    ids_json = json.dumps(network_ids).encode('utf-8')
+    result_ptr = _LoomGraftNetworks(ids_json, combine_mode.encode('utf-8'))
+    
+    if not result_ptr:
+        raise RuntimeError("Grafting failed")
+        
+    result_json = ctypes.string_at(result_ptr).decode('utf-8')
+    _free_cstring_ptr(result_ptr)
+    
+    result = json.loads(result_json)
+    if "error" in result:
+        raise RuntimeError(f"Grafting failed: {result['error']}")
+        
+    return result
+
+
+def free_graft_network(handle: int):
+    """Free a graft network."""
+    if _LoomFreeGraftNetwork:
+        _LoomFreeGraftNetwork(int(handle))
+
+
+# ---- Scheduler Wrappers ----
+
+class Scheduler:
+    """Wrapper for a Learning Rate Scheduler."""
+    def __init__(self, handle: int):
+        self.handle = handle
+        
+    def get_lr(self, step: int) -> float:
+        """Get learning rate for a specific step."""
+        if not _LoomSchedulerGetLR: return 0.0
+        return float(_LoomSchedulerGetLR(int(self.handle), int(step)))
+        
+    def name(self) -> str:
+        """Get scheduler name."""
+        if not _LoomSchedulerName: return "unknown"
+        ptr = _LoomSchedulerName(int(self.handle))
+        return _steal(ptr)
+        
+    def free(self):
+        """Free scheduler resources."""
+        if _LoomFreeScheduler and self.handle:
+            _LoomFreeScheduler(int(self.handle))
+            self.handle = 0
+            
+    def __del__(self):
+        self.free()
+
+def create_constant_scheduler(base_lr: float) -> Scheduler:
+    """Create a constant learning rate scheduler."""
+    if not _LoomCreateConstantScheduler:
+        raise RuntimeError("CreateConstantScheduler not available")
+    handle = _LoomCreateConstantScheduler(float(base_lr))
+    return Scheduler(handle)
+
+def create_linear_decay_scheduler(start_lr: float, end_lr: float, total_steps: int) -> Scheduler:
+    """Create a linear decay scheduler."""
+    if not _LoomCreateLinearDecayScheduler:
+        raise RuntimeError("CreateLinearDecayScheduler not available")
+    handle = _LoomCreateLinearDecayScheduler(float(start_lr), float(end_lr), int(total_steps))
+    return Scheduler(handle)
+
+def create_cosine_scheduler(start_lr: float, min_lr: float, total_steps: int) -> Scheduler:
+    """Create a cosine annealing scheduler."""
+    if not _LoomCreateCosineScheduler:
+        raise RuntimeError("CreateCosineScheduler not available")
+    handle = _LoomCreateCosineScheduler(float(start_lr), float(min_lr), int(total_steps))
+    return Scheduler(handle)
 def load_transformer_from_bytes(config_data: bytes, weights_data: bytes) -> dict:
     """
     Load transformer model from config and weights bytes.

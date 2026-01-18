@@ -692,8 +692,34 @@ func (l *LSTMLayer) Compile(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer mod.Release()
+
+	// Explicit Layout
+	bgl, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Hidden
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Cell
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Output
+			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Weights
+			{Binding: 5, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // Step
+		},
+	})
+	if err != nil {
+		return err
+	}
+	pl, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_PL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
+	})
+	if err != nil {
+		return err
+	}
+
 	l.pipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_Pipe",
+		Layout:  pl,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: mod, EntryPoint: "main"},
 	})
 	return err
@@ -708,8 +734,36 @@ func (l *LSTMLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer modGate.Release()
+
+	bglGate, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BwdGateBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // dOutput
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Output
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Cell
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Weights
+			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // dHidden
+			{Binding: 5, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dCell
+			{Binding: 6, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // GateGrads
+			{Binding: 7, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
+			{Binding: 8, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // Step
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plGate, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_BwdGatePL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglGate},
+	})
+	if err != nil {
+		return err
+	}
+
 	l.bwGatePipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_BwdGatePipe",
+		Layout:  plGate,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: modGate, EntryPoint: "main"},
 	})
 	if err != nil {
@@ -724,8 +778,36 @@ func (l *LSTMLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer modPrev.Release()
+
+	// Prev bindings: 3, 4, 5, 6, 7 (gaps 0,1,2 used in gate shader kept for consistency?)
+	// Actually bindings here are independent BGLs unless they share group?
+	// They are separate pipelines, so we create specific BGL for each.
+	// The shader defines bindings 3,4,5,6,7.
+	bglPrev, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BwdPrevBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Weights
+			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dHidden
+			{Binding: 5, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // GateGrads
+			{Binding: 6, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dInput
+			{Binding: 7, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // Step
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plPrev, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_BwdPrevPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglPrev},
+	})
+	if err != nil {
+		return err
+	}
+
 	l.bwPrevPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_BwdPrevPipe",
+		Layout:  plPrev,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: modPrev, EntryPoint: "main"},
 	})
 	if err != nil {
@@ -740,8 +822,32 @@ func (l *LSTMLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer modGrad.Release()
+
+	// Grad bindings: 1, 2, 3, 4
+	bglGrad, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BwdGradBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Output
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // UnifiedWeightsGrad
+			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // GateGrads
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plGrad, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_BwdGradPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglGrad},
+	})
+	if err != nil {
+		return err
+	}
+
 	l.bwGradPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_BwdGradPipe",
+		Layout:  plGrad,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: modGrad, EntryPoint: "main"},
 	})
 	return err

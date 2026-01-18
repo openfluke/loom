@@ -154,9 +154,9 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 				epoch+1, config.Epochs, avgLoss, result.BestLoss, epochTime, samplesPerSec)
 
 			// Show gradient statistics every 5 epochs
-			if (epoch+1)%5 == 0 {
+			/*if (epoch+1)%5 == 0 {
 				n.printGradientStats()
-			}
+			}*/
 
 			// Evaluate on validation set if configured
 			if config.EvaluateEveryN > 0 && (epoch+1)%config.EvaluateEveryN == 0 {
@@ -238,6 +238,7 @@ func calculateMSEGradient(output, target []float32) []float32 {
 // Assumes output and target are probability distributions
 func calculateCrossEntropyLoss(output, target []float32) float64 {
 	sum := 0.0
+	totalProb := 0.0
 	epsilon := 1e-7 // Prevent log(0)
 	for i := 0; i < len(output) && i < len(target); i++ {
 		if target[i] > 0 {
@@ -245,16 +246,29 @@ func calculateCrossEntropyLoss(output, target []float32) float64 {
 			pred := math.Max(float64(output[i]), epsilon)
 			pred = math.Min(pred, 1.0-epsilon)
 			sum -= float64(target[i]) * math.Log(pred)
+			totalProb += float64(target[i])
 		}
 	}
-	return sum / float64(len(output))
+	if totalProb == 0 {
+		return 0
+	}
+	return sum / totalProb
 }
 
 // calculateCrossEntropyGradient computes gradient for cross-entropy loss
 func calculateCrossEntropyGradient(output, target []float32) []float32 {
 	grad := make([]float32, len(output))
 	epsilon := float32(1e-7)
-	scale := float32(1.0) / float32(len(output))
+
+	// Calculate total probability mass for normalization (effective batch size)
+	totalProb := float32(0)
+	for _, t := range target {
+		totalProb += t
+	}
+	if totalProb == 0 {
+		return grad // No gradient if no target
+	}
+	scale := 1.0 / totalProb
 
 	for i := 0; i < len(output) && i < len(target); i++ {
 		if target[i] > 0 {

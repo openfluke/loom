@@ -144,9 +144,31 @@ func (l *ResidualLayer) Compile(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer module.Release()
+
+	// Explicit Layout
+	bgl, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Skip
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Output
+		},
+	})
+	if err != nil {
+		return err
+	}
+	pl, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_PL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
+	})
+	if err != nil {
+		return err
+	}
 
 	l.pipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_Pipe",
+		Layout:  pl,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: module, EntryPoint: "main"},
 	})
 	return err
@@ -161,9 +183,31 @@ func (l *ResidualLayer) CompileBackward(ctx *Context, labelPrefix string) error 
 	if err != nil {
 		return err
 	}
+	defer module.Release()
+
+	// Explicit Layout Backward
+	bglBwd, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BwdBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // dOutput
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dInput
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dSkip
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plBwd, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_BwdPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglBwd},
+	})
+	if err != nil {
+		return err
+	}
 
 	l.bwPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_BwdPipe",
+		Layout:  plBwd,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: module, EntryPoint: "main"},
 	})
 	return err
@@ -291,8 +335,28 @@ func NewInPlaceResidual(ctx *Context, size int) (*InPlaceResidual, error) {
 	}
 	defer module.Release()
 
+	// Explicit Layout InPlace
+	bgl, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: "InPlaceResidual_BGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Output (ReadWrite)
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Skip
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	pl, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            "InPlaceResidual_PL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	r.pipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   "InPlaceResidual_Pipe",
+		Layout:  pl,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: module, EntryPoint: "main"},
 	})
 	if err != nil {

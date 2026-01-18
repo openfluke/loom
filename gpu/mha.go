@@ -591,8 +591,33 @@ func (l *MHALayer) Compile(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer mod1.Release()
+
+	// Explicit Layout QKV
+	bglQKV, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_QKVBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // w_qkv
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // b_qkv
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // q_out
+			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // k_out
+			{Binding: 5, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // v_out
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plQKV, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_QKVPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglQKV},
+	})
+	if err != nil {
+		return err
+	}
 	l.pipelineQKV, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_QKVPipe",
+		Layout:  plQKV,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: mod1, EntryPoint: "main"},
 	})
 	if err != nil {
@@ -607,8 +632,32 @@ func (l *MHALayer) Compile(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer mod2.Release()
+
+	// Attention Layout
+	bglAttn, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_AttnBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // q
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // k
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // v
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // attn_out
+			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // params
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plAttn, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_AttnPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglAttn},
+	})
+	if err != nil {
+		return err
+	}
 	l.pipelineAttn, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_AttnPipe",
+		Layout:  plAttn,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: mod2, EntryPoint: "main"},
 	})
 	if err != nil {
@@ -623,8 +672,31 @@ func (l *MHALayer) Compile(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer mod3.Release()
+
+	// Output Layout
+	bglOut, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_OutBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // attn_out
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // o_w
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // o_b
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // output
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plOut, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_OutPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglOut},
+	})
+	if err != nil {
+		return err
+	}
 	l.pipelineOut, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_OutPipe",
+		Layout:  plOut,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: mod3, EntryPoint: "main"},
 	})
 	return err
@@ -638,8 +710,31 @@ func (l *MHALayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer mod.Release()
+
+	bglBwd, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BwdBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // dOutput
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // o_w
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // w_qkv
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dInput
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plBwd, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_BwdPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglBwd},
+	})
+	if err != nil {
+		return err
+	}
+
 	l.bwPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_BwdPipe",
+		Layout:  plBwd,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: mod, EntryPoint: "main"},
 	})
 	return err

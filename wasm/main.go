@@ -11,8 +11,89 @@ import (
 	"syscall/js"
 	"time"
 
+	"github.com/openfluke/loom/gpu"
 	"github.com/openfluke/loom/nn"
 )
+
+// setupWebGPUWrapper performs the async navigator.gpu initialization entirely in Go
+// and returns a Promise that resolves when ready.
+func setupWebGPUWrapper(this js.Value, args []js.Value) interface{} {
+	handler := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		resolve := args[0]
+		reject := args[1]
+
+		go func() {
+			nav := js.Global().Get("navigator")
+			if nav.IsUndefined() || nav.Get("gpu").IsUndefined() {
+				reject.Invoke("WebGPU not supported (navigator.gpu missing)")
+				return
+			}
+
+			gpuObj := nav.Get("gpu")
+
+			// 1. requestAdapter
+			adapterPromise := gpuObj.Call("requestAdapter")
+			adapterVal, err := awaitPromise(adapterPromise)
+			if err != nil {
+				reject.Invoke("requestAdapter failed: " + err.Error())
+				return
+			}
+			if adapterVal.IsNull() {
+				reject.Invoke("requestAdapter returned null")
+				return
+			}
+
+			// 2. requestDevice
+			devicePromise := adapterVal.Call("requestDevice")
+			deviceVal, err := awaitPromise(devicePromise)
+			if err != nil {
+				reject.Invoke("requestDevice failed: " + err.Error())
+				return
+			}
+
+			// 3. Expose to Window (mimicking user's old setup)
+			js.Global().Set("webgpuAdapter", adapterVal)
+			js.Global().Set("webgpuDevice", deviceVal)
+			js.Global().Set("webgpuQueue", deviceVal.Get("queue"))
+
+			fmt.Println("GOWASM: WebGPU initialized automatically!")
+			resolve.Invoke("WebGPU Initialized via Go")
+		}()
+
+		return nil
+	})
+
+	promise := js.Global().Get("Promise").New(handler)
+	return promise
+}
+
+// awaitPromise helper to wait for a JS Promise in Go
+func awaitPromise(promise js.Value) (js.Value, error) {
+	resultCh := make(chan js.Value)
+	errCh := make(chan error)
+
+	then := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		resultCh <- args[0]
+		return nil
+	})
+	catch := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		errCh <- fmt.Errorf(args[0].String())
+		return nil
+	})
+
+	promise.Call("then", then).Call("catch", catch)
+
+	select {
+	case res := <-resultCh:
+		then.Release()
+		catch.Release()
+		return res, nil
+	case err := <-errCh:
+		then.Release()
+		catch.Release()
+		return js.Undefined(), err
+	}
+}
 
 // methodWrapper dynamically wraps each method to expose it to JavaScript
 func methodWrapper(network *nn.Network, methodName string) js.Func {
@@ -246,11 +327,8 @@ func createNetworkFromJSON(this js.Value, args []js.Value) interface{} {
 	}
 
 	// Add optimizer-specific gradient application methods
-	obj.Set("ApplyGradientsAdamW", methodWrapper(network, "ApplyGradientsAdamW"))
-	obj.Set("ApplyGradientsRMSprop", methodWrapper(network, "ApplyGradientsRMSprop"))
 	obj.Set("ApplyGradientsSGDMomentum", methodWrapper(network, "ApplyGradientsSGDMomentum"))
 
-	// Add createStepState method
 	obj.Set("createStepState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		if len(args) < 1 {
 			return "Expected 1 argument: inputSize"
@@ -314,6 +392,15 @@ func createNetworkFromJSON(this js.Value, args []js.Value) interface{} {
 		}
 		totalBytes := totalParams * 4
 		return fmt.Sprintf("[%d]", totalBytes)
+	}))
+
+	// Add setGPU for controlling execution backend
+	obj.Set("setGPU", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return "Expected 1 argument: useGPU (boolean)"
+		}
+		network.GPU = args[0].Bool()
+		return nil
 	}))
 
 	return obj
@@ -696,9 +783,9 @@ func kmeansClusterWrapper(this js.Value, args []js.Value) interface{} {
 	iter := args[2].Int()
 
 	centroids, assignments := nn.KMeansCluster(data, int(k), int(iter), false)
-	
+
 	res := map[string]interface{}{
-		"centroids": centroids,
+		"centroids":  centroids,
 		"assignment": assignments,
 	}
 	b, _ := json.Marshal(res)
@@ -734,12 +821,98 @@ func findComplementaryMatchesWrapper(this js.Value, args []js.Value) interface{}
 	return string(b)
 }
 
+func silhouetteScoreWrapper(this js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return -1.0
+	}
+	var data [][]float32
+	json.Unmarshal([]byte(args[0].String()), &data)
+	var assignments []int
+	json.Unmarshal([]byte(args[1].String()), &assignments)
+
+	return nn.ComputeSilhouetteScore(data, assignments)
+}
+
+// ============================================================================
+// Learning Rate Scheduler Support
+// ============================================================================
+
+var schedulers = make(map[int64]nn.LRScheduler)
+var schedulerNextID int64 = 1
+var schedulerMu sync.RWMutex
+
+func createSchedulerWrapper(sched nn.LRScheduler) js.Value {
+	schedulerMu.Lock()
+	id := schedulerNextID
+	schedulerNextID++
+	schedulers[id] = sched
+	schedulerMu.Unlock()
+
+	obj := js.Global().Get("Object").New()
+	obj.Set("id", int(id))
+
+	obj.Set("getLR", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return 0.0
+		}
+		return sched.GetLR(args[0].Int())
+	}))
+
+	obj.Set("name", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		return sched.Name()
+	}))
+
+	obj.Set("free", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		schedulerMu.Lock()
+		delete(schedulers, id)
+		schedulerMu.Unlock()
+		return nil
+	}))
+
+	return obj
+}
+
+func createConstantScheduler(this js.Value, args []js.Value) interface{} {
+	if len(args) < 1 {
+		return "Expected baseLR"
+	}
+	sched := nn.NewConstantScheduler(float32(args[0].Float()))
+	return createSchedulerWrapper(sched)
+}
+
+func createLinearDecayScheduler(this js.Value, args []js.Value) interface{} {
+	if len(args) < 3 {
+		return "Expected startLR, endLR, totalSteps"
+	}
+	sched := nn.NewLinearDecayScheduler(float32(args[0].Float()), float32(args[1].Float()), args[2].Int())
+	return createSchedulerWrapper(sched)
+}
+
+func createCosineScheduler(this js.Value, args []js.Value) interface{} {
+	if len(args) < 3 {
+		return "Expected startLR, minLR, totalSteps"
+	}
+	sched := nn.NewCosineAnnealingScheduler(float32(args[0].Float()), float32(args[1].Float()), args[2].Int())
+	return createSchedulerWrapper(sched)
+}
+
+// setGpuDebug wrapper
+func setGpuDebug(this js.Value, args []js.Value) interface{} {
+	if len(args) < 1 {
+		return "Expected 1 argument: enabled (boolean)"
+	}
+	enabled := args[0].Bool()
+	gpu.SetDebug(enabled)
+	return nil
+}
+
 func main() {
 	fmt.Println("Loom WASM Framework Initialized")
 
-	// Register the network creation functions
 	js.Global().Set("createLoomNetwork", js.FuncOf(createNetworkFromJSON))
 	js.Global().Set("loadLoomNetwork", js.FuncOf(loadNetworkFromString))
+	js.Global().Set("setupWebGPU", js.FuncOf(setupWebGPUWrapper))
+	js.Global().Set("setGpuDebug", js.FuncOf(setGpuDebug))
 
 	// Register AdaptationTracker for adaptation benchmarks
 	js.Global().Set("createAdaptationTracker", js.FuncOf(createAdaptationTracker))
@@ -748,9 +921,14 @@ func main() {
 	js.Global().Set("createNetworkForGraft", js.FuncOf(createNetworkForGraft))
 	js.Global().Set("graftNetworks", js.FuncOf(graftNetworksWrapper))
 	js.Global().Set("kmeansCluster", js.FuncOf(kmeansClusterWrapper))
-	js.Global().Set("kmeansCluster", js.FuncOf(kmeansClusterWrapper))
 	js.Global().Set("computeCorrelation", js.FuncOf(computeCorrelationWrapper))
 	js.Global().Set("findComplementaryMatches", js.FuncOf(findComplementaryMatchesWrapper))
+	js.Global().Set("computeSilhouetteScore", js.FuncOf(silhouetteScoreWrapper))
+
+	// Register Schedulers
+	js.Global().Set("createConstantScheduler", js.FuncOf(createConstantScheduler))
+	js.Global().Set("createLinearDecayScheduler", js.FuncOf(createLinearDecayScheduler))
+	js.Global().Set("createCosineScheduler", js.FuncOf(createCosineScheduler))
 
 	fmt.Println("Available functions:")
 	fmt.Println("  - createLoomNetwork(jsonConfig) - Create network from JSON")

@@ -284,7 +284,7 @@ func (n *Network) EvaluateNetwork(inputs [][]float32, expectedOutputs []float64)
 
 	// Run forward passes
 	for i, input := range inputs {
-		output, _ := n.ForwardCPU(input)
+		output, _ := n.Forward(input)
 
 		// Extract prediction (argmax or first value depending on task)
 		if len(output) == 1 {
@@ -338,7 +338,7 @@ func (n *Network) EvaluateFromCheckpointFiles(checkpointFiles []string, expected
 		totalLoadTime += time.Since(startLoad)
 
 		startForward := time.Now()
-		output, _ := n.ForwardCPU(cpState)
+		output, _ := n.Forward(cpState)
 		totalForwardTime += time.Since(startForward)
 
 		// Extract prediction
@@ -1130,8 +1130,8 @@ func VerifySaveLoadConsistency(original *Network, format string, testInputs [][]
 	comparisons := 0
 
 	for _, input := range testInputs {
-		out1, _ := original.ForwardCPU(input)
-		out2, _ := reloaded.ForwardCPU(input)
+		out1, _ := original.Forward(input)
+		out2, _ := reloaded.Forward(input)
 
 		if len(out1) != len(out2) {
 			return nil, fmt.Errorf("output size mismatch: %d vs %d", len(out1), len(out2))
@@ -1537,8 +1537,8 @@ func BenchmarkNumericalTypes(baseNetwork *Network, dtypes []string, scales []flo
 		actual := make([]float64, len(testInputs))
 
 		for k := 0; k < len(testInputs); k++ {
-			outOrig, _ := baseNetwork.ForwardCPU(testInputs[k])
-			outNew, _ := testNet.ForwardCPU(testInputs[k])
+			outOrig, _ := baseNetwork.Forward(testInputs[k])
+			outNew, _ := testNet.Forward(testInputs[k])
 
 			// Find which class the original model predicts
 			maxIdx := 0
@@ -1658,4 +1658,73 @@ func (b *NumericalTypeBenchmark) GetBestTradeoff() *NumericalTypeResult {
 	}
 
 	return best
+}
+
+// PrintDeviationComparisonTable prints a comparison of two deviation metrics side-by-side
+// DeviationComparison holds two sets of metrics for comparison
+type DeviationComparison struct {
+	Name   string            `json:"name"`
+	Before *DeviationMetrics `json:"before"`
+	After  *DeviationMetrics `json:"after"`
+}
+
+// NewDeviationComparison creates a new comparison object
+func NewDeviationComparison(name string, before, after *DeviationMetrics) *DeviationComparison {
+	return &DeviationComparison{
+		Name:   name,
+		Before: before,
+		After:  after,
+	}
+}
+
+// PrintTable prints a formatted comparison table
+func (dc *DeviationComparison) PrintTable() {
+	if dc.Before == nil || dc.After == nil {
+		fmt.Printf("Error: Comparison '%s' has nil metrics\n", dc.Name)
+		return
+	}
+
+	fmt.Printf("\n╔═══════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  %-59s  ║\n", dc.Name)
+	fmt.Printf("╠═══════════════════════════════════════════════════════════════╣\n")
+	fmt.Printf("║  Accuracy:      %6.1f%% → %6.1f%%                           ║\n",
+		dc.Before.Accuracy*100, dc.After.Accuracy*100)
+	fmt.Printf("║  Quality Score: %6.1f   → %6.1f                           ║\n",
+		dc.Before.Score, dc.After.Score)
+	fmt.Printf("║  Avg Deviation: %6.1f%% → %6.1f%%                          ║\n",
+		dc.Before.AverageDeviation, dc.After.AverageDeviation)
+	fmt.Printf("╠═══════════════════════════════════════════════════════════════╣\n")
+	fmt.Printf("║  Deviation Distribution:                                      ║\n")
+	fmt.Printf("╠═══════════════════════════════════════════════════════════════╣\n")
+
+	bucketOrder := []string{"0-10%", "10-20%", "20-30%", "30-40%", "40-50%", "50-100%", "100%+"}
+	for _, bucketName := range bucketOrder {
+		beforeCount := 0
+		if b, ok := dc.Before.Buckets[bucketName]; ok {
+			beforeCount = b.Count
+		}
+		afterCount := 0
+		if b, ok := dc.After.Buckets[bucketName]; ok {
+			afterCount = b.Count
+		}
+
+		beforePct := 0.0
+		if dc.Before.TotalSamples > 0 {
+			beforePct = float64(beforeCount) / float64(dc.Before.TotalSamples) * 100
+		}
+		afterPct := 0.0
+		if dc.After.TotalSamples > 0 {
+			afterPct = float64(afterCount) / float64(dc.After.TotalSamples) * 100
+		}
+
+		fmt.Printf("║    %8s: %3d (%5.1f%%) → %3d (%5.1f%%)                    ║\n",
+			bucketName, beforeCount, beforePct, afterCount, afterPct)
+	}
+	fmt.Printf("╚═══════════════════════════════════════════════════════════════╝\n")
+}
+
+// PrintDeviationComparisonTable prints a comparison of two deviation metrics side-by-side
+// This is a wrapper around DeviationComparison for backward compatibility
+func PrintDeviationComparisonTable(name string, before, after *DeviationMetrics) {
+	NewDeviationComparison(name, before, after).PrintTable()
 }

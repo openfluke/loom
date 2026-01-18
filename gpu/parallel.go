@@ -82,6 +82,26 @@ func (l *ParallelLayer) setupPipelines(ctx *Context) error {
 		return nil
 	}
 
+	// Define Common BindGroupLayout (Binding 0: Read, Binding 1: ReadWrite)
+	bgl, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: "ParallelCommonBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Src
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Dst
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	pl, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            "ParallelCommonPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
+	})
+	if err != nil {
+		return err
+	}
+
 	// Compile Copy Shader
 	cShader, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label: "ParallelCopyShader",
@@ -92,13 +112,12 @@ func (l *ParallelLayer) setupPipelines(ctx *Context) error {
 	if err != nil {
 		return err
 	}
+	defer cShader.Release()
 
 	l.copyPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
-		Label: "ParallelCopyPipeline",
-		Compute: wgpu.ProgrammableStageDescriptor{
-			Module:     cShader,
-			EntryPoint: "main",
-		},
+		Label:   "ParallelCopyPipeline",
+		Layout:  pl,
+		Compute: wgpu.ProgrammableStageDescriptor{Module: cShader, EntryPoint: "main"},
 	})
 	if err != nil {
 		return err
@@ -114,19 +133,14 @@ func (l *ParallelLayer) setupPipelines(ctx *Context) error {
 	if err != nil {
 		return err
 	}
+	defer sShader.Release()
 
 	l.sumPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
-		Label: "ParallelSumPipeline",
-		Compute: wgpu.ProgrammableStageDescriptor{
-			Module:     sShader,
-			EntryPoint: "main",
-		},
+		Label:   "ParallelSumPipeline",
+		Layout:  pl,
+		Compute: wgpu.ProgrammableStageDescriptor{Module: sShader, EntryPoint: "main"},
 	})
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func (l *ParallelLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {

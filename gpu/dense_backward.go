@@ -8,6 +8,7 @@ import (
 
 // DispatchBackward adds backward pass commands to encoder
 func (l *DenseLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
+	// Log("Dispatching Backward Dense Layer")
 	// Assumes dZ (dOutput) has been computed by generic activation backward shader and placed in dOutputBuffer (bound in CreateBackwardBindGroup).
 
 	// Pipeline 1: Weight Gradients (dW, dB)
@@ -47,8 +48,14 @@ func (l *DenseLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 }
 
 // CompileBackward creates pipelines for backward pass
+// CompileBackward creates pipelines for backward pass with Explicit Layouts
 func (l *DenseLayer) CompileBackward(ctx *Context, labelPrefix string) error {
-	// Shader for Gradients (dW, dB)
+	if Debug {
+		Log("Compiling backward dense layer %s", labelPrefix)
+	}
+	// ------------------------------------------------------------------
+	// 1. Gradients Pipeline (dW, dB)
+	// ------------------------------------------------------------------
 	shaderGrads := l.generateBackwardGradsShader()
 	moduleGrads, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:          labelPrefix + "_Shader_Bwd_Grads",
@@ -57,11 +64,33 @@ func (l *DenseLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return fmt.Errorf("create shader grads: %w", err)
 	}
-	defer moduleGrads.Release()
+	// defer moduleGrads.Release()
 
-	// Pipeline Gradients
+	// Explicit Bind Group Layout (Avoids "auto" panic)
+	l.backwardBindGroupLayoutGrads, err = ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BGL_Bwd_Grads",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // dZ
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dW
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dB
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create bgl grads: %w", err)
+	}
+
+	plGrads, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_PL_Bwd_Grads",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{l.backwardBindGroupLayoutGrads},
+	})
+	if err != nil {
+		return fmt.Errorf("create pl grads: %w", err)
+	}
+
 	l.backwardPipelineGrads, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
-		Label: labelPrefix + "_Pipe_Bwd_Grads",
+		Label:  labelPrefix + "_Pipe_Bwd_Grads",
+		Layout: plGrads, // Explicit
 		Compute: wgpu.ProgrammableStageDescriptor{
 			Module:     moduleGrads,
 			EntryPoint: "main",
@@ -70,8 +99,11 @@ func (l *DenseLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return fmt.Errorf("create pipeline grads: %w", err)
 	}
+	moduleGrads.Release()
 
-	// Shader for Input Gradients (dX)
+	// ------------------------------------------------------------------
+	// 2. Input Gradients Pipeline (dX)
+	// ------------------------------------------------------------------
 	shaderInput := l.generateBackwardInputShader()
 	moduleInput, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:          labelPrefix + "_Shader_Bwd_Input",
@@ -80,11 +112,30 @@ func (l *DenseLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return fmt.Errorf("create shader input: %w", err)
 	}
-	defer moduleInput.Release()
 
-	// Pipeline Input
+	l.backwardBindGroupLayoutInput, err = ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BGL_Bwd_Input",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // dZ
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Weights
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dX
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create bgl input: %w", err)
+	}
+
+	plInput, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_PL_Bwd_Input",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{l.backwardBindGroupLayoutInput},
+	})
+	if err != nil {
+		return fmt.Errorf("create pl input: %w", err)
+	}
+
 	l.backwardPipelineInput, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
-		Label: labelPrefix + "_Pipe_Bwd_Input",
+		Label:  labelPrefix + "_Pipe_Bwd_Input",
+		Layout: plInput, // Explicit
 		Compute: wgpu.ProgrammableStageDescriptor{
 			Module:     moduleInput,
 			EntryPoint: "main",
@@ -93,6 +144,7 @@ func (l *DenseLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return fmt.Errorf("create pipeline input: %w", err)
 	}
+	moduleInput.Release()
 
 	return nil
 }
@@ -107,7 +159,7 @@ func (l *DenseLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, d
 	var err error
 	l.backwardBindGroupGrads, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:  labelPrefix + "_BG_Bwd_Grads",
-		Layout: l.backwardPipelineGrads.GetBindGroupLayout(0),
+		Layout: l.backwardBindGroupLayoutGrads,
 		Entries: []wgpu.BindGroupEntry{
 			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
 			{Binding: 1, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
@@ -122,7 +174,7 @@ func (l *DenseLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, d
 	// Bind Group for Input Gradients (dX)
 	l.backwardBindGroupInput, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:  labelPrefix + "_BG_Bwd_Input",
-		Layout: l.backwardPipelineInput.GetBindGroupLayout(0),
+		Layout: l.backwardBindGroupLayoutInput,
 		Entries: []wgpu.BindGroupEntry{
 			{Binding: 0, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
 			{Binding: 1, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},

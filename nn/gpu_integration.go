@@ -13,18 +13,35 @@ import (
 // After calling this, ForwardCPU will automatically use GPU acceleration when n.GPU = true.
 // Returns an error if GPU initialization fails.
 func (n *Network) WeightsToGPU() error {
+	//fmt.Printf("WeightsToGPU Called. Mounted: %v\n", n.gpuMounted)
+
+	if gpu.Debug {
+		gpu.Log("WeightsToGPU Start. n=%p", n)
+		gpu.Log("gpuMounted=%v", n.gpuMounted)
+	}
+
 	if n.gpuMounted {
 		return nil // Already mounted
 	}
 
 	// Get GPU context
+	// Get GPU context
+	if gpu.Debug {
+		gpu.Log("Getting GPU context...")
+	}
 	ctx, err := gpu.GetContext()
 	if err != nil {
 		return fmt.Errorf("failed to get GPU context: %w", err)
 	}
 	n.gpuCtx = ctx
+	if gpu.Debug {
+		gpu.Log("GPU context obtained.")
+	}
 
 	// Build GPU layers from CPU layer configs
+	if gpu.Debug {
+		gpu.Log("Building GPU layers...")
+	}
 	layers := make([]gpu.GPULayer, 0, len(n.Layers))
 	outputSize := 0
 
@@ -35,8 +52,12 @@ func (n *Network) WeightsToGPU() error {
 
 		var gpuLayer gpu.GPULayer
 		var layerOutputSize int
+
 		var buildErr error
 
+		if gpu.Debug {
+			gpu.Log("Building layer %d type %d", i, l.Type)
+		}
 		gpuLayer, layerOutputSize, buildErr = n.buildGPULayer(&l, outputSize, i)
 		if buildErr != nil {
 			// Clean up already-built layers
@@ -170,6 +191,10 @@ func (n *Network) WeightsToGPU() error {
 	n.gpuMounted = true
 	n.gpuOutputSize = outputSize
 
+	if gpu.Debug {
+		gpu.Log("WeightsToGPU Complete! gpuMounted=%v layers=%d", n.gpuMounted, len(layers))
+	}
+
 	return nil
 }
 
@@ -241,6 +266,11 @@ func (n *Network) ReleaseGPUWeights() {
 	n.gpuOutputSize = 0
 }
 
+// SetGPU enables or disables GPU acceleration for the network
+func (n *Network) SetGPU(enabled bool) {
+	n.GPU = enabled
+}
+
 // IsGPUMounted returns true if weights are currently loaded on GPU
 func (n *Network) IsGPUMounted() bool {
 	return n.gpuMounted
@@ -258,6 +288,9 @@ func (n *Network) cleanupGPULayers(layers []gpu.GPULayer) {
 // forwardGPU runs the forward pass on GPU
 // Returns the output tensor
 func (n *Network) forwardGPU(input []float32) ([]float32, error) {
+	if gpu.Debug {
+		gpu.Log("forwardGPU Start. Input len: %d", len(input))
+	}
 	if !n.gpuMounted {
 		return nil, fmt.Errorf("GPU not mounted, call WeightsToGPU first")
 	}
@@ -457,6 +490,9 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 // dOutput is the gradient of loss with respect to output
 // Returns the gradient of loss with respect to input
 func (n *Network) backwardGPU(dOutput []float32) ([]float32, error) {
+	if gpu.Debug {
+		gpu.Log("backwardGPU Start. dOutput len: %d", len(dOutput))
+	}
 	if !n.gpuMounted {
 		return nil, fmt.Errorf("GPU not mounted, call WeightsToGPU first")
 	}
@@ -545,6 +581,9 @@ func (n *Network) backwardGPU(dOutput []float32) ([]float32, error) {
 
 // buildGPULayer constructs a GPU layer from an nn.LayerConfig
 func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gpu.GPULayer, int, error) {
+	if gpu.Debug {
+		gpu.Log("buildGPULayer idx=%d type=%d", idx, l.Type)
+	}
 	inputSize := prevOutputSize
 	if idx == 0 && inputSize == 0 {
 		// First layer, use configured input size

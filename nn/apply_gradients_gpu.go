@@ -12,6 +12,9 @@ import (
 func (n *Network) applyGradientsGPU(learningRate float32) {
 	layers, ok := n.gpuLayers.([]gpu.GPULayer)
 	if !ok || len(layers) == 0 {
+		if gpu.Debug {
+			gpu.Log("applyGradientsGPU skipped: no layers")
+		}
 		return
 	}
 
@@ -60,6 +63,9 @@ func (n *Network) applyGradientsGPU(learningRate float32) {
 	ctx.Queue.Submit(cmd)
 
 	// No poll - async execution
+	if gpu.Debug {
+		gpu.Log("Applied gradients on GPU")
+	}
 }
 func applyGradientsToDenseLayer(ctx *gpu.Context, pipeline *wgpu.ComputePipeline, paramsBuffer *wgpu.Buffer, layer *gpu.DenseLayer) {
 	// This function is no longer used - see applyGradientsGPU for batched implementation
@@ -366,17 +372,20 @@ func (n *Network) EnsureGradientPipeline(ctx *gpu.Context) error {
 	if n.gpuGradPipeline != nil {
 		return nil
 	}
+	if gpu.Debug {
+		gpu.Log("Initializing shared gradient application pipeline")
+	}
 
 	shaderCode := `
 		@group(0) @binding(0) var<storage, read_write> weights: array<f32>;
 		@group(0) @binding(1) var<storage, read> gradients: array<f32>;
-		@group(0) @binding(2) var<uniform> params: vec4<f32>;
+		@group(0) @binding(2) var<storage, read> params: array<f32>;
 
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let i = gid.x;
 			if (i >= arrayLength(&weights)) { return; }
-			weights[i] -= params.x * gradients[i];
+			weights[i] -= params[0] * gradients[i];
 		}
 	`
 
@@ -389,8 +398,30 @@ func (n *Network) EnsureGradientPipeline(ctx *gpu.Context) error {
 	}
 	defer module.Release()
 
+	// Explicit Bind Group Layout for Gradient Application
+	bgl, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: "GradientApplicationBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // weights (read_write)
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // gradients (read)
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // params (Refactored to Storage to avoid Uniform issues)
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create gradient bgl: %w", err)
+	}
+
+	pl, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            "GradientApplicationPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
+	})
+	if err != nil {
+		return fmt.Errorf("create gradient pl: %w", err)
+	}
+
 	n.gpuGradPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
-		Label: "GradientApplicationPipeline",
+		Label:  "GradientApplicationPipeline",
+		Layout: pl, // Explicit
 		Compute: wgpu.ProgrammableStageDescriptor{
 			Module:     module,
 			EntryPoint: "main",
@@ -405,7 +436,7 @@ func (n *Network) EnsureGradientPipeline(ctx *gpu.Context) error {
 	n.gpuGradParams, err = ctx.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
 		Label:    "GradientApplicationParams",
 		Contents: wgpu.ToBytes(paramsData),
-		Usage:    wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
+		Usage:    wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst, // Refactored to Storage
 	})
 	if err != nil {
 		n.gpuGradPipeline.Release()

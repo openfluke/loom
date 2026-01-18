@@ -210,10 +210,10 @@ func (l *RNNLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) err
 }
 
 func (l *RNNLayer) GenerateShader() string {
-// RNN: h' = tanh(W_ih * x + W_hh * h + b)
-// Process ONE time step per dispatch for ALL batches in parallel
-// Data layout matches CPU: input[b, t, i], output[b, t, h]
-return fmt.Sprintf(`
+	// RNN: h' = tanh(W_ih * x + W_hh * h + b)
+	// Process ONE time step per dispatch for ALL batches in parallel
+	// Data layout matches CPU: input[b, t, i], output[b, t, h]
+	return fmt.Sprintf(`
 @group(0) @binding(0) var<storage, read> input : array<f32>;
 @group(0) @binding(1) var<storage, read> w_ih : array<f32>;
 @group(0) @binding(2) var<storage, read> w_hh : array<f32>;
@@ -268,7 +268,6 @@ output[out_offset + h_idx] = h_val;
 }
 `, l.Spec.InputSize, l.Spec.HiddenSize, l.BatchSize, l.Spec.SeqLen)
 }
-
 
 func (l *RNNLayer) GenerateBackwardShader() string {
 	// Simplified BPTT: d_input = d_h @ W_ih.T where d_h = d_output * (1 - h^2)
@@ -391,8 +390,35 @@ func (l *RNNLayer) Compile(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer mod.Release()
+
+	// Explicit Layout
+	bgl, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // w_ih
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // w_hh
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // bias
+			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // hidden
+			{Binding: 5, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // output
+			{Binding: 6, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // step
+		},
+	})
+	if err != nil {
+		return err
+	}
+	pl, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_PL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bgl},
+	})
+	if err != nil {
+		return err
+	}
+
 	l.pipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_Pipe",
+		Layout:  pl,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: mod, EntryPoint: "main"},
 	})
 	return err
@@ -407,8 +433,31 @@ func (l *RNNLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer mod.Release()
+
+	bglBackward, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BwdBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // dOutput
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Output
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // w_ih
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // dInput
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plBackward, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_BwdPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglBackward},
+	})
+	if err != nil {
+		return err
+	}
+
 	l.bwPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_BwdPipe",
+		Layout:  plBackward,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: mod, EntryPoint: "main"},
 	})
 	if err != nil {
@@ -423,8 +472,33 @@ func (l *RNNLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 	if err != nil {
 		return err
 	}
+	defer modGrad.Release()
+
+	bglGrad, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_BwdGradBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // dOutput
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Output
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // d_w_ih
+			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // d_w_hh
+			{Binding: 5, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // d_bias
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plGrad, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_BwdGradPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglGrad},
+	})
+	if err != nil {
+		return err
+	}
+
 	l.bwGradPipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
 		Label:   labelPrefix + "_BwdGradPipe",
+		Layout:  plGrad,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: modGrad, EntryPoint: "main"},
 	})
 	return err
@@ -489,17 +563,16 @@ func (l *RNNLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOu
 }
 
 func (l *RNNLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
-// Dispatch once per time step - each step processes ALL batches in parallel
-// Total threads needed: BatchSize * HiddenSize
-total := uint32(l.BatchSize * l.Spec.HiddenSize)
-wg := (total + 255) / 256
-for step := 0; step < l.Spec.SeqLen; step++ {
-pass.SetPipeline(l.pipeline)
-pass.SetBindGroup(0, l.bindGroups[step], nil)
-pass.DispatchWorkgroups(wg, 1, 1)
+	// Dispatch once per time step - each step processes ALL batches in parallel
+	// Total threads needed: BatchSize * HiddenSize
+	total := uint32(l.BatchSize * l.Spec.HiddenSize)
+	wg := (total + 255) / 256
+	for step := 0; step < l.Spec.SeqLen; step++ {
+		pass.SetPipeline(l.pipeline)
+		pass.SetBindGroup(0, l.bindGroups[step], nil)
+		pass.DispatchWorkgroups(wg, 1, 1)
+	}
 }
-}
-
 
 func (l *RNNLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	// 1. dInput
