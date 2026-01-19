@@ -55,6 +55,13 @@ func CreateLoomNetwork(jsonConfig *C.char) *C.char {
 	return C.CString(`{"status": "success", "message": "network created"}`)
 }
 
+//export LoomGPUFlush
+func LoomGPUFlush() {
+	if currentNetwork != nil {
+		currentNetwork.SyncGPU()
+	}
+}
+
 //export FreeLoomNetwork
 func FreeLoomNetwork() {
 	if currentNetwork != nil {

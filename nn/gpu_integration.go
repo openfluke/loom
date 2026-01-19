@@ -185,7 +185,8 @@ func (n *Network) WeightsToGPU() error {
 	}
 
 	// Wait for GPU to finish
-	pollGPU(ctx)
+	// Wait for any pending ops
+	n.SyncGPU()
 
 	n.gpuLayers = layers
 	n.gpuMounted = true
@@ -249,9 +250,7 @@ func (n *Network) ReleaseGPUWeights() {
 	// Fix for Windows ARM64 / Adreno:
 	// Ensure all GPU commands are finished before destroying resources.
 	// This prevents "CommandBuffer cannot be destroyed because is still in use" panic.
-	if ctx, ok := n.gpuCtx.(*gpu.Context); ok && ctx != nil {
-		pollGPU(ctx)
-	}
+	n.SyncGPU()
 
 	if layers, ok := n.gpuLayers.([]gpu.GPULayer); ok {
 		n.cleanupGPULayers(layers)
@@ -463,7 +462,7 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 		return nil, fmt.Errorf("command encoder finish: %w", err)
 	}
 	ctx.Queue.Submit(cmd)
-	pollGPU(ctx)
+	n.SyncGPU()
 
 	// Read output from staging buffer
 	lastLayer := layers[len(layers)-1]
@@ -560,7 +559,7 @@ func (n *Network) backwardGPU(dOutput []float32) ([]float32, error) {
 		return nil, fmt.Errorf("backward command encoder finish: %w", err)
 	}
 	ctx.Queue.Submit(cmd)
-	pollGPU(ctx)
+	n.SyncGPU()
 
 	// Download gradients and store them in Network's gradient arrays
 	for i, l := range layers {
@@ -1009,7 +1008,17 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 }
 
 // pollGPU waits for GPU operations to complete using a fence buffer
-func pollGPU(ctx *gpu.Context) {
+// SyncGPU blocks until all queued GPU commands are completed.
+// This is critical for preventing panics when destroying resources or toggling GPU/CPU.
+func (n *Network) SyncGPU() {
+	if !n.gpuMounted {
+		return
+	}
+	ctx, ok := n.gpuCtx.(*gpu.Context)
+	if !ok || ctx == nil {
+		return
+	}
+
 	// Robust synchronization for Windows ARM64 / Adreno (Tiled GPU):
 	// We create a temporary fence buffer, write to it, and map it.
 	// The MapAsync processing guarantees that all prior queue operations (WriteBuffer)
@@ -1023,7 +1032,7 @@ func pollGPU(ctx *gpu.Context) {
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
 	if err != nil {
-		fmt.Printf("pollGPU warning: failed to create fence: %v\n", err)
+		fmt.Printf("SyncGPU warning: failed to create fence: %v\n", err)
 		ctx.Device.Poll(true, nil)
 		return
 	}
