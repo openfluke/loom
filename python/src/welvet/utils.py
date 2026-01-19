@@ -229,6 +229,18 @@ if _LoomTrain:
     _LoomTrain.restype = ctypes.c_char_p
     _LoomTrain.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 
+# LoomTrainStandard: train network with standardized inputs/targets
+_LoomTrainStandard = _sym("LoomTrainStandard")
+if _LoomTrainStandard:
+    _LoomTrainStandard.restype = ctypes.c_char_p
+    _LoomTrainStandard.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+
+# LoomTrainLabels: train network with standardized inputs/labels
+_LoomTrainLabels = _sym("LoomTrainLabels")
+if _LoomTrainLabels:
+    _LoomTrainLabels.restype = ctypes.c_char_p
+    _LoomTrainLabels.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+
 # LoomSaveModel: save model to JSON string
 _LoomSaveModel = _sym("LoomSaveModel")
 if _LoomSaveModel:
@@ -1600,13 +1612,106 @@ def create_network_from_json(json_config: str) -> None:
         json_config = json.dumps(json_config)
     
     response = _CreateLoomNetwork(json_config.encode('utf-8'))
+    
     if not response:
         raise RuntimeError("Failed to create network")
-    
+        
     result = json.loads(response.decode('utf-8'))
     
-    if "error" in result:
+    if isinstance(result, dict) and "error" in result:
         raise RuntimeError(f"Failed to create network: {result['error']}")
+
+
+def train_standard(inputs: list, targets: list, config: dict = None) -> dict:
+    """
+    Train the network using the standardized regression/generic API.
+    
+    Args:
+        inputs: List of input vectors (list of float lists)
+        targets: List of target vectors (list of float lists)
+        config: Optional training configuration
+            - epochs: int (default: 5)
+            - learning_rate: float (default: 0.05)
+            - use_gpu: bool (default: False)
+            - loss_type: str (default: "mse")
+    
+    Returns:
+        Training result dict (final_loss, best_loss, etc.)
+    """
+    if not _LoomTrainStandard:
+        raise RuntimeError("LoomTrainStandard not available in library")
+
+    if config is None:
+        config = {}
+    
+    # Defaults
+    training_config = {
+        "Epochs": config.get("epochs", 5),
+        "LearningRate": config.get("learning_rate", 0.05),
+        "UseGPU": config.get("use_gpu", False),
+        "LossType": config.get("loss_type", "mse"),
+        "Verbose": config.get("verbose", False),
+    }
+
+    inputs_json = json.dumps(inputs).encode('utf-8')
+    targets_json = json.dumps(targets).encode('utf-8')
+    config_json = json.dumps(training_config).encode('utf-8')
+
+    response = _LoomTrainStandard(inputs_json, targets_json, config_json)
+    if not response:
+        raise RuntimeError("Training failed (no response)")
+
+    result = json.loads(response.decode('utf-8'))
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(f"Training failed: {result['error']}")
+    
+    return result
+
+
+def train_labels(inputs: list, labels: list, config: dict = None) -> dict:
+    """
+    Train the network using the standardized classification API.
+    
+    Args:
+        inputs: List of input vectors (list of float lists)
+        labels: List of integer class labels
+        config: Optional training configuration
+            - epochs: int (default: 5)
+            - learning_rate: float (default: 0.05)
+            - use_gpu: bool (default: False)
+            - loss_type: str (default: "mse")
+    
+    Returns:
+        Training result dict
+    """
+    if not _LoomTrainLabels:
+        raise RuntimeError("LoomTrainLabels not available in library")
+
+    if config is None:
+        config = {}
+    
+    # Defaults
+    training_config = {
+        "Epochs": config.get("epochs", 5),
+        "LearningRate": config.get("learning_rate", 0.05),
+        "UseGPU": config.get("use_gpu", False),
+        "LossType": config.get("loss_type", "mse"),
+        "Verbose": config.get("verbose", False),
+    }
+
+    inputs_json = json.dumps(inputs).encode('utf-8')
+    labels_json = json.dumps(labels).encode('utf-8')
+    config_json = json.dumps(training_config).encode('utf-8')
+
+    response = _LoomTrainLabels(inputs_json, labels_json, config_json)
+    if not response:
+        raise RuntimeError("Training failed (no response)")
+
+    result = json.loads(response.decode('utf-8'))
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(f"Training failed: {result['error']}")
+    
+    return result
 
 
 def forward_simple(inputs: List[float]) -> List[float]:

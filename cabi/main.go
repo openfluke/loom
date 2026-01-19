@@ -125,6 +125,76 @@ func LoomTrain(batchesJSON *C.char, configJSON *C.char) *C.char {
 	return C.CString(string(resultJSON))
 }
 
+//export LoomTrainStandard
+func LoomTrainStandard(inputsJSON *C.char, targetsJSON *C.char, configJSON *C.char) *C.char {
+	if currentNetwork == nil {
+		return C.CString(`{"error": "no network created"}`)
+	}
+
+	// Parse inputs
+	var inputs [][]float32
+	if err := json.Unmarshal([]byte(C.GoString(inputsJSON)), &inputs); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid inputs: %v"}`, err))
+	}
+
+	// Parse targets
+	var targets [][]float32
+	if err := json.Unmarshal([]byte(C.GoString(targetsJSON)), &targets); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid targets: %v"}`, err))
+	}
+
+	// Parse config
+	var config nn.TrainingConfig
+	if err := json.Unmarshal([]byte(C.GoString(configJSON)), &config); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid config: %v"}`, err))
+	}
+
+	// Train
+	result, err := currentNetwork.TrainStandard(inputs, targets, &config)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	// Convert result to JSON
+	resultJSON, _ := json.Marshal(result)
+	return C.CString(string(resultJSON))
+}
+
+//export LoomTrainLabels
+func LoomTrainLabels(inputsJSON *C.char, labelsJSON *C.char, configJSON *C.char) *C.char {
+	if currentNetwork == nil {
+		return C.CString(`{"error": "no network created"}`)
+	}
+
+	// Parse inputs
+	var inputs [][]float32
+	if err := json.Unmarshal([]byte(C.GoString(inputsJSON)), &inputs); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid inputs: %v"}`, err))
+	}
+
+	// Parse labels
+	var labels []int
+	if err := json.Unmarshal([]byte(C.GoString(labelsJSON)), &labels); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid labels: %v"}`, err))
+	}
+
+	// Parse config
+	var config nn.TrainingConfig
+	if err := json.Unmarshal([]byte(C.GoString(configJSON)), &config); err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "invalid config: %v"}`, err))
+	}
+
+	// Train
+	result, err := currentNetwork.TrainLabels(inputs, labels, &config)
+	if err != nil {
+		return C.CString(fmt.Sprintf(`{"error": "%v"}`, err))
+	}
+
+	// Convert result to JSON
+	resultJSON, _ := json.Marshal(result)
+	return C.CString(string(resultJSON))
+}
+
 //export LoomSaveModel
 func LoomSaveModel(modelID *C.char) *C.char {
 	if currentNetwork == nil {
