@@ -1008,12 +1008,48 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 	}
 }
 
-// pollGPU waits for GPU operations to complete
+// pollGPU waits for GPU operations to complete using a fence buffer
 func pollGPU(ctx *gpu.Context) {
-	// For reliable synchronization, especially on tiled/mobile GPUs (ARM64),
-	// we must wait until the device is truly idle before destroying resources.
-	// wgpu.MaintainWait (true) blocks until all submitted work is done.
-	ctx.Device.Poll(true, nil)
+	// Robust synchronization for Windows ARM64 / Adreno (Tiled GPU):
+	// We create a temporary fence buffer, write to it, and map it.
+	// The MapAsync processing guarantees that all prior queue operations (WriteBuffer)
+	// and their dependencies (Submits) are finished.
+	// This forces wgpu.Poll(true) to actually block until the GPU is idle.
+
+	fenceSize := uint64(4)
+	fence, err := ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: "SyncFence",
+		Size:  fenceSize,
+		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
+	})
+	if err != nil {
+		fmt.Printf("pollGPU warning: failed to create fence: %v\n", err)
+		ctx.Device.Poll(true, nil)
+		return
+	}
+	defer fence.Destroy()
+
+	// 1. Enqueue a write to usage the buffer on the GPU queue
+	// This barrier ensures previous submissions are processed before this write
+	zero := []uint32{0}
+	ctx.Queue.WriteBuffer(fence, 0, wgpu.ToBytes(zero))
+
+	// 2. Map the buffer. This waits for the Write to finish.
+	done := make(chan struct{})
+	fence.MapAsync(wgpu.MapModeRead, 0, fenceSize, func(status wgpu.BufferMapAsyncStatus) {
+		close(done)
+	})
+
+	// 3. Poll until callback fires
+	for {
+		select {
+		case <-done:
+			return
+		default:
+			// MaintainWait=true to drive the event loop
+			ctx.Device.Poll(true, nil)
+		}
+	}
 }
 
 // readStagingBuffer reads float32 data from a staging buffer
