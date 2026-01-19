@@ -124,43 +124,59 @@ func (l *EmbeddingLayer) GenerateShader() string {
 }
 
 func (l *EmbeddingLayer) GenerateBackwardShader() string {
-	// Backward: scatter gradients to weight gradient buffer using atomics
+	// Backward: Pull gradient from d_output to d_weights (Atomic-Free)
+	// Iterate over all tokens for each weight element to find matches
+	// O(Vocab * Dim * Batch * Seq) - simpler/safer for MSL than atomics
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> tokens : array<u32>;
 		@group(0) @binding(1) var<storage, read> d_output : array<f32>;
-		@group(0) @binding(2) var<storage, read_write> d_weights : array<atomic<u32>>;
+		@group(0) @binding(2) var<storage, read_write> d_weights : array<f32>;
 
 		const SEQ_LEN: u32 = %du;
 		const EMB_DIM: u32 = %du;
 		const VOCAB_SIZE: u32 = %du;
+		const INPUT_TOTAL: u32 = %du; // SeqLen * BatchSize (conceptually, though here just seqlen)
 
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-			let idx = gid.x;
-			let total = SEQ_LEN * EMB_DIM;
-			if (idx >= total) { return; }
+			let idx = gid.x; // Weight index (Vocab * Dim)
+			let total_weights = VOCAB_SIZE * EMB_DIM;
+			if (idx >= total_weights) { return; }
 
-			let pos = idx / EMB_DIM;
+			let vocab_id = idx / EMB_DIM;
 			let dim = idx %% EMB_DIM;
 
-			let token_id = tokens[pos];
-			if (token_id >= VOCAB_SIZE) { return; }
-
-			let grad = d_output[idx];
-			let weight_idx = token_id * EMB_DIM + dim;
-
-			// Atomic add for gradient
-			var old_val: u32 = atomicLoad(&d_weights[weight_idx]);
-			loop {
-				let old_f32 = bitcast<f32>(old_val);
-				let new_f32 = old_f32 + grad;
-				let new_val = bitcast<u32>(new_f32);
-				let result = atomicCompareExchangeWeak(&d_weights[weight_idx], old_val, new_val);
-				if (result.exchanged) { break; }
-				old_val = result.old_value;
+			var grad_acc: f32 = 0.0;
+			
+			// Iterate over all input tokens to see if they contributed to this weight
+			// Note: l.Spec.SeqLength acts as total input tokens here
+			for (var i: u32 = 0u; i < SEQ_LEN; i++) {
+				if (tokens[i] == vocab_id) {
+					// This token used this weight, accumulate gradient
+					grad_acc += d_output[i * EMB_DIM + dim];
+				}
 			}
+			
+			// Write accumulated gradient (assuming buffer zeroed or overwriting)
+			// Since we account for all inputs, strictly overwriting is correct if we assume standard backprop
+			// But usually we accumulate into existing gradients? 
+			// Standard Loom usually zeroes before backward or accumulates.
+			// The atomic version added. Here we calculate the WHOLE delta for this weight from this batch.
+			// So we should ADD to existing d_weights? 
+			// If d_weights accumulates across batches or optimizers, read-modify-write is safest.
+			
+			// However, without atomics, read-add-write is only safe if one thread owns this address.
+			// Here, exactly one thread owns 'idx' in d_weights. So race-free!
+			
+			// But we need to load current value if we want to support accumulation?
+			// Usually ZeroGradients is called before Backward.
+			// Loom convention: Backward typically *adds* to gradient buffer (to support branching/sharing).
+			// So we will add.
+			
+			let current = d_weights[idx];
+			d_weights[idx] = current + grad_acc;
 		}
-	`, l.Spec.SeqLength, l.Spec.EmbeddingDim, l.Spec.VocabSize)
+	`, l.Spec.SeqLength, l.Spec.EmbeddingDim, l.Spec.VocabSize, l.Spec.SeqLength)
 }
 
 func (l *EmbeddingLayer) Compile(ctx *Context, labelPrefix string) error {
@@ -219,7 +235,7 @@ func (l *EmbeddingLayer) CompileBackward(ctx *Context, labelPrefix string) error
 		Entries: []wgpu.BindGroupLayoutEntry{
 			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // tokens
 			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // d_output
-			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // d_weights
+			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // d_weights (changed from atomic)
 		},
 	})
 	if err != nil {

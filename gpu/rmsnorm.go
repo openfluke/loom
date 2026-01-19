@@ -31,8 +31,14 @@ type RMSNormLayer struct {
 	GammaGradientBuffer *wgpu.Buffer
 	InputGradientBuffer *wgpu.Buffer
 
+	// NEW: Batch Gradients for atomic-free reduction
+	GammaBatchGradientBuffer *wgpu.Buffer
+
 	bwPipeline  *wgpu.ComputePipeline
 	bwBindGroup *wgpu.BindGroup
+
+	reducePipeline  *wgpu.ComputePipeline
+	reduceBindGroup *wgpu.BindGroup
 }
 
 // Interface implementations
@@ -117,6 +123,18 @@ func (l *RMSNormLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string)
 		Size:  uint64(sz * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+	if err != nil {
+		return err
+	}
+
+	// NEW: Batch Gradients (Batch * NormSize)
+	batchTotal := batch * l.Spec.NormSize
+	l.GammaBatchGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_GammaBatchGrad",
+		Size:  uint64(batchTotal * 4),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc,
+	})
+
 	return err
 }
 
@@ -195,6 +213,7 @@ func (l *RMSNormLayer) GenerateShader() string {
 
 func (l *RMSNormLayer) GenerateBackwardShader() string {
 	// RMSNorm backward: compute dGamma and dInput
+	// Uses atomic-free partial reduction (Batch * NormSize)
 	elemsPerThread := (l.Spec.NormSize + 255) / 256
 
 	return fmt.Sprintf(`
@@ -203,7 +222,7 @@ func (l *RMSNormLayer) GenerateBackwardShader() string {
 		@group(0) @binding(2) var<storage, read> gamma : array<f32>;
 		
 		@group(0) @binding(3) var<storage, read_write> d_input : array<f32>;
-		@group(0) @binding(4) var<storage, read_write> d_gamma : array<atomic<u32>>;
+		@group(0) @binding(4) var<storage, read_write> d_gamma_batch : array<f32>;
 
 		const N: u32 = %du;
 		const EPS: f32 = %f;
@@ -245,7 +264,7 @@ func (l *RMSNormLayer) GenerateBackwardShader() string {
 			workgroupBarrier();
 			let inv_rms = wg_inv_rms;
 			
-			// Phase 2: Accumulate d_gamma and compute sum for d_input
+			// Phase 2: Compute d_gamma (partial) and term2
 			var local_sum_dxhat_x: f32 = 0.0;
 			
 			for (var i: u32 = 0u; i < ELEMS_PER_THREAD; i++) {
@@ -255,19 +274,9 @@ func (l *RMSNormLayer) GenerateBackwardShader() string {
 					let dout = d_output[offset + idx];
 					let x_hat = val * inv_rms;
 					
-					// Atomic add for d_gamma
-					{
-						let gamma_contrib = dout * x_hat;
-						var old_val: u32 = atomicLoad(&d_gamma[idx]);
-						loop {
-							let old_f32 = bitcast<f32>(old_val);
-							let new_f32 = old_f32 + gamma_contrib;
-							let new_val = bitcast<u32>(new_f32);
-							let result = atomicCompareExchangeWeak(&d_gamma[idx], old_val, new_val);
-							if (result.exchanged) { break; }
-							old_val = result.old_value;
-						}
-					}
+					// Store partial gradient directly
+					let out_idx = offset + idx;
+					d_gamma_batch[out_idx] = dout * x_hat;
 					
 					var g: f32 = 1.0;
 					if (arrayLength(&gamma) >= N) { g = gamma[idx]; }
@@ -305,6 +314,32 @@ func (l *RMSNormLayer) GenerateBackwardShader() string {
 			}
 		}
 	`, l.Spec.NormSize, l.Spec.Epsilon, elemsPerThread)
+}
+
+func (l *RMSNormLayer) GenerateReduceShader() string {
+	return fmt.Sprintf(`
+		@group(0) @binding(0) var<storage, read> batch_gamma : array<f32>;
+		@group(0) @binding(1) var<storage, read_write> final_gamma : array<f32>;
+
+		const N: u32 = %du;
+		const BATCH: u32 = %du;
+
+		@compute @workgroup_size(256)
+		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+			let idx = gid.x;
+			if (idx >= N) { return; }
+
+			var sum_g: f32 = 0.0;
+
+			for (var b: u32 = 0u; b < BATCH; b++) {
+				let offset = b * N + idx;
+				sum_g += batch_gamma[offset];
+			}
+
+			// Accumulate
+			final_gamma[idx] = final_gamma[idx] + sum_g;
+		}
+	`, l.Spec.NormSize, l.Spec.BatchSize)
 }
 
 func (l *RMSNormLayer) Compile(ctx *Context, labelPrefix string) error {
@@ -384,6 +419,44 @@ func (l *RMSNormLayer) CompileBackward(ctx *Context, labelPrefix string) error {
 		Layout:  plBwd,
 		Compute: wgpu.ProgrammableStageDescriptor{Module: module, EntryPoint: "main"},
 	})
+	if err != nil {
+		return err
+	}
+
+	// 2. Reduce Pipeline
+	redShader := l.GenerateReduceShader()
+	redModule, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
+		Label:          labelPrefix + "_RedShader",
+		WGSLDescriptor: &wgpu.ShaderModuleWGSLDescriptor{Code: redShader},
+	})
+	if err != nil {
+		return err
+	}
+	defer redModule.Release()
+
+	bglRed, err := ctx.Device.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+		Label: labelPrefix + "_RedBGL",
+		Entries: []wgpu.BindGroupLayoutEntry{
+			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // batchG
+			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // finalG
+		},
+	})
+	if err != nil {
+		return err
+	}
+	plRed, err := ctx.Device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{
+		Label:            labelPrefix + "_RedPL",
+		BindGroupLayouts: []*wgpu.BindGroupLayout{bglRed},
+	})
+	if err != nil {
+		return err
+	}
+	l.reducePipeline, err = ctx.Device.CreateComputePipeline(&wgpu.ComputePipelineDescriptor{
+		Label:   labelPrefix + "_RedPipe",
+		Layout:  plRed,
+		Compute: wgpu.ProgrammableStageDescriptor{Module: redModule, EntryPoint: "main"},
+	})
+
 	return err
 }
 
@@ -409,13 +482,28 @@ func (l *RMSNormLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string,
 		{Binding: 1, Buffer: dOutputBuffer, Size: dOutputBuffer.GetSize()},
 		{Binding: 2, Buffer: l.GammaBuffer, Size: l.GammaBuffer.GetSize()},
 		{Binding: 3, Buffer: l.InputGradientBuffer, Size: l.InputGradientBuffer.GetSize()},
-		{Binding: 4, Buffer: l.GammaGradientBuffer, Size: l.GammaGradientBuffer.GetSize()},
+		{Binding: 4, Buffer: l.GammaBatchGradientBuffer, Size: l.GammaBatchGradientBuffer.GetSize()}, // Batch Grads
 	}
 	l.bwBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:   labelPrefix + "_BwdBind",
 		Layout:  l.bwPipeline.GetBindGroupLayout(0),
 		Entries: entries,
 	})
+	if err != nil {
+		return err
+	}
+
+	// Reduce BindGroup
+	redEntries := []wgpu.BindGroupEntry{
+		{Binding: 0, Buffer: l.GammaBatchGradientBuffer, Size: l.GammaBatchGradientBuffer.GetSize()},
+		{Binding: 1, Buffer: l.GammaGradientBuffer, Size: l.GammaGradientBuffer.GetSize()},
+	}
+	l.reduceBindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Label:   labelPrefix + "_RedBind",
+		Layout:  l.reducePipeline.GetBindGroupLayout(0),
+		Entries: redEntries,
+	})
+
 	return err
 }
 
@@ -439,6 +527,15 @@ func (l *RMSNormLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	}
 	pass.DispatchWorkgroups(uint32(batch), 1, 1)
 	pass.End()
+
+	// Reduce Pass
+	passRed := enc.BeginComputePass(nil)
+	passRed.SetPipeline(l.reducePipeline)
+	passRed.SetBindGroup(0, l.reduceBindGroup, nil)
+
+	wgx := (l.Spec.NormSize + 255) / 256
+	passRed.DispatchWorkgroups(uint32(wgx), 1, 1)
+	passRed.End()
 }
 
 func (l *RMSNormLayer) UploadWeights(ctx *Context) {
