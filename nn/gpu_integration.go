@@ -522,7 +522,17 @@ func (n *Network) backwardGPU(dOutput []float32) ([]float32, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create dOutput buffer: %w", err)
 	}
-	defer dOutBuffer.Destroy()
+
+	// Safe cleanup pattern: Ensure GPU is synced before destroying buffer
+	// This prevents "CommandBuffer cannot be destroyed because is still in use" panic on error returns
+	synced := false
+	defer func() {
+		if !synced {
+			n.SyncGPU()
+		}
+		dOutBuffer.Destroy()
+	}()
+
 	ctx.Queue.WriteBuffer(dOutBuffer, 0, wgpu.ToBytes(dOutput))
 
 	// Create backward bind groups - link each layer to the next's input gradient
@@ -560,6 +570,7 @@ func (n *Network) backwardGPU(dOutput []float32) ([]float32, error) {
 	}
 	ctx.Queue.Submit(cmd)
 	n.SyncGPU()
+	synced = true
 
 	// Download gradients and store them in Network's gradient arrays
 	for i, l := range layers {
