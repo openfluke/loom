@@ -198,6 +198,7 @@ export interface TweenState {
  */
 declare global {
   function createLoomNetwork(jsonConfig: string): Network;
+  function loadLoomNetwork(jsonString: string, modelID: string): Network;
   function createAdaptationTracker(windowMs: number, totalMs: number): AdaptationTracker;
   function createNetworkForGraft(jsonConfig: string): number;
   function graftNetworks(idsJSON: string, combineMode: string): string;

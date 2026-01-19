@@ -3,7 +3,7 @@
  * Browser-only version without Node.js dependencies
  */
 
-export async function loadLoomWASMBrowser(): Promise<void> {
+export async function loadLoomWASMBrowser(wasmUrl?: string): Promise<void> {
   // For browser environments - load wasm_exec.js first if not already loaded
   if (typeof (globalThis as any).Go === "undefined") {
     // Load wasm_exec.js dynamically from /dist/
@@ -16,7 +16,7 @@ export async function loadLoomWASMBrowser(): Promise<void> {
     });
   }
 
-  const response = await fetch("/dist/main.wasm");
+  const response = await fetch(wasmUrl || "/dist/main.wasm");
   const wasmBuffer = await response.arrayBuffer();
 
   // @ts-ignore - Go is defined by wasm_exec.js

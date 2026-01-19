@@ -14,24 +14,33 @@ import {
   EnsembleMatch,
   AdaptationTracker
 } from "./types.js";
-import { loadLoomWASM } from "./loader.js";
 import { loadLoomWASMBrowser } from "./loader.browser.js";
 
 export * from "./types.js";
-export { loadLoomWASM, loadLoomWASMBrowser };
+export { loadLoomWASMBrowser };
+
+export async function loadLoomWASM(): Promise<void> {
+  const mod = await import("./loader.js");
+  await mod.loadLoomWASM();
+}
 
 /**
- * Initialize WASM for Node.js environment
+ * Initialize WASM
+ * Auto-detects environment (Browser vs Node.js)
  */
-export async function init(): Promise<void> {
-  await loadLoomWASM();
+export async function init(wasmUrl?: string): Promise<void> {
+  // Check for browser environment (needs window and document for loader.browser.ts)
+  if (typeof window !== "undefined" && typeof document !== "undefined") {
+    return initBrowser(wasmUrl);
+  }
+  return loadLoomWASM();
 }
 
 /**
  * Initialize WASM for Browser environment
  */
-export async function initBrowser(): Promise<void> {
-  await loadLoomWASMBrowser();
+export async function initBrowser(wasmUrl?: string): Promise<void> {
+  await loadLoomWASMBrowser(wasmUrl);
 }
 
 /**
@@ -44,6 +53,13 @@ export function createNetwork(config: object | string): Network {
     : JSON.stringify(config);
 
   return createLoomNetwork(jsonConfig) as unknown as Network;
+}
+
+/**
+ * Load a network from JSON string and ID
+ */
+export function loadNetwork(jsonString: string, modelID: string): Network {
+  return loadLoomNetwork(jsonString, modelID) as unknown as Network;
 }
 
 /**
@@ -111,6 +127,7 @@ export default {
   init,
   initBrowser,
   createNetwork,
+  loadNetwork,
   createKHandle,
   graft,
   kmeans,
