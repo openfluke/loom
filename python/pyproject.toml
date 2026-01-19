@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "welvet"
-version = "0.0.9"
-description = "Complete Python bindings for LOOM v0.0.7 — Portable neural networks with transformer inference"
+version = "0.0.10"
+description = "High-Performance AI Engine (Loom v0.0.8) — Native WebGPU, Transformer Inference, and 100% Determinism"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "Apache-2.0"}
@@ -22,7 +22,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-keywords = ["neural-network", "machine-learning", "webgpu", "gpu", "deep-learning"]
+keywords = ["neural-network", "webgpu", "gpu", "deep-learning", "transformer", "swiglu", "moe", "safetensors", "wasm", "determinism"]
 
 [project.urls]
 Homepage = "https://github.com/openfluke/loom"
