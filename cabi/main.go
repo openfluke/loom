@@ -37,6 +37,12 @@ var currentNetwork *nn.Network
 func CreateLoomNetwork(jsonConfig *C.char) *C.char {
 	config := C.GoString(jsonConfig)
 
+	// Cleanup previous network if exists to prevent GPU resource leaks
+	if currentNetwork != nil {
+		currentNetwork.ReleaseGPUWeights()
+		currentNetwork = nil
+	}
+
 	network, err := nn.BuildNetworkFromJSON(config)
 	if err != nil {
 		errMsg := fmt.Sprintf(`{"error": "failed to create network: %v"}`, err)
@@ -47,6 +53,14 @@ func CreateLoomNetwork(jsonConfig *C.char) *C.char {
 	currentNetwork = network
 
 	return C.CString(`{"status": "success", "message": "network created"}`)
+}
+
+//export FreeLoomNetwork
+func FreeLoomNetwork() {
+	if currentNetwork != nil {
+		currentNetwork.ReleaseGPUWeights()
+		currentNetwork = nil
+	}
 }
 
 //export LoomForward

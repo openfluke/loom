@@ -1369,7 +1369,8 @@ int testObserverPattern() {
     printf("└──────────────────────────────────────────────────────────────────────┘\n");
 
     // 1. Create Network
-    const char* config = "{\"layers\":[{\"type\":\"dense\",\"input_height\":4,\"output_height\":2}]}";
+    // 1. Create Network
+    const char* config = "{\"batch_size\": 1, \"grid_rows\": 1, \"grid_cols\": 1, \"layers_per_cell\": 1, \"layers\":[{\"type\":\"dense\",\"input_height\":4,\"output_height\":2}]}";
     // Casts to silence warnings
     char* result = CreateLoomNetwork((char*)config);
     FreeLoomString(result);
@@ -1406,6 +1407,7 @@ int testObserverPattern() {
 
     // 5. Cleanup
     LoomFreeRecordingObserver(obsHandle);
+    FreeLoomNetwork();
 
     printf("  ✅ PASSED: Observer Pattern\n");
     return 1;
@@ -1469,6 +1471,7 @@ int testGPUDeterminism() {
 
     FreeLoomString(cpuOut);
     FreeLoomString(gpuOut);
+    FreeLoomNetwork(); // Explicitly release GPU resources
 
     printf("  ✅ PASSED: GPU Determinism\n");
     return 1;
@@ -1522,6 +1525,7 @@ int runGPUTrainingTest(const char* layerType) {
         printf("  ✓ %s: Trained OK\n", layerType);
     }
     FreeLoomString(result);
+    FreeLoomNetwork(); // Explicitly release GPU resources
     return 1;
 }
 
@@ -1604,6 +1608,7 @@ int runGPUTrainingVerifyTest(const char* layerType) {
     FreeLoomString(gpuResult);
     
     LoomEnableGPU(0); // Reset
+    FreeLoomNetwork(); // Explicitly release GPU resources
 
     if (cpuOK && gpuOK) {
         printf("  ✓ %s: CPU+GPU OK\n", layerType);
