@@ -1442,7 +1442,7 @@ int testObserverPattern() {
 
     // 5. Cleanup
     LoomFreeRecordingObserver(obsHandle);
-    FreeLoomNetwork();
+    SafeFreeLoomNetwork();
 
     printf("  ✅ PASSED: Observer Pattern\n");
     return 1;
