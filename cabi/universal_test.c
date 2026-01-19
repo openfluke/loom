@@ -19,6 +19,41 @@
 #include <math.h>
 #include "libloom.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+// =============================================================================
+// GPU Synchronization Helpers
+// =============================================================================
+
+// Helper: Safe network cleanup with GPU sync
+void SafeFreeLoomNetwork() {
+    // CRITICAL: Wait for GPU to finish before destroying resources
+    LoomSyncGPU();
+    FreeLoomNetwork();
+}
+
+// Helper: Safe GPU disable with sync
+void SafeDisableGPU() {
+    LoomEnableGPU(0);
+    LoomSyncGPU();  // Ensure GPU is idle before proceeding
+}
+
+// Global Test Cleanup Pattern
+void CleanupBetweenTests() {
+    // CRITICAL: Full GPU sync before proceeding to next test
+    LoomSyncGPU();
+    // Small delay for Adreno tile scheduler to fully quiesce
+    #ifdef _WIN32
+    Sleep(50);  // 50ms
+    #else
+    usleep(50000);
+    #endif
+}
+
 // =============================================================================
 // Test Utilities
 // =============================================================================
@@ -1441,17 +1476,22 @@ int testGPUDeterminism() {
     LoomEnableGPU(0);
     char* cpuOut = LoomForward(input, 64);
     
+    // CRITICAL: Sync before switching to GPU mode
+    LoomSyncGPU();
+
     // Run on GPU
     LoomEnableGPU(1);
     char* gpuOut = LoomForward(input, 64);
     
-    // Disable GPU for subsequent tests
-    LoomEnableGPU(0);
+    // CRITICAL: Sync GPU before disabling (prevents async command issues)
+    LoomSyncGPU();
+    SafeDisableGPU();
 
     if (json_has_error(cpuOut)) { 
         printf("  ❌ CPU run failed: %s\n", cpuOut); 
         FreeLoomString(cpuOut);
         FreeLoomString(gpuOut);
+        SafeFreeLoomNetwork();
         return 0; 
     }
     
@@ -1471,9 +1511,12 @@ int testGPUDeterminism() {
 
     FreeLoomString(cpuOut);
     FreeLoomString(gpuOut);
-    FreeLoomNetwork(); // Explicitly release GPU resources
+    SafeFreeLoomNetwork(); // Explicitly release GPU resources safely
 
     printf("  ✅ PASSED: GPU Determinism\n");
+    
+    CleanupBetweenTests(); // CRITICAL: Ensure quiescent state before next test
+    return 1;
     return 1;
 }
 
@@ -1509,6 +1552,8 @@ int runGPUTrainingTest(const char* layerType) {
     }
     FreeLoomString(netParams);
 
+    // CRITICAL: Sync before enabling GPU
+    LoomSyncGPU();
     LoomEnableGPU(1);
     
     // Simple dummy batches: Input [4] -> Target [2]
@@ -1517,7 +1562,9 @@ int runGPUTrainingTest(const char* layerType) {
 
     char* result = LoomTrain((char*)batches, (char*)trainConfig);
     
-    LoomEnableGPU(0); // Reset
+    // CRITICAL: Wait for training to complete before disabling GPU
+    LoomSyncGPU();
+    SafeDisableGPU();
 
     if (json_has_error(result)) {
         printf("  ⚠️ %s: GPU training error (expected if no GPU): %s\n", layerType, result);
@@ -1525,7 +1572,9 @@ int runGPUTrainingTest(const char* layerType) {
         printf("  ✓ %s: Trained OK\n", layerType);
     }
     FreeLoomString(result);
-    FreeLoomNetwork(); // Explicitly release GPU resources
+    SafeFreeLoomNetwork(); // Explicitly release GPU resources
+    
+    CleanupBetweenTests(); // CRITICAL
     return 1;
 }
 
@@ -1595,20 +1644,30 @@ int runGPUTrainingVerifyTest(const char* layerType) {
     int cpuOK = !json_has_error(cpuResult);
     FreeLoomString(cpuResult);
 
-    // Train on GPU
+    // CRITICAL: Sync before cleanup and GPU test
+    SafeFreeLoomNetwork();
+
+    // GPU Training - recreate network
+    LoomSyncGPU();
+    netParams = CreateLoomNetwork((char*)config);
+    FreeLoomString(netParams);
+    
+    LoomSyncGPU();
     LoomEnableGPU(1);
     const char* trainConfigGPU = "{\"Epochs\": 5, \"LearningRate\": 0.05, \"UseGPU\": true, \"LossType\": \"mse\"}";
     
-    // Recreate network for GPU test
-    netParams = CreateLoomNetwork((char*)config);
-    FreeLoomString(netParams);
+    // Recreate network for GPU test (handled above)
     
     char* gpuResult = LoomTrain((char*)batches, (char*)trainConfigGPU);
     int gpuOK = !json_has_error(gpuResult);
     FreeLoomString(gpuResult);
     
-    LoomEnableGPU(0); // Reset
-    FreeLoomNetwork(); // Explicitly release GPU resources
+    // CRITICAL: Complete sync sequence before cleanup
+    LoomSyncGPU();
+    SafeDisableGPU();
+    SafeFreeLoomNetwork();
+    
+    CleanupBetweenTests(); // CRITICAL
 
     if (cpuOK && gpuOK) {
         printf("  ✓ %s: CPU+GPU OK\n", layerType);
