@@ -246,6 +246,13 @@ func (n *Network) ReleaseGPUWeights() {
 		return
 	}
 
+	// Fix for Windows ARM64 / Adreno:
+	// Ensure all GPU commands are finished before destroying resources.
+	// This prevents "CommandBuffer cannot be destroyed because is still in use" panic.
+	if ctx, ok := n.gpuCtx.(*gpu.Context); ok && ctx != nil {
+		pollGPU(ctx)
+	}
+
 	if layers, ok := n.gpuLayers.([]gpu.GPULayer); ok {
 		n.cleanupGPULayers(layers)
 	}
@@ -1003,18 +1010,10 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 
 // pollGPU waits for GPU operations to complete
 func pollGPU(ctx *gpu.Context) {
-	done := make(chan struct{})
-	go func() {
-		ctx.Device.Poll(true, nil)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return
-	case <-time.After(2 * time.Second):
-		// Timeout, continue anyway
-	}
+	// For reliable synchronization, especially on tiled/mobile GPUs (ARM64),
+	// we must wait until the device is truly idle before destroying resources.
+	// wgpu.MaintainWait (true) blocks until all submitted work is done.
+	ctx.Device.Poll(true, nil)
 }
 
 // readStagingBuffer reads float32 data from a staging buffer
