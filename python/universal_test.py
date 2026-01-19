@@ -738,7 +738,90 @@ def get_gpu_train_config(layer_type):
                 {"type": "dense", "activation": "sigmoid", "input_height": size, "output_height": 2}
             ]
         })
-    # ... Simplified generic fallback for others
+    elif "Conv1D" in layer_type:
+        filters = int(layer_type.split("-")[1])
+        return json.dumps({
+            "batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 3,
+            "layers": [
+                {"type": "dense", "activation": "relu", "input_height": 2, "output_height": 16},
+                {"type": "conv1d", "input_channels": 1, "filters": filters, "kernel_size": 3, "stride": 1, "padding": 1, "input_length": 16, "activation": "relu"},
+                {"type": "dense", "activation": "sigmoid", "input_height": 16 * filters, "output_height": 2}
+            ]
+        })
+    elif "RNN" in layer_type:
+        hidden = int(layer_type.split("-")[1])
+        return json.dumps({
+            "batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 3,
+            "layers": [
+                {"type": "dense", "activation": "tanh", "input_height": 2, "output_height": 16},
+                {"type": "rnn", "input_size": 16, "hidden_size": hidden, "activation": "tanh"},
+                {"type": "dense", "activation": "sigmoid", "input_height": hidden, "output_height": 2}
+            ]
+        })
+    elif "LSTM" in layer_type:
+        hidden = int(layer_type.split("-")[1])
+        return json.dumps({
+            "batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 3,
+            "layers": [
+                {"type": "dense", "activation": "tanh", "input_height": 2, "output_height": 16},
+                {"type": "lstm", "input_size": 16, "hidden_size": hidden},
+                {"type": "dense", "activation": "sigmoid", "input_height": hidden, "output_height": 2}
+            ]
+        })
+    elif "LayerNorm" in layer_type:
+        size = int(layer_type.split("-")[1])
+        return json.dumps({
+            "batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 3,
+            "layers": [
+                {"type": "dense", "activation": "relu", "input_height": 2, "output_height": size},
+                {"type": "layer_norm", "norm_size": size, "epsilon": 1e-5},
+                {"type": "dense", "activation": "sigmoid", "input_height": size, "output_height": 2}
+            ]
+        })
+    elif "RMSNorm" in layer_type:
+        size = int(layer_type.split("-")[1])
+        return json.dumps({
+            "batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 3,
+            "layers": [
+                {"type": "dense", "activation": "relu", "input_height": 2, "output_height": size},
+                {"type": "rms_norm", "norm_size": size, "epsilon": 1e-5},
+                {"type": "dense", "activation": "sigmoid", "input_height": size, "output_height": 2}
+            ]
+        })
+    elif "SwiGLU" in layer_type:
+        size = int(layer_type.split("-")[1])
+        return json.dumps({
+            "batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 3,
+            "layers": [
+                {"type": "dense", "activation": "relu", "input_height": 2, "output_height": size},
+                {"type": "swiglu", "input_height": size, "output_height": size},
+                {"type": "dense", "activation": "sigmoid", "input_height": size, "output_height": 2}
+            ]
+        })
+    elif "MHA" in layer_type:
+        # MHA-4h -> 4 heads
+        heads = int(layer_type.split("-")[1].replace("h", ""))
+        d_model = heads * 8 # assume 8 dim per head
+        return json.dumps({
+            "batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 3,
+            "layers": [
+                {"type": "dense", "activation": "relu", "input_height": 2, "output_height": d_model},
+                {"type": "multi_head_attention", "d_model": d_model, "num_heads": heads, "seq_length": 1},
+                {"type": "dense", "activation": "sigmoid", "input_height": d_model, "output_height": 2}
+            ]
+        })
+    elif "Softmax" in layer_type:
+        size = int(layer_type.split("-")[1])
+        return json.dumps({
+            "batch_size": 1, "grid_rows": 1, "grid_cols": 1, "layers_per_cell": 3,
+            "layers": [
+                {"type": "dense", "activation": "relu", "input_height": 2, "output_height": size},
+                {"type": "softmax", "softmax_variant": "standard", "temperature": 1.0},
+                {"type": "dense", "activation": "sigmoid", "input_height": size, "output_height": 2}
+            ]
+        })
+    
+    # Fallback
     return get_layer_config("Dense", "float32")
 
 def run_gpu_training_verify_test(layer_type):
