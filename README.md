@@ -617,6 +617,8 @@ Loom includes a rigorous verification suite in `tva/muniversal_testing.go` and `
 > [!NOTE]
 > **GPU Acceleration Limits:** As of v0.0.8, WebGPU acceleration is enabled for standard `Forward/Backward` passes. 
 > The structural API `nn/step_forward.go` (Step-based execution), `nn/tween.go` (Neural Tweening), and `nn/kmeans_layer.go` (K-Means) currently run on **CPU only**.
+>
+> **Browser Testing (v0.3.0):** The universal test suite can now be run directly in the browser with full parity. See `typescript/README.md` for details on running `serve.py`.
 
 
 

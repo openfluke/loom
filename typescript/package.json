@@ -1,6 +1,6 @@
 {
   "name": "@openfluke/welvet",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript/JavaScript bindings for LOOM neural network framework with WebAssembly support - GPU-accelerated machine learning in the browser",
   "type": "module",
   "main": "./dist/index.js",
