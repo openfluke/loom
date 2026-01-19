@@ -131,6 +131,7 @@ int testArchitectureGeneration() {
     FreeLoomString(output);
 
     printf("  ✅ PASSED: Architecture Generation with DType\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -176,6 +177,7 @@ int testFilterCombineMode() {
     FreeLoomString(output);
 
     printf("  ✅ PASSED: Parallel Combine Mode\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -220,6 +222,7 @@ int testSequentialLayers() {
     FreeLoomString(output);
 
     printf("  ✅ PASSED: Sequential Layer Composition\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -259,6 +262,7 @@ int testNetworkInfo() {
     FreeLoomString(info);
 
     printf("  ✅ PASSED: Introspection & Network Info\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -524,9 +528,9 @@ int testLayerWithDType(const char* layerName, const char* dtype) {
 
     char* output = LoomForward(input, inputSize);
     if (json_has_error(output)) {
-        printf("  ❌ %-10s/%-8s: Forward failed\n", layerName, dtype);
         FreeLoomString(output);
         free(input);
+        SafeFreeLoomNetwork();
         return 0;
     }
     FreeLoomString(output);
@@ -534,9 +538,9 @@ int testLayerWithDType(const char* layerName, const char* dtype) {
     // Save model
     char* saved = LoomSaveModel(modelID);
     if (json_has_error(saved)) {
-        printf("  ❌ %-10s/%-8s: Save failed\n", layerName, dtype);
         FreeLoomString(saved);
         free(input);
+        SafeFreeLoomNetwork();
         return 0;
     }
     size_t saveSize = strlen(saved);
@@ -546,9 +550,9 @@ int testLayerWithDType(const char* layerName, const char* dtype) {
     FreeLoomString(saved);
     
     if (json_has_error(loadResult)) {
-        printf("  ❌ %-10s/%-8s: Load failed: %s\n", layerName, dtype, loadResult);
         FreeLoomString(loadResult);
         free(input);
+        SafeFreeLoomNetwork();
         return 0;
     }
     FreeLoomString(loadResult);
@@ -556,15 +560,16 @@ int testLayerWithDType(const char* layerName, const char* dtype) {
     // Verify output after reload
     output = LoomForward(input, inputSize);
     if (json_has_error(output)) {
-        printf("  ❌ %-10s/%-8s: Reload forward failed\n", layerName, dtype);
         FreeLoomString(output);
         free(input);
+        SafeFreeLoomNetwork();
         return 0;
     }
     FreeLoomString(output);
     free(input);
 
     printf("  ✓ %-10s/%-8s: save/load OK (size=%zu bytes)\n", layerName, dtype, saveSize);
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -715,6 +720,7 @@ int runParallelPermutationTest(const char* branch1, const char* branch2, const c
     char* output = LoomForward(input, 4);
     if (json_has_error(output)) {
         FreeLoomString(output);
+        SafeFreeLoomNetwork();
         return 0;
     }
     FreeLoomString(output);
@@ -725,6 +731,7 @@ int runParallelPermutationTest(const char* branch1, const char* branch2, const c
     char* saved = LoomSaveModel(modelID);
     if (json_has_error(saved)) {
         FreeLoomString(saved);
+        SafeFreeLoomNetwork();
         return 0;
     }
     
@@ -733,6 +740,7 @@ int runParallelPermutationTest(const char* branch1, const char* branch2, const c
     FreeLoomString(saved);
     if (json_has_error(loaded)) {
         FreeLoomString(loaded);
+        SafeFreeLoomNetwork();
         return 0;
     }
     FreeLoomString(loaded);
@@ -741,6 +749,7 @@ int runParallelPermutationTest(const char* branch1, const char* branch2, const c
     output = LoomForward(input, 4);
     if (json_has_error(output)) {
         FreeLoomString(output);
+        SafeFreeLoomNetwork();
         return 0;
     }
     FreeLoomString(output);
@@ -771,6 +780,7 @@ int runAllParallelPermutationTests(int* outPassed, int* outFailed) {
                         count++;
                         if (count % 100 == 0) {
                             printf("  Progress: %d/%d\n", count, total);
+                            CleanupBetweenTests();
                         }
                     }
                 }
@@ -784,6 +794,8 @@ int runAllParallelPermutationTests(int* outPassed, int* outFailed) {
     *outPassed = passed;
     *outFailed = failed;
     
+    CleanupBetweenTests();
+
     return failed == 0 ? 1 : 0;
 }
 
@@ -829,6 +841,7 @@ int testOptimizers() {
     FreeLoomString(trainResult);
 
     printf("  ✅ PASSED: Optimizers\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -870,6 +883,7 @@ int testActivations() {
         printf("  ✓ %s: f(0.5)=[%.3f, %.3f, %.3f, %.3f]\n", 
                activations[i], out[0], out[1], out[2], out[3]);
         FreeLoomString(output);
+        SafeFreeLoomNetwork();
     }
 
     printf("  ✅ PASSED: Activation Functions\n");
@@ -896,6 +910,8 @@ int testSoftmaxVariants() {
     // Casts to silence warnings
     char* result = CreateLoomNetwork((char*)config);
     FreeLoomString(result);
+    // Note: Softmax Variants uses CreateLoomNetwork, so needs cleanup
+
 
     float input[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     char* output = LoomForward(input, 4);
@@ -909,9 +925,11 @@ int testSoftmaxVariants() {
 
     if (fabs(sum - 1.0f) < 0.01f) {
         printf("  ✅ PASSED: Softmax Variants\n");
+        SafeFreeLoomNetwork();
         return 1;
     } else {
         printf("  ❌ FAILED: Softmax sum != 1.0\n");
+        SafeFreeLoomNetwork();
         return 0;
     }
 }
@@ -952,6 +970,7 @@ int testEmbeddingLayer() {
     FreeLoomString(output);
 
     printf("  ✅ PASSED: Embedding Layer\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -992,6 +1011,7 @@ int testConv1DLayer() {
     FreeLoomString(output);
 
     printf("  ✅ PASSED: Conv1D Layer\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -1030,6 +1050,7 @@ int testStepTween() {
     LoomFreeTweenState(tweenHandle);
 
     printf("  ✅ PASSED: Step-Tween Training\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -1081,6 +1102,7 @@ int testSteppingAPI() {
     LoomFreeStepState(stepHandle);
 
     printf("  ✅ PASSED: Stepping API\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -1116,6 +1138,7 @@ int testResidualConnection() {
     FreeLoomString(output);
 
     printf("  ✅ PASSED: Residual Connection\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -1363,6 +1386,7 @@ int testFrozenSpecDemo() {
     
     printf("  ✓ Network created with frozen layer\n");
     printf("  ✅ PASSED: Frozen Specialization Demo\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -1395,6 +1419,7 @@ int testOddsDemo() {
     LoomFreeGraftNetwork(netB);
 
     printf("  ✅ PASSED: Stitched Experts Demo\n");
+    SafeFreeLoomNetwork();
     return 1;
 }
 
@@ -1516,7 +1541,6 @@ int testGPUDeterminism() {
     printf("  ✅ PASSED: GPU Determinism\n");
     
     CleanupBetweenTests(); // CRITICAL: Ensure quiescent state before next test
-    return 1;
     return 1;
 }
 
@@ -1744,6 +1768,7 @@ int runSafeTensorsMemoryTest(const char* layerType, const char* dtype) {
     
     if (json_has_error(saved)) {
         FreeLoomString(saved);
+        SafeFreeLoomNetwork();
         return 0;
     }
     
@@ -1753,10 +1778,12 @@ int runSafeTensorsMemoryTest(const char* layerType, const char* dtype) {
     
     if (json_has_error(loadResult)) {
         FreeLoomString(loadResult);
+        SafeFreeLoomNetwork();
         return 0;
     }
     FreeLoomString(loadResult);
     
+    SafeFreeLoomNetwork(); // CRITICAL LEAK FIX
     return ok ? 1 : 0;
 }
 
@@ -1833,6 +1860,7 @@ int testInMemorySafeTensors() {
         printf("  ❌ Mega-Model Failed\n");
     }
     
+    SafeFreeLoomNetwork(); // Cleanup mega model
     return (passed == totalTests && megaPassed) ? 1 : 0;
 }
 
@@ -1898,6 +1926,7 @@ int main() {
                 TEST_FAIL(); f2++;
             }
         }
+        CleanupBetweenTests();
     }
     // Add 8 more permutations to reach 300
     for (int extra = 0; extra < 120; extra++) {
