@@ -220,7 +220,7 @@ func (dm *DeviationMetrics) UpdateMetrics(result PredictionResult) {
 
 	// Compute score: lower deviations contribute more positively
 	dm.Score += math.Max(0, 100-result.Deviation)
-	
+
 	// Exact match tracking (for classification accuracy)
 	if result.ActualOutput == result.ExpectedOutput {
 		dm.CorrectCount++
@@ -244,7 +244,7 @@ func (dm *DeviationMetrics) ComputeFinalMetrics() {
 		totalDeviation += result.Deviation
 	}
 	dm.AverageDeviation = totalDeviation / float64(dm.TotalSamples)
-	
+
 	// Accuracy
 	dm.Accuracy = float64(dm.CorrectCount) / float64(dm.TotalSamples)
 }
@@ -284,7 +284,7 @@ func (n *Network) EvaluateNetwork(inputs [][]float32, expectedOutputs []float64)
 
 	// Run forward passes
 	for i, input := range inputs {
-		output, _ := n.ForwardCPU(input)
+		output, _ := n.Forward(input)
 
 		// Extract prediction (argmax or first value depending on task)
 		if len(output) == 1 {
@@ -338,7 +338,7 @@ func (n *Network) EvaluateFromCheckpointFiles(checkpointFiles []string, expected
 		totalLoadTime += time.Since(startLoad)
 
 		startForward := time.Now()
-		output, _ := n.ForwardCPU(cpState)
+		output, _ := n.Forward(cpState)
 		totalForwardTime += time.Since(startForward)
 
 		// Extract prediction
@@ -1018,4 +1018,713 @@ func (ac *AdaptationComparison) SaveToJSON(filepath string) error {
 		return fmt.Errorf("failed to marshal comparison: %w", err)
 	}
 	return os.WriteFile(filepath, data, 0644)
+}
+
+// ============================================================================
+// Save/Load Verification (WASM-Compatible, In-Memory)
+// ============================================================================
+
+// SaveLoadConsistencyResult captures the results of save/load verification
+type SaveLoadConsistencyResult struct {
+	Format       string  `json:"format"`        // "json" or "safetensors"
+	TestSamples  int     `json:"test_samples"`  // Number of samples tested
+	MaxDiff      float32 `json:"max_diff"`      // Maximum difference found
+	AvgDiff      float32 `json:"avg_diff"`      // Average difference
+	IsConsistent bool    `json:"is_consistent"` // Whether consistency check passed
+	Tolerance    float32 `json:"tolerance"`     // Tolerance used
+}
+
+// VerifySaveLoadConsistency validates that a model produces identical outputs
+// after being serialized and deserialized. Works entirely in-memory (WASM-compatible).
+//
+// Parameters:
+//   - original: The network to test
+//   - format: "json" or "safetensors"
+//   - testInputs: Sample inputs to test (should be representative of your data)
+//   - tolerance: Maximum allowed difference (e.g., 1e-6)
+//
+// Returns: Detailed results including max/avg differences and pass/fail status
+func VerifySaveLoadConsistency(original *Network, format string, testInputs [][]float32, tolerance float32) (*SaveLoadConsistencyResult, error) {
+	if len(testInputs) == 0 {
+		return nil, fmt.Errorf("must provide at least one test input")
+	}
+
+	var serialized string
+	var err error
+
+	// Serialize to string (in-memory)
+	if format == "json" {
+		serialized, err = original.SaveModelToString("verify")
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize to JSON: %w", err)
+		}
+	} else if format == "safetensors" {
+		// For safetensors, we need to use the tensor format
+		tensors := make(map[string]TensorWithShape)
+		for i := range original.Layers {
+			l := &original.Layers[i]
+			prefix := fmt.Sprintf("layer_%d", i)
+
+			if len(l.Kernel) > 0 {
+				tensors[prefix+".kernel"] = TensorWithShape{
+					Values: l.Kernel,
+					Shape:  []int{len(l.Kernel)},
+					DType:  "F32",
+				}
+			}
+			if len(l.Bias) > 0 {
+				tensors[prefix+".bias"] = TensorWithShape{
+					Values: l.Bias,
+					Shape:  []int{len(l.Bias)},
+					DType:  "F32",
+				}
+			}
+		}
+
+		// Convert to bytes (still in-memory)
+		bytes, err := SerializeSafetensors(tensors)
+		if err != nil {
+			return nil, fmt.Errorf("failed to serialize to safetensors: %w", err)
+		}
+		serialized = string(bytes)
+	} else {
+		return nil, fmt.Errorf("unsupported format: %s (use 'json' or 'safetensors')", format)
+	}
+
+	// Deserialize
+	var reloaded *Network
+	if format == "json" {
+		reloaded, err = LoadModelFromString(serialized, "verify")
+		if err != nil {
+			return nil, fmt.Errorf("failed to deserialize from JSON: %w", err)
+		}
+	} else {
+		// For safetensors, rebuild network and load weights
+		reloaded = original.CloneForParallel()
+		if reloaded == nil {
+			return nil, fmt.Errorf("failed to clone network")
+		}
+
+		tensors, err := LoadSafetensorsWithShapes([]byte(serialized))
+		if err != nil {
+			return nil, fmt.Errorf("failed to deserialize safetensors: %w", err)
+		}
+
+		// Load weights back
+		for i := range reloaded.Layers {
+			l := &reloaded.Layers[i]
+			prefix := fmt.Sprintf("layer_%d", i)
+
+			if tensor, ok := tensors[prefix+".kernel"]; ok {
+				l.Kernel = tensor.Values
+			}
+			if tensor, ok := tensors[prefix+".bias"]; ok {
+				l.Bias = tensor.Values
+			}
+		}
+	}
+
+	// Compare outputs
+	maxDiff := float32(0.0)
+	totalDiff := float32(0.0)
+	comparisons := 0
+
+	for _, input := range testInputs {
+		out1, _ := original.Forward(input)
+		out2, _ := reloaded.Forward(input)
+
+		if len(out1) != len(out2) {
+			return nil, fmt.Errorf("output size mismatch: %d vs %d", len(out1), len(out2))
+		}
+
+		for j := 0; j < len(out1); j++ {
+			diff := out1[j] - out2[j]
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > maxDiff {
+				maxDiff = diff
+			}
+			totalDiff += diff
+			comparisons++
+		}
+	}
+
+	avgDiff := totalDiff / float32(comparisons)
+	isConsistent := maxDiff <= tolerance
+
+	return &SaveLoadConsistencyResult{
+		Format:       format,
+		TestSamples:  len(testInputs),
+		MaxDiff:      maxDiff,
+		AvgDiff:      avgDiff,
+		IsConsistent: isConsistent,
+		Tolerance:    tolerance,
+	}, nil
+}
+
+// PrintConsistencyResult prints a human-readable summary
+func (r *SaveLoadConsistencyResult) PrintConsistencyResult() {
+	fmt.Printf("\n=== Save/Load Consistency Verification ===\n")
+	fmt.Printf("Format: %s\n", r.Format)
+	fmt.Printf("Test Samples: %d\n", r.TestSamples)
+	fmt.Printf("Max Difference: %.9f\n", r.MaxDiff)
+	fmt.Printf("Avg Difference: %.9f\n", r.AvgDiff)
+	fmt.Printf("Tolerance: %.9f\n", r.Tolerance)
+	if r.IsConsistent {
+		fmt.Println("✓ Consistency PASSED")
+	} else {
+		fmt.Println("✗ Consistency FAILED")
+	}
+	fmt.Println()
+}
+
+// ============================================================================
+// Numerical Type Benchmarking (WASM-Compatible, In-Memory)
+// ============================================================================
+
+// NumericalTypeResult captures results for a single numerical type
+type NumericalTypeResult struct {
+	DType            string  `json:"dtype"`
+	QualityScore     float64 `json:"quality_score"`     // 0-100 score
+	AverageDeviation float64 `json:"average_deviation"` // Percentage deviation
+	MemoryBytes      int64   `json:"memory_bytes"`      // Estimated memory usage
+	ScaleFactor      float32 `json:"scale_factor"`      // Scale used for quantization
+}
+
+// NumericalTypeBenchmark holds all benchmark results
+type NumericalTypeBenchmark struct {
+	Results []NumericalTypeResult `json:"results"`
+}
+
+// ScaleWeights scales all weights in a network by a factor (for quantization)
+// If unsigned=true, shifts values by +1 before scaling (for unsigned types)
+func (n *Network) ScaleWeights(scale float32, unsigned bool) {
+	for i := range n.Layers {
+		l := &n.Layers[i]
+
+		for j := range l.Kernel {
+			if unsigned {
+				l.Kernel[j] = (l.Kernel[j] + 1.0) * scale
+			} else {
+				l.Kernel[j] *= scale
+			}
+		}
+
+		for j := range l.Bias {
+			if unsigned {
+				l.Bias[j] = (l.Bias[j] + 1.0) * scale
+			} else {
+				l.Bias[j] *= scale
+			}
+		}
+	}
+}
+
+// UnscaleWeights reverses weight scaling (after loading quantized weights)
+func (n *Network) UnscaleWeights(scale float32, unsigned bool) {
+	invScale := 1.0 / scale
+	for i := range n.Layers {
+		l := &n.Layers[i]
+
+		for j := range l.Kernel {
+			l.Kernel[j] *= invScale
+			if unsigned {
+				l.Kernel[j] -= 1.0
+			}
+		}
+
+		for j := range l.Bias {
+			l.Bias[j] *= invScale
+			if unsigned {
+				l.Bias[j] -= 1.0
+			}
+		}
+	}
+}
+
+// deepCloneNetwork creates a full copy of a network with deep copied weights.
+// Unlike CloneForParallel which shares weight pointers, this function creates
+// independent copies of all weight slices so modifications don't affect the original.
+func deepCloneNetwork(n *Network) *Network {
+	totalLayers := n.TotalLayers()
+
+	clone := &Network{
+		GridRows:        n.GridRows,
+		GridCols:        n.GridCols,
+		LayersPerCell:   n.LayersPerCell,
+		InputSize:       n.InputSize,
+		BatchSize:       n.BatchSize,
+		Layers:          make([]LayerConfig, len(n.Layers)),
+		activations:     make([][]float32, totalLayers+1),
+		preActivations:  make([][]float32, totalLayers),
+		kernelGradients: nil,
+		biasGradients:   nil,
+		learningRate:    n.learningRate,
+	}
+
+	// Deep copy each layer config including all weight slices
+	for i, layer := range n.Layers {
+		clone.Layers[i] = layer // Shallow copy first
+
+		// Deep copy all weight slices
+		l := &clone.Layers[i]
+
+		if len(layer.Kernel) > 0 {
+			l.Kernel = make([]float32, len(layer.Kernel))
+			copy(l.Kernel, layer.Kernel)
+		}
+		if len(layer.Bias) > 0 {
+			l.Bias = make([]float32, len(layer.Bias))
+			copy(l.Bias, layer.Bias)
+		}
+
+		// RNN weights
+		if len(layer.WeightIH) > 0 {
+			l.WeightIH = make([]float32, len(layer.WeightIH))
+			copy(l.WeightIH, layer.WeightIH)
+		}
+		if len(layer.WeightHH) > 0 {
+			l.WeightHH = make([]float32, len(layer.WeightHH))
+			copy(l.WeightHH, layer.WeightHH)
+		}
+		if len(layer.BiasH) > 0 {
+			l.BiasH = make([]float32, len(layer.BiasH))
+			copy(l.BiasH, layer.BiasH)
+		}
+
+		// LSTM weights (all 4 gates)
+		if len(layer.WeightIH_i) > 0 {
+			l.WeightIH_i = make([]float32, len(layer.WeightIH_i))
+			copy(l.WeightIH_i, layer.WeightIH_i)
+		}
+		if len(layer.WeightHH_i) > 0 {
+			l.WeightHH_i = make([]float32, len(layer.WeightHH_i))
+			copy(l.WeightHH_i, layer.WeightHH_i)
+		}
+		if len(layer.BiasH_i) > 0 {
+			l.BiasH_i = make([]float32, len(layer.BiasH_i))
+			copy(l.BiasH_i, layer.BiasH_i)
+		}
+		if len(layer.WeightIH_f) > 0 {
+			l.WeightIH_f = make([]float32, len(layer.WeightIH_f))
+			copy(l.WeightIH_f, layer.WeightIH_f)
+		}
+		if len(layer.WeightHH_f) > 0 {
+			l.WeightHH_f = make([]float32, len(layer.WeightHH_f))
+			copy(l.WeightHH_f, layer.WeightHH_f)
+		}
+		if len(layer.BiasH_f) > 0 {
+			l.BiasH_f = make([]float32, len(layer.BiasH_f))
+			copy(l.BiasH_f, layer.BiasH_f)
+		}
+		if len(layer.WeightIH_g) > 0 {
+			l.WeightIH_g = make([]float32, len(layer.WeightIH_g))
+			copy(l.WeightIH_g, layer.WeightIH_g)
+		}
+		if len(layer.WeightHH_g) > 0 {
+			l.WeightHH_g = make([]float32, len(layer.WeightHH_g))
+			copy(l.WeightHH_g, layer.WeightHH_g)
+		}
+		if len(layer.BiasH_g) > 0 {
+			l.BiasH_g = make([]float32, len(layer.BiasH_g))
+			copy(l.BiasH_g, layer.BiasH_g)
+		}
+		if len(layer.WeightIH_o) > 0 {
+			l.WeightIH_o = make([]float32, len(layer.WeightIH_o))
+			copy(l.WeightIH_o, layer.WeightIH_o)
+		}
+		if len(layer.WeightHH_o) > 0 {
+			l.WeightHH_o = make([]float32, len(layer.WeightHH_o))
+			copy(l.WeightHH_o, layer.WeightHH_o)
+		}
+		if len(layer.BiasH_o) > 0 {
+			l.BiasH_o = make([]float32, len(layer.BiasH_o))
+			copy(l.BiasH_o, layer.BiasH_o)
+		}
+
+		// Attention weights
+		if len(layer.QWeights) > 0 {
+			l.QWeights = make([]float32, len(layer.QWeights))
+			copy(l.QWeights, layer.QWeights)
+		}
+		if len(layer.KWeights) > 0 {
+			l.KWeights = make([]float32, len(layer.KWeights))
+			copy(l.KWeights, layer.KWeights)
+		}
+		if len(layer.VWeights) > 0 {
+			l.VWeights = make([]float32, len(layer.VWeights))
+			copy(l.VWeights, layer.VWeights)
+		}
+		if len(layer.OutputWeight) > 0 {
+			l.OutputWeight = make([]float32, len(layer.OutputWeight))
+			copy(l.OutputWeight, layer.OutputWeight)
+		}
+		if len(layer.QBias) > 0 {
+			l.QBias = make([]float32, len(layer.QBias))
+			copy(l.QBias, layer.QBias)
+		}
+		if len(layer.KBias) > 0 {
+			l.KBias = make([]float32, len(layer.KBias))
+			copy(l.KBias, layer.KBias)
+		}
+		if len(layer.VBias) > 0 {
+			l.VBias = make([]float32, len(layer.VBias))
+			copy(l.VBias, layer.VBias)
+		}
+		if len(layer.OutputBias) > 0 {
+			l.OutputBias = make([]float32, len(layer.OutputBias))
+			copy(l.OutputBias, layer.OutputBias)
+		}
+
+		// SwiGLU weights
+		if len(layer.GateWeights) > 0 {
+			l.GateWeights = make([]float32, len(layer.GateWeights))
+			copy(l.GateWeights, layer.GateWeights)
+		}
+		if len(layer.UpWeights) > 0 {
+			l.UpWeights = make([]float32, len(layer.UpWeights))
+			copy(l.UpWeights, layer.UpWeights)
+		}
+		if len(layer.DownWeights) > 0 {
+			l.DownWeights = make([]float32, len(layer.DownWeights))
+			copy(l.DownWeights, layer.DownWeights)
+		}
+		if len(layer.GateBias) > 0 {
+			l.GateBias = make([]float32, len(layer.GateBias))
+			copy(l.GateBias, layer.GateBias)
+		}
+		if len(layer.UpBias) > 0 {
+			l.UpBias = make([]float32, len(layer.UpBias))
+			copy(l.UpBias, layer.UpBias)
+		}
+		if len(layer.DownBias) > 0 {
+			l.DownBias = make([]float32, len(layer.DownBias))
+			copy(l.DownBias, layer.DownBias)
+		}
+
+		// LayerNorm/RMSNorm
+		if len(layer.Gamma) > 0 {
+			l.Gamma = make([]float32, len(layer.Gamma))
+			copy(l.Gamma, layer.Gamma)
+		}
+		if len(layer.Beta) > 0 {
+			l.Beta = make([]float32, len(layer.Beta))
+			copy(l.Beta, layer.Beta)
+		}
+
+		// Embedding
+		if len(layer.EmbeddingWeights) > 0 {
+			l.EmbeddingWeights = make([]float32, len(layer.EmbeddingWeights))
+			copy(l.EmbeddingWeights, layer.EmbeddingWeights)
+		}
+
+		// Conv1D (uses Kernel and Bias which are already copied above)
+	}
+
+	// Initialize activation buffers
+	for i := 0; i <= totalLayers; i++ {
+		if i < len(n.activations) && n.activations[i] != nil {
+			clone.activations[i] = make([]float32, len(n.activations[i]))
+		}
+	}
+	for i := 0; i < totalLayers; i++ {
+		if i < len(n.preActivations) && n.preActivations[i] != nil {
+			clone.preActivations[i] = make([]float32, len(n.preActivations[i]))
+		}
+	}
+
+	return clone
+}
+
+// BenchmarkNumericalTypes evaluates network performance across different numerical precisions.
+// Works entirely in-memory (WASM-compatible). Tests how well the network performs after
+// quantization to various data types.
+//
+// Parameters:
+//   - baseNetwork: The network to benchmark (will be cloned, not modified)
+//   - dtypes: List of dtype names to test (e.g., ["F32", "F16", "BF16", "I8"])
+//   - scales: Corresponding scale factors for each dtype (1.0 for floats, larger for ints)
+//   - testInputs: Sample inputs for evaluation
+//   - expectedOutputs: Expected output values (for classification: class indices)
+//
+// Returns: Benchmark results for all dtypes
+func BenchmarkNumericalTypes(baseNetwork *Network, dtypes []string, scales []float32, testInputs [][]float32, expectedOutputs []float64) (*NumericalTypeBenchmark, error) {
+	if len(dtypes) != len(scales) {
+		return nil, fmt.Errorf("dtypes and scales must have same length")
+	}
+	if len(testInputs) != len(expectedOutputs) {
+		return nil, fmt.Errorf("testInputs and expectedOutputs must have same length")
+	}
+
+	benchmark := &NumericalTypeBenchmark{
+		Results: make([]NumericalTypeResult, 0, len(dtypes)),
+	}
+
+	for i, dtype := range dtypes {
+		scale := scales[i]
+		isUnsigned := len(dtype) > 0 && dtype[0] == 'U'
+
+		// Deep clone network with copied weights (not shared pointers)
+		// This is critical because ScaleWeights modifies weights in-place
+		testNet := deepCloneNetwork(baseNetwork)
+		if testNet == nil {
+			return nil, fmt.Errorf("failed to clone network for %s", dtype)
+		}
+
+		// Scale weights
+		testNet.ScaleWeights(scale, isUnsigned)
+
+		// Convert to safetensors and back (simulates quantization)
+		tensors := make(map[string]TensorWithShape)
+		for j := range testNet.Layers {
+			l := &testNet.Layers[j]
+			prefix := fmt.Sprintf("layer_%d", j)
+
+			if len(l.Kernel) > 0 {
+				tensors[prefix+".kernel"] = TensorWithShape{
+					Values: l.Kernel,
+					Shape:  []int{len(l.Kernel)},
+					DType:  dtype,
+				}
+			}
+			if len(l.Bias) > 0 {
+				tensors[prefix+".bias"] = TensorWithShape{
+					Values: l.Bias,
+					Shape:  []int{len(l.Bias)},
+					DType:  dtype,
+				}
+			}
+		}
+
+		// Serialize to bytes
+		serialized, err := SerializeSafetensors(tensors)
+		if err != nil {
+			log.Printf("Warning: Failed to serialize %s: %v", dtype, err)
+			continue
+		}
+
+		// Calculate memory usage
+		memoryBytes := int64(len(serialized))
+
+		// Deserialize back
+		loadedTensors, err := LoadSafetensorsWithShapes(serialized)
+		if err != nil {
+			log.Printf("Warning: Failed to deserialize %s: %v", dtype, err)
+			continue
+		}
+
+		// Reload weights
+		for j := range testNet.Layers {
+			l := &testNet.Layers[j]
+			prefix := fmt.Sprintf("layer_%d", j)
+
+			if tensor, ok := loadedTensors[prefix+".kernel"]; ok {
+				l.Kernel = tensor.Values
+			}
+			if tensor, ok := loadedTensors[prefix+".bias"]; ok {
+				l.Bias = tensor.Values
+			}
+		}
+
+		// Unscale weights
+		testNet.UnscaleWeights(scale, isUnsigned)
+
+		// Evaluate using deviation metrics
+		// Compare the output values at the predicted class index
+		// (measures how close the quantized outputs are to the original outputs)
+		expected := make([]float64, len(testInputs))
+		actual := make([]float64, len(testInputs))
+
+		for k := 0; k < len(testInputs); k++ {
+			outOrig, _ := baseNetwork.Forward(testInputs[k])
+			outNew, _ := testNet.Forward(testInputs[k])
+
+			// Find which class the original model predicts
+			maxIdx := 0
+			for j := range outOrig {
+				if outOrig[j] > outOrig[maxIdx] {
+					maxIdx = j
+				}
+			}
+
+			// Compare the OUTPUT VALUES at that index (not the class indices)
+			expected[k] = float64(outOrig[maxIdx])
+			actual[k] = float64(outNew[maxIdx])
+		}
+
+		metrics, err := EvaluateModel(expected, actual)
+		if err != nil {
+			log.Printf("Warning: Evaluation failed for %s: %v", dtype, err)
+			continue
+		}
+
+		benchmark.Results = append(benchmark.Results, NumericalTypeResult{
+			DType:            dtype,
+			QualityScore:     metrics.Score,
+			AverageDeviation: metrics.AverageDeviation,
+			MemoryBytes:      memoryBytes,
+			ScaleFactor:      scale,
+		})
+	}
+
+	return benchmark, nil
+}
+
+// PrintNumericalTypeSummary prints a formatted comparison table
+func (b *NumericalTypeBenchmark) PrintNumericalTypeSummary() {
+	fmt.Println("\n=== NUMERICAL TYPE COMPARISON SUMMARY ===")
+	fmt.Println()
+	fmt.Printf("%-8s  %-15s  %-15s  %-15s  %-12s\n",
+		"DType", "Quality Score", "Avg Deviation", "Memory", "Scale")
+	fmt.Println("--------  ---------------  ---------------  ---------------  ------------")
+
+	for _, res := range b.Results {
+		fmt.Printf("%-8s  %13.2f%%  %13.4f%%  %15s  %12.1f\n",
+			res.DType,
+			res.QualityScore,
+			res.AverageDeviation,
+			formatBytes(res.MemoryBytes),
+			res.ScaleFactor,
+		)
+	}
+	fmt.Println()
+}
+
+// formatBytes formats a byte count as human-readable string
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.2f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// GetBestByQuality returns the dtype with the highest quality score
+func (b *NumericalTypeBenchmark) GetBestByQuality() *NumericalTypeResult {
+	if len(b.Results) == 0 {
+		return nil
+	}
+	best := &b.Results[0]
+	for i := 1; i < len(b.Results); i++ {
+		if b.Results[i].QualityScore > best.QualityScore {
+			best = &b.Results[i]
+		}
+	}
+	return best
+}
+
+// GetSmallest returns the dtype with the smallest memory footprint
+func (b *NumericalTypeBenchmark) GetSmallest() *NumericalTypeResult {
+	if len(b.Results) == 0 {
+		return nil
+	}
+	smallest := &b.Results[0]
+	for i := 1; i < len(b.Results); i++ {
+		if b.Results[i].MemoryBytes < smallest.MemoryBytes {
+			smallest = &b.Results[i]
+		}
+	}
+	return smallest
+}
+
+// GetBestTradeoff returns the dtype with the best quality-to-size ratio
+func (b *NumericalTypeBenchmark) GetBestTradeoff() *NumericalTypeResult {
+	if len(b.Results) == 0 {
+		return nil
+	}
+
+	bestScore := -1.0
+	var best *NumericalTypeResult
+
+	for i := range b.Results {
+		// Score = Quality / (Memory in MB)
+		// Higher is better
+		memMB := float64(b.Results[i].MemoryBytes) / (1024 * 1024)
+		if memMB < 0.01 {
+			memMB = 0.01 // Avoid division by very small numbers
+		}
+		score := b.Results[i].QualityScore / memMB
+
+		if score > bestScore {
+			bestScore = score
+			best = &b.Results[i]
+		}
+	}
+
+	return best
+}
+
+// PrintDeviationComparisonTable prints a comparison of two deviation metrics side-by-side
+// DeviationComparison holds two sets of metrics for comparison
+type DeviationComparison struct {
+	Name   string            `json:"name"`
+	Before *DeviationMetrics `json:"before"`
+	After  *DeviationMetrics `json:"after"`
+}
+
+// NewDeviationComparison creates a new comparison object
+func NewDeviationComparison(name string, before, after *DeviationMetrics) *DeviationComparison {
+	return &DeviationComparison{
+		Name:   name,
+		Before: before,
+		After:  after,
+	}
+}
+
+// PrintTable prints a formatted comparison table
+func (dc *DeviationComparison) PrintTable() {
+	if dc.Before == nil || dc.After == nil {
+		fmt.Printf("Error: Comparison '%s' has nil metrics\n", dc.Name)
+		return
+	}
+
+	fmt.Printf("\n╔═══════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  %-59s  ║\n", dc.Name)
+	fmt.Printf("╠═══════════════════════════════════════════════════════════════╣\n")
+	fmt.Printf("║  Accuracy:      %6.1f%% → %6.1f%%                           ║\n",
+		dc.Before.Accuracy*100, dc.After.Accuracy*100)
+	fmt.Printf("║  Quality Score: %6.1f   → %6.1f                           ║\n",
+		dc.Before.Score, dc.After.Score)
+	fmt.Printf("║  Avg Deviation: %6.1f%% → %6.1f%%                          ║\n",
+		dc.Before.AverageDeviation, dc.After.AverageDeviation)
+	fmt.Printf("╠═══════════════════════════════════════════════════════════════╣\n")
+	fmt.Printf("║  Deviation Distribution:                                      ║\n")
+	fmt.Printf("╠═══════════════════════════════════════════════════════════════╣\n")
+
+	bucketOrder := []string{"0-10%", "10-20%", "20-30%", "30-40%", "40-50%", "50-100%", "100%+"}
+	for _, bucketName := range bucketOrder {
+		beforeCount := 0
+		if b, ok := dc.Before.Buckets[bucketName]; ok {
+			beforeCount = b.Count
+		}
+		afterCount := 0
+		if b, ok := dc.After.Buckets[bucketName]; ok {
+			afterCount = b.Count
+		}
+
+		beforePct := 0.0
+		if dc.Before.TotalSamples > 0 {
+			beforePct = float64(beforeCount) / float64(dc.Before.TotalSamples) * 100
+		}
+		afterPct := 0.0
+		if dc.After.TotalSamples > 0 {
+			afterPct = float64(afterCount) / float64(dc.After.TotalSamples) * 100
+		}
+
+		fmt.Printf("║    %8s: %3d (%5.1f%%) → %3d (%5.1f%%)                    ║\n",
+			bucketName, beforeCount, beforePct, afterCount, afterPct)
+	}
+	fmt.Printf("╚═══════════════════════════════════════════════════════════════╝\n")
+}
+
+// PrintDeviationComparisonTable prints a comparison of two deviation metrics side-by-side
+// This is a wrapper around DeviationComparison for backward compatibility
+func PrintDeviationComparisonTable(name string, before, after *DeviationMetrics) {
+	NewDeviationComparison(name, before, after).PrintTable()
 }

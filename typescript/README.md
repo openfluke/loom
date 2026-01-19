@@ -1,8 +1,11 @@
 # @openfluke/welvet - LOOM TypeScript/WASM Bindings
+ 
+ **Wrapper for Embedding Loom Via External (WASM) Toolchain**
+ 
+ High-performance neural network library with **full training in browser/Node.js** via WebAssembly. Zero external dependencies—just import and go.
+ 
+ > **v0.3.0 Update**: Now includes a **Universal Test Suite** (2298 tests) with 100% parity across Browser and Node.js environments.
 
-**Wrapper for Embedding Loom Via External (WASM) Toolchain**
-
-High-performance neural network library with **full training in browser/Node.js** via WebAssembly. Zero external dependencies—just import and go.
 
 ## Framework Comparison
 
@@ -217,26 +220,34 @@ Tests **5 architectures × 3 depths × 5 training modes** (75 tests total):
 - **Modes:** NormalBP, StepBP, Tween, TweenChain, StepTweenChain
 
 ## Complete Test Suite
-
-The `universal_test.ts` example demonstrates all framework capabilities:
-
-```bash
-cd example
-bun run universal_test.ts
-```
-
-**Test Coverage:**
-- ✅ 12 Layer Types × 6 Data Types (72 tests)
-- ✅ Network Grafting
-- ✅ K-Means Clustering & Correlation Analysis
-- ✅ Optimizers (SGD, AdamW, RMSprop)
-- ✅ Ensemble Features
-- ✅ Observer Pattern (Adaptation Tracking)
-- ✅ Introspection API
-- ✅ Step & Tween API
-- ✅ Advanced Layers (Embedding, Residual)
-
-See [`example/universal_test.ts`](./example/universal_test.ts) for the complete test implementation.
+ 
+ The `universal_test.ts` example demonstrates all framework capabilities with **100% parity** to the Go/C core.
+ 
+ ### Running in Browser (v0.3.0+)
+ 
+ The universal test suite now runs directly in the browser with a full DOM report:
+ 
+ ```bash
+ cd typescript
+ python3 serve.py
+ # Open http://localhost:8081
+ ```
+ 
+ ### Running in Node/Bun
+ 
+ ```bash
+ cd example
+ bun run universal_test.ts
+ ```
+ 
+ **Test Coverage (2298 Tests):**
+ - ✅ **Serialization**: 12 Layer Types × 15 Data Types (2100 combinations)
+ - ✅ **In-Memory WASM**: SafeTensors without filesystem (144 tests)
+ - ✅ **Advanced Math**: K-Means, Correlation, Grafting, Ensembles
+ - ✅ **GPU Parity**: Determinism checks for forward/backward passes
+ - ✅ **Core**: Architecture generation, combinators, sequential layers
+ 
+ See [`example/universal_test.ts`](./example/universal_test.ts) for the complete test implementation.
 
 ## Layer Types
 

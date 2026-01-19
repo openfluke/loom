@@ -1,10 +1,10 @@
-# Paper 1: Loom — A Polyglot, Zero-Dependency Runtime for Embeddable AI
+# Paper 1: Loom — A Deterministic Neural Virtual Machine for Polyglot AI Deployment
 
 > **Target Venue:** MLSys, OSDI, or similar systems conference
 
 ## Abstract
 
-Modern AI deployment requires navigating a complex dependency stack: Python runtimes, CUDA drivers, C++ libraries, and platform-specific binaries. This creates friction for edge deployment, embedded systems, and polyglot environments. We present **Loom**, a neural network framework written in pure Go that compiles to a single zero-dependency binary and exposes a universal C-ABI, enabling identical model behavior across Python, C#, TypeScript, Rust, WebAssembly (browser), and native applications without runtime dependencies.
+Modern AI deployment requires navigating a complex dependency stack: Python runtimes, CUDA drivers, C++ libraries, and platform-specific binaries. This creates friction for edge deployment, embedded systems, and polyglot environments. We present **Loom**, a **Deterministic Neural Virtual Machine (DNVM)** written in pure Go that guarantees **bitwise-identical results** across all platforms and backends. Loom compiles to a single zero-dependency binary and exposes a universal C-ABI, enabling identical model behavior across Python, C#, TypeScript, Rust, WebAssembly (browser), and native applications—with the same numerical output everywhere.
 
 ---
 
@@ -227,3 +227,4 @@ This eliminates the "Python tax" for production AI systems while maintaining res
 - [Paper 3: Heterogeneous MoE](research_paper_3_heterogeneous_moe.md)
 - [Paper 4: Native Integer Training](research_paper_4_integer_training.md)
 - [Paper 5: Spatially-Adaptive Stitching](research_paper_5_arc_stitching.md)
+- [Paper 6: Universal Precision & WebGPU](research_paper_6_universal_precision.md)

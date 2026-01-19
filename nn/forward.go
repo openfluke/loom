@@ -41,7 +41,7 @@ func GenericForwardPass[T Numeric](
 		for col := 0; col < n.GridCols; col++ {
 			for layer := 0; layer < n.LayersPerCell; layer++ {
 				config := n.GetLayer(row, col, layer)
-				
+
 				// Context for this layer
 				var context any
 
@@ -150,22 +150,22 @@ func GenericForwardPass[T Numeric](
 
 					case LayerMultiHeadAttention:
 						weights := &AttentionWeights[T]{
-							QWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
-							QBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
-							KWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
-							KBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
-							VWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
-							VBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
+							QWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
+							QBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
+							KWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
+							KBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
+							VWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
+							VBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
 							OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputWeight, len(config.OutputWeight))),
 							OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputBias, len(config.OutputBias))),
-							DModel: config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
+							DModel:       config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
 						}
 						output := MultiHeadAttentionForward(data, weights, 10000.0)
 						data = output
 						activations[layerIdx+1] = output
 						context = nil // Backward recomputes simply or doesn't need context stored here
 
-				case LayerParallel:
+					case LayerParallel:
 						// Convert config.ParallelBranches ([]LayerConfig) to []*LayerConfig
 						branches := make([]*LayerConfig, len(config.ParallelBranches))
 						for i := range config.ParallelBranches {
@@ -205,8 +205,8 @@ func GenericForwardPass[T Numeric](
 						context = nil // Embedding backward needs token IDs (stored in activations[layerIdx])
 
 					case LayerConv1D:
-						kernel := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel)))
-						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DBias, len(config.Conv1DBias)))
+						kernel := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Bias, len(config.Bias)))
 						seqLen := config.InputHeight // Using InputHeight for sequence length
 						if seqLen <= 0 {
 							seqLen = len(data.Data) / (config.Conv1DInChannels * n.BatchSize)
@@ -220,7 +220,7 @@ func GenericForwardPass[T Numeric](
 						context = pre // Store pre-activation
 
 					case LayerResidual:
-						// Residual connects current input to something? 
+						// Residual connects current input to something?
 						// Current design: Residual layer takes input, assumes it's added to *previous* layer input.
 						// Wait, standard residual is: y = x + f(x).
 						// But if LayerResidual is a separate layer in grid, it implies:
@@ -233,7 +233,7 @@ func GenericForwardPass[T Numeric](
 						// This implies Residual adds activations[layerIdx] + activations[layerIdx-1]?
 						// Let's assume ResidualForward adds input + skipInput.
 						// We need skipInput.
-						
+
 						// GenericForwardPass loop structure:
 						// activations[layerIdx] is input to CURRENT layer.
 						// activations[layerIdx+1] will be output.
@@ -241,10 +241,10 @@ func GenericForwardPass[T Numeric](
 						// If we assume skip from layerIdx-1 (input to previous layer):
 						var skipInput *Tensor[T]
 						if layerIdx > 0 {
-							skipInput = activations[layerIdx-1] 
+							skipInput = activations[layerIdx-1]
 						}
 						// If layerIdx=0, skip is nil
-						
+
 						output := ResidualForward(data, skipInput)
 						data = output
 						activations[layerIdx+1] = output
@@ -254,10 +254,10 @@ func GenericForwardPass[T Numeric](
 						// Apply activation using backend
 						data = backend.Activate(data, config.Activation)
 						activations[layerIdx+1] = data.Clone()
-						context = nil 
+						context = nil
 					}
 				}
-				
+
 				backwardContext[layerIdx] = context
 				layerIdx++
 			}
@@ -271,9 +271,24 @@ func GenericForwardPass[T Numeric](
 // Original float32 Implementation
 // =============================================================================
 
+// Forward executes the network forward pass, automatically selecting GPU or CPU backend
+func (n *Network) Forward(input []float32) ([]float32, time.Duration) {
+	// GPU auto-routing: if GPU mode is enabled and weights are mounted, use GPU
+	if n.GPU && n.gpuMounted {
+		start := time.Now()
+		output, err := n.forwardGPU(input)
+		if err == nil {
+			return output, time.Since(start)
+		}
+		// Fall back to CPU on GPU error
+		fmt.Printf("⚠️ GPU Forward failed, falling back to CPU: %v\n", err)
+	}
+	return n.ForwardCPU(input)
+}
 
 // ForwardCPU executes the grid network on CPU and stores intermediate activations for backprop
 func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
+
 	start := time.Now()
 
 	// Store input
@@ -365,10 +380,29 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					data = output
 				} else if config.Type == LayerSoftmax {
 					// Softmax layer
-					probs, err := ForwardSoftmaxCPU(data, config)
-					if err != nil {
-						// If error, fall back to standard softmax
-						probs = softmaxStandard(data, 1.0)
+					// Function `ForwardSoftmaxCPU` computes softmax over the entire input slice.
+					// We must handle batching manually here.
+					inputSize := len(data)
+					if n.BatchSize > 0 {
+						inputSize = len(data) / n.BatchSize
+					}
+
+					probs := make([]float32, len(data))
+
+					// Apply softmax per sample
+					for i := 0; i < n.BatchSize; i++ {
+						start := i * inputSize
+						end := start + inputSize
+						if end > len(data) {
+							break // Should not happen if size is aligned
+						}
+
+						sampleProbs, err := ForwardSoftmaxCPU(data[start:end], config)
+						if err != nil {
+							// Fallback to standard softmax on error
+							sampleProbs = softmaxStandard(data[start:end], 1.0)
+						}
+						copy(probs[start:end], sampleProbs)
 					}
 
 					// Store input as pre-activation (logits)
@@ -486,14 +520,14 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 						fmt.Printf("Sequential layer error: %v\n", err)
 						output = data
 					}
-					
+
 					// Store intermediates (simplified)
 					// We can flatten intermediates similar to Parallel layer if we wanted,
 					// but for now let's just use the output as "pre-activation" effectively since we don't fully support backward yet.
 					n.preActivations[layerIdx] = make([]float32, 1) // Dummy
-					
+
 					data = output
-					
+
 				} else if config.Type == LayerEmbedding {
 					// Embedding lookup layer
 					output := embeddingForwardCPU(data, config)
@@ -513,6 +547,27 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 					// Use post-activation for next layer
 					data = postAct
+				} else if config.Type == LayerKMeans {
+					// Learnable K-Means clustering layer
+					output, err := ForwardKMeansCPU(data, config)
+					if err != nil {
+						fmt.Printf("KMeans layer error: %v\n", err)
+						// On error, pass through unchanged
+						output = data
+					}
+
+					// Store features from attached layer (needed for backward)
+					// ForwardKMeansCPU stores features in config.PreActivations
+					if len(config.PreActivations) > 0 {
+						// Store usage of features for backward pass
+						n.preActivations[layerIdx] = config.PreActivations
+					} else {
+						// Fallback if something went wrong or legacy
+						n.preActivations[layerIdx] = make([]float32, 1) // Dummy
+					}
+
+					// Use KMeans output for next layer
+					data = output
 				} else {
 					// Default: element-wise activation only
 					// Store pre-activation values
@@ -549,32 +604,7 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 		return nil, 0, fmt.Errorf("GPU not initialized, call InitGPU first")
 	}
 
-	// Check for specialized layer types and use dedicated GPU paths
-	hasConv2D := false
-	hasMHA := false
-	for i := 0; i < n.TotalLayers(); i++ {
-		row := i / (n.GridCols * n.LayersPerCell)
-		remainder := i % (n.GridCols * n.LayersPerCell)
-		col := remainder / n.LayersPerCell
-		layer := remainder % n.LayersPerCell
-
-		config := n.GetLayer(row, col, layer)
-		if config.Type == LayerConv2D {
-			hasConv2D = true
-		}
-		if config.Type == LayerMultiHeadAttention {
-			hasMHA = true
-		}
-	}
-
-	if hasConv2D {
-		return n.forwardGPUConv2D(input)
-	}
-
-	if hasMHA {
-		return n.forwardGPUMultiHeadAttention(input)
-	}
-
+	// fmt.Println("DEBUG: Starting ForwardGPU") // DEBUG
 	start := time.Now()
 
 	dev := n.deviceInfo.Device
@@ -821,65 +851,6 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 	readback.Unmap()
 
 	return output, time.Since(start), nil
-}
-
-// forwardGPUConv2D executes networks containing Conv2D layers on GPU
-// This uses specialized pipelines for Conv2D layers
-func (n *Network) forwardGPUConv2D(input []float32) ([]float32, time.Duration, error) {
-	start := time.Now()
-
-	dev := n.deviceInfo.Device
-	q := n.deviceInfo.Queue
-
-	// Store input
-	n.activations[0] = make([]float32, len(input))
-	copy(n.activations[0], input)
-
-	data := input
-	layerIdx := 0
-
-	// Forward through grid
-	for row := 0; row < n.GridRows; row++ {
-		for col := 0; col < n.GridCols; col++ {
-			for layer := 0; layer < n.LayersPerCell; layer++ {
-				config := n.GetLayer(row, col, layer)
-
-				if config.Type == LayerConv2D {
-					// GPU Conv2D
-					output, err := conv2DForwardGPU(dev, q, data, config, n.BatchSize)
-					if err != nil {
-						// Fall back to CPU on error
-						cpuOut, _ := n.ForwardCPU(input)
-						return cpuOut, time.Since(start), nil
-					}
-
-					// Store pre-activation (output before activation)
-					n.preActivations[layerIdx] = make([]float32, len(output))
-					copy(n.preActivations[layerIdx], output)
-
-					// Apply activation
-					postAct := make([]float32, len(output))
-					for i := 0; i < len(output); i++ {
-						postAct[i] = activateCPU(output[i], config.Activation)
-					}
-
-					data = postAct
-				} else {
-					// Fallback to CPU for other layer types
-					cpuOut, _ := n.ForwardCPU(input)
-					return cpuOut, time.Since(start), nil
-				}
-
-				// Store post-activation
-				n.activations[layerIdx+1] = make([]float32, len(data))
-				copy(n.activations[layerIdx+1], data)
-
-				layerIdx++
-			}
-		}
-	}
-
-	return data, time.Since(start), nil
 }
 
 // Helper functions for GPU resource cleanup

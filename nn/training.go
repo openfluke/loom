@@ -23,7 +23,7 @@ type TrainingConfig struct {
 // TrainingBatch represents a single training batch
 type TrainingBatch struct {
 	Input  []float32
-	Target []float32
+	Target []float32 // Flat target vector (one-hot or direct values)
 }
 
 // TrainingResult contains training statistics
@@ -40,7 +40,7 @@ type TrainingResult struct {
 func DefaultTrainingConfig() *TrainingConfig {
 	return &TrainingConfig{
 		Epochs:          10,
-		LearningRate:    0.001,
+		LearningRate:    0.05,
 		UseGPU:          true,
 		PrintEveryBatch: 0, // Only print epoch summary
 		GradientClip:    0, // No clipping
@@ -49,23 +49,28 @@ func DefaultTrainingConfig() *TrainingConfig {
 	}
 }
 
-// Train trains the network on provided batches
+// Train trains the network on provided batches using the Verified Logic
 func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*TrainingResult, error) {
 	if config == nil {
 		config = DefaultTrainingConfig()
 	}
 
 	// Initialize GPU if requested
-	if config.UseGPU && n.deviceInfo == nil {
-		if config.Verbose {
-			fmt.Println("Initializing GPU...")
+	if config.UseGPU {
+		n.GPU = true
+		if !n.gpuMounted {
+			if config.Verbose {
+				fmt.Println("Initializing GPU (WeightsToGPU)...")
+			}
+			if err := n.WeightsToGPU(); err != nil {
+				return nil, fmt.Errorf("WeightsToGPU failed: %w", err)
+			}
+			if config.Verbose {
+				fmt.Println("✓ GPU initialized")
+			}
 		}
-		if err := n.InitGPU(); err != nil {
-			return nil, fmt.Errorf("GPU initialization failed: %w", err)
-		}
-		if config.Verbose {
-			fmt.Println("✓ GPU initialized")
-		}
+	} else {
+		n.GPU = false
 	}
 
 	result := &TrainingResult{
@@ -74,209 +79,260 @@ func (n *Network) Train(batches []TrainingBatch, config *TrainingConfig) (*Train
 	}
 
 	startTime := time.Now()
-	totalSamples := len(batches) * n.BatchSize
+	numBatches := len(batches)
+
+	name := "CPU"
+	if n.GPU {
+		name = "GPU"
+	}
 
 	if config.Verbose {
 		fmt.Printf("\n=== Training Configuration ===\n")
 		fmt.Printf("Epochs: %d\n", config.Epochs)
 		fmt.Printf("Learning Rate: %.6f\n", config.LearningRate)
-		fmt.Printf("Batches per Epoch: %d\n", len(batches))
-		fmt.Printf("Samples per Epoch: %d\n", totalSamples)
-		fmt.Printf("Backend: %s\n", map[bool]string{true: "GPU", false: "CPU"}[config.UseGPU])
+		fmt.Printf("Batches per Epoch: %d\n", numBatches)
+		fmt.Printf("Backend: %s\n", name)
 		fmt.Printf("Loss Function: %s\n", config.LossType)
-		if config.GradientClip > 0 {
-			fmt.Printf("Gradient Clipping: %.2f\n", config.GradientClip)
-		}
 		fmt.Println()
 	}
 
 	// Training loop
 	for epoch := 0; epoch < config.Epochs; epoch++ {
-		epochStart := time.Now()
-		totalLoss := 0.0
+		totalLoss := float32(0.0)
+		samplesProcessed := 0
 
-		for batchIdx, batch := range batches {
-			// Forward pass
-			var output []float32
-			var err error
-
-			if config.UseGPU {
-				output, _, err = n.ForwardGPU(batch.Input)
-			} else {
-				output, _ = n.ForwardCPU(batch.Input)
+		for b, batch := range batches {
+			// Determine current batch size based on input length and input dim
+			// n.InputSize might be reliable, or we calculate from expected BatchSize
+			currentBatchSize := n.BatchSize
+			if n.InputSize > 0 && len(batch.Input) > 0 {
+				currentBatchSize = len(batch.Input) / n.InputSize
+			}
+			// Fallback: trust the helper's chunking if n.BatchSize is set
+			if currentBatchSize <= 0 {
+				currentBatchSize = 1
 			}
 
-			if err != nil {
-				return nil, fmt.Errorf("forward pass failed at epoch %d, batch %d: %w", epoch, batchIdx, err)
+			// 1. Forward Pass
+			output, _ := n.Forward(batch.Input)
+
+			// 2. Compute Gradients & Loss
+			dOutput := make([]float32, len(output))
+
+			// Infer output size per sample
+			outputSize := len(output)
+			if currentBatchSize > 0 {
+				outputSize = len(output) / currentBatchSize
 			}
 
-			// Calculate loss
-			loss := n.calculateLoss(output, batch.Target, config.LossType)
-			totalLoss += loss
-
-			// Backward pass
-			gradOutput := n.calculateGradient(output, batch.Target, config.LossType)
-
-			if config.UseGPU {
-				_, _, err = n.BackwardGPU(gradOutput)
-			} else {
-				_, _ = n.BackwardCPU(gradOutput)
-			}
-
-			if err != nil {
-				return nil, fmt.Errorf("backward pass failed at epoch %d, batch %d: %w", epoch, batchIdx, err)
-			}
-
-			// Gradient clipping if enabled
-			if config.GradientClip > 0 {
-				n.clipGradients(config.GradientClip)
-			}
-
-			// Update weights
-			n.UpdateWeights(config.LearningRate)
-
-			// Print batch progress if verbose
-			if config.Verbose {
-				if config.PrintEveryBatch > 0 && batchIdx%config.PrintEveryBatch == 0 {
-					fmt.Printf("\rEpoch %d/%d - Batch %d/%d - Loss: %.6f",
-						epoch+1, config.Epochs, batchIdx+1, len(batches), loss)
-				} else if config.PrintEveryBatch == 0 {
-					// Print every batch when PrintEveryBatch is 0
-					fmt.Printf("\rEpoch %d/%d - Batch %d/%d - Loss: %.6f",
-						epoch+1, config.Epochs, batchIdx+1, len(batches), loss)
+			// Loop over samples in batch
+			for i := 0; i < currentBatchSize; i++ {
+				// Output corresponds to batch index i
+				outStart := i * outputSize
+				if outStart+outputSize > len(output) {
+					break
 				}
-			}
-		}
+				sampleOut := output[outStart : outStart+outputSize]
 
-		// Epoch summary
-		avgLoss := totalLoss / float64(len(batches))
-		epochTime := time.Since(epochStart)
-		result.LossHistory = append(result.LossHistory, avgLoss)
+				// Target for this sample
+				tgtStart := i * outputSize
 
-		if avgLoss < result.BestLoss {
-			result.BestLoss = avgLoss
-		}
+				if config.LossType == "cross_entropy" {
+					// Cross Entropy Loss
+					for j := 0; j < outputSize; j++ {
+						if tgtStart+j >= len(batch.Target) {
+							break
+						}
+						t := batch.Target[tgtStart+j]
+						if t > 0 {
+							val := sampleOut[j]
+							if val < 1e-7 {
+								val = 1e-7
+							}
+							totalLoss += -float32(math.Log(float64(val)))
+						}
 
-		if config.Verbose {
-			samplesPerSec := float64(totalSamples) / epochTime.Seconds()
-			fmt.Printf("\rEpoch %d/%d - Avg Loss: %.6f (Best: %.6f) - Time: %v - Throughput: %.0f samples/sec\n",
-				epoch+1, config.Epochs, avgLoss, result.BestLoss, epochTime, samplesPerSec)
+						// Gradient: (O - T) / N
+						dOutput[outStart+j] = (sampleOut[j] - t) / float32(currentBatchSize)
+					}
 
-			// Show gradient statistics every 5 epochs
-			if (epoch+1)%5 == 0 {
-				n.printGradientStats()
-			}
+				} else {
+					// MSE (Default)
+					for j := 0; j < outputSize; j++ {
+						if tgtStart+j >= len(batch.Target) {
+							break
+						}
+						t := batch.Target[tgtStart+j]
+						diff := sampleOut[j] - t
+						totalLoss += diff * diff // Sum of squares
 
-			// Evaluate on validation set if configured
-			if config.EvaluateEveryN > 0 && (epoch+1)%config.EvaluateEveryN == 0 {
-				if len(config.ValidationInputs) > 0 && len(config.ValidationTargets) > 0 {
-					fmt.Printf("\n  Running validation evaluation...\n")
-					evalMetrics, err := n.EvaluateNetwork(config.ValidationInputs, config.ValidationTargets)
-					if err != nil {
-						fmt.Printf("  Warning: Validation evaluation failed: %v\n", err)
-					} else {
-						fmt.Printf("  Validation Score: %.2f/100, Avg Deviation: %.2f%%, Failures: %d/%d\n",
-							evalMetrics.Score, evalMetrics.AverageDeviation, evalMetrics.Failures, evalMetrics.TotalSamples)
-						result.EvalMetrics = evalMetrics
+						// Gradient: (O - T) / N
+						dOutput[outStart+j] = diff / float32(currentBatchSize)
 					}
 				}
 			}
+
+			// 3. Backward Pass
+			n.Backward(dOutput)
+
+			// 4. Update Weights
+			n.ApplyGradients(config.LearningRate)
+
+			samplesProcessed += currentBatchSize
+
+			// Optional: Print batch progress
+			if config.Verbose && config.PrintEveryBatch > 0 && b%config.PrintEveryBatch == 0 {
+				fmt.Printf("\r  [%s] Epoch %d/%d - Batch %d/%d", name, epoch+1, config.Epochs, b+1, numBatches)
+			}
+		}
+
+		// epoch summary
+		avgLoss := float32(0)
+		if samplesProcessed > 0 {
+			avgLoss = totalLoss / float32(samplesProcessed)
+		}
+		result.LossHistory = append(result.LossHistory, float64(avgLoss))
+
+		if float64(avgLoss) < result.BestLoss {
+			result.BestLoss = float64(avgLoss)
+		}
+
+		if config.Verbose {
+			fmt.Printf("  [%s] Epoch %d/%d - Loss: %.4f\n", name, epoch+1, config.Epochs, avgLoss)
 		}
 	}
 
 	result.FinalLoss = result.LossHistory[len(result.LossHistory)-1]
 	result.TotalTime = time.Since(startTime)
-	result.AvgThroughput = float64(totalSamples*config.Epochs) / result.TotalTime.Seconds()
-
-	if config.Verbose {
-		fmt.Printf("\n✓ Training Complete!\n")
-		fmt.Printf("Final Loss: %.6f\n", result.FinalLoss)
-		fmt.Printf("Best Loss: %.6f\n", result.BestLoss)
-		fmt.Printf("Total Time: %v\n", result.TotalTime)
-		fmt.Printf("Average Throughput: %.0f samples/sec\n\n", result.AvgThroughput)
-	}
 
 	return result, nil
 }
 
-// calculateLoss computes the loss between output and target
-func (n *Network) calculateLoss(output, target []float32, lossType string) float64 {
-	switch lossType {
-	case "mse":
-		return calculateMSELoss(output, target)
-	case "cross_entropy":
-		return calculateCrossEntropyLoss(output, target)
-	default:
-		return calculateMSELoss(output, target)
+// TrainStandard is a helper for training with float32 inputs and targets (Regression, etc.)
+// It automatically handles batch creation and flattening.
+func (n *Network) TrainStandard(inputs, targets [][]float32, config *TrainingConfig) (*TrainingResult, error) {
+	if len(inputs) != len(targets) {
+		return nil, fmt.Errorf("input count %d does not match target count %d", len(inputs), len(targets))
 	}
-}
-
-// calculateGradient computes the gradient of the loss
-func (n *Network) calculateGradient(output, target []float32, lossType string) []float32 {
-	switch lossType {
-	case "mse":
-		return calculateMSEGradient(output, target)
-	case "cross_entropy":
-		return calculateCrossEntropyGradient(output, target)
-	default:
-		return calculateMSEGradient(output, target)
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("no training data provided")
 	}
-}
 
-// calculateMSELoss computes Mean Squared Error loss
-func calculateMSELoss(output, target []float32) float64 {
-	sum := 0.0
-	for i := 0; i < len(output) && i < len(target); i++ {
-		diff := float64(output[i] - target[i])
-		sum += diff * diff
+	batchSize := n.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+		n.BatchSize = 1
 	}
-	return sum / float64(len(output))
-}
 
-// calculateMSEGradient computes gradient for MSE loss
-func calculateMSEGradient(output, target []float32) []float32 {
-	grad := make([]float32, len(output))
-	scale := float32(2.0) / float32(len(output))
-	for i := 0; i < len(output) && i < len(target); i++ {
-		grad[i] = (output[i] - target[i]) * scale
-	}
-	return grad
-}
+	numSamples := len(inputs)
+	numBatches := (numSamples + batchSize - 1) / batchSize
+	batches := make([]TrainingBatch, numBatches)
 
-// calculateCrossEntropyLoss computes cross-entropy loss
-// Assumes output and target are probability distributions
-func calculateCrossEntropyLoss(output, target []float32) float64 {
-	sum := 0.0
-	epsilon := 1e-7 // Prevent log(0)
-	for i := 0; i < len(output) && i < len(target); i++ {
-		if target[i] > 0 {
-			// Clamp output to prevent numerical issues
-			pred := math.Max(float64(output[i]), epsilon)
-			pred = math.Min(pred, 1.0-epsilon)
-			sum -= float64(target[i]) * math.Log(pred)
+	for b := 0; b < numBatches; b++ {
+		start := b * batchSize
+		end := start + batchSize
+		if end > numSamples {
+			end = numSamples
+		}
+
+		currentSize := end - start
+		inputDim := len(inputs[0])
+		targetDim := len(targets[0])
+
+		flatInput := make([]float32, currentSize*inputDim)
+		flatTarget := make([]float32, currentSize*targetDim)
+
+		for i := 0; i < currentSize; i++ {
+			copy(flatInput[i*inputDim:], inputs[start+i])
+			copy(flatTarget[i*targetDim:], targets[start+i])
+		}
+
+		batches[b] = TrainingBatch{
+			Input:  flatInput,
+			Target: flatTarget,
 		}
 	}
-	return sum / float64(len(output))
+
+	return n.Train(batches, config)
 }
 
-// calculateCrossEntropyGradient computes gradient for cross-entropy loss
-func calculateCrossEntropyGradient(output, target []float32) []float32 {
-	grad := make([]float32, len(output))
-	epsilon := float32(1e-7)
-	scale := float32(1.0) / float32(len(output))
+// TrainLabels is a helper for training with float32 inputs and integer class labels (Classification)
+// It automatically performs one-hot encoding of targets.
+func (n *Network) TrainLabels(inputs [][]float32, labels []int, config *TrainingConfig) (*TrainingResult, error) {
+	if len(inputs) != len(labels) {
+		return nil, fmt.Errorf("input count %d does not match label count %d", len(inputs), len(labels))
+	}
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("no training data provided")
+	}
 
-	for i := 0; i < len(output) && i < len(target); i++ {
-		if target[i] > 0 {
-			// Prevent division by zero
-			pred := output[i]
-			if pred < epsilon {
-				pred = epsilon
+	batchSize := n.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+		n.BatchSize = 1
+	}
+
+	// Determine output size for one-hot encoding
+	outputSize := 0
+	// 1. Try to find last layer output size
+	if len(n.Layers) > 0 {
+		last := n.Layers[len(n.Layers)-1]
+		outputSize = last.OutputHeight * last.OutputWidth
+		if last.Filters > 0 {
+			outputSize *= last.Filters
+		}
+	}
+	// 2. Scan labels for max value if still 0
+	if outputSize == 0 {
+		maxLabel := 0
+		for _, l := range labels {
+			if l > maxLabel {
+				maxLabel = l
 			}
-			grad[i] = -(target[i] / pred) * scale
+		}
+		outputSize = maxLabel + 1
+	}
+
+	numSamples := len(inputs)
+	numBatches := (numSamples + batchSize - 1) / batchSize
+	batches := make([]TrainingBatch, numBatches)
+
+	for b := 0; b < numBatches; b++ {
+		start := b * batchSize
+		end := start + batchSize
+		if end > numSamples {
+			end = numSamples
+		}
+
+		currentSize := end - start
+		inputDim := len(inputs[0])
+
+		flatInput := make([]float32, currentSize*inputDim)
+		flatTarget := make([]float32, currentSize*outputSize)
+
+		for i := 0; i < currentSize; i++ {
+			// Input
+			copy(flatInput[i*inputDim:], inputs[start+i])
+
+			// Target One-Hot
+			label := labels[start+i]
+			if label >= 0 && label < outputSize {
+				flatTarget[i*outputSize+label] = 1.0
+			}
+		}
+
+		batches[b] = TrainingBatch{
+			Input:  flatInput,
+			Target: flatTarget,
 		}
 	}
-	return grad
+
+	return n.Train(batches, config)
 }
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
 
 // clipGradients clips gradients by global norm
 func (n *Network) clipGradients(maxNorm float32) {
@@ -351,181 +407,71 @@ func (n *Network) printGradientStats() {
 	}
 }
 
-// =============================================================================
-// Generic Training Functions
-// =============================================================================
-
-// GenericTrainStep executes a single training step for generic types
-func GenericTrainStep[T Numeric](
-	n *Network,
-	input *Tensor[T],
-	target *Tensor[T],
-	learningRate float64,
-	backend Backend[T],
-) (*Tensor[T], float64, time.Duration) {
-	start := time.Now()
-	
-	// 1. Forward Pass
-	output, activations, backwardContext, _ := GenericForwardPass(n, input, backend)
-	
-	// 2. Calculate Loss and Grading
-	// For simplicity, implement MSE here inline or call helper
-	loss, gradOutput := computeGenericMSELoss(output, target)
-	
-	// 3. Backward Pass
-	_, kernelGrads, biasGrads, _ := GenericBackwardPass(n, gradOutput, activations, backwardContext)
-	
-	// 4. Update Weights
-	UpdateWeightsGeneric[T](n, learningRate, kernelGrads, biasGrads)
-	
-	return output, loss, time.Since(start)
-}
-
-func computeGenericMSELoss[T Numeric](output, target *Tensor[T]) (float64, *Tensor[T]) {
-	grad := NewTensor[T](len(output.Data))
+// calculateMSELoss computes Mean Squared Error loss
+func calculateMSELoss(output, target []float32) float64 {
 	sum := 0.0
-	scale := 2.0 / float64(len(output.Data))
-	
-	// For integer types, standard MSE gradient (diff * 2/N) is often < 1 and truncates to 0.
-	// We should scale inputs/outputs or just handle it here.
-	// Simple fix: For integers, ensure gradient is at least 1 if diff exists, or don't scale by N here (move to LR).
-	isInt := isIntegerType[T]()
-
-	for i := range output.Data {
-		outVal := float64(output.Data[i])
-		tgtVal := float64(target.Data[i])
-		diff := outVal - tgtVal
+	for i := 0; i < len(output) && i < len(target); i++ {
+		diff := float64(output[i] - target[i])
 		sum += diff * diff
-		
-		val := diff * scale
-		if isInt && diff != 0 && math.Abs(val) < 0.5 {
-			// If diff exists but scaling makes it 0, preserve direction
-			if val > 0 { val = 1 } else { val = -1 }
-		}
-		grad.Data[i] = T(val)
 	}
-	
-	return sum / float64(len(output.Data)), grad
+	return sum / float64(len(output))
 }
 
-// UpdateWeightsGeneric updates network weights using generic gradients
-func UpdateWeightsGeneric[T Numeric](n *Network, learningRate float64, kernelGrads []any, biasGrads []any) {
-	lr := learningRate
-	
-	totalLayers := n.TotalLayers()
-	for layerIdx := 0; layerIdx < totalLayers; layerIdx++ {
-		if layerIdx >= len(kernelGrads) { break }
-		
-		// Get layer config to access weights
-		row := layerIdx / (n.GridCols * n.LayersPerCell)
-		remainder := layerIdx % (n.GridCols * n.LayersPerCell)
-		col := remainder / n.LayersPerCell
-		layer := remainder % n.LayersPerCell
-		config := n.GetLayer(row, col, layer)
-		
-		// Update Kernels
-		if kGrad := kernelGrads[layerIdx]; kGrad != nil {
-			switch g := kGrad.(type) {
-			case *Tensor[T]:
-				// Single tensor update (Dense, Conv2D, etc.)
-				applyUpdate(config.Kernel, g, lr)
-			
-			case []*Tensor[T]:
-				// Multiple tensors (RNN, SwiGLU)
-				if config.Type == LayerRNN {
-					if len(g) >= 2 {
-						applyUpdate(config.WeightIH, g[0], lr)
-						applyUpdate(config.WeightHH, g[1], lr)
-					}
-				} else if config.Type == LayerSwiGLU {
-					if len(g) >= 3 {
-						applyUpdate(config.GateWeights, g[0], lr)
-						applyUpdate(config.UpWeights, g[1], lr)
-						applyUpdate(config.DownWeights, g[2], lr)
-					}
-				}
-				
-			case map[string]*Tensor[T]:
-				// Map (LSTM)
-				if config.Type == LayerLSTM {
-					applyUpdate(config.WeightIH_i, g["WeightIH_i"], lr)
-					applyUpdate(config.WeightHH_i, g["WeightHH_i"], lr)
-					applyUpdate(config.WeightIH_f, g["WeightIH_f"], lr)
-					applyUpdate(config.WeightHH_f, g["WeightHH_f"], lr)
-					applyUpdate(config.WeightIH_g, g["WeightIH_g"], lr)
-					applyUpdate(config.WeightHH_g, g["WeightHH_g"], lr)
-					applyUpdate(config.WeightIH_o, g["WeightIH_o"], lr)
-					applyUpdate(config.WeightHH_o, g["WeightHH_o"], lr)
-				}
-				
-			case *AttentionWeights[T]:
-				// Attention struct (MultiHeadAttention)
-				if config.Type == LayerMultiHeadAttention {
-					applyUpdate(config.QWeights, g.QWeights, lr)
-					applyUpdate(config.KWeights, g.KWeights, lr)
-					applyUpdate(config.VWeights, g.VWeights, lr)
-					applyUpdate(config.OutputWeight, g.OutputWeight, lr)
-					applyUpdate(config.QBias, g.QBias, lr) // Biases handled in weights struct for Attention
-					applyUpdate(config.KBias, g.KBias, lr)
-					applyUpdate(config.VBias, g.VBias, lr)
-					applyUpdate(config.OutputBias, g.OutputBias, lr)
-				}
-			}
-		}
-		
-		// Update Biases (if separate)
-		if bGrad := biasGrads[layerIdx]; bGrad != nil {
-			switch g := bGrad.(type) {
-			case *Tensor[T]:
-				// Single tensor (Dense, Conv2D, LayerNorm)
-				if config.Type == LayerNorm {
-					applyUpdate(config.Beta, g, lr)
-				} else {
-					applyUpdate(config.Bias, g, lr)
-				}
-				
-			case []*Tensor[T]:
-				if config.Type == LayerRNN && len(g) >= 1 {
-					applyUpdate(config.BiasH, g[0], lr)
-				} else if config.Type == LayerSwiGLU && len(g) >= 3 {
-					applyUpdate(config.GateBias, g[0], lr)
-					applyUpdate(config.UpBias, g[1], lr)
-					applyUpdate(config.DownBias, g[2], lr)
-				}
-			}
-		}
-		
-		// Special handling where bias might be in kernelGrads (like Attention struct) or special types
-		if config.Type == LayerNorm {
-			// Gamma is in kernelGrads, Beta is in biasGrads
-			if kGrad, ok := kernelGrads[layerIdx].(*Tensor[T]); ok {
-				applyUpdate(config.Gamma, kGrad, lr)
-			}
-		} else if config.Type == LayerRMSNorm {
-			if kGrad, ok := kernelGrads[layerIdx].(*Tensor[T]); ok {
-				applyUpdate(config.Gamma, kGrad, lr)
-			}
-		}
+// calculateMSEGradient computes gradient for MSE loss
+func calculateMSEGradient(output, target []float32) []float32 {
+	grad := make([]float32, len(output))
+	scale := float32(2.0) / float32(len(output))
+	for i := 0; i < len(output) && i < len(target); i++ {
+		grad[i] = (output[i] - target[i]) * scale
 	}
+	return grad
 }
 
-// applyUpdate updates a float32 slice with generic gradient
-func applyUpdate[T Numeric](weights []float32, grad *Tensor[T], lr float64) {
-	if len(weights) != len(grad.Data) {
-		return // Size mismatch, ignore (safety)
+// calculateCrossEntropyLoss computes cross-entropy loss
+// Assumes output and target are probability distributions
+func calculateCrossEntropyLoss(output, target []float32) float64 {
+	sum := 0.0
+	totalProb := 0.0
+	epsilon := 1e-7 // Prevent log(0)
+	for i := 0; i < len(output) && i < len(target); i++ {
+		if target[i] > 0 {
+			// Clamp output to prevent numerical issues
+			pred := math.Max(float64(output[i]), epsilon)
+			pred = math.Min(pred, 1.0-epsilon)
+			sum -= float64(target[i]) * math.Log(pred)
+			totalProb += float64(target[i])
+		}
 	}
-	for i := range weights {
-		// W = W - lr * grad
-		weights[i] -= float32(float64(grad.Data[i]) * lr)
+	if totalProb == 0 {
+		return 0
 	}
+	return sum / totalProb
 }
 
-// isIntegerType checks if T is an integer type
-func isIntegerType[T Numeric]() bool {
-	var z T
-	switch any(z).(type) {
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-		return true
+// calculateCrossEntropyGradient computes gradient for cross-entropy loss
+func calculateCrossEntropyGradient(output, target []float32) []float32 {
+	grad := make([]float32, len(output))
+	epsilon := float32(1e-7)
+
+	// Calculate total probability mass for normalization (effective batch size)
+	totalProb := float32(0)
+	for _, t := range target {
+		totalProb += t
 	}
-	return false
+	if totalProb == 0 {
+		return grad // No gradient if no target
+	}
+	scale := 1.0 / totalProb
+
+	for i := 0; i < len(output) && i < len(target); i++ {
+		if target[i] > 0 {
+			// Prevent division by zero
+			pred := output[i]
+			if pred < epsilon {
+				pred = epsilon
+			}
+			grad[i] = -(target[i] / pred) * scale
+		}
+	}
+	return grad
 }

@@ -47,7 +47,7 @@ func SequentialForward[T Numeric](
 			downBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(layerCfg.DownBias, len(layerCfg.DownBias)))
 			postAct = SwiGLUForward(currentInput, gateW, upW, downW, gateBias, upBias, downBias, layerCfg.InputHeight, layerCfg.OutputHeight, batchSize)
 			preAct = currentInput.Clone() // Needs re-evaluation or stored context
-			
+
 		case LayerNorm:
 			gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(layerCfg.Gamma, len(layerCfg.Gamma)))
 			beta := ConvertTensorFloat32ToT[T](NewTensorFromSlice(layerCfg.Beta, len(layerCfg.Beta)))
@@ -120,51 +120,50 @@ func SequentialBackward[T Numeric](
 	}
 
 	currentGrad := gradOutput
-	
+
 	// Iterate backwards
 	for i := len(layers) - 1; i >= 0; i-- {
 		layerCfg := layers[i]
 		intermediate := intermediates[i] // Pre-activation or input to this layer
-		
+
 		// For the FIRST layer (index 0), its input is the function arg `input`.
 		// For subsequent layers (index > 0), the input was the output of previous layer.
 		// However, many Backward functions require the INPUT to the layer.
-		// In Forward loop: 
+		// In Forward loop:
 		//   Layer 0 input = input
 		//   Layer 1 input = Layer 0 output
 		// We didn't store Layer 0 output in `intermediates`!
-		// `intermediates` stores `preAct` (often needed for activation derivative) 
+		// `intermediates` stores `preAct` (often needed for activation derivative)
 		// OR `currentInput` (for LayerNorm, RMSNorm, SwiGLU etc).
-		
+
 		// Let's refine strict requirements for each layer type:
 		// DenseBackward: needs (gradOutput, input, preAct, weights)
 		//   - input: input to this layer
 		//   - preAct: pre-activation of this layer
-		
+
 		// Wait, my Forward implementation stores `preAct` in `intermediates`.
 		// It does NOT store the input to the layer (except implicitly as `preAct` for Norm layers).
 		// This is a problem for DenseBackward which needs BOTH.
-		
+
 		// For this simple implementation, we assume we can re-derive what's needed or
 		// we should have stored `activations` like the main GenericForwardPass.
 		// Since we only need this for the "Expert -> Stitch" case, let's see.
 		// Expert (Dense) -> Stitch (Dense).
 		// We need input to Stitch (which is Output of Expert).
-		
+
 		// FIX: We need to store layer inputs in Forward!
 		// Let's rely on the fact that `preAct` IS the input for some layers, but for Dense it's not.
 		// Actually, `GenericForwardPass` stores `activations` array.
 		// `SequentialForward` returns `intermediates` which currently matches `preActivations` logic.
-		
+
 		// Let's update SequentialForward to return inputs as well?
 		// Or just stick to the specific use case where we might hack it?
 		// No, let's do it right. But keeping it simple.
 		// The `intermediates` slice is returned. I can repurpose it or add another return.
 		// `ParallelForward` returns `combiner` and `branchIntermediates`.
 		// `SequentialForward` matches that signature somewhat.
-		
+
 		// Let's assume for now we only support layers where we can manage.
-		
 
 		// Calculate batchSize for DenseBackward
 		// Use tensor length / input height from config
@@ -180,18 +179,18 @@ func SequentialBackward[T Numeric](
 		switch layerCfg.Type {
 		case LayerDense:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(layerCfg.Kernel, len(layerCfg.Kernel)))
-			// We lack 'input'. 
+			// We lack 'input'.
 			// We can compute dInput (gradInput) without `input`, but we can't compute `gradWeights`.
-			// Since `SequentialBackward` is mostly a helper for now, we pass a dummy input tensor 
+			// Since `SequentialBackward` is mostly a helper for now, we pass a dummy input tensor
 			// of correct size to satisfy the function signature.
 			dummyInput := NewTensor[T](layerCfg.InputHeight * batchSize)
-			
+
 			subGradInput, _, _ = DenseBackward(currentGrad, dummyInput, intermediate, weights, layerCfg.InputHeight, layerCfg.OutputHeight, batchSize, layerCfg.Activation)
 
 		default:
 			subGradInput = currentGrad // Pass through gradient
 		}
-		
+
 		if subGradInput != nil {
 			currentGrad = subGradInput
 		}
@@ -211,7 +210,7 @@ func sequentialForwardCPU(input []float32, layers []LayerConfig, batchSize int) 
 
 	// We need to convert []LayerConfig to []*LayerConfig for generating generic call?
 	// Or just reimplement loop for float32 to be fast/simple.
-	
+
 	currentInput := input
 	var intermediates [][]float32
 	// Note: We are not storing full intermediates here, matching generic pattern
@@ -237,7 +236,7 @@ func sequentialForwardCPU(input []float32, layers []LayerConfig, batchSize int) 
 			postAct = currentInput
 			preAct = currentInput
 		}
-		
+
 		intermediates = append(intermediates, preAct)
 		currentInput = postAct
 	}
@@ -252,23 +251,23 @@ func sequentialBackwardCPU(input []float32, gradOutput []float32, intermediates 
 		return gradOutput, nil, nil, nil
 	}
 
-	// 1. Re-run forward pass to get inputs for each layer
-	// layerInputs[i] is the input to layer i.
+	// 1. Re-run forward pass to get inputs and pre-activations for each layer
 	layerInputs := make([][]float32, len(layers))
+	localIntermediates := make([][]float32, len(layers))
 	currentInput := input
-	
+
 	for i := range layers {
 		layerInputs[i] = currentInput
-		
+
 		layerCfg := &layers[i]
 		var postAct []float32
-		
-		// We only need the output (postAct) to serve as input for next layer
+		var preAct []float32
+
 		switch layerCfg.Type {
 		case LayerDense:
-			_, postAct = denseForwardCPU(currentInput, layerCfg, batchSize)
+			preAct, postAct = denseForwardCPU(currentInput, layerCfg, batchSize)
 		case LayerConv2D:
-			_, postAct = conv2DForwardCPU(currentInput, layerCfg, batchSize)
+			preAct, postAct = conv2DForwardCPU(currentInput, layerCfg, batchSize)
 		case LayerMultiHeadAttention:
 			_, postAct = MultiHeadAttentionForwardCPU(currentInput, layerCfg, batchSize)
 		case LayerRNN:
@@ -283,11 +282,25 @@ func sequentialBackwardCPU(input []float32, gradOutput []float32, intermediates 
 			postAct = rmsNormForwardCPU(currentInput, nil, layerCfg, batchSize)
 		case LayerSoftmax:
 			postAct, _ = ForwardSoftmaxCPU(currentInput, layerCfg)
-			if postAct == nil { postAct = currentInput }
+			if postAct == nil {
+				postAct = currentInput
+			}
+		case LayerParallel:
+			postAct, _, _ = parallelForwardCPU(currentInput, layerCfg, batchSize, "step")
+		case LayerKMeans:
+			postAct, _ = ForwardKMeansCPU(currentInput, layerCfg)
+			preAct = layerCfg.PreActivations
 		default:
 			postAct = currentInput
 		}
+
+		localIntermediates[i] = preAct
 		currentInput = postAct
+	}
+
+	// Use provided intermediates if available, otherwise use locals
+	if intermediates == nil {
+		intermediates = localIntermediates
 	}
 
 	// 2. Backward Pass
@@ -343,9 +356,11 @@ func sequentialBackwardCPU(input []float32, gradOutput []float32, intermediates 
 			kGrad = append(kGrad, append(append(grads["WeightIH_g"], grads["WeightHH_g"]...), grads["BiasH_g"]...)...)
 			kGrad = append(kGrad, append(append(grads["WeightIH_o"], grads["WeightHH_o"]...), grads["BiasH_o"]...)...)
 		case LayerSwiGLU:
-			gradInput = make([]float32, len(layerInput)); copy(gradInput, currentGrad)
+			gradInput = make([]float32, len(layerInput))
+			copy(gradInput, currentGrad)
 		case LayerNorm:
-			gradInput = make([]float32, len(layerInput)); copy(gradInput, currentGrad)
+			gradInput = make([]float32, len(layerInput))
+			copy(gradInput, currentGrad)
 		case LayerRMSNorm:
 			gradInput = rmsNormBackwardCPU(preAct, nil, currentGrad, layerCfg, batchSize)
 		case LayerSoftmax:
@@ -357,6 +372,38 @@ func sequentialBackwardCPU(input []float32, gradOutput []float32, intermediates 
 					gradInput[idx] += currentGrad[j] * softmaxOutput[j] * (kroneckerFloat(idx, j) - softmaxOutput[idx])
 				}
 			}
+		case LayerParallel:
+			_, nestedPreActs, _ := parallelForwardCPU(layerInput, layerCfg, batchSize, "step")
+			var allK, allB [][]float32
+			var err error
+			gradInput, allK, allB, err = parallelBackwardCPU(layerInput, currentGrad, nestedPreActs, layerCfg, batchSize, "step")
+			if err == nil {
+				for _, gk := range allK {
+					kGrad = append(kGrad, gk...)
+				}
+				for _, gb := range allB {
+					bGrad = append(bGrad, gb...)
+				}
+			}
+		case LayerSequential:
+			gIn, kGs, bGs, err := sequentialBackwardCPU(layerInput, currentGrad, nil, layerCfg.ParallelBranches, batchSize)
+			if err == nil {
+				gradInput = gIn
+				for _, gk := range kGs {
+					kGrad = append(kGrad, gk...)
+				}
+				for _, gb := range bGs {
+					bGrad = append(bGrad, gb...)
+				}
+			}
+		case LayerKMeans:
+			assignments, _ := ForwardKMeansCPU(layerInput, layerCfg)
+			lr := layerCfg.KMeansLearningRate
+			if lr == 0 {
+				lr = 0.01
+			}
+			gradInput, _ = BackwardKMeansCPU(currentGrad, layerCfg, layerInput, preAct, assignments, lr)
+			kGrad = nil // Updated in-place
 		default:
 			return nil, nil, nil, fmt.Errorf("unsupported layer type %d in sequential backward", layerCfg.Type)
 		}

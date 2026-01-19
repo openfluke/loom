@@ -56,9 +56,10 @@ type LayerDefinition struct {
 	OutputWidth   int `json:"output_width,omitempty"`
 
 	// MHA fields
-	DModel    int `json:"d_model,omitempty"`
-	NumHeads  int `json:"num_heads,omitempty"`
-	SeqLength int `json:"seq_length,omitempty"`
+	DModel       int     `json:"d_model,omitempty"`
+	NumHeads     int     `json:"num_heads,omitempty"`
+	SeqLength    int     `json:"seq_length,omitempty"`
+	RoPEFreqBase float32 `json:"rope_freq_base,omitempty"`
 
 	// RNN/LSTM fields
 	HiddenSize int `json:"hidden_size,omitempty"`
@@ -87,12 +88,24 @@ type LayerDefinition struct {
 	InputLength int `json:"input_length,omitempty"`
 
 	// Parallel layer fields
-	Branches         []LayerDefinition `json:"branches,omitempty"`
-	CombineMode      string            `json:"combine_mode,omitempty"` // "concat", "add", "avg", "grid_scatter"
-	GridPositions    []GridPositionDef `json:"grid_positions,omitempty"`
-	GridOutputRows   int               `json:"grid_output_rows,omitempty"`
-	GridOutputCols   int               `json:"grid_output_cols,omitempty"`
-	GridOutputLayers int               `json:"grid_output_layers,omitempty"`
+	Branches          []LayerDefinition `json:"branches,omitempty"`
+	CombineMode       string            `json:"combine_mode,omitempty"` // "concat", "add", "avg", "grid_scatter"
+	GridPositions     []GridPositionDef `json:"grid_positions,omitempty"`
+	GridOutputRows    int               `json:"grid_output_rows,omitempty"`
+	GridOutputCols    int               `json:"grid_output_cols,omitempty"`
+	GridOutputLayers  int               `json:"grid_output_layers,omitempty"`
+	FilterGateConfig  *LayerDefinition  `json:"filter_gate,omitempty"`
+	FilterSoftmax     string            `json:"filter_softmax,omitempty"`
+	FilterTemperature float32           `json:"filter_temperature,omitempty"`
+
+	// KMeans fields
+	NumClusters        int              `json:"num_clusters,omitempty"`
+	DistanceMetric     string           `json:"distance_metric,omitempty"`
+	KMeansTemperature  float32          `json:"kmeans_temperature,omitempty"`
+	KMeansOutputMode   string           `json:"kmeans_output_mode,omitempty"`
+	KMeansLearningRate float32          `json:"kmeans_learning_rate,omitempty"`
+	ClusterDim         int              `json:"cluster_dim,omitempty"`
+	AttachedLayer      *LayerDefinition `json:"attached_layer,omitempty"`
 }
 
 // GridPositionDef is the JSON representation of a grid position
@@ -112,8 +125,8 @@ type EncodedWeights struct {
 // WeightsData represents the actual weight values
 // Type field indicates the numeric type used for weights
 type WeightsData struct {
-	Type   string         `json:"type"`   // "float32", "float64", etc.
-	DType  string         `json:"dtype"`  // DType enum value as string (for multi-type support)
+	Type   string         `json:"type"`  // "float32", "float64", etc.
+	DType  string         `json:"dtype"` // DType enum value as string (for multi-type support)
 	Layers []LayerWeights `json:"layers"`
 }
 
@@ -173,6 +186,9 @@ type LayerWeights struct {
 
 	// Parallel layer branch weights (recursive)
 	BranchWeights []LayerWeights `json:"branch_weights,omitempty"`
+
+	// KMeans weights
+	ClusterCenters []float32 `json:"cluster_centers,omitempty"`
 }
 
 // SaveModel saves a single model to a file
@@ -239,6 +255,7 @@ func serializeBranches(branches []LayerConfig) []LayerDefinition {
 			def.DModel = branch.DModel
 			def.NumHeads = branch.NumHeads
 			def.SeqLength = branch.SeqLength
+			def.RoPEFreqBase = branch.RoPEFreqBase
 		case LayerRNN:
 			def.InputSize = branch.RNNInputSize
 			def.HiddenSize = branch.HiddenSize
@@ -287,6 +304,30 @@ func serializeBranches(branches []LayerConfig) []LayerDefinition {
 		case LayerSequential:
 			// Sequential layers store their sub-layers in ParallelBranches (processed in order)
 			def.Branches = serializeBranches(branch.ParallelBranches) // Recursive call
+		case LayerConv1D:
+			def.InputChannels = branch.Conv1DInChannels
+			def.Filters = branch.Conv1DFilters
+			def.KernelSize = branch.Conv1DKernelSize
+			def.Stride = branch.Conv1DStride
+			def.Padding = branch.Conv1DPadding
+			def.InputLength = branch.InputHeight
+		case LayerKMeans:
+			def.NumClusters = branch.NumClusters
+			def.DistanceMetric = branch.DistanceMetric
+			def.KMeansTemperature = branch.KMeansTemperature
+			def.KMeansOutputMode = branch.KMeansOutputMode
+			def.KMeansLearningRate = branch.KMeansLearningRate
+			def.ClusterDim = branch.ClusterDim
+
+			// Serialize sub-network if it's a Network
+			if subNet, ok := branch.SubNetwork.(*Network); ok {
+				// We can't easily put a full Network into LayerDefinition branches
+				// but we can serialize its layers as branches for now?
+				// Actually, InitKMeansLayer creates a small network.
+				if subNet != nil {
+					def.Branches = serializeBranches(subNet.Layers)
+				}
+			}
 		}
 
 		defs[i] = def
@@ -351,6 +392,16 @@ func serializeBranchWeights(branches []LayerConfig) []LayerWeights {
 		case LayerSequential:
 			// Recursively serialize nested sequential layer weights
 			w.BranchWeights = serializeBranchWeights(branch.ParallelBranches)
+		case LayerConv1D:
+			w.Kernel = branch.Kernel
+			w.ConvBias = branch.Bias
+		case LayerKMeans:
+			w.ClusterCenters = branch.ClusterCenters
+			if subNet, ok := branch.SubNetwork.(*Network); ok {
+				if subNet != nil {
+					w.BranchWeights = serializeBranchWeights(subNet.Layers)
+				}
+			}
 		}
 
 		weights[i] = w
@@ -400,6 +451,7 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				DModel:       def.DModel,
 				NumHeads:     def.NumHeads,
 				SeqLength:    def.SeqLength,
+				RoPEFreqBase: def.RoPEFreqBase,
 				QWeights:     w.QWeights,
 				KWeights:     w.KWeights,
 				VWeights:     w.VWeights,
@@ -408,6 +460,9 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				KBias:        w.KBias,
 				VBias:        w.VBias,
 				OutputBias:   w.OutputBias,
+			}
+			if config.RoPEFreqBase == 0 {
+				config.RoPEFreqBase = 10000.0
 			}
 		case "rnn":
 			config = LayerConfig{
@@ -518,8 +573,42 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				Type:             LayerSequential,
 				ParallelBranches: nestedBranches, // Sequential uses ParallelBranches to store sub-layers
 			}
-		default:
-			return nil, fmt.Errorf("unknown branch type: %s", def.Type)
+		case "conv1d":
+			config = LayerConfig{
+				Type:             LayerConv1D,
+				Activation:       stringToActivation(def.Activation),
+				Conv1DInChannels: def.InputChannels,
+				Conv1DFilters:    def.Filters,
+				Conv1DKernelSize: def.KernelSize,
+				Conv1DStride:     def.Stride,
+				Conv1DPadding:    def.Padding,
+				InputHeight:      def.InputLength, // Map input_length to InputHeight for internal use
+				// OutputHeight calculated dynamically or from definition if available
+				// deserialization usually trusts correct input
+			}
+		case "kmeans":
+			config = LayerConfig{
+				Type:               LayerKMeans,
+				NumClusters:        def.NumClusters,
+				DistanceMetric:     def.DistanceMetric,
+				KMeansTemperature:  def.KMeansTemperature,
+				KMeansOutputMode:   def.KMeansOutputMode,
+				KMeansLearningRate: def.KMeansLearningRate,
+				ClusterDim:         def.ClusterDim,
+				ClusterCenters:     w.ClusterCenters,
+			}
+			// Reconstruct sub-network from branches
+			if len(def.Branches) > 0 {
+				subLayers, err := deserializeBranches(def.Branches, w.BranchWeights)
+				if err == nil {
+					// Create a sub-network
+					// We need to know input size, but it's often 1 for these small nets?
+					// Use 1 for now, it will resize.
+					subNet := NewNetwork(1, 1, 1, len(subLayers))
+					subNet.Layers = subLayers
+					config.SubNetwork = subNet
+				}
+			}
 		}
 
 		branches[i] = config
@@ -680,6 +769,34 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 			// Serialize sequential layers (stored in ParallelBranches)
 			layerDef.Branches = serializeBranches(layerConfig.ParallelBranches)
 			layerWeights.BranchWeights = serializeBranchWeights(layerConfig.ParallelBranches)
+
+		case LayerConv1D:
+			layerDef.InputChannels = layerConfig.Conv1DInChannels
+			layerDef.Filters = layerConfig.Conv1DFilters
+			layerDef.KernelSize = layerConfig.Conv1DKernelSize
+			layerDef.Stride = layerConfig.Conv1DStride
+			layerDef.Padding = layerConfig.Conv1DPadding
+			layerDef.InputLength = layerConfig.InputHeight // Map InputHeight to input_length for JSON
+			layerWeights.Kernel = layerConfig.Kernel
+			layerWeights.ConvBias = layerConfig.Bias
+
+		case LayerKMeans:
+			layerDef.NumClusters = layerConfig.NumClusters
+			layerDef.DistanceMetric = layerConfig.DistanceMetric
+			layerDef.KMeansTemperature = layerConfig.KMeansTemperature
+			layerDef.KMeansOutputMode = layerConfig.KMeansOutputMode
+			layerDef.KMeansLearningRate = layerConfig.KMeansLearningRate
+			layerDef.ClusterDim = layerConfig.ClusterDim
+
+			layerWeights.ClusterCenters = layerConfig.ClusterCenters
+
+			// Serialize sub-network
+			if subNet, ok := layerConfig.SubNetwork.(*Network); ok {
+				if subNet != nil {
+					layerDef.Branches = serializeBranches(subNet.Layers)
+					layerWeights.BranchWeights = serializeBranchWeights(subNet.Layers)
+				}
+			}
 		}
 
 		config.Layers = append(config.Layers, layerDef)
@@ -983,6 +1100,20 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				DownBias:     layerWeights.DownBias,
 			}
 
+		case "conv1d":
+			layerConfig = LayerConfig{
+				Type:             LayerConv1D,
+				Activation:       stringToActivation(layerDef.Activation),
+				Conv1DInChannels: layerDef.InputChannels,
+				Conv1DFilters:    layerDef.Filters,
+				Conv1DKernelSize: layerDef.KernelSize,
+				Conv1DStride:     layerDef.Stride,
+				Conv1DPadding:    layerDef.Padding,
+				InputHeight:      layerDef.InputLength, // Map input_length to InputHeight
+				Kernel:           layerWeights.Kernel,
+				Bias:             layerWeights.ConvBias,
+			}
+
 		case "parallel":
 			// Deserialize branches recursively with their weights
 			branches, err := deserializeBranches(layerDef.Branches, layerWeights.BranchWeights)
@@ -1023,6 +1154,28 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				ParallelBranches: branches,
 			}
 
+		case "kmeans":
+			layerConfig = LayerConfig{
+				Type:               LayerKMeans,
+				NumClusters:        layerDef.NumClusters,
+				DistanceMetric:     layerDef.DistanceMetric,
+				KMeansTemperature:  layerDef.KMeansTemperature,
+				KMeansOutputMode:   layerDef.KMeansOutputMode,
+				KMeansLearningRate: layerDef.KMeansLearningRate,
+				ClusterDim:         layerDef.ClusterDim,
+				ClusterCenters:     layerWeights.ClusterCenters,
+			}
+			// Reconstruct sub-network from branches
+			if len(layerDef.Branches) > 0 {
+				subLayers, err := deserializeBranches(layerDef.Branches, layerWeights.BranchWeights)
+				if err == nil {
+					// Create a sub-network
+					subNet := NewNetwork(1, 1, 1, len(subLayers))
+					subNet.Layers = subLayers
+					layerConfig.SubNetwork = subNet
+				}
+			}
+
 		default:
 			return nil, fmt.Errorf("unknown layer type: %s", layerDef.Type)
 		}
@@ -1040,6 +1193,8 @@ func layerTypeToString(lt LayerType) string {
 		return "dense"
 	case LayerConv2D:
 		return "conv2d"
+	case LayerConv1D:
+		return "conv1d"
 	case LayerMultiHeadAttention:
 		return "multi_head_attention"
 	case LayerRNN:
@@ -1054,12 +1209,16 @@ func layerTypeToString(lt LayerType) string {
 		return "rms_norm"
 	case LayerSwiGLU:
 		return "swiglu"
+	case LayerEmbedding:
+		return "embedding"
 	case LayerResidual:
 		return "residual"
 	case LayerParallel:
 		return "parallel"
 	case LayerSequential:
 		return "sequential"
+	case LayerKMeans:
+		return "kmeans"
 	default:
 		return "unknown"
 	}
@@ -1184,9 +1343,29 @@ func BuildNetworkFromJSONWithDType(jsonConfig string) (*Network, string, error) 
 		batchSize = 1
 	}
 
+	// Determine input size from first layer configuration
+	inputSize := 1
+	if len(config.Layers) > 0 {
+		l0 := config.Layers[0]
+		if l0.InputHeight > 0 {
+			inputSize = l0.InputHeight
+		} else if l0.InputSize > 0 {
+			inputSize = l0.InputSize
+		} else if l0.InputChannels > 0 {
+			// Estimate for conv layers
+			if l0.InputHeight > 0 && l0.InputWidth > 0 {
+				inputSize = l0.InputChannels * l0.InputHeight * l0.InputWidth
+			} else if l0.InputLength > 0 {
+				inputSize = l0.InputChannels * l0.InputLength
+			} else {
+				inputSize = l0.InputChannels // Fallback
+			}
+		}
+	}
+
 	// Create network with grid structure
 	network := NewNetwork(
-		batchSize,
+		inputSize,
 		config.GridRows,
 		config.GridCols,
 		config.LayersPerCell,
@@ -1269,6 +1448,18 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		config.OutputHeight = def.OutputHeight
 		config.OutputWidth = def.OutputWidth
 
+		// Calculate output dimensions if not provided
+		if config.OutputHeight == 0 || config.OutputWidth == 0 {
+			if config.InputHeight > 0 && config.InputWidth > 0 && config.KernelSize > 0 {
+				str := config.Stride
+				if str < 1 {
+					str = 1
+				}
+				config.OutputHeight = (config.InputHeight+2*config.Padding-config.KernelSize)/str + 1
+				config.OutputWidth = (config.InputWidth+2*config.Padding-config.KernelSize)/str + 1
+			}
+		}
+
 	case "mha", "multi_head_attention":
 		// Use InitMHABrain to properly initialize weights
 		numHeads := def.NumHeads
@@ -1277,6 +1468,10 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		}
 		config = InitMHABrain(def.DModel, numHeads, 0.5)
 		config.SeqLength = def.SeqLength
+		config.RoPEFreqBase = def.RoPEFreqBase
+		if config.RoPEFreqBase == 0 {
+			config.RoPEFreqBase = 10000.0 // Default
+		}
 		if config.SeqLength == 0 {
 			config.SeqLength = 1
 		}
@@ -1289,6 +1484,10 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		}
 		config = InitRNNBrain(dModel, 0.5)
 		config.RNNInputSize = def.InputSize
+		config.HiddenSize = def.HiddenSize
+		if def.SeqLength > 0 {
+			config.SeqLength = def.SeqLength
+		}
 
 	case "lstm":
 		// Use InitLSTMBrain to properly initialize weights
@@ -1298,6 +1497,10 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		}
 		config = InitLSTMBrain(dModel, 0.5)
 		config.RNNInputSize = def.InputSize
+		config.HiddenSize = def.HiddenSize
+		if def.SeqLength > 0 {
+			config.SeqLength = def.SeqLength
+		}
 
 	case "softmax":
 		config.Type = LayerSoftmax
@@ -1373,6 +1576,15 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		config.GridOutputRows = def.GridOutputRows
 		config.GridOutputCols = def.GridOutputCols
 		config.GridOutputLayers = def.GridOutputLayers
+		config.FilterSoftmax = stringToSoftmaxType(def.FilterSoftmax)
+		config.FilterTemperature = def.FilterTemperature
+		if def.FilterGateConfig != nil {
+			gateCfg, err := buildLayerConfig(*def.FilterGateConfig)
+			if err != nil {
+				return config, fmt.Errorf("filter gate config: %w", err)
+			}
+			config.FilterGateConfig = &gateCfg
+		}
 
 		// Convert GridPositionDef to GridPosition
 		if len(def.GridPositions) > 0 {
@@ -1424,6 +1636,30 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 			inChannels = 1 // Default to 1 channel
 		}
 		config = InitConv1DLayer(seqLen, inChannels, def.KernelSize, def.Stride, def.Padding, def.Filters, stringToActivation(def.Activation))
+
+	case "kmeans":
+		var attachedConfig LayerConfig
+		if def.AttachedLayer != nil {
+			var err error
+			attachedConfig, err = buildLayerConfig(*def.AttachedLayer)
+			if err != nil {
+				return config, fmt.Errorf("kmeans attached layer: %w", err)
+			}
+		} else {
+			// Fallback (e.g. Identity or small Dense) if not specified
+			attachedConfig = LayerConfig{Type: LayerDense, InputHeight: 1, OutputHeight: 1}
+		}
+		config = InitKMeansLayer(def.NumClusters, attachedConfig, def.KMeansOutputMode)
+		config.DistanceMetric = def.DistanceMetric
+		config.KMeansTemperature = def.KMeansTemperature
+		config.KMeansLearningRate = def.KMeansLearningRate
+		config.ClusterDim = def.ClusterDim
+
+		// If branches are provided, they will be handled by deserializeBranches caller
+		// but wait, buildLayerConfig is called by BuildNetworkFromJSON loop.
+		// BuildNetworkFromJSON calls buildLayerConfig(layerDef) which doesn't have weights.
+		// Higher level deserializeBranches handles weights.
+		// So this is just for the structure.
 
 	default:
 		return config, fmt.Errorf("unknown layer type: %s", def.Type)

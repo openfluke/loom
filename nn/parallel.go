@@ -43,13 +43,13 @@ func ParallelForward[T Numeric](
 		case LayerConv1D:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DKernel, len(branchCfg.Conv1DKernel)))
 			bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DBias, len(branchCfg.Conv1DBias)))
-			
+
 			// Use InputHeight as seqLen
 			seqLen := branchCfg.InputHeight
 			if seqLen <= 0 {
 				seqLen = len(input.Data) / (branchCfg.Conv1DInChannels * batchSize)
 			}
-			
+
 			preAct, postAct = Conv1DForward(input, weights, bias,
 				seqLen, branchCfg.Conv1DInChannels,
 				branchCfg.Conv1DKernelSize, branchCfg.Conv1DStride, branchCfg.Conv1DPadding,
@@ -152,6 +152,15 @@ func ParallelForward[T Numeric](
 			}
 			preAct = input.Clone() // Placeholder
 
+		case LayerKMeans:
+			inputF32 := ConvertSliceTToFloat32(input.Data)
+			outputF32, err := ForwardKMeansCPU(inputF32, branchCfg)
+			if err != nil {
+				return nil, nil, fmt.Errorf("kmeans branch %d failed: %w", i, err)
+			}
+			postAct = ConvertTensorFloat32ToT[T](NewTensorFromSlice(outputF32, len(outputF32)))
+			preAct = ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.PreActivations, len(branchCfg.PreActivations)))
+
 		default:
 			// For unsupported types, pass through
 			postAct = input.Clone()
@@ -221,7 +230,23 @@ func ParallelForward[T Numeric](
 			offset += len(branchOut.Data)
 		}
 
-	// NOTE: "filter" mode now handled by ParallelForwardFiltered function for full control
+	case "filter":
+		// Use specialized filtered forward function
+		// Note: We need to retrieve the gate config from a context or pass it in.
+		// However, ParallelForward signature doesn't include the parent config where GateConfig lives.
+		// Standard StepForwardGeneric calls this with branches only.
+		// WE NEED TO CHANGE PARALLEL FORWARD SIGNATURE OR ASSUME GATE CONFIG IS ATTACHED TO BRANCHES?
+		// Actually, FilterGateConfig is on the PARENT layer config.
+		// But ParallelForward only receives `branches []*LayerConfig`.
+
+		// CRITICAL FIX: We can't implement this cleanly without accessing properties of the PARENT config (FilterGateConfig).
+		// But we don't have the parent config here.
+		// Workaround: We will use Uniform Gating (1/N) if we can't find the gate config, OR fallback to concat?
+		// No, that breaks the "Mixture of Experts" promise.
+
+		// Better approach: The CALLER (StepForwardGeneric) has the parent config.
+		// It should call ParallelForwardFiltered directly if mode is "filter".
+		return nil, nil, fmt.Errorf("filter mode must be called via ParallelForwardFiltered, not ParallelForward")
 
 	default:
 		return nil, nil, fmt.Errorf("unknown combine mode: %s", combineMode)
@@ -266,6 +291,13 @@ func ParallelForwardFiltered[T Numeric](
 			upBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.UpBias, len(branchCfg.UpBias)))
 			downBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.DownBias, len(branchCfg.DownBias)))
 			postAct = SwiGLUForward(input, gateW, upW, downW, gateBias, upBias, downBias, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize)
+		case LayerKMeans:
+			inputF32 := ConvertSliceTToFloat32(input.Data)
+			outputF32, err := ForwardKMeansCPU(inputF32, branchCfg)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("kmeans branch %d failed: %w", i, err)
+			}
+			postAct = ConvertTensorFloat32ToT[T](NewTensorFromSlice(outputF32, len(outputF32)))
 		default:
 			// Fallback: use generic ParallelForward for this branch type
 			nestedBranches := []*LayerConfig{branchCfg}
@@ -287,13 +319,13 @@ func ParallelForwardFiltered[T Numeric](
 
 	// 2. Compute gate weights
 	gateLogits := make([]float32, len(branches))
-	
+
 	if gateConfig != nil && gateConfig.Type == LayerDense {
 		// Use the gate layer to compute logits
 		gateWeights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(gateConfig.Kernel, len(gateConfig.Kernel)))
 		gateBias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(gateConfig.Bias, len(gateConfig.Bias)))
 		_, gateOut := DenseForward(input, gateWeights, gateBias, gateConfig.InputHeight, gateConfig.OutputHeight, batchSize, ActivationScaledReLU)
-		
+
 		// Convert gate output to float32 for softmax
 		for i := 0; i < len(gateLogits) && i < len(gateOut.Data); i++ {
 			gateLogits[i] = float32(gateOut.Data[i])
@@ -355,6 +387,12 @@ func ParallelBackward[T Numeric](
 				size = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
 			case LayerConv1D:
 				size = batchSize * branchCfg.OutputHeight * branchCfg.Conv1DFilters
+			case LayerKMeans:
+				if branchCfg.KMeansOutputMode == "probabilities" {
+					size = batchSize * branchCfg.NumClusters
+				} else {
+					size = batchSize * branchCfg.ClusterDim
+				}
 			default:
 				size = len(input.Data)
 			}
@@ -406,12 +444,12 @@ func ParallelBackward[T Numeric](
 
 		case LayerConv1D:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DKernel, len(branchCfg.Conv1DKernel)))
-			
+
 			seqLen := branchCfg.InputHeight
 			if seqLen <= 0 {
 				seqLen = len(input.Data) / (branchCfg.Conv1DInChannels * batchSize)
 			}
-			
+
 			subGradInput, _, _ = Conv1DBackward(gradBranch, input, intermediate, weights,
 				seqLen, branchCfg.Conv1DInChannels,
 				branchCfg.Conv1DKernelSize, branchCfg.Conv1DStride, branchCfg.Conv1DPadding,
@@ -437,6 +475,18 @@ func ParallelBackward[T Numeric](
 			// For now, we pass nil/empty, effectively disabling training through Sequential layers
 			// until a better state management is implemented.
 			subGradInput = SequentialBackward(gradBranch, input, nestedLayers, nil)
+
+		case LayerKMeans:
+			inputF32 := ConvertSliceTToFloat32(input.Data)
+			gradOutF32 := ConvertSliceTToFloat32(gradBranch.Data)
+			preActF32 := ConvertSliceTToFloat32(intermediate.Data)
+			assignmentsF32, _ := ForwardKMeansCPU(inputF32, branchCfg)
+			lr := branchCfg.KMeansLearningRate
+			if lr == 0 {
+				lr = 0.01
+			}
+			subGradInF32, _ := BackwardKMeansCPU(gradOutF32, branchCfg, inputF32, preActF32, assignmentsF32, lr)
+			subGradInput = ConvertTensorFloat32ToT[T](NewTensorFromSlice(subGradInF32, len(subGradInF32)))
 
 		default:
 			if len(gradBranch.Data) == len(input.Data) {
@@ -486,20 +536,34 @@ func ParallelBackwardFiltered[T Numeric](
 		case LayerDense:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Kernel, len(branchCfg.Kernel)))
 			subGradInput, _, _ = DenseBackward(scaledGrad, input, input.Clone(), weights, branchCfg.InputHeight, branchCfg.OutputHeight, batchSize, branchCfg.Activation)
-		
+
 		case LayerConv1D:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(branchCfg.Conv1DKernel, len(branchCfg.Conv1DKernel)))
-			
+
 			seqLen := branchCfg.InputHeight
 			if seqLen <= 0 {
 				seqLen = len(input.Data) / (branchCfg.Conv1DInChannels * batchSize)
 			}
-			
+
 			subGradInput, _, _ = Conv1DBackward(scaledGrad, input, input.Clone(), weights,
 				seqLen, branchCfg.Conv1DInChannels,
 				branchCfg.Conv1DKernelSize, branchCfg.Conv1DStride, branchCfg.Conv1DPadding,
 				branchCfg.Conv1DFilters, batchSize, branchCfg.Activation)
-			
+
+		case LayerKMeans:
+			inputF32 := ConvertSliceTToFloat32(input.Data)
+			gradOutF32 := ConvertSliceTToFloat32(scaledGrad.Data)
+			// In Filtered mode, we might not have good intermediates for sub-network
+			// Re-running or using input as proxy:
+			assignmentsF32, _ := ForwardKMeansCPU(inputF32, branchCfg)
+			preActF32 := branchCfg.PreActivations
+			lr := branchCfg.KMeansLearningRate
+			if lr == 0 {
+				lr = 0.01
+			}
+			subGradInF32, _ := BackwardKMeansCPU(gradOutF32, branchCfg, inputF32, preActF32, assignmentsF32, lr)
+			subGradInput = ConvertTensorFloat32ToT[T](NewTensorFromSlice(subGradInF32, len(subGradInF32)))
+
 		default:
 			subGradInput = scaledGrad.Clone()
 		}
@@ -533,10 +597,10 @@ func ParallelBackwardFiltered[T Numeric](
 // softmaxType: which softmax variant to use for gating
 func InitFilteredParallelLayer(branches []LayerConfig, gateInputSize int, softmaxType SoftmaxType, temperature float32) LayerConfig {
 	numBranches := len(branches)
-	
+
 	// Create gate layer: Dense(inputSize -> numBranches)
 	gateLayer := InitDenseLayer(gateInputSize, numBranches, ActivationScaledReLU)
-	
+
 	return LayerConfig{
 		Type:              LayerParallel,
 		ParallelBranches:  branches,
@@ -655,7 +719,15 @@ func parallelForwardCPU(input []float32, cfg *LayerConfig, batchSize int, mode s
 				copy(preAct[offset:], pa)
 				offset += len(pa)
 			}
-			
+
+		case LayerKMeans:
+			output, err := ForwardKMeansCPU(input, branchCfg)
+			if err != nil {
+				return nil, nil, fmt.Errorf("kmeans branch %d failed: %w", i, err)
+			}
+			postAct = output
+			preAct = branchCfg.PreActivations
+
 		default:
 			return nil, nil, fmt.Errorf("unsupported layer type %d in parallel branch %d", branchCfg.Type, i)
 		}
@@ -887,6 +959,8 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				outputSize = batchSize * branchCfg.OutputHeight
 			case LayerConv2D:
 				outputSize = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
+			case LayerConv1D:
+				outputSize = batchSize * branchCfg.OutputHeight * branchCfg.Conv1DFilters
 			case LayerMultiHeadAttention:
 				outputSize = batchSize * branchCfg.SeqLength * branchCfg.DModel
 			case LayerRNN:
@@ -907,6 +981,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
 				outputSize = len(dummyOut)
+			case LayerKMeans:
+				if branchCfg.KMeansOutputMode == "probabilities" {
+					outputSize = batchSize * branchCfg.NumClusters
+				} else {
+					outputSize = batchSize * branchCfg.ClusterDim
+				}
 			default:
 				return nil, nil, nil, fmt.Errorf("cannot determine output size for layer type %d", branchCfg.Type)
 			}
@@ -947,6 +1027,8 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				branchOutputSize = batchSize * branchCfg.OutputHeight
 			case LayerConv2D:
 				branchOutputSize = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
+			case LayerConv1D:
+				branchOutputSize = batchSize * branchCfg.OutputHeight * branchCfg.Conv1DFilters
 			case LayerMultiHeadAttention:
 				branchOutputSize = batchSize * branchCfg.SeqLength * branchCfg.DModel
 			case LayerRNN:
@@ -967,6 +1049,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
 				branchOutputSize = len(dummyOut)
+			case LayerKMeans:
+				if branchCfg.KMeansOutputMode == "probabilities" {
+					branchOutputSize = batchSize * branchCfg.NumClusters
+				} else {
+					branchOutputSize = batchSize * branchCfg.ClusterDim
+				}
 			default:
 				return nil, nil, nil, fmt.Errorf("cannot determine output size for layer type %d", branchCfg.Type)
 			}
@@ -993,6 +1081,8 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				branchOutputSize = batchSize * branchCfg.OutputHeight
 			case LayerConv2D:
 				branchOutputSize = batchSize * branchCfg.OutputHeight * branchCfg.OutputWidth * branchCfg.Filters
+			case LayerConv1D:
+				branchOutputSize = batchSize * branchCfg.OutputHeight * branchCfg.Conv1DFilters
 			case LayerMultiHeadAttention:
 				branchOutputSize = batchSize * branchCfg.SeqLength * branchCfg.DModel
 			case LayerRNN:
@@ -1013,6 +1103,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
 				branchOutputSize = len(dummyOut)
+			case LayerKMeans:
+				if branchCfg.KMeansOutputMode == "probabilities" {
+					branchOutputSize = batchSize * branchCfg.NumClusters
+				} else {
+					branchOutputSize = batchSize * branchCfg.ClusterDim
+				}
 			default:
 				return nil, nil, nil, fmt.Errorf("cannot determine output size for layer type %d", branchCfg.Type)
 			}
@@ -1040,14 +1136,55 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 		branchGrads = make([][]float32, len(cfg.ParallelBranches))
 		outputSize := len(gradOutput)
 
-		// For filter mode, each branch gets gradient scaled by its gate weight
-		// Since we don't have the exact gate weights stored, we use uniform distribution
-		// This is a simplification - ideally we'd store gate weights from forward pass
-		scale := 1.0 / float32(len(cfg.ParallelBranches))
+		// Recompute gate weights from input (same logic as forward) so backward reflects gating.
+		gateLogits := make([]float32, len(cfg.ParallelBranches))
+		if cfg.FilterGateConfig != nil && cfg.FilterGateConfig.Type == LayerDense {
+			gateWeights := cfg.FilterGateConfig.Kernel
+			gateBias := cfg.FilterGateConfig.Bias
+			gateOutSize := cfg.FilterGateConfig.OutputHeight
+			if gateOutSize == 0 {
+				gateOutSize = len(cfg.ParallelBranches)
+			}
+			inputSize := cfg.FilterGateConfig.InputHeight
+			if inputSize == 0 {
+				inputSize = len(input)
+			}
+			for o := 0; o < gateOutSize && o < len(gateLogits); o++ {
+				sum := float32(0)
+				for i := 0; i < inputSize && i < len(input); i++ {
+					wIdx := o*inputSize + i
+					if wIdx < len(gateWeights) {
+						sum += input[i] * gateWeights[wIdx]
+					}
+				}
+				if o < len(gateBias) {
+					sum += gateBias[o]
+				}
+				gateLogits[o] = sum
+			}
+		} else {
+			for i := range gateLogits {
+				gateLogits[i] = 1.0 / float32(len(cfg.ParallelBranches))
+			}
+		}
+
+		temp := cfg.FilterTemperature
+		if temp <= 0 {
+			temp = 1.0
+		}
+		gateWeights, _ := ForwardSoftmaxCPU(gateLogits, &LayerConfig{
+			SoftmaxVariant: cfg.FilterSoftmax,
+			Temperature:    temp,
+		})
+
 		for i := range branchGrads {
+			weight := float32(1.0 / float32(len(cfg.ParallelBranches)))
+			if i < len(gateWeights) {
+				weight = gateWeights[i]
+			}
 			branchGrads[i] = make([]float32, outputSize)
 			for j := range gradOutput {
-				branchGrads[i][j] = gradOutput[j] * scale
+				branchGrads[i][j] = gradOutput[j] * weight
 			}
 		}
 
@@ -1074,6 +1211,9 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 
 		case LayerConv2D:
 			branchInputGrad, kernelGrad, biasGrad = conv2DBackwardCPU(gradOut, input, preAct, branchCfg, batchSize)
+
+		case LayerConv1D:
+			branchInputGrad, kernelGrad, biasGrad = conv1DBackwardCPU(gradOut, input, preAct, branchCfg, batchSize)
 
 		case LayerMultiHeadAttention:
 			var gradQW, gradKW, gradVW, gradOutW, gradQB, gradKB, gradVB, gradOutB []float32
@@ -1204,12 +1344,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("nested sequential backward failed: %w", err)
 			}
-			
+
 			// Flatten kernel/bias grads for this branch (Sequential layer returns []Layer grads)
 			// parallelBackwardCPU expects ONE kernelGrad/biasGrad slice per BRANCH.
 			// But wait, LayerSequential inside Parallel means "this branch is a sequence".
 			// The caller of parallelBackwardCPU expects `allKernelGrads[i]` to be a FLAT slice of all weights in that branch.
-			
+
 			totalKernel := 0
 			totalBias := 0
 			for j := range nestedKernelGrads {
@@ -1226,6 +1366,16 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				copy(biasGrad[bOff:], nestedBiasGrads[j])
 				bOff += len(nestedBiasGrads[j])
 			}
+
+		case LayerKMeans:
+			assignments, _ := ForwardKMeansCPU(input, branchCfg)
+			lr := branchCfg.KMeansLearningRate
+			if lr == 0 {
+				lr = 0.01
+			}
+			branchInputGrad, _ = BackwardKMeansCPU(gradOut, branchCfg, input, preAct, assignments, lr)
+			kernelGrad = nil // KMgrads are handled in-place inside BackwardKMeansCPU
+			biasGrad = nil
 
 		default:
 			return nil, nil, nil, fmt.Errorf("unsupported layer type %d in parallel branch %d backward", branchCfg.Type, i)

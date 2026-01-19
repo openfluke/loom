@@ -20,7 +20,7 @@ func Conv1DForward[T Numeric](
 	// Calculate output length
 	outLen := (seqLen+2*padding-kernelSize)/stride + 1
 	outputSize := batchSize * filters * outLen
-	
+
 	preAct = NewTensor[T](outputSize)
 	postAct = NewTensor[T](outputSize)
 
@@ -125,6 +125,9 @@ func InitConv1DLayer(
 	kernelSize, stride, padding, filters int,
 	activation ActivationType,
 ) LayerConfig {
+	if stride < 1 {
+		stride = 1
+	}
 	// Calculate output length
 	outLen := (seqLen+2*padding-kernelSize)/stride + 1
 
@@ -147,11 +150,11 @@ func InitConv1DLayer(
 		Conv1DStride:     stride,
 		Conv1DPadding:    padding,
 		Conv1DFilters:    filters,
-		Conv1DKernel:     kernel,
-		Conv1DBias:       bias,
+		Kernel:           kernel,
+		Bias:             bias,
 		Conv1DInChannels: inChannels,
 		// Store input size for computing output
-		InputHeight: seqLen, // Reuse InputHeight for sequence length
+		InputHeight:  seqLen, // Reuse InputHeight for sequence length
 		OutputHeight: outLen, // Reuse OutputHeight for output length
 	}
 }
@@ -159,8 +162,8 @@ func InitConv1DLayer(
 // conv1DForwardCPU performs 1D convolution on CPU
 func conv1DForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]float32, []float32) {
 	inputT := NewTensorFromSlice(input, len(input))
-	kernelT := NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel))
-	biasT := NewTensorFromSlice(config.Conv1DBias, len(config.Conv1DBias))
+	kernelT := NewTensorFromSlice(config.Kernel, len(config.Kernel))
+	biasT := NewTensorFromSlice(config.Bias, len(config.Bias))
 
 	// Use InputHeight as seqLen
 	seqLen := config.InputHeight
@@ -190,7 +193,7 @@ func conv1DBackwardCPU(
 	gradOutputT := NewTensorFromSlice(gradOutput, len(gradOutput))
 	inputT := NewTensorFromSlice(input, len(input))
 	preActT := NewTensorFromSlice(preActivation, len(preActivation))
-	kernelT := NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel))
+	kernelT := NewTensorFromSlice(config.Kernel, len(config.Kernel))
 
 	seqLen := config.InputHeight
 	if seqLen <= 0 {

@@ -58,3 +58,12 @@ func ResidualForwardCPU(input, skipInput []float32) []float32 {
 	}
 	return output
 }
+// ResidualBackwardCPU computes gradients for Residual layer on CPU
+// returns: gradInput (for current path), gradSkip (for skip path)
+func ResidualBackwardCPU(gradOutput []float32) (gradInput, gradSkip []float32) {
+	gradInput = make([]float32, len(gradOutput))
+	gradSkip = make([]float32, len(gradOutput))
+	copy(gradInput, gradOutput)
+	copy(gradSkip, gradOutput)
+	return gradInput, gradSkip
+}

@@ -166,7 +166,11 @@ func (t *Tokenizer) bpeEncode(word string) []uint32 {
 	}
 
 	// Convert word to initial tokens (characters or bytes)
-	chars := t.splitToChars(word)
+	// Text is first mapped to GPT-2 byte-encoding characters
+	// e.g. " " (space) -> "Ġ" (U+0120)
+	gpt2Word := encodeToGPT2Chars(word)
+
+	chars := t.splitToChars(gpt2Word)
 	if len(chars) == 0 {
 		return []uint32{}
 	}
@@ -343,6 +347,62 @@ func (t *Tokenizer) Decode(ids []uint32, skipSpecialTokens bool) string {
 	return text
 }
 
+// encodeToGPT2Chars converts text to GPT-2/SmolLM2 style byte-encoded characters
+// This is the inverse of decodeGPT2Bytes
+func encodeToGPT2Chars(text string) string {
+	var b strings.Builder
+	// Convert string to bytes first, as the mapping operates on bytes
+	bytes := []byte(text)
+	for _, byteVal := range bytes {
+		r := gpt2ByteEncode(byteVal)
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// gpt2ByteEncode maps a single byte to its GPT-2 unicode representation
+func gpt2ByteEncode(b byte) rune {
+	// GPT-2 mapping logic (inverse of gpt2ByteDecode)
+
+	// Printable ASCII characters (except space, which is 0x20)
+	// In the decoder:
+	// 0x21-0x7E map to themselves
+	// 0xA1-0xAC map to themselves
+	// 0xAE-0xFF map to themselves (Wait, strictly checking the decoder logic is safer)
+
+	// Let's look at decoder:
+	// if r >= 0x100 && r <= 0x1FF { ... decode ... }
+	// else return r
+
+	// So if we have a byte b:
+	// If b is a printable char that GPT-2 preserves, we return rune(b).
+	// If it's a control char or space or specific others, we map to 0x100 + offset.
+
+	// Re-deriving from decoder logic:
+	// Decoder:
+	// offset <= 0x20  -> return offset (0x00-0x20)
+	// offset == 0x21  -> return 0x7F (DEL)
+	// offset >= 0x22 ... -> return 0x80 + (offset - 0x22)
+
+	// So Encoder:
+	// If b <= 0x20: offset = b -> rune = 0x100 + b
+	// If b == 0x7F: offset = 0x21 -> rune = 0x100 + 0x21 = 0x121
+	// If b >= 0x80: offset = b - 0x80 + 0x22 -> rune = 0x100 + b - 0x80 + 0x22 = b + 0x100 - 0x5E
+	//    (Wait, let's check the math. 0x80 -> 0x122. Decoder: 0x122-0x100=0x22. 0x80 + (0x22 - 0x22) = 0x80. Correct.)
+
+	val := int(b)
+	if val <= 0x20 {
+		return rune(0x100 + val)
+	} else if val == 0x7F {
+		return rune(0x121)
+	} else if val >= 0x80 {
+		return rune(0x100 + val - 0x80 + 0x22)
+	}
+
+	// Printable ASCII (0x21 - 0x7E) remains as is
+	return rune(val)
+}
+
 // decodeGPT2Bytes converts GPT-2/SmolLM2 style byte-encoded characters back to normal text
 // GPT-2 uses a byte-to-unicode mapping where printable ASCII is shifted to avoid special chars
 func decodeGPT2Bytes(text string) string {
@@ -361,27 +421,27 @@ func gpt2ByteDecode(r rune) rune {
 	// GPT-2 uses a specific mapping to avoid control characters
 	// Characters 0x21-0x7E and 0xA1-0xAC and 0xAE-0xFF are kept as-is (printable)
 	// Others are shifted to Unicode range starting at 0x100
-	
+
 	// Common mappings for SmolLM2/GPT-2:
 	// Ġ (U+0120 = 288) -> space (0x20 = 32)
 	// Ċ (U+010A = 266) -> newline (0x0A = 10)
 	// ĉ (U+0109 = 265) -> tab (0x09 = 9)
 	// Ď (U+010E = 270) -> carriage return (0x0D = 13)
-	
+
 	// The pattern: for bytes 0-255 that aren't printable ASCII,
 	// GPT-2 maps them to 0x100 + offset
-	
+
 	if r >= 0x100 && r <= 0x1FF {
 		// This is an encoded byte - decode it
 		// The offset depends on which "gap" in the printable range we're filling
 		offset := int(r) - 0x100
-		
+
 		// Reconstruct the original byte
 		// Bytes 0x00-0x20 (control chars + space) -> 0x100-0x120
-		// Byte 0x7F (DEL) -> 0x121  
+		// Byte 0x7F (DEL) -> 0x121
 		// Bytes 0x80-0xA0 -> 0x122-0x142
 		// etc.
-		
+
 		if offset <= 0x20 {
 			return rune(offset)
 		} else if offset == 0x21 {
@@ -390,7 +450,7 @@ func gpt2ByteDecode(r rune) rune {
 			return rune(0x80 + (offset - 0x22))
 		}
 	}
-	
+
 	// Keep printable ASCII and already-decoded chars as-is
 	return r
 }

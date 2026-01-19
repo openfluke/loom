@@ -5,13 +5,28 @@ C Foreign Function Interface (FFI) for LOOM. Use LOOM transformers and neural ne
 **Features:**
 
 - ✅ **Simple API**: New streamlined functions - `CreateLoomNetwork`, `LoomForward`, `LoomTrain`, `LoomSaveModel`, `LoomLoadModel`, `LoomEvaluateNetwork`
-- ✅ **8 Layer Types (All CPU)**: Dense, Conv2D, Multi-Head Attention, LayerNorm, RNN, LSTM, Softmax (10 variants), Parallel (4 combine modes)
+- ✅ **13 Layer Types**: Dense, Conv1D, Conv2D, Multi-Head Attention, LayerNorm, RMSNorm, RNN, LSTM, SwiGLU, KMeans, Softmax (10 variants), Parallel, Sequential
 - ✅ **Full CPU Implementation**: Every layer works with complete forward/backward passes - tested and reliable!
 - ✅ **Transformer Inference**: Run LLMs with streaming generation
 - ✅ **Cross-Platform Consistency**: Same API as Python, TypeScript, C#, WASM
 - 🌐 **Universal FFI**: Works from any language (Python, C#, Rust, C++, Node.js, etc.)
 - 📦 **Cross-Platform**: Linux, macOS, Windows, Android, iOS
 - ⚠️ **GPU Note**: GPU/WebGPU code exists but is untested; all demos use reliable CPU execution
+
+## ✅ Test Coverage (2298 tests)
+
+The C ABI is validated by `universal_test.c` which runs **2298 tests** covering:
+
+| Section | Tests | Description |
+|---------|------:|-------------|
+| Core Features | 7 | Forward/backward, introspection, grafting |
+| Serialization | 2100 | All layers × 15 dtypes + parallel permutations |
+| Advanced Math | 11 | Optimizers, activations, schedulers |
+| GPU Determinism | 15 | CPU/GPU parity verification |
+| GPU Training | 21 | Backward pass verification |
+| In-Memory/WASM | 144 | SafeTensors without filesystem |
+
+Run tests: `cd cabi && ./run_tests.sh`
 
 ## 🎉 NEW: Simple API
 

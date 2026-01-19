@@ -1,6 +1,8 @@
 package nn
 
 import (
+	"time"
+
 	"github.com/openfluke/webgpu/wgpu"
 )
 
@@ -8,16 +10,16 @@ import (
 type DType int
 
 const (
-	DTypeFloat32 DType = 0 // Standard 32-bit float (default)
-	DTypeFloat64 DType = 1 // 64-bit float (high precision)
-	DTypeFloat16 DType = 2 // 16-bit float storage (computation upcasts to F32)
-	DTypeInt8    DType = 3 // 8-bit int (quantized, requires scale factor)
-	DTypeInt16   DType = 4 // 16-bit int
-	DTypeInt32   DType = 5 // 32-bit int
-	DTypeInt64   DType = 6 // 64-bit int
-	DTypeUint8   DType = 7 // 8-bit unsigned int
-	DTypeUint16  DType = 8 // 16-bit unsigned int
-	DTypeUint32  DType = 9 // 32-bit unsigned int
+	DTypeFloat32 DType = 0  // Standard 32-bit float (default)
+	DTypeFloat64 DType = 1  // 64-bit float (high precision)
+	DTypeFloat16 DType = 2  // 16-bit float storage (computation upcasts to F32)
+	DTypeInt8    DType = 3  // 8-bit int (quantized, requires scale factor)
+	DTypeInt16   DType = 4  // 16-bit int
+	DTypeInt32   DType = 5  // 32-bit int
+	DTypeInt64   DType = 6  // 64-bit int
+	DTypeUint8   DType = 7  // 8-bit unsigned int
+	DTypeUint16  DType = 8  // 16-bit unsigned int
+	DTypeUint32  DType = 9  // 32-bit unsigned int
 	DTypeUint64  DType = 10 // 64-bit unsigned int
 )
 
@@ -202,6 +204,7 @@ const (
 	LayerEmbedding          LayerType = 11 // Embedding lookup table (token/position -> vector)
 	LayerConv1D             LayerType = 12 // 1D Convolutional layer (for audio/sequence data)
 	LayerSequential         LayerType = 13 // Sequential layer (runs multiple sub-layers in sequence)
+	LayerKMeans             LayerType = 14 // Learnable K-Means clustering with attached sub-network
 )
 
 // SoftmaxType defines the variant of softmax to use
@@ -254,6 +257,7 @@ type LayerConfig struct {
 	KBias        []float32 // Key bias [dModel or smaller for GQA]
 	VBias        []float32 // Value bias [dModel or smaller for GQA]
 	OutputBias   []float32 // Output bias [dModel]
+	RoPEFreqBase float32   // Base frequency for RoPE (default 10000.0)
 
 	// RNN/LSTM specific parameters
 	HiddenSize   int       // Hidden state size
@@ -314,13 +318,13 @@ type LayerConfig struct {
 	EmbeddingWeights []float32 // Embedding lookup table [VocabSize * EmbeddingDim]
 
 	// Conv1D specific parameters (for audio/sequence data)
-	Conv1DFilters     int       // Number of output filters
-	Conv1DKernelSize  int       // Size of 1D kernel
-	Conv1DStride      int       // Stride for convolution
-	Conv1DPadding     int       // Padding for convolution
-	Conv1DKernel      []float32 // Kernel weights [filters][inChannels][kernelSize]
-	Conv1DBias        []float32 // Bias terms [filters]
-	Conv1DInChannels  int       // Input channels
+	Conv1DFilters    int       // Number of output filters
+	Conv1DKernelSize int       // Size of 1D kernel
+	Conv1DStride     int       // Stride for convolution
+	Conv1DPadding    int       // Padding for convolution
+	Conv1DKernel     []float32 // Kernel weights [filters][inChannels][kernelSize]
+	Conv1DBias       []float32 // Bias terms [filters]
+	Conv1DInChannels int       // Input channels
 
 	// Parallel layer specific parameters
 	ParallelBranches []LayerConfig  // Sub-layers to run in parallel
@@ -334,6 +338,18 @@ type LayerConfig struct {
 	FilterGateConfig  *LayerConfig // Gate layer to compute routing weights (Dense, MHA, etc.)
 	FilterSoftmax     SoftmaxType  // Softmax variant for gating (default: SoftmaxStandard)
 	FilterTemperature float32      // Temperature for softmax (lower = sharper selection)
+
+	// KMeans layer specific parameters (learnable clustering)
+	NumClusters        int          // Number of clusters (K)
+	ClusterCenters     []float32    // Learnable cluster centers [NumClusters * ClusterDim]
+	ClusterGradients   []float32    // Gradients for cluster centers (same size as ClusterCenters)
+	ClusterDim         int          // Dimension of each cluster center
+	AttachedLayer      *LayerConfig // Sub-network for feature transformation before clustering
+	DistanceMetric     string       // Distance metric: "euclidean", "cosine", "manhattan"
+	KMeansTemperature  float32      // Temperature for soft assignments (default 1.0)
+	KMeansOutputMode   string       // Output mode: "probabilities" (K values) or "features" (ClusterDim values)
+	KMeansLearningRate float32      // Learning rate for cluster center updates (default 0.01)
+	KMeansUpdateCount  int          // Count of forward passes (for diagnostics)
 
 	// Observer for debugging/recording (nil = no observation)
 	Observer LayerObserver
@@ -349,6 +365,16 @@ type LayerConfig struct {
 
 	// Training control
 	Frozen bool // If true, weights in this layer will not be updated during training
+
+	// Transient state (for sub-layers like AttachedLayer in KMeans)
+	PreActivations []float32 // Stored pre-activations for backpropagation
+
+	// Sub-network support (Network-in-Network)
+	SubNetwork interface { // Interface to avoid circular type dependency if Network is defined elsewhere
+		ForwardCPU(input []float32) ([]float32, time.Duration)
+		BackwardCPU(gradOutput []float32) ([]float32, time.Duration)
+		ApplyGradients(learningRate float32)
+	}
 }
 
 // GridPosition specifies where a parallel branch output should be placed in the grid
@@ -410,6 +436,21 @@ type Network struct {
 	BatchSize     int // Batch size for Conv2D layers
 	deviceInfo    *GPUDeviceInfo
 
+	// GPU acceleration (new integration)
+	GPU           bool        // Enable GPU mode for forward/backward
+	gpuLayers     interface{} // []gpu.GPULayer (interface{} to avoid import cycle)
+	gpuCtx        interface{} // *gpu.Context (interface{} to avoid import cycle)
+	gpuMounted    bool        // True if weights are currently on GPU
+	gpuOutputSize int         // Size of final layer output for GPU
+
+	// Cached gradient application pipeline (created once, reused many times)
+	gpuGradPipeline *wgpu.ComputePipeline
+	gpuGradParams   *wgpu.Buffer // Uniform buffer for learning rate
+
+	// Residual support
+	gpuResidualAdder  interface{} // *gpu.InPlaceResidual
+	gpuResidualBuffer *wgpu.Buffer
+
 	// Layer configuration for each position in the grid
 	// Indexed by flattened position: row*GridCols*LayersPerCell + col*LayersPerCell + layer
 	Layers []LayerConfig
@@ -445,6 +486,14 @@ type GPUDeviceInfo struct {
 	forwardBGLs       []*wgpu.BindGroupLayout
 	backwardPipelines []*wgpu.ComputePipeline
 	backwardBGLs      []*wgpu.BindGroupLayout
+
+	// Cached persistent buffers for BackwardGPU to avoid reallocation per-step
+	backwardGradBufA    *wgpu.Buffer
+	backwardGradBufB    *wgpu.Buffer
+	backwardPreActBufs  []*wgpu.Buffer
+	backwardBindGroups  []*wgpu.BindGroup // Cached per-layer bind groups
+	backwardReadbackBuf *wgpu.Buffer      // Cached readback buffer
+	backwardCachedSize  int               // To detect if resizing is needed
 }
 
 // NewNetwork creates a new grid neural network with dense layers
@@ -570,6 +619,36 @@ func (n *Network) ReleaseGPU() {
 				}
 			}
 			n.deviceInfo.backwardBGLs = nil
+		}
+
+		// Cleanup backward persistent resources
+		if n.deviceInfo.backwardGradBufA != nil {
+			n.deviceInfo.backwardGradBufA.Release()
+			n.deviceInfo.backwardGradBufA = nil
+		}
+		if n.deviceInfo.backwardGradBufB != nil {
+			n.deviceInfo.backwardGradBufB.Release()
+			n.deviceInfo.backwardGradBufB = nil
+		}
+		if n.deviceInfo.backwardPreActBufs != nil {
+			for _, buf := range n.deviceInfo.backwardPreActBufs {
+				if buf != nil {
+					buf.Release()
+				}
+			}
+			n.deviceInfo.backwardPreActBufs = nil
+		}
+		if n.deviceInfo.backwardBindGroups != nil {
+			for _, bg := range n.deviceInfo.backwardBindGroups {
+				if bg != nil {
+					bg.Release()
+				}
+			}
+			n.deviceInfo.backwardBindGroups = nil
+		}
+		if n.deviceInfo.backwardReadbackBuf != nil {
+			n.deviceInfo.backwardReadbackBuf.Release()
+			n.deviceInfo.backwardReadbackBuf = nil
 		}
 
 		if n.deviceInfo.release != nil {

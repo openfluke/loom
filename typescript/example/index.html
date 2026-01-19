@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loom Universal Test Suite (Browser)</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            padding: 20px;
+            background: #111;
+            color: #eee;
+        }
+
+        h1 {
+            color: #4af;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            max-width: 800px;
+            margin-top: 20px;
+            background: #222;
+        }
+
+        th,
+        td {
+            border: 1px solid #444;
+            padding: 10px;
+            text-align: left;
+        }
+
+        th {
+            background: #333;
+        }
+
+        .log-container {
+            background: #000;
+            color: #0f0;
+            padding: 15px;
+            font-family: monospace;
+            height: 300px;
+            overflow-y: scroll;
+            margin-bottom: 20px;
+            border: 1px solid #333;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Loom Universal Test Suite</h1>
+    <p>Running verification tests in browser...</p>
+
+    <div id="logs" class="log-container">Initializing...</div>
+
+    <script>
+        // Redirect console to div
+        const logDiv = document.getElementById('logs');
+        const originalLog = console.log;
+        const originalError = console.error;
+
+        function appendLog(msg, color) {
+            const el = document.createElement('div');
+            el.textContent = msg;
+            if (color) el.style.color = color;
+            logDiv.appendChild(el);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        console.log = function (...args) {
+            appendLog(args.join(' '));
+            originalLog.apply(console, args);
+        };
+        console.error = function (...args) {
+            appendLog(args.join(' '), 'red');
+            originalError.apply(console, args);
+        };
+    </script>
+
+    <script type="module" src="./universal_test_browser.js"></script>
+</body>
+
+</html>

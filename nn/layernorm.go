@@ -121,19 +121,19 @@ func LayerNormBackward[T Numeric](input, residual, gradOutput, gamma, beta *Tens
 		for i := start; i < end; i++ {
 			idx := i
 			localIdx := i - start
-			
+
 			dL_dy := float64(gradOutput.Data[idx])
-			
+
 			// Beta gradient
 			gradBeta.Data[localIdx] += T(dL_dy)
-			
+
 			// x_hat calculation
 			val := float64(inputWithResidual.Data[idx])
 			x_hat := (val - mean) * invStd
-			
+
 			// Gamma gradient
 			gradGamma.Data[localIdx] += T(dL_dy * x_hat)
-			
+
 			// Propagate through gamma scaling
 			g := 1.0
 			if gamma != nil && len(gamma.Data) > localIdx {
@@ -145,44 +145,44 @@ func LayerNormBackward[T Numeric](input, residual, gradOutput, gamma, beta *Tens
 			gradSigma += d_xhat * (val - mean)
 			gradMu += d_xhat
 		}
-		
-		gradSigma *= -0.5 * math.Pow(variance + epsilon, -1.5)
-		gradMu = gradMu * (-invStd) + gradSigma * (-2.0 / float64(normSize)) * 0 // Wait, gradSigma term for mu is complex
-		
+
+		gradSigma *= -0.5 * math.Pow(variance+epsilon, -1.5)
+		gradMu = gradMu*(-invStd) + gradSigma*(-2.0/float64(normSize))*0 // Wait, gradSigma term for mu is complex
+
 		// Correct derivation for backprop through LayerNorm:
 		// dL/dx_i = (1/sigma) * (dL/dxhat_i - mean(dL/dxhat) - xhat_i * mean(dL/dxhat * xhat))
 		// Re-loop to apply
-		
+
 		var sum_dxhat float64
 		var sum_dxhat_xhat float64
-		
+
 		for i := start; i < end; i++ {
 			idx := i
 			localIdx := i - start
-			
+
 			dL_dy := float64(gradOutput.Data[idx])
 			g := 1.0
 			if gamma != nil && len(gamma.Data) > localIdx {
 				g = float64(gamma.Data[localIdx])
 			}
 			d_xhat := dL_dy * g
-			
+
 			val := float64(inputWithResidual.Data[idx])
 			x_hat := (val - mean) * invStd
-			
+
 			sum_dxhat += d_xhat
 			sum_dxhat_xhat += d_xhat * x_hat
 		}
-		
+
 		mean_dxhat := sum_dxhat / float64(normSize)
 		mean_dxhat_xhat := sum_dxhat_xhat / float64(normSize)
-		
+
 		for i := start; i < end; i++ {
 			idx := i
-			
+
 			val := float64(inputWithResidual.Data[idx])
 			x_hat := (val - mean) * invStd
-			
+
 			dL_dy := float64(gradOutput.Data[idx])
 			g := 1.0
 			localIdx := i - start
@@ -190,8 +190,8 @@ func LayerNormBackward[T Numeric](input, residual, gradOutput, gamma, beta *Tens
 				g = float64(gamma.Data[localIdx])
 			}
 			d_xhat := dL_dy * g
-			
-			dx := invStd * (d_xhat - mean_dxhat - x_hat * mean_dxhat_xhat)
+
+			dx := invStd * (d_xhat - mean_dxhat - x_hat*mean_dxhat_xhat)
 			gradInput.Data[idx] = T(dx)
 		}
 	}
@@ -220,4 +220,35 @@ func layerNormForwardCPU(input []float32, residual []float32, config *LayerConfi
 
 	result := LayerNormForward(inputT, residualT, gammaT, betaT, config.NormSize, batchSize, float64(config.Epsilon))
 	return result.Data
+}
+
+// layerNormBackwardCPU computes gradients for Layer normalization on CPU
+func layerNormBackwardCPU(input, residual, gradOutput []float32, config *LayerConfig, batchSize int) ([]float32, []float32, []float32) {
+	inputT := NewTensorFromSlice(input, len(input))
+	var residualT *Tensor[float32]
+	if len(residual) > 0 {
+		residualT = NewTensorFromSlice(residual, len(residual))
+	}
+	gradOutputT := NewTensorFromSlice(gradOutput, len(gradOutput))
+
+	var gammaT, betaT *Tensor[float32]
+	if len(config.Gamma) > 0 {
+		gammaT = NewTensorFromSlice(config.Gamma, len(config.Gamma))
+	}
+	if len(config.Beta) > 0 {
+		betaT = NewTensorFromSlice(config.Beta, len(config.Beta))
+	}
+
+	gInput, gGamma, gBeta := LayerNormBackward(inputT, residualT, gradOutputT, gammaT, betaT, config.NormSize, batchSize, float64(config.Epsilon))
+
+	// Handle nil returns if gamma/beta missing
+	var gGammaData, gBetaData []float32
+	if gGamma != nil {
+		gGammaData = gGamma.Data
+	}
+	if gBeta != nil {
+		gBetaData = gBeta.Data
+	}
+
+	return gInput.Data, gGammaData, gBetaData
 }

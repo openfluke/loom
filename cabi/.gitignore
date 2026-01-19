@@ -15,3 +15,4 @@ simple_bench.exe
 # macOS specific
 *.dSYM/
 test_optimizers
+universal_test

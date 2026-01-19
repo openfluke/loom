@@ -5,6 +5,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/openfluke/loom/gpu"
 	"github.com/openfluke/webgpu/wgpu"
 )
 
@@ -35,14 +36,14 @@ func GenericBackwardPass[T Numeric](
 	// Gradients for activations [0...totalLayers]
 	// grads[i] is gradient w.r.t. activations[i] (output of layer i-1, input to layer i)
 	grads := make([]*Tensor[T], totalLayers+1)
-	
+
 	// Initialize output gradient
 	grads[totalLayers] = gradOutput.Clone()
-	
+
 	// Storage for weight gradients
 	kernelGrads := make([]any, totalLayers)
 	biasGrads := make([]any, totalLayers)
-	
+
 	// Backpropagate through grid in reverse order
 	for layerIdx := totalLayers - 1; layerIdx >= 0; layerIdx-- {
 		// Calculate grid position for this layer
@@ -52,12 +53,12 @@ func GenericBackwardPass[T Numeric](
 		layer := remainder % n.LayersPerCell
 
 		config := n.GetLayer(row, col, layer)
-		
+
 		// Inputs and Context
 		input := activations[layerIdx] // Input to this layer
 		context := backwardContext[layerIdx]
 		gradOut := grads[layerIdx+1] // Gradient w.r.t. output of this layer
-		
+
 		if gradOut == nil {
 			// Should not happen if graph is connected
 			gradOut = NewTensor[T](len(input.Data)) // Zero gradient
@@ -76,11 +77,11 @@ func GenericBackwardPass[T Numeric](
 			preAct, ok := context.(*Tensor[T])
 			if !ok {
 				// Fallback if context missing
-				preAct = NewTensor[T](len(gradOut.Data)) 
+				preAct = NewTensor[T](len(gradOut.Data))
 			}
-			
+
 			gInput, gWeights, gBias := DenseBackward(gradOut, input, preAct, weights, config.InputHeight, config.OutputHeight, n.BatchSize, config.Activation)
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gWeights
 			biasGrads[layerIdx] = gBias
@@ -88,12 +89,12 @@ func GenericBackwardPass[T Numeric](
 		case LayerConv2D:
 			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
 			preAct, _ := context.(*Tensor[T])
-			
+
 			gInput, gKernel, gBias := Conv2DBackward(gradOut, input, preAct, weights,
 				config.InputHeight, config.InputWidth, config.InputChannels,
 				config.KernelSize, config.Stride, config.Padding, config.Filters,
 				config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
-				
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gKernel
 			biasGrads[layerIdx] = gBias
@@ -103,9 +104,9 @@ func GenericBackwardPass[T Numeric](
 			wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
 			wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
 			hiddenStates, _ := context.(*Tensor[T])
-			
+
 			gInput, gWIH, gWHH, gBiasH := RNNBackward(gradOut, input, hiddenStates, wIH, wHH, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			// Return slice of weight grads
 			kernelGrads[layerIdx] = []*Tensor[T]{gWIH, gWHH}
@@ -128,13 +129,13 @@ func GenericBackwardPass[T Numeric](
 				WeightHH_o: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH_o, len(config.WeightHH_o))),
 				BiasH_o:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.BiasH_o, len(config.BiasH_o))),
 			}
-			
+
 			gInput, gWeights := LSTMBackward(gradOut, input, states, weights, n.BatchSize, config.SeqLength, config.RNNInputSize, config.HiddenSize)
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			// Return all weight grads map
 			kernelGrads[layerIdx] = gWeights // Map
-			biasGrads[layerIdx] = nil // Biases inside map
+			biasGrads[layerIdx] = nil        // Biases inside map
 
 		case LayerSoftmax:
 			// SoftmaxBackward
@@ -150,9 +151,9 @@ func GenericBackwardPass[T Numeric](
 			// Signature: (input, residual, gradOutput, gamma, beta, normSize, batchSize, epsilon)
 			gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
 			beta := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Beta, len(config.Beta)))
-			
+
 			gInput, gGamma, gBeta := LayerNormBackward(input, nil, gradOut, gamma, beta, config.NormSize, n.BatchSize, float64(config.Epsilon))
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gGamma
 			biasGrads[layerIdx] = gBeta
@@ -162,7 +163,7 @@ func GenericBackwardPass[T Numeric](
 			// Signature: (input, residual, gradOutput, gamma, normSize, batchSize, epsilon)
 			gamma := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Gamma, len(config.Gamma)))
 			gInput, gGamma := RMSNormBackward(input, nil, gradOut, gamma, config.NormSize, n.BatchSize, float64(config.Epsilon))
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gGamma
 			biasGrads[layerIdx] = nil
@@ -172,15 +173,15 @@ func GenericBackwardPass[T Numeric](
 			gateW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateWeights, len(config.GateWeights)))
 			upW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpWeights, len(config.UpWeights)))
 			downW := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownWeights, len(config.DownWeights)))
-			
+
 			gInput, gGateW, gUpW, gDownW, gGateB, gUpB, gDownB := SwiGLUBackward(
-				gradOut, input, 
-				gateW, upW, downW, 
+				gradOut, input,
+				gateW, upW, downW,
 				ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.GateBias, len(config.GateBias))),
 				ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.UpBias, len(config.UpBias))),
 				ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.DownBias, len(config.DownBias))),
 				config.InputHeight, config.OutputHeight, n.BatchSize)
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = []*Tensor[T]{gGateW, gUpW, gDownW}
 			biasGrads[layerIdx] = []*Tensor[T]{gGateB, gUpB, gDownB}
@@ -188,18 +189,18 @@ func GenericBackwardPass[T Numeric](
 		case LayerMultiHeadAttention:
 			// MultiHeadAttentionBackward
 			weights := &AttentionWeights[T]{
-				QWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
-				QBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
-				KWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
-				KBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
-				VWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
-				VBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
+				QWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
+				QBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
+				KWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
+				KBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
+				VWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
+				VBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
 				OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputWeight, len(config.OutputWeight))),
 				OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputBias, len(config.OutputBias))),
-				DModel: config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
+				DModel:       config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
 			}
 			gInput, gWeights := MultiHeadAttentionBackward(gradOut, input, weights)
-			
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gWeights // Struct
 			biasGrads[layerIdx] = nil
@@ -208,9 +209,12 @@ func GenericBackwardPass[T Numeric](
 			// ResidualBackward
 			gInput, gSkip := ResidualBackward(gradOut)
 			accumulateGradient(grads, layerIdx, gInput)
-			// Apply skip gradient to previous layer
+			// Apply skip gradient to previous layer if dimensions match
 			if layerIdx > 0 {
-				accumulateGradient(grads, layerIdx-1, gSkip)
+				prevInput := activations[layerIdx-1]
+				if prevInput != nil && len(prevInput.Data) == len(input.Data) {
+					accumulateGradient(grads, layerIdx-1, gSkip)
+				}
 			}
 			kernelGrads[layerIdx] = nil
 			biasGrads[layerIdx] = nil
@@ -218,13 +222,13 @@ func GenericBackwardPass[T Numeric](
 		case LayerParallel:
 			// ParallelBackward
 			branchIntermediates, _ := context.([]*Tensor[T])
-			
+
 			// Convert config.ParallelBranches ([]LayerConfig) to []*LayerConfig
 			branches := make([]*LayerConfig, len(config.ParallelBranches))
 			for i := range config.ParallelBranches {
 				branches[i] = &config.ParallelBranches[i]
 			}
-			
+
 			gInput, _ := ParallelBackward(gradOut, input, branches, branchIntermediates, config.CombineMode)
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = nil
@@ -236,7 +240,7 @@ func GenericBackwardPass[T Numeric](
 			// Input has shape [seqLen] (token IDs)
 			// gradOut has shape [seqLen, embeddingDim]
 			gWeights := EmbeddingBackward(gradOut, input, config.VocabSize, config.EmbeddingDim)
-			
+
 			// No gradient w.r.t. input (discrete tokens)
 			accumulateGradient(grads, layerIdx, nil)
 			kernelGrads[layerIdx] = gWeights
@@ -244,19 +248,19 @@ func GenericBackwardPass[T Numeric](
 
 		case LayerConv1D:
 			// Conv1DBackward
-			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel)))
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Kernel, len(config.Kernel)))
 			preAct, _ := context.(*Tensor[T])
-			
-			seqLen := config.InputHeight 
+
+			seqLen := config.InputHeight
 			if seqLen <= 0 {
 				seqLen = len(input.Data) / (config.Conv1DInChannels * n.BatchSize)
 			}
-			
+
 			gInput, gKernel, gBias := Conv1DBackward(gradOut, input, preAct, weights,
 				seqLen, config.Conv1DInChannels,
 				config.Conv1DKernelSize, config.Conv1DStride, config.Conv1DPadding,
 				config.Conv1DFilters, n.BatchSize, config.Activation)
-				
+
 			accumulateGradient(grads, layerIdx, gInput)
 			kernelGrads[layerIdx] = gKernel
 			biasGrads[layerIdx] = gBias
@@ -271,7 +275,9 @@ func GenericBackwardPass[T Numeric](
 }
 
 func accumulateGradient[T Numeric](grads []*Tensor[T], index int, g *Tensor[T]) {
-	if g == nil { return }
+	if g == nil {
+		return
+	}
 	if grads[index] == nil {
 		grads[index] = g.Clone()
 	} else {
@@ -282,10 +288,26 @@ func accumulateGradient[T Numeric](grads []*Tensor[T], index int, g *Tensor[T]) 
 	}
 }
 
+// Backward computes gradients via backpropagation, automatically selecting GPU or CPU backend
+func (n *Network) Backward(gradOutput []float32) ([]float32, time.Duration) {
+	// GPU auto-routing: if GPU mode is enabled and weights are mounted, use GPU
+	if n.GPU && n.gpuMounted {
+		start := time.Now()
+		output, err := n.backwardGPU(gradOutput)
+		if err == nil {
+			return output, time.Since(start)
+		}
+		// Fall back to CPU on GPU error
+		fmt.Printf("⚠️ GPU Backward failed, falling back to CPU: %v\n", err)
+	}
+	return n.BackwardCPU(gradOutput)
+}
+
 // BackwardCPU computes gradients via backpropagation on CPU through the grid
 // gradOutput: gradient flowing back from the loss (same size as network output)
 // Returns: gradient with respect to the input
 func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
+
 	start := time.Now()
 
 	if len(n.activations) == 0 || len(n.activations[0]) == 0 {
@@ -457,7 +479,7 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 		} else if config.Type == LayerConv1D {
 			// Conv1DBackward
 			input := n.activations[layerIdx]
-			
+
 			gradInput, gradKernel, gradBias := conv1DBackwardCPU(grad, input, preAct, config, n.BatchSize)
 
 			// Store gradients
@@ -510,6 +532,68 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 				}
 				grad = gradInput
 			}
+		} else if config.Type == LayerNorm {
+			// LayerNorm backward
+			input := n.activations[layerIdx]
+			// residual? Not stored in activations usually, unless residual layer.
+			// For standalone LayerNorm, residual is nil.
+
+			gradInput, gradGamma, gradBeta := layerNormBackwardCPU(input, nil, grad, config, n.BatchSize)
+
+			n.kernelGradients[layerIdx] = gradGamma
+			n.biasGradients[layerIdx] = gradBeta
+
+			grad = gradInput
+		} else if config.Type == LayerKMeans {
+			// K-Means layer backward
+			input := n.activations[layerIdx]
+			features := n.preActivations[layerIdx] // Features from attached layer
+
+			// Recompute assignments for gradient computation
+			assignments := make([]float32, config.NumClusters)
+			if len(features) > 0 && len(config.ClusterCenters) > 0 {
+				// Compute distances to each cluster center
+				distances := make([]float32, config.NumClusters)
+				for k := 0; k < config.NumClusters; k++ {
+					centerOffset := k * config.ClusterDim
+					switch config.DistanceMetric {
+					case "cosine":
+						distances[k] = cosineDistance(features, config.ClusterCenters[centerOffset:centerOffset+config.ClusterDim])
+					case "manhattan":
+						distances[k] = manhattanDistance(features, config.ClusterCenters[centerOffset:centerOffset+config.ClusterDim])
+					default: // "euclidean"
+						distances[k] = euclideanDistance(features, config.ClusterCenters[centerOffset:centerOffset+config.ClusterDim])
+					}
+				}
+
+				// Convert to soft assignments
+				temp := config.KMeansTemperature
+				if temp == 0 {
+					temp = 1.0
+				}
+				for i := range distances {
+					distances[i] = -distances[i] / temp
+				}
+				assignments = softmaxSimple(distances)
+			}
+
+			// Learning rate for cluster center updates
+			learningRate := config.KMeansLearningRate
+			if learningRate == 0 {
+				learningRate = 0.01
+			}
+
+			gradInput, err := BackwardKMeansCPU(grad, config, input, features, assignments, learningRate)
+			if err != nil {
+				fmt.Printf("KMeans backward error: %v\n", err)
+				gradInput = make([]float32, len(input))
+			}
+
+			// No kernel/bias gradients for KMeans (centers updated in-place during backward)
+			n.kernelGradients[layerIdx] = nil
+			n.biasGradients[layerIdx] = nil
+
+			grad = gradInput
 		} else {
 		}
 
@@ -532,32 +616,6 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 
 	if len(n.preActivations) == 0 {
 		return nil, 0, fmt.Errorf("no forward pass data available for backward pass")
-	}
-
-	// Check for specialized layer types and use dedicated GPU paths
-	hasConv2D := false
-	hasMHA := false
-	for i := 0; i < n.TotalLayers(); i++ {
-		row := i / (n.GridCols * n.LayersPerCell)
-		remainder := i % (n.GridCols * n.LayersPerCell)
-		col := remainder / n.LayersPerCell
-		layer := remainder % n.LayersPerCell
-
-		config := n.GetLayer(row, col, layer)
-		if config.Type == LayerConv2D {
-			hasConv2D = true
-		}
-		if config.Type == LayerMultiHeadAttention {
-			hasMHA = true
-		}
-	}
-
-	if hasConv2D {
-		return n.backwardGPUConv2D(gradOutput)
-	}
-
-	if hasMHA {
-		return n.backwardGPUMultiHeadAttention(gradOutput)
 	}
 
 	start := time.Now()
@@ -646,67 +704,106 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 		bgls = n.deviceInfo.backwardBGLs
 	}
 
-	// Create buffers for gradient computation
-	bufGradA, err := dev.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: "nn_bwd_grad_A",
-		Size:  bytes,
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	defer bufGradA.Release()
+	// Create or reuse buffers for gradient computation
+	if n.deviceInfo.backwardGradBufA == nil || n.deviceInfo.backwardCachedSize != N {
+		// specific cleanup if resizing
+		if n.deviceInfo.backwardGradBufA != nil {
+			n.deviceInfo.backwardGradBufA.Release()
+			n.deviceInfo.backwardGradBufB.Release()
+			for _, bg := range n.deviceInfo.backwardBindGroups {
+				if bg != nil {
+					bg.Release()
+				}
+			}
+			n.deviceInfo.backwardBindGroups = nil
+		}
 
-	bufGradB, err := dev.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: "nn_bwd_grad_B",
-		Size:  bytes,
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	defer bufGradB.Release()
-
-	// Create buffers for pre-activations
-	preActBuffers := make([]*wgpu.Buffer, totalLayers)
-	for i := 0; i < totalLayers; i++ {
-		buf, err := dev.CreateBuffer(&wgpu.BufferDescriptor{
-			Label: fmt.Sprintf("nn_bwd_preact_%d", i),
+		var err error
+		n.deviceInfo.backwardGradBufA, err = dev.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: "nn_bwd_grad_A",
 			Size:  bytes,
-			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
 		if err != nil {
-			for j := 0; j < i; j++ {
-				preActBuffers[j].Release()
-			}
 			return nil, 0, err
 		}
-		preActBuffers[i] = buf
 
-		// Upload pre-activation data from CPU
-		preActData := n.preActivations[i]
-		q.WriteBuffer(buf, 0, unsafe.Slice((*byte)(unsafe.Pointer(&preActData[0])), int(bytes)))
-	}
-
-	defer func() {
-		for _, buf := range preActBuffers {
-			buf.Release()
+		n.deviceInfo.backwardGradBufB, err = dev.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: "nn_bwd_grad_B",
+			Size:  bytes,
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return nil, 0, err
 		}
-	}()
 
-	readback, err := dev.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: "nn_bwd_RB",
-		Size:  bytes,
-		Usage: wgpu.BufferUsageCopyDst | wgpu.BufferUsageMapRead,
-	})
-	if err != nil {
-		return nil, 0, err
+		n.deviceInfo.backwardCachedSize = N
 	}
-	defer readback.Release()
+
+	bufGradA := n.deviceInfo.backwardGradBufA
+	bufGradB := n.deviceInfo.backwardGradBufB
+
+	// Create or reuse buffers for pre-activations
+	if n.deviceInfo.backwardPreActBufs == nil || len(n.deviceInfo.backwardPreActBufs) != totalLayers {
+		// cleanup old
+		for _, buf := range n.deviceInfo.backwardPreActBufs {
+			if buf != nil {
+				buf.Release()
+			}
+		}
+
+		n.deviceInfo.backwardPreActBufs = make([]*wgpu.Buffer, totalLayers)
+		for i := 0; i < totalLayers; i++ {
+			buf, err := dev.CreateBuffer(&wgpu.BufferDescriptor{
+				Label: fmt.Sprintf("nn_bwd_preact_%d", i),
+				Size:  bytes, // Assuming same size for all layers for now (dense/uniform)
+				Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
+			})
+			if err != nil {
+				return nil, 0, err
+			}
+			n.deviceInfo.backwardPreActBufs[i] = buf
+		}
+	}
+
+	// Upload pre-activation data from CPU to cached buffers
+	for i := 0; i < totalLayers; i++ {
+		preActData := n.preActivations[i]
+		// Determine size to copy - careful not to overflow if layer sizes differ
+		copySize := int(bytes)
+		if len(preActData)*4 < copySize {
+			copySize = len(preActData) * 4
+		}
+		q.WriteBuffer(n.deviceInfo.backwardPreActBufs[i], 0, unsafe.Slice((*byte)(unsafe.Pointer(&preActData[0])), copySize))
+	}
 
 	// Write initial gradient
 	q.WriteBuffer(bufGradA, 0, unsafe.Slice((*byte)(unsafe.Pointer(&gradOutput[0])), int(bytes)))
-	pollDevice(dev, 100)
+
+	// Create or reuse readback buffer (now AFTER other buffers are prepped)
+	if n.deviceInfo.backwardReadbackBuf == nil || n.deviceInfo.backwardCachedSize != N {
+		if n.deviceInfo.backwardReadbackBuf != nil {
+			n.deviceInfo.backwardReadbackBuf.Release()
+		}
+
+		var err error
+		n.deviceInfo.backwardReadbackBuf, err = dev.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: "nn_bwd_RB",
+			Size:  bytes,
+			Usage: wgpu.BufferUsageCopyDst | wgpu.BufferUsageMapRead,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	readback := n.deviceInfo.backwardReadbackBuf
+
+	// Write initial gradient
+	q.WriteBuffer(bufGradA, 0, unsafe.Slice((*byte)(unsafe.Pointer(&gradOutput[0])), int(bytes)))
+
+	// Note: We skip ReadBack buffer creation as it wasn't being used in the loop logic shown previously
+	// and we return nil at the end of this function anyway in the current stub.
+	// If needed, we'd cache it too.
 
 	gx := uint32((N + int(wgx) - 1) / int(wgx))
 	if gx == 0 {
@@ -721,8 +818,10 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 		return nil, 0, fmt.Errorf("create encoder: %w", err)
 	}
 
-	// Track bind groups to release after submission
-	bindGroupsToRelease := make([]*wgpu.BindGroup, 0, totalLayers)
+	// Initialize bind group cache if needed
+	if n.deviceInfo.backwardBindGroups == nil {
+		n.deviceInfo.backwardBindGroups = make([]*wgpu.BindGroup, totalLayers)
+	}
 
 	// Backpropagate through grid in reverse order
 	for layerIdx := totalLayers - 1; layerIdx >= 0; layerIdx-- {
@@ -732,68 +831,288 @@ func (n *Network) BackwardGPU(gradOutput []float32) ([]float32, time.Duration, e
 		col := remainder / n.LayersPerCell
 		layer := remainder % n.LayersPerCell
 
-		activation := int(n.GetActivation(row, col, layer))
-		pipeline := pipelines[activation]
+		// Identify layer type and cast
+		var gpuLayer gpu.GPULayer
+		if layerIdx < len(n.gpuLayers.([]gpu.GPULayer)) {
+			gpuLayer = n.gpuLayers.([]gpu.GPULayer)[layerIdx]
+		}
 
-		// Determine buffer indices (ping-pong)
-		reverseIdx := totalLayers - 1 - layerIdx
-		var gradIn, gradOut *wgpu.Buffer
-		if reverseIdx%2 == 0 {
+		// Determine Source Gradient Buffer (gradIn)
+		// Last layer inputs from bufGradA (external gradient).
+		// Others input from Next Layer's InputGradientBuffer.
+		var gradIn *wgpu.Buffer
+		if layerIdx == totalLayers-1 {
 			gradIn = bufGradA
-			gradOut = bufGradB
 		} else {
-			gradIn = bufGradB
-			gradOut = bufGradA
-		}
-
-		preActBuf := preActBuffers[layerIdx]
-
-		bgl := bgls[activation]
-		bg, err := dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
-			Label:  fmt.Sprintf("nn_bwd_bg_%d", layerIdx),
-			Layout: bgl,
-			Entries: []wgpu.BindGroupEntry{
-				{Binding: 0, Buffer: gradIn, Offset: 0, Size: gradIn.GetSize()},
-				{Binding: 1, Buffer: preActBuf, Offset: 0, Size: preActBuf.GetSize()},
-				{Binding: 2, Buffer: gradOut, Offset: 0, Size: gradOut.GetSize()},
-			},
-		})
-		if err != nil {
-			enc.Release()
-			for _, bgr := range bindGroupsToRelease {
-				bgr.Release()
+			nextLayer := n.gpuLayers.([]gpu.GPULayer)[layerIdx+1]
+			// We need GetInputGradientBuffer from interface.
+			// Assuming generic interface doesn't have it, we check DenseLayer specifically
+			if dl, ok := nextLayer.(*gpu.DenseLayer); ok {
+				gradIn = dl.GetInputGradientBuffer()
+			} else {
+				// Fallback or error for unknown layers
+				enc.Release()
+				return nil, 0, fmt.Errorf("unknown next layer type at %d", layerIdx+1)
 			}
-			return nil, 0, fmt.Errorf("create backward bindgroup %d: %w", layerIdx, err)
 		}
-		bindGroupsToRelease = append(bindGroupsToRelease, bg)
 
-		pass := enc.BeginComputePass(&wgpu.ComputePassDescriptor{
-			Label: fmt.Sprintf("nn_bwd_pass_%d", layerIdx),
-		})
-		pass.SetPipeline(pipeline)
-		pass.SetBindGroup(0, bg, nil)
-		pass.DispatchWorkgroups(gx, 1, 1)
-		pass.End()
+		// For Dense Layers (and likely others), we perform 2 steps:
+		// 1. Activation Backward: gradIn (dL/dOutput) -> dZBuffer (dL/dZ)
+		// 2. Layer Backward: dZBuffer -> dW, dB, dInput (InputGradientBuffer)
+
+		if denseL, ok := gpuLayer.(*gpu.DenseLayer); ok {
+			dZBuf := denseL.GetDZBuffer()
+			if dZBuf == nil {
+				return nil, 0, fmt.Errorf("dZ buffer missing for layer %d", layerIdx)
+			}
+
+			// Step 1: Activation Backward (Generic Shader)
+			activation := int(n.GetActivation(row, col, layer))
+			pipeline := pipelines[activation]
+			bgl := bgls[activation]
+
+			// Get or create cached bind group for ACTIVATION shader
+			// Bind Group depends on: gradIn (Source), preActivations (buf), dZBuf (Dest)
+			// Since gradIn is stable (either external bufA or nextLayer's buf), we can cache it.
+			bg := n.deviceInfo.backwardBindGroups[layerIdx]
+
+			// We must check if cached BG is valid (buffers match?).
+			// For now assuming static topology, so cached is valid after first creation.
+			if bg == nil {
+				var err error
+				preActBuf := n.deviceInfo.backwardPreActBufs[layerIdx] // Uploaded earlier
+				bg, err = dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
+					Label:  fmt.Sprintf("nn_act_bwd_bg_%d", layerIdx),
+					Layout: bgl,
+					Entries: []wgpu.BindGroupEntry{
+						{Binding: 0, Buffer: gradIn, Offset: 0, Size: gradIn.GetSize()},
+						{Binding: 1, Buffer: preActBuf, Offset: 0, Size: preActBuf.GetSize()},
+						{Binding: 2, Buffer: dZBuf, Offset: 0, Size: dZBuf.GetSize()}, // Writing dZ
+					},
+				})
+				if err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create act bindgroup %d: %w", layerIdx, err)
+				}
+				n.deviceInfo.backwardBindGroups[layerIdx] = bg
+			}
+
+			// Dispatch Activation Backward
+			pass := enc.BeginComputePass(&wgpu.ComputePassDescriptor{
+				Label: fmt.Sprintf("nn_act_bwd_%d", layerIdx),
+			})
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bg, nil)
+			pass.DispatchWorkgroups(gx, 1, 1) // Using global Size N (Batch)
+			pass.End()
+
+			// Step 2: Dense Layer Backward
+			// Initialize Dense BindGroups if needed (lazy)
+			// Requires dZBuf as input.
+			// DenseLayer handles its own BG caching, but needs `CreateBackwardBindGroup` call if first time.
+			// We call it every time? No, it errors if exists?
+			// `CreateBackwardBindGroup` in dense_backward.go overwrites if called.
+			// But we only want to call it once.
+			// How to check? internal `backwardBindGroupGrads` != nil.
+			// We can expose a check or just try/catch?
+			// `DispatchBackward` checks internally if BGs are nil.
+			// But creating them requires `ctx` which `Dispatch` doesn't have.
+			// So verify/create here.
+
+			// Hack: Check via reflection or just call Create (overhead?)
+			// Or check private field? Can't.
+			// We updated `WeightsToGPU` to call `CreateBindGroup` (Forward).
+			// We did NOT call `CreateBackwardBindGroup`.
+			// So we MUST call it here.
+			// Optimization: Check n.deviceInfo flag or map?
+			// Or just assume if n.deviceInfo.backwardBindGroups[layerIdx] was nil (first run), we also need to init Dense BG.
+
+			// Since we just populated `n.deviceInfo.backwardBindGroups[layerIdx]` (Generic BG) above if nil...
+			// We can use the same flag!
+			// If we just created `bg`, implies first run.
+
+			// However `CreateBackwardBindGroup` overwrites fields. Calling it multiple times is waste but safe if cleanup handled?
+			// `CreateBackwardBindGroup` creates NEW bindgroups. It doesn't check existing.
+			// So we should only call if needed.
+
+			// We can use a map in `deviceInfo`? Or add `initBackward` flag to `GPUDeviceInfo`?
+			// Let's use `n.deviceInfo.backwardBindGroups[layerIdx] == nil` check BEFORE we allocated it above.
+			// Wait, I allocate it above inside `if bg == nil`.
+			// So I can put this logic inside that block!
+
+			// Refactor:
+			if n.deviceInfo.backwardBindGroups[layerIdx] == nil {
+				// 1. Create Act BG (above code) ...
+				var err error
+				preActBuf := n.deviceInfo.backwardPreActBufs[layerIdx]
+				bg, err = dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
+					Label:  fmt.Sprintf("nn_act_bwd_bg_%d", layerIdx),
+					Layout: bgl,
+					Entries: []wgpu.BindGroupEntry{
+						{Binding: 0, Buffer: gradIn, Offset: 0, Size: gradIn.GetSize()},
+						{Binding: 1, Buffer: preActBuf, Offset: 0, Size: preActBuf.GetSize()},
+						{Binding: 2, Buffer: dZBuf, Offset: 0, Size: dZBuf.GetSize()},
+					},
+				})
+				if err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create act bg %d: %w", layerIdx, err)
+				}
+				n.deviceInfo.backwardBindGroups[layerIdx] = bg
+
+				// 2. Init Dense Backward Resources
+				ctx := n.gpuCtx.(*gpu.Context)
+				if err := denseL.CreateBackwardBindGroup(ctx, fmt.Sprintf("L%d_Bwd", layerIdx), dZBuf); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create dense bwd bg %d: %w", layerIdx, err)
+				}
+			}
+
+			// Dispatch Dense Backward
+			denseL.DispatchBackward(enc)
+
+		} else if conv2dL, ok := gpuLayer.(*gpu.Conv2DLayer); ok {
+			// Conv2D Layer Backward
+			// Conv2D handles its own activation backward internally
+			// It just needs the backward resources initialized once
+
+			if n.deviceInfo.backwardBindGroups[layerIdx] == nil {
+				// Init Conv2D Backward Resources (one-time)
+				ctx := n.gpuCtx.(*gpu.Context)
+				if err := conv2dL.AllocateBackwardBuffers(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("allocate conv2d bwd buffers %d: %w", layerIdx, err)
+				}
+				if err := conv2dL.CompileBackward(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("compile conv2d bwd %d: %w", layerIdx, err)
+				}
+				// gradIn is the dOutput for this layer
+				if err := conv2dL.CreateBackwardBindGroup(ctx, fmt.Sprintf("L%d_Bwd", layerIdx), gradIn); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create conv2d bwd bg %d: %w", layerIdx, err)
+				}
+				// Mark as initialized (use a sentinel BindGroup to avoid recreating)
+				// Create a minimal dummy bind group as a marker
+				dummyBGL, _ := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+					Label:   fmt.Sprintf("conv2d_bwd_marker_%d", layerIdx),
+					Entries: []wgpu.BindGroupLayoutEntry{},
+				})
+				marker, _ := dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
+					Label:   fmt.Sprintf("conv2d_bwd_marker_bg_%d", layerIdx),
+					Layout:  dummyBGL,
+					Entries: []wgpu.BindGroupEntry{},
+				})
+				n.deviceInfo.backwardBindGroups[layerIdx] = marker
+			}
+
+			// Dispatch Conv2D Backward
+			conv2dL.DispatchBackward(enc)
+
+		} else if conv1dL, ok := gpuLayer.(*gpu.Conv1DLayer); ok {
+			// Conv1D Layer Backward
+			if n.deviceInfo.backwardBindGroups[layerIdx] == nil {
+				ctx := n.gpuCtx.(*gpu.Context)
+				if err := conv1dL.AllocateBackwardBuffers(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("allocate conv1d bwd buffers %d: %w", layerIdx, err)
+				}
+				if err := conv1dL.CompileBackward(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("compile conv1d bwd %d: %w", layerIdx, err)
+				}
+				if err := conv1dL.CreateBackwardBindGroup(ctx, fmt.Sprintf("L%d_Bwd", layerIdx), gradIn); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create conv1d bwd bg %d: %w", layerIdx, err)
+				}
+				dummyBGL, _ := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+					Label:   fmt.Sprintf("conv1d_bwd_marker_%d", layerIdx),
+					Entries: []wgpu.BindGroupLayoutEntry{},
+				})
+				marker, _ := dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
+					Label:   fmt.Sprintf("conv1d_bwd_marker_bg_%d", layerIdx),
+					Layout:  dummyBGL,
+					Entries: []wgpu.BindGroupEntry{},
+				})
+				n.deviceInfo.backwardBindGroups[layerIdx] = marker
+			}
+			conv1dL.DispatchBackward(enc)
+
+		} else if rnnL, ok := gpuLayer.(*gpu.RNNLayer); ok {
+			// RNN Layer Backward
+			if n.deviceInfo.backwardBindGroups[layerIdx] == nil {
+				ctx := n.gpuCtx.(*gpu.Context)
+				if err := rnnL.AllocateBackwardBuffers(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("allocate rnn bwd buffers %d: %w", layerIdx, err)
+				}
+				if err := rnnL.CompileBackward(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("compile rnn bwd %d: %w", layerIdx, err)
+				}
+				if err := rnnL.CreateBackwardBindGroup(ctx, fmt.Sprintf("L%d_Bwd", layerIdx), gradIn); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create rnn bwd bg %d: %w", layerIdx, err)
+				}
+				dummyBGL, _ := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+					Label:   fmt.Sprintf("rnn_bwd_marker_%d", layerIdx),
+					Entries: []wgpu.BindGroupLayoutEntry{},
+				})
+				marker, _ := dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
+					Label:   fmt.Sprintf("rnn_bwd_marker_bg_%d", layerIdx),
+					Layout:  dummyBGL,
+					Entries: []wgpu.BindGroupEntry{},
+				})
+				n.deviceInfo.backwardBindGroups[layerIdx] = marker
+			}
+			rnnL.DispatchBackward(enc)
+
+		} else if lstmL, ok := gpuLayer.(*gpu.LSTMLayer); ok {
+			// LSTM Layer Backward
+			if n.deviceInfo.backwardBindGroups[layerIdx] == nil {
+				ctx := n.gpuCtx.(*gpu.Context)
+				if err := lstmL.AllocateBackwardBuffers(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("allocate lstm bwd buffers %d: %w", layerIdx, err)
+				}
+				if err := lstmL.CompileBackward(ctx, fmt.Sprintf("L%d", layerIdx)); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("compile lstm bwd %d: %w", layerIdx, err)
+				}
+				if err := lstmL.CreateBackwardBindGroup(ctx, fmt.Sprintf("L%d_Bwd", layerIdx), gradIn); err != nil {
+					enc.Release()
+					return nil, 0, fmt.Errorf("create lstm bwd bg %d: %w", layerIdx, err)
+				}
+				dummyBGL, _ := dev.CreateBindGroupLayout(&wgpu.BindGroupLayoutDescriptor{
+					Label:   fmt.Sprintf("lstm_bwd_marker_%d", layerIdx),
+					Entries: []wgpu.BindGroupLayoutEntry{},
+				})
+				marker, _ := dev.CreateBindGroup(&wgpu.BindGroupDescriptor{
+					Label:   fmt.Sprintf("lstm_bwd_marker_bg_%d", layerIdx),
+					Layout:  dummyBGL,
+					Entries: []wgpu.BindGroupEntry{},
+				})
+				n.deviceInfo.backwardBindGroups[layerIdx] = marker
+			}
+			lstmL.DispatchBackward(enc)
+
+		} else {
+			// Other layers (Softmax, etc.) - no backward implementation yet
+			// Gradient passes through unchanged
+		}
 	}
 
 	// Submit all layers at once
 	cb, err := enc.Finish(nil)
 	if err != nil {
 		enc.Release()
-		for _, bg := range bindGroupsToRelease {
-			bg.Release()
-		}
 		return nil, 0, fmt.Errorf("finish command buffer: %w", err)
 	}
 	enc.Release()
 	q.Submit(cb)
 	cb.Release()
 
-	// Release bind groups
-	for _, bg := range bindGroupsToRelease {
-		bg.Release()
-	}
-	pollDevice(dev, 1000)
+	// No poll - async execution
 
 	// Determine final gradient buffer
 	var finalGrad *wgpu.Buffer

@@ -271,19 +271,19 @@ func (ts *GenericTweenState[T]) BackwardPassRegression(n *Network, target []floa
 		if IsIntegerType[T]() {
 			actual /= 100.0
 		}
-		
+
 		tVal := float32(0.0)
 		if i < len(target) {
 			tVal = target[i]
 		}
-		
+
 		gradOutput[i] = tVal - float32(actual)
 		targetT.Data[i] = T(tVal)
 		if IsIntegerType[T]() {
 			targetT.Data[i] = T(tVal * 100.0)
 		}
 	}
-	
+
 	ts.BackwardTargets[ts.TotalLayers] = targetT
 	ts.propagateGradients(n, gradOutput)
 }
@@ -326,6 +326,8 @@ func (ts *GenericTweenState[T]) propagateGradients(n *Network, gradOutput []floa
 			inputGrad = ts.chainRuleBackwardEmbeddingGeneric(cfg, input, output, currentGrad, depthScale)
 		case LayerConv1D:
 			inputGrad = ts.chainRuleBackwardConv1DGeneric(cfg, input, output, currentGrad, depthScale)
+		case LayerKMeans:
+			inputGrad = ts.chainRuleBackwardKMeansGeneric(cfg, input, output, currentGrad, depthScale)
 		default:
 			// Pass-through for other layers
 			inputGrad = make([]float32, len(input.Data))
@@ -505,7 +507,7 @@ func (ts *GenericTweenState[T]) chainRuleBackwardEmbeddingGeneric(cfg *LayerConf
 	// Output Size = seqLen * embeddingDim
 	// There is no gradient flow TO the discrete inputs.
 	// We return a zero gradient for inputs.
-	
+
 	gradInput := make([]float32, len(input.Data))
 	// Zeros
 	return gradInput
@@ -532,6 +534,45 @@ func (ts *GenericTweenState[T]) chainRuleBackwardConv1DGeneric(cfg *LayerConfig,
 	for i := range gradInput {
 		gradInput[i] = avgGrad
 	}
+	return gradInput
+}
+
+// chainRuleBackwardKMeansGeneric computes gradient for KMeans layer
+func (ts *GenericTweenState[T]) chainRuleBackwardKMeansGeneric(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	if cfg.SubNetwork == nil {
+		return make([]float32, len(input.Data))
+	}
+
+	features := cfg.PreActivations
+	if len(features) == 0 {
+		return make([]float32, len(input.Data))
+	}
+
+	assignments := make([]float32, len(output.Data))
+	for i, v := range output.Data {
+		assignments[i] = float32(v)
+		if IsIntegerType[T]() {
+			assignments[i] /= 100.0
+		}
+	}
+
+	// input float32 slice for BackwardKMeansCPU
+	inputF32 := make([]float32, len(input.Data))
+	for i, v := range input.Data {
+		inputF32[i] = float32(v)
+		if IsIntegerType[T]() {
+			inputF32[i] /= 100.0
+		}
+	}
+
+	// Call BackwardKMeansCPU with 0 learning rate to get gradInput without updating
+	gradInput, _ := BackwardKMeansCPU(gradOutput, cfg, inputF32, features, assignments, 0)
+
+	// Apply depth scaling to the final input gradient
+	for i := range gradInput {
+		gradInput[i] *= depthScale
+	}
+
 	return gradInput
 }
 
@@ -576,6 +617,8 @@ func (ts *GenericTweenState[T]) TweenWeightsChainRule(n *Network, rate float32) 
 			ts.chainRuleUpdateEmbeddingGeneric(cfg, outputGrad, rate*ts.Config.EmbeddingRate)
 		case LayerConv1D:
 			ts.chainRuleUpdateConv1DGeneric(cfg, input, outputGrad, rate*ts.Config.Conv1DRate, mom, i)
+		case LayerKMeans:
+			ts.chainRuleUpdateKMeansGeneric(cfg, input, outputGrad, rate, i)
 		}
 
 		ts.setLayerCfgGeneric(n, i, *cfg)
@@ -789,9 +832,9 @@ func (ts *GenericTweenState[T]) chainRuleUpdateSwiGLUGeneric(cfg *LayerConfig, o
 func (ts *GenericTweenState[T]) chainRuleUpdateEmbeddingGeneric(cfg *LayerConfig, outputGrad []float32, rate float32) {
 	// Embedding update (simplified generic)
 	// Ideally we need the input tokens to know WHICH rows to update.
-	// But in this GenericTween pass, we are doing a simplified "gap-based" update 
+	// But in this GenericTween pass, we are doing a simplified "gap-based" update
 	// that smears the update across weights proportional to the gap.
-	
+
 	avgGrad := float32(0)
 	for _, g := range outputGrad {
 		avgGrad += g
@@ -808,34 +851,160 @@ func (ts *GenericTweenState[T]) chainRuleUpdateEmbeddingGeneric(cfg *LayerConfig
 	}
 }
 
+// chainRuleUpdateKMeansGeneric applies update to KMeans layer
+func (ts *GenericTweenState[T]) chainRuleUpdateKMeansGeneric(cfg *LayerConfig, input *Tensor[T], outputGrad []float32, rate float32, layerIdx int) {
+	if cfg.SubNetwork == nil {
+		return
+	}
+
+	features := cfg.PreActivations
+	if len(features) == 0 {
+		return
+	}
+
+	// Need output from ts.ForwardActs[layerIdx+1]
+	output := ts.ForwardActs[layerIdx+1]
+	if output == nil {
+		return
+	}
+
+	assignments := make([]float32, len(output.Data))
+	for i, v := range output.Data {
+		assignments[i] = float32(v)
+		if IsIntegerType[T]() {
+			assignments[i] /= 100.0
+		}
+	}
+
+	inputF32 := make([]float32, len(input.Data))
+	for i, v := range input.Data {
+		inputF32[i] = float32(v)
+		if IsIntegerType[T]() {
+			inputF32[i] /= 100.0
+		}
+	}
+
+	// Call BackwardKMeansCPU with the given rate to update cluster centers and sub-network
+	// Note: BackwardKMeansCPU already calls SubNetwork.ApplyGradients(learningRate)
+	BackwardKMeansCPU(outputGrad, cfg, inputF32, features, assignments, rate)
+}
+
 // chainRuleUpdateConv1DGeneric applies gradient update to Conv1D layer
 func (ts *GenericTweenState[T]) chainRuleUpdateConv1DGeneric(cfg *LayerConfig, input *Tensor[T], outputGrad []float32, rate, mom float32, layerIdx int) {
-	avgInput := float32(0)
-	for _, v := range input.Data {
-		val := float32(v)
+	// Dimensions
+	batchSize := ts.Config.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	inChannels := cfg.Conv1DInChannels
+	kernelSize := cfg.Conv1DKernelSize
+	stride := cfg.Conv1DStride
+	padding := cfg.Conv1DPadding
+	filters := cfg.Conv1DFilters
+
+	// Infer input sequence length
+	inputLen := len(input.Data)
+	seqLen := cfg.InputHeight
+	if seqLen <= 0 {
+		seqLen = inputLen / (inChannels * batchSize)
+	}
+
+	// Calculate output length
+	outLen := (seqLen+2*padding-kernelSize)/stride + 1
+	outputSize := batchSize * filters * outLen
+
+	// Validation
+	if len(outputGrad) != outputSize {
+		// Mismatch, possibly due to rounding or different batch size handling?
+		// Try to adapt or just return to avoid panic
+		return
+	}
+
+	// Helper for input value access
+	getMediaVal := func(idx int) float32 {
+		val := float32(input.Data[idx])
 		if IsIntegerType[T]() {
 			val /= 100.0
 		}
-		avgInput += val
-	}
-	if len(input.Data) > 0 {
-		avgInput /= float32(len(input.Data))
+		return val
 	}
 
-	avgGrad := float32(0)
-	for _, g := range outputGrad {
-		avgGrad += g
-	}
-	if len(outputGrad) > 0 {
-		avgGrad /= float32(len(outputGrad))
+	// Accumulate gradients for kernel and bias
+	// This mirrors Conv1DBackward logic for weights
+	// We accumulate updates into a temporary buffer or apply directly with momentum?
+	// Dense update applies momentum per weight.
+	// Here we can iterate weights?
+	// Or iterate output and accumulate to weights.
+	// Iterating weights is outer loop?
+	// Conv1DBackward iterates batch -> filters -> outLen -> inChannels -> kernelSize.
+	// Inside the inner loop it updates gradKernel at specific index.
+
+	// We need buffers for weight gradients to apply momentum correctly
+	// If we update directly inside the loop, we might update the same weight multiple times per batch?
+	// Yes, weights are shared.
+	// So we MUST accumulate gradient first, then update weights.
+
+	gradKernel := make([]float32, len(cfg.Kernel))
+	gradBias := make([]float32, len(cfg.Bias))
+
+	for b := 0; b < batchSize; b++ {
+		for f := 0; f < filters; f++ {
+			for o := 0; o < outLen; o++ {
+				outputIdx := b*filters*outLen + f*outLen + o
+				if outputIdx >= len(outputGrad) {
+					continue
+				}
+
+				// Gradient at this output position
+				gOut := outputGrad[outputIdx]
+
+				// Bias gradient
+				gradBias[f] += gOut
+
+				// Kernel gradients
+				for ic := 0; ic < inChannels; ic++ {
+					for k := 0; k < kernelSize; k++ {
+						inPos := o*stride + k - padding
+
+						if inPos >= 0 && inPos < seqLen {
+							inputIdx := b*inChannels*seqLen + ic*seqLen + inPos
+							kernelIdx := f*inChannels*kernelSize + ic*kernelSize + k
+
+							if inputIdx < inputLen && kernelIdx < len(gradKernel) {
+								inVal := getMediaVal(inputIdx)
+								gradKernel[kernelIdx] += gOut * inVal
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
-	delta := clipGradGeneric(rate*avgInput*avgGrad, 0.1)
-	for i := range cfg.Conv1DKernel {
-		cfg.Conv1DKernel[i] += delta
+	// Apply updates with momentum
+	// Normalize gradients by batch size?
+	// Dense update didn't seem to normalize explicitly by batch size but iterated input.
+	// But usually gradient is average over batch.
+	// Let's stick to raw sum scaled by rate, assuming rate accounts for it or it's SGD.
+
+	// Update Kernel
+	for i := range cfg.Kernel {
+		delta := rate * gradKernel[i]
+		delta = clipGradGeneric(delta, 1.0)
+
+		if layerIdx < len(ts.WeightVel) && i < len(ts.WeightVel[layerIdx]) {
+			ts.WeightVel[layerIdx][i] = mom*ts.WeightVel[layerIdx][i] + (1-mom)*delta
+			cfg.Kernel[i] += ts.WeightVel[layerIdx][i]
+		} else {
+			cfg.Kernel[i] += delta
+		}
 	}
-	for i := range cfg.Conv1DBias {
-		cfg.Conv1DBias[i] += clipGradGeneric(rate*avgGrad, 0.1)
+
+	// Update Bias
+	for i := range cfg.Bias {
+		delta := rate * gradBias[i]
+		delta = clipGradGeneric(delta, 1.0)
+		cfg.Bias[i] += delta
 	}
 }
 
@@ -877,11 +1046,9 @@ func clipGradGeneric(grad, max float32) float32 {
 	return grad
 }
 
-
 // =============================================================================
 // Original float32 Implementation
 // =============================================================================
-
 
 // NeuralTween - True Bidirectional Approach
 //
@@ -1261,7 +1428,7 @@ func (ts *TweenState) BackwardPassRegression(n *Network, target []float32) {
 
 	outputGrad := make([]float32, len(actual))
 	targetT := make([]float32, len(actual))
-	
+
 	for i := range outputGrad {
 		tVal := float32(0.0)
 		if i < len(target) {
@@ -1270,10 +1437,10 @@ func (ts *TweenState) BackwardPassRegression(n *Network, target []float32) {
 		outputGrad[i] = tVal - actual[i]
 		targetT[i] = tVal
 	}
-	
+
 	ts.ChainGradients[ts.TotalLayers] = outputGrad
 	ts.BackwardTargets[ts.TotalLayers] = targetT
-	
+
 	ts.propagateGradients(n, outputGrad)
 }
 
@@ -2884,6 +3051,7 @@ func (ts *TweenState) TweenBatch(n *Network, inputs [][]float32, targetClasses [
 	ts.TweenBatchApply(n, rate)
 	return totalLoss / float32(len(inputs))
 }
+
 // =============================================================================
 // PARALLEL BATCH TRAINING - Multithreaded TweenBatch
 // Uses per-worker TweenState CLONES for true data parallelism.
@@ -2926,6 +3094,7 @@ func (ts *TweenState) CloneTweenState() *TweenState {
 //  1. Gets its own TweenState clone
 //  2. Runs the REAL ForwardPass, BackwardPassChainRule, CalculateLinkBudgets
 //  3. Accumulates gaps locally
+//
 // Then all gaps are merged and TweenBatchApply is called once on the original network.
 func (ts *TweenState) TweenBatchParallel(n *Network, inputs [][]float32, targetClasses []int, outputSize int, rate float32, numWorkers int) float32 {
 	if len(inputs) == 0 {
@@ -2953,7 +3122,7 @@ func (ts *TweenState) TweenBatchParallel(n *Network, inputs [][]float32, targetC
 			continue
 		}
 
-	go func(workerInputs [][]float32, workerTargets []int) {
+		go func(workerInputs [][]float32, workerTargets []int) {
 			// Create worker's own TweenState clone AND Network clone
 			workerTS := ts.CloneTweenState()
 			workerTS.ResetBatch()
@@ -3128,7 +3297,7 @@ func (ts *TweenState) TweenStepBatchParallel(n *Network, inputs [][]float32, tar
 	}
 
 	totalLayers := n.TotalLayers()
-	
+
 	// 1. Snapshot original weights for all layers
 	originalWeights := make([][][]float32, totalLayers)
 	originalBiases := make([][]float32, totalLayers)
@@ -3174,7 +3343,7 @@ func (ts *TweenState) TweenStepBatchParallel(n *Network, inputs [][]float32, tar
 		go func(workerInputs [][]float32, workerTargets []int) {
 			// Clone network for this worker (separate weights but same architecture)
 			localNet := n.CloneForParallel()
-			
+
 			// Clone TweenState for this worker (BEFORE using it to get layer configs)
 			workerTS := ts.CloneTweenState()
 
@@ -3192,7 +3361,6 @@ func (ts *TweenState) TweenStepBatchParallel(n *Network, inputs [][]float32, tar
 					copy(cfg.Bias, originalBiases[layer])
 				}
 			}
-
 
 			// 3. Run TweenStep for each sample (this updates localNet weights)
 			totalLoss := float32(0)
@@ -3301,7 +3469,6 @@ func (ts *TweenState) TweenStepBatchParallel(n *Network, inputs [][]float32, tar
 	}
 	return 0
 }
-
 
 func (ts *TweenState) Train(n *Network, inputs [][]float32, expected []float64, epochs int, rate float32,
 	callback func(epoch int, avgLoss float32, metrics *DeviationMetrics)) {

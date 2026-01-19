@@ -130,16 +130,12 @@ func StepForwardGeneric[T Numeric](
 						size = config.DModel
 					case LayerNorm, LayerRMSNorm:
 						size = config.NormSize
-					case LayerResidual, LayerSoftmax:
-						// These usually preserve size, but if prev layer output is unknown... 
-						// Fallback to 1 or try to infer? 
-						// For Residual, it matches input. 
-						// If this is the *first* layer (unlikely for residual), 1 is bad.
-						// But usually these follow another layer.
-						// If following layer has nil output (start of sim), we need to know size.
-						// Best guess: 1 or config.InputHeight if available.
+					case LayerResidual, LayerSoftmax, LayerKMeans:
 						if config.InputHeight > 0 {
 							size = config.InputHeight
+						} else if layerIdx > 0 && layerIdx-1 < len(n.Layers) {
+							// Infer size from previous layer's output
+							size = n.Layers[layerIdx-1].OutputHeight
 						}
 					}
 					if size <= 0 {
@@ -147,7 +143,7 @@ func StepForwardGeneric[T Numeric](
 					}
 					input = NewTensor[T](size * n.BatchSize)
 				}
-				
+
 				var postAct *Tensor[T]
 				var context any
 
@@ -223,7 +219,7 @@ func StepForwardGeneric[T Numeric](
 							normSize = len(input.Data)
 						}
 						postAct = LayerNormForward(input, residual, gamma, beta, normSize, n.BatchSize, float64(config.Epsilon))
-						
+
 						// Update residual tracking?
 						// In GenericForwardPass, LayerResidual is explicit.
 						context = nil
@@ -249,15 +245,15 @@ func StepForwardGeneric[T Numeric](
 
 					case LayerMultiHeadAttention:
 						weights := &AttentionWeights[T]{
-							QWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
-							QBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
-							KWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
-							KBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
-							VWeights: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
-							VBias:    ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
+							QWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QWeights, len(config.QWeights))),
+							QBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.QBias, len(config.QBias))),
+							KWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KWeights, len(config.KWeights))),
+							KBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.KBias, len(config.KBias))),
+							VWeights:     ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VWeights, len(config.VWeights))),
+							VBias:        ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.VBias, len(config.VBias))),
 							OutputWeight: ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputWeight, len(config.OutputWeight))),
 							OutputBias:   ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.OutputBias, len(config.OutputBias))),
-							DModel: config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
+							DModel:       config.DModel, NumHeads: config.NumHeads, NumKVHeads: config.NumKVHeads, HeadDim: config.HeadDim,
 						}
 						postAct = MultiHeadAttentionForward(input, weights, 10000.0)
 						// Store output as residual if this layer acts as residual source?
@@ -277,8 +273,26 @@ func StepForwardGeneric[T Numeric](
 						for i := range config.ParallelBranches {
 							branches[i] = &config.ParallelBranches[i]
 						}
-						output, intermediates, err := ParallelForward(input, branches, n.BatchSize, config.CombineMode)
+
+						var output *Tensor[T]
+						var intermediates []*Tensor[T]
+						var err error
+
+						if config.CombineMode == "filter" {
+							var gateWeights []float32
+							output, intermediates, gateWeights, err = ParallelForwardFiltered(input, branches, config.FilterGateConfig, config.FilterSoftmax, config.FilterTemperature, n.BatchSize)
+							// We could store gateWeights in context if we wanted to introspect them later
+							// For now, we just proceed. intermediates contains branch activations.
+
+							// Hack: Store gateWeights as an additional "intermediate" for introspection?
+							// Or just rely on the introspection strategy planned for the test.
+							_ = gateWeights
+						} else {
+							output, intermediates, err = ParallelForward(input, branches, n.BatchSize, config.CombineMode)
+						}
+
 						if err != nil {
+							fmt.Printf("Parallel layer error: %v\n", err)
 							output = input.Clone()
 						}
 						postAct = output
@@ -288,19 +302,24 @@ func StepForwardGeneric[T Numeric](
 						// Skip connection from previous layer
 						var skipInput *Tensor[T]
 						if layerIdx > 0 {
-							skipInput = state.LayerData[layerIdx-1] // Is this logically right? 
-							// In GenericForwardPass we used activations[layerIdx-1]. LayerData[0] is input. LayerData[i] is input to layer i?
-							// Wait, LayerData[0] is network input.
-							// loop layerIdx=0..N.
-							// input = LayerData[layerIdx].
-							// newOutputs[layerIdx+1] = postAct.
-							// So LayerData[i] IS the output of layer i-1.
-							// So LayerData[layerIdx] is input to current layer.
-							// Skip connection usually means input to *previous* layer.
-							// Similar to GenericForwardPass
+							skipInput = state.LayerData[layerIdx-1]
 						}
 						postAct = ResidualForward(input, skipInput)
 						context = nil
+
+					case LayerConv1D:
+						kernel := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DKernel, len(config.Conv1DKernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv1DBias, len(config.Conv1DBias)))
+						seqLen := config.InputHeight
+						if seqLen <= 0 {
+							seqLen = len(input.Data) / (config.Conv1DInChannels * n.BatchSize)
+						}
+						pre, post := Conv1DForward(input, kernel, bias,
+							seqLen, config.Conv1DInChannels,
+							config.Conv1DKernelSize, config.Conv1DStride, config.Conv1DPadding,
+							config.Conv1DFilters, n.BatchSize, config.Activation)
+						postAct = post
+						context = pre
 
 					default:
 						// Apply activation using backend
@@ -328,7 +347,6 @@ func StepForwardGeneric[T Numeric](
 // =============================================================================
 // Original float32 Implementation
 // =============================================================================
-
 
 // Helper to calculate output size recursively
 func getLayerOutputSize(config *LayerConfig, batchSize int) int {
@@ -400,6 +418,11 @@ func getLayerOutputSize(config *LayerConfig, batchSize int) int {
 		}
 		// Return size of the last layer in sequence
 		return getLayerOutputSize(&config.ParallelBranches[len(config.ParallelBranches)-1], batchSize)
+	} else if config.Type == LayerKMeans {
+		if config.KMeansOutputMode == "probabilities" {
+			return config.NumClusters
+		}
+		return config.ClusterDim
 	}
 
 	// Default: Try to use OutputHeight if available
@@ -532,6 +555,9 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 				case LayerConv2D:
 					preAct, postAct = conv2DForwardCPU(input, config, n.BatchSize)
 
+				case LayerConv1D:
+					preAct, postAct = conv1DForwardCPU(input, config, n.BatchSize)
+
 				case LayerMultiHeadAttention:
 					preAct, postAct = MultiHeadAttentionForwardCPU(input, config, n.BatchSize)
 
@@ -579,6 +605,17 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 				case LayerDense:
 					preAct, postAct = denseForwardCPU(input, config, n.BatchSize)
 
+				case LayerKMeans:
+					// KMeans layer forward (CPU only for now)
+					output, err := ForwardKMeansCPU(input, config)
+					if err != nil {
+						fmt.Printf("KMeans forward error: %v\n", err)
+						output = make([]float32, getLayerOutputSize(config, n.BatchSize))
+					}
+					// PreActivations (sub-network features) are already stored in config by ForwardKMeansCPU
+					preAct = config.PreActivations
+					postAct = output
+
 				case LayerSwiGLU:
 					preAct, postAct = SwiGLUForwardCPU(input, config, n.BatchSize)
 
@@ -623,6 +660,15 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 					// Store intermediates? (Limited support in StepForward for introspection inside Seq)
 					preAct = make([]float32, len(output)) // Dummy preAct
 					postAct = output
+
+				case LayerResidual:
+					var skipInput []float32
+					if layerIdx > 0 {
+						skipInput = state.layerData[layerIdx-1]
+					}
+					postAct = ResidualForwardCPU(input, skipInput)
+					preAct = make([]float32, len(postAct)) // Dummy preAct
+					copy(preAct, postAct)
 
 				case LayerParallel:
 					output, branchPreActs, err := parallelForwardCPU(input, config, n.BatchSize, "step")

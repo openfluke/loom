@@ -21,16 +21,29 @@ import (
 type BrainType int
 
 const (
-	BrainMHA       BrainType = iota // Multi-Head Attention
-	BrainLSTM                       // Long Short-Term Memory
-	BrainRNN                        // Simple Recurrent Neural Network
-	BrainDense                      // Dense/Fully-Connected
-	BrainSwiGLU                     // SwiGLU activation variant
-	BrainNormDense                  // Normalized Dense
+	BrainMHA        BrainType = iota // Multi-Head Attention
+	BrainLSTM                        // Long Short-Term Memory
+	BrainRNN                         // Simple Recurrent Neural Network
+	BrainDense                       // Dense/Fully-Connected
+	BrainSwiGLU                      // SwiGLU activation variant
+	BrainNormDense                   // Normalized Dense
+	BrainConv2D                      // 2D Convolutional
+	BrainConv1D                      // 1D Convolutional (audio/sequence)
+	BrainSoftmax                     // Softmax layer
+	BrainNorm                        // Layer Normalization
+	BrainRMSNorm                     // RMS Normalization
+	BrainResidual                    // Residual/Skip connection
+	BrainEmbedding                   // Embedding lookup table
+	BrainSequential                  // Sequential (runs sub-layers in sequence)
+	BrainParallel                    // Parallel (runs sub-layers and combines)
 )
 
 // BrainTypeNames maps brain types to their string names
-var BrainTypeNames = []string{"MHA", "LSTM", "RNN", "Dense", "SwiGLU", "NormDense"}
+var BrainTypeNames = []string{
+	"MHA", "LSTM", "RNN", "Dense", "SwiGLU", "NormDense",
+	"Conv2D", "Conv1D", "Softmax", "Norm", "RMSNorm",
+	"Residual", "Embedding", "Sequential", "Parallel",
+}
 
 // String returns the name of the brain type
 func (bt BrainType) String() string {
@@ -224,6 +237,505 @@ func InitNormDenseBrain(dModel int, activation ActivationType, scale float32) La
 	dense := InitDenseLayer(dModel, dModel, activation)
 	scaleWeights(dense.Kernel, scale*0.8)
 	return dense
+}
+
+// InitConv2DBrain creates a Conv2D brain layer
+// Assumes input is square (e.g., 4x4x1 for inputSize=16)
+func InitConv2DBrain(inputSize int, scale float32) LayerConfig {
+	// Calculate square dimensions from input size
+	side := int(math.Sqrt(float64(inputSize)))
+	if side*side != inputSize {
+		side = 4 // default to 4x4 if not perfect square
+	}
+	// Conv2D: side x side x 1 with 2 filters, kernel 2x2, stride 1, padding 2
+	conv := InitConv2DLayer(side, side, 1, 2, 2, 1, 2, ActivationLeakyReLU)
+	return conv
+}
+
+// InitConv1DBrain creates a Conv1D brain layer
+func InitConv1DBrain(dModel int, scale float32) LayerConfig {
+	// Conv1D with kernel size 3, 2 filters
+	conv := LayerConfig{
+		Type:             LayerConv1D,
+		Conv1DKernelSize: 3,
+		Conv1DStride:     1,
+		Conv1DPadding:    1,
+		Conv1DFilters:    2,
+		Conv1DInChannels: 1,      // Assume 1 input channel (sequence of scalars)
+		InputHeight:      dModel, // Sequence length
+		OutputHeight:     dModel, // Preserves length with padding=1, stride=1, k=3
+		Activation:       ActivationLeakyReLU,
+	}
+	// Initialize kernel: filters × kernelSize × inputChannels
+	// filters=2, k=3, in=1 => 6 weights
+	// Initialize kernel: filters × kernelSize × inputChannels
+	// filters=2, k=3, in=1 => 6 weights
+	conv.Kernel = make([]float32, 2*3*1)
+	for i := range conv.Kernel {
+		conv.Kernel[i] = (rand.Float32()*2 - 1) * scale
+	}
+	conv.Bias = make([]float32, 2)
+	return conv
+}
+
+// InitSoftmaxBrain creates a Softmax brain layer
+func InitSoftmaxBrain(dModel int) LayerConfig {
+	return LayerConfig{
+		Type:           LayerSoftmax,
+		SoftmaxVariant: SoftmaxStandard,
+	}
+}
+
+// InitNormBrain creates a Layer Normalization brain layer
+func InitNormBrain(dModel int, scale float32) LayerConfig {
+	norm := LayerConfig{
+		Type:     LayerNorm,
+		NormSize: dModel,
+		Epsilon:  1e-5,
+	}
+	norm.Gamma = make([]float32, dModel)
+	norm.Beta = make([]float32, dModel)
+	for i := 0; i < dModel; i++ {
+		norm.Gamma[i] = 1.0
+		norm.Beta[i] = 0.0
+	}
+	return norm
+}
+
+// InitRMSNormBrain creates an RMS Normalization brain layer
+func InitRMSNormBrain(dModel int, scale float32) LayerConfig {
+	norm := LayerConfig{
+		Type:     LayerRMSNorm,
+		NormSize: dModel,
+		Epsilon:  1e-5,
+	}
+	norm.Gamma = make([]float32, dModel)
+	for i := 0; i < dModel; i++ {
+		norm.Gamma[i] = 1.0
+	}
+	return norm
+}
+
+// InitResidualBrain creates a Residual/Skip connection brain layer
+func InitResidualBrain() LayerConfig {
+	return LayerConfig{
+		Type: LayerResidual,
+	}
+}
+
+// InitEmbeddingBrain creates an Embedding lookup table brain layer
+func InitEmbeddingBrain(vocabSize, embedDim int, scale float32) LayerConfig {
+	emb := LayerConfig{
+		Type:         LayerEmbedding,
+		VocabSize:    vocabSize,
+		EmbeddingDim: embedDim,
+	}
+	emb.EmbeddingWeights = make([]float32, vocabSize*embedDim)
+	for i := range emb.EmbeddingWeights {
+		emb.EmbeddingWeights[i] = (rand.Float32()*2 - 1) * scale
+	}
+	return emb
+}
+
+// =============================================================================
+// Simple Network Builder (for benchmarks and simple architectures)
+// =============================================================================
+
+// SimpleNetworkConfig defines configuration for simple single-layer-type networks
+type SimpleNetworkConfig struct {
+	LayerType    BrainType      // Primary layer type (Dense, Conv2D, RNN, LSTM, MHA)
+	InputSize    int            // Input dimension
+	HiddenSize   int            // Hidden layer dimension
+	OutputSize   int            // Output dimension
+	Activation   ActivationType // Activation function
+	InitScale    float32        // Weight initialization scale
+	NumLayers    int            // Number of hidden layers (default 2)
+	DType        DType          // Numerical type (DTypeFloat32, DTypeFloat64, etc.)
+}
+
+// StandardDTypes lists all supported numerical types as DType enum values
+var StandardDTypeList = []DType{
+	DTypeFloat32, DTypeFloat64,
+	DTypeInt8, DTypeInt16, DTypeInt32, DTypeInt64,
+	DTypeUint8, DTypeUint16, DTypeUint32, DTypeUint64,
+}
+
+// StandardDTypes lists all supported numerical types as strings (for compatibility)
+var StandardDTypes = []string{
+	"float32", "float64",
+	"int8", "int16", "int32", "int64",
+	"uint8", "uint16", "uint32", "uint64",
+}
+
+// DTypeToString converts a DType to its string representation
+func DTypeToString(dt DType) string {
+	switch dt {
+	case DTypeFloat32:
+		return "float32"
+	case DTypeFloat64:
+		return "float64"
+	case DTypeFloat16:
+		return "float16"
+	case DTypeInt8:
+		return "int8"
+	case DTypeInt16:
+		return "int16"
+	case DTypeInt32:
+		return "int32"
+	case DTypeInt64:
+		return "int64"
+	case DTypeUint8:
+		return "uint8"
+	case DTypeUint16:
+		return "uint16"
+	case DTypeUint32:
+		return "uint32"
+	case DTypeUint64:
+		return "uint64"
+	default:
+		return "float32"
+	}
+}
+
+// DTypeFromString converts a string to DType
+func DTypeFromString(s string) DType {
+	switch s {
+	case "float32":
+		return DTypeFloat32
+	case "float64":
+		return DTypeFloat64
+	case "float16":
+		return DTypeFloat16
+	case "int8":
+		return DTypeInt8
+	case "int16":
+		return DTypeInt16
+	case "int32":
+		return DTypeInt32
+	case "int64":
+		return DTypeInt64
+	case "uint8":
+		return DTypeUint8
+	case "uint16":
+		return DTypeUint16
+	case "uint32":
+		return DTypeUint32
+	case "uint64":
+		return DTypeUint64
+	default:
+		return DTypeFloat32
+	}
+}
+
+// DefaultSimpleConfig returns a default simple network configuration
+func DefaultSimpleConfig() SimpleNetworkConfig {
+	return SimpleNetworkConfig{
+		LayerType:  BrainDense,
+		InputSize:  16,
+		HiddenSize: 16,
+		OutputSize: 1,
+		Activation: ActivationLeakyReLU,
+		InitScale:  0.5,
+		NumLayers:  2,
+		DType:      DTypeFloat32,
+	}
+}
+
+// BuildSimpleNetwork creates a simple network with a single layer type
+// If DType is not DTypeFloat32, the network is converted to that type
+func BuildSimpleNetwork(config SimpleNetworkConfig) *Network {
+	// Build the base float32 network
+	var net *Network
+	switch config.LayerType {
+	case BrainConv2D:
+		net = buildSimpleConv2DNetwork(config)
+	case BrainRNN:
+		net = buildSimpleRNNNetwork(config)
+	case BrainLSTM:
+		net = buildSimpleLSTMNetwork(config)
+	case BrainMHA:
+		net = buildSimpleMHANetwork(config)
+	case BrainSwiGLU:
+		net = buildSimpleSwiGLUNetwork(config)
+	case BrainNormDense:
+		net = buildSimpleNormDenseNetwork(config)
+	case BrainConv1D:
+		net = buildSimpleConv1DNetwork(config)
+	case BrainResidual:
+		net = buildSimpleResidualNetwork(config)
+	default:
+		net = buildSimpleDenseNetwork(config)
+	}
+
+	// Note: DType conversion would happen here if ConvertNetwork was available
+	// For now, return the float32 network - type conversion is handled externally
+
+	return net
+}
+
+func buildSimpleDenseNetwork(config SimpleNetworkConfig) *Network {
+	net := NewNetwork(config.InputSize, 1, 1, 3)
+	net.BatchSize = 1
+
+	layer0 := InitDenseLayer(config.InputSize, config.HiddenSize, config.Activation)
+	scaleWeights(layer0.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 0, layer0)
+
+	layer1 := InitDenseLayer(config.HiddenSize, config.HiddenSize, config.Activation)
+	scaleWeights(layer1.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 1, layer1)
+
+	layer2 := InitDenseLayer(config.HiddenSize, config.OutputSize, ActivationSigmoid)
+	scaleWeights(layer2.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 2, layer2)
+
+	return net
+}
+
+func buildSimpleConv2DNetwork(config SimpleNetworkConfig) *Network {
+	net := NewNetwork(config.InputSize, 1, 1, 2)
+	net.BatchSize = 1
+
+	// Calculate square dimensions from input size
+	side := int(math.Sqrt(float64(config.InputSize)))
+	if side*side != config.InputSize {
+		side = 4 // default to 4x4 if not perfect square
+	}
+
+	// Conv2D: side x side x 1 with 2 filters, kernel 2x2, stride 1, padding 2
+	conv := InitConv2DLayer(side, side, 1, 2, 2, 1, 2, ActivationLeakyReLU)
+	net.SetLayer(0, 0, 0, conv)
+
+	// Calculate conv output size: ((side - kernel) / stride + 1)^2 * filters
+	// Note: The generic Conv2D implementation currently operates with VALID padding (ignoring the padding arg for shape)
+	outSide := (side - 2) / 1 + 1
+	convOutputSize := outSide * outSide * 2
+
+	// Dense output layer
+	dense := InitDenseLayer(convOutputSize, config.OutputSize, ActivationSigmoid)
+	scaleWeights(dense.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 1, dense)
+
+	return net
+}
+
+func buildSimpleRNNNetwork(config SimpleNetworkConfig) *Network {
+	net := NewNetwork(config.InputSize, 1, 1, 3)
+	net.BatchSize = 1
+
+	rnn := InitRNNLayer(config.InputSize, config.HiddenSize, 1, 1)
+	net.SetLayer(0, 0, 0, rnn)
+
+	layer1 := InitDenseLayer(config.HiddenSize, config.HiddenSize, config.Activation)
+	scaleWeights(layer1.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 1, layer1)
+
+	layer2 := InitDenseLayer(config.HiddenSize, config.OutputSize, ActivationSigmoid)
+	scaleWeights(layer2.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 2, layer2)
+
+	return net
+}
+
+func buildSimpleLSTMNetwork(config SimpleNetworkConfig) *Network {
+	net := NewNetwork(config.InputSize, 1, 1, 3)
+	net.BatchSize = 1
+
+	lstm := InitLSTMLayer(config.InputSize, config.HiddenSize, 1, 1)
+	net.SetLayer(0, 0, 0, lstm)
+
+	layer1 := InitDenseLayer(config.HiddenSize, config.HiddenSize, config.Activation)
+	scaleWeights(layer1.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 1, layer1)
+
+	layer2 := InitDenseLayer(config.HiddenSize, config.OutputSize, ActivationSigmoid)
+	scaleWeights(layer2.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 2, layer2)
+
+	return net
+}
+
+
+
+func buildSimpleMHANetwork(config SimpleNetworkConfig) *Network {
+	net := NewNetwork(config.InputSize, 1, 1, 3)
+	net.BatchSize = 1
+
+	// Input projection to dModel
+	layer0 := InitDenseLayer(config.InputSize, config.HiddenSize, config.Activation)
+	scaleWeights(layer0.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 0, layer0)
+
+	// MHA layer (4 heads by default)
+	numHeads := 4
+	if config.HiddenSize%numHeads != 0 {
+		numHeads = 2
+	}
+	mha := InitMHABrain(config.HiddenSize, numHeads, config.InitScale)
+	net.SetLayer(0, 0, 1, mha)
+
+	// Output projection
+	layer2 := InitDenseLayer(config.HiddenSize, config.OutputSize, ActivationSigmoid)
+	scaleWeights(layer2.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 2, layer2)
+
+	return net
+}
+
+func buildSimpleSwiGLUNetwork(config SimpleNetworkConfig) *Network {
+	net := NewNetwork(config.InputSize, 1, 1, 3)
+	net.BatchSize = 1
+
+	// SwiGLU: d_model -> d_model (internally expands to 4*d_model or similar)
+	l0 := InitSwiGLUBrain(config.InputSize, config.InitScale)
+	net.SetLayer(0, 0, 0, l0)
+
+	l1 := InitSwiGLUBrain(config.HiddenSize, config.InitScale)
+	net.SetLayer(0, 0, 1, l1)
+
+	l2 := InitDenseLayer(config.HiddenSize, config.OutputSize, ActivationSigmoid)
+	scaleWeights(l2.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 2, l2)
+
+	return net
+}
+
+func buildSimpleNormDenseNetwork(config SimpleNetworkConfig) *Network {
+	net := NewNetwork(config.InputSize, 1, 1, 3)
+	net.BatchSize = 1
+
+	l0 := InitNormDenseBrain(config.InputSize, config.Activation, config.InitScale)
+	net.SetLayer(0, 0, 0, l0)
+
+	l1 := InitNormDenseBrain(config.HiddenSize, config.Activation, config.InitScale)
+	net.SetLayer(0, 0, 1, l1)
+
+	l2 := InitDenseLayer(config.HiddenSize, config.OutputSize, ActivationSigmoid)
+	scaleWeights(l2.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 2, l2)
+
+	return net
+}
+
+func buildSimpleConv1DNetwork(config SimpleNetworkConfig) *Network {
+	net := NewNetwork(config.InputSize, 1, 1, 3)
+	net.BatchSize = 1
+
+	// Conv1D layer
+	l0 := InitConv1DBrain(config.InputSize, config.InitScale)
+	net.SetLayer(0, 0, 0, l0)
+
+	// Simple projection to HiddenSize
+	// Conv1D output size = Filters * SeqLen
+	// Filters = 2 (hardcoded in InitConv1DBrain), SeqLen = InputSize
+	convOutLen := config.InputSize // Stride=1, Pad=1, K=3 puts us back to InputSize
+	convOutputSize := 2 * convOutLen
+
+	l1 := InitDenseLayer(convOutputSize, config.HiddenSize, ActivationLeakyReLU)
+	scaleWeights(l1.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 1, l1)
+
+	l2 := InitDenseLayer(config.HiddenSize, config.OutputSize, ActivationSigmoid)
+	scaleWeights(l2.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 2, l2)
+
+	return net
+}
+
+func buildSimpleResidualNetwork(config SimpleNetworkConfig) *Network {
+	net := NewNetwork(config.InputSize, 1, 1, 4) // Increased to 4 layers
+	net.BatchSize = 1
+
+	// L0: Input projection (Input -> Hidden)
+	l0 := InitDenseLayer(config.InputSize, config.HiddenSize, ActivationLeakyReLU)
+	scaleWeights(l0.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 0, l0)
+
+	// L1: Intermediate processing (Hidden -> Hidden)
+	// This ensures the Residual layer at L2 sees Hidden-sized input from L1
+	// and skips to L1's input (which is L0's output, also Hidden-sized)
+	l1 := InitDenseLayer(config.HiddenSize, config.HiddenSize, ActivationLeakyReLU)
+	scaleWeights(l1.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 1, l1)
+
+	// L2: Residual connection
+	// Adds L1 Output (Hidden) + L1 Input (Hidden)
+	l2 := InitResidualBrain()
+	net.SetLayer(0, 0, 2, l2)
+
+	// L3: Output projection (Hidden -> Output)
+	l3 := InitDenseLayer(config.HiddenSize, config.OutputSize, ActivationSigmoid)
+	scaleWeights(l3.Kernel, config.InitScale)
+	net.SetLayer(0, 0, 3, l3)
+
+	return net
+}
+
+
+
+// BrainTypeFromString converts a string name to BrainType
+func BrainTypeFromString(name string) BrainType {
+	for i, n := range BrainTypeNames {
+		if strings.EqualFold(n, name) {
+			return BrainType(i)
+		}
+	}
+	return BrainDense // default
+}
+
+// StandardBrainTypes lists common brain types suitable for simple networks
+var StandardBrainTypes = []BrainType{
+	BrainDense,
+	BrainConv2D,
+	BrainRNN,
+	BrainLSTM,
+	BrainMHA,
+}
+
+// AllBrainTypes lists all available brain types
+var AllBrainTypes = []BrainType{
+	BrainMHA,
+	BrainLSTM,
+	BrainRNN,
+	BrainDense,
+	BrainSwiGLU,
+	BrainNormDense,
+	BrainConv2D,
+	BrainConv1D,
+	BrainSoftmax,
+	BrainNorm,
+	BrainRMSNorm,
+	BrainResidual,
+	BrainEmbedding,
+	BrainSequential,
+	BrainParallel,
+}
+
+// GenerateAllSimpleConfigs generates all permutations of layer types × numerical types
+// Returns len(layerTypes) × len(dtypes) configurations
+func GenerateAllSimpleConfigs(base SimpleNetworkConfig, layerTypes []BrainType, dtypes []DType) []SimpleNetworkConfig {
+	if len(layerTypes) == 0 {
+		layerTypes = StandardBrainTypes
+	}
+	if len(dtypes) == 0 {
+		dtypes = StandardDTypeList
+	}
+
+	configs := make([]SimpleNetworkConfig, 0, len(layerTypes)*len(dtypes))
+	for _, lt := range layerTypes {
+		for _, dt := range dtypes {
+			cfg := base
+			cfg.LayerType = lt
+			cfg.DType = dt
+			configs = append(configs, cfg)
+		}
+	}
+	return configs
+}
+
+// GenerateSimpleConfigs generates configs for specific layer types with all dtypes
+func GenerateSimpleConfigs(base SimpleNetworkConfig, layerTypes []BrainType) []SimpleNetworkConfig {
+	return GenerateAllSimpleConfigs(base, layerTypes, StandardDTypeList)
 }
 
 // =============================================================================

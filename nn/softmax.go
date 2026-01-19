@@ -99,6 +99,12 @@ func InitEntmaxLayer(alpha float32) LayerConfig {
 func ForwardSoftmaxCPU(input []float32, config *LayerConfig) ([]float32, error) {
 	switch config.SoftmaxVariant {
 	case SoftmaxStandard:
+		// Check for batching implied by InputHeight
+		if config.InputHeight > 0 && len(input) > config.InputHeight && len(input)%config.InputHeight == 0 {
+			rows := len(input) / config.InputHeight
+			cols := config.InputHeight
+			return softmaxGrid(input, rows, cols, config.Temperature), nil
+		}
 		return softmaxStandard(input, config.Temperature), nil
 
 	case SoftmaxGrid:
@@ -211,7 +217,7 @@ func ApplySoftmaxGrid[T Numeric](logits *Tensor[T], rows, cols int, temperature 
 // SoftmaxBackward computes gradients for Softmax layer.
 func SoftmaxBackward[T Numeric](gradOutput, output *Tensor[T], softmaxRows, softmaxCols int) *Tensor[T] {
 	gradInput := NewTensor[T](len(gradOutput.Data))
-	
+
 	// If dimensions not specified, treat as single vector
 	if softmaxRows == 0 {
 		softmaxRows = 1
@@ -222,36 +228,36 @@ func SoftmaxBackward[T Numeric](gradOutput, output *Tensor[T], softmaxRows, soft
 	for r := 0; r < softmaxRows; r++ {
 		start := r * softmaxCols
 		end := start + softmaxCols
-		
+
 		// For each element in this row
 		for i := start; i < end; i++ {
 			var gradSum float64
 			// Jacobian-vector product: dL/dx_i = sum_j (dL/dx_j * dy_j/dx_i)
 			// dy_j/dx_i = y_i * (delta_ij - y_j)
-			
+
 			// For integer types, the output values are scaled by 100.
 			// We need to unscale them to get probabilities [0, 1] for the Jacobian.
 			y_i := float64(output.Data[i])
 			if IsIntegerType[T]() {
 				y_i /= 100.0
 			}
-			
+
 			for j := start; j < end; j++ {
 				grad_j := float64(gradOutput.Data[j])
 				y_j := float64(output.Data[j])
 				if IsIntegerType[T]() {
 					y_j /= 100.0
 				}
-				
+
 				delta := 0.0
 				if i == j {
 					delta = 1.0
 				}
-				
+
 				jacobian := y_i * (delta - y_j)
 				gradSum += grad_j * jacobian
 			}
-			
+
 			// For integer types, we scale the gradient by 100 to match activation scaling
 			if IsIntegerType[T]() {
 				gradSum *= 100.0
