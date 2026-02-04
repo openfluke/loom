@@ -393,6 +393,30 @@ func ParallelBackward[T Numeric](
 				} else {
 					size = batchSize * branchCfg.ClusterDim
 				}
+			case LayerParallel:
+				// Generic Parallel dummy forward to determine size
+				nestedBranches := make([]*LayerConfig, len(branchCfg.ParallelBranches))
+				for j := range branchCfg.ParallelBranches {
+					nestedBranches[j] = &branchCfg.ParallelBranches[j]
+				}
+				dummyOut, _, err := ParallelForward[T](input, nestedBranches, batchSize, branchCfg.CombineMode)
+				if err == nil {
+					size = len(dummyOut.Data)
+				} else {
+					size = len(input.Data)
+				}
+			case LayerSequential:
+				// Generic Sequential dummy forward to determine size
+				nestedLayers := make([]*LayerConfig, len(branchCfg.ParallelBranches))
+				for j := range branchCfg.ParallelBranches {
+					nestedLayers[j] = &branchCfg.ParallelBranches[j]
+				}
+				dummyOut, _, err := SequentialForward[T](input, nestedLayers, batchSize)
+				if err == nil {
+					size = len(dummyOut.Data)
+				} else {
+					size = len(input.Data)
+				}
 			default:
 				size = len(input.Data)
 			}
@@ -981,6 +1005,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
 				outputSize = len(dummyOut)
+			case LayerSequential:
+				dummyOut, _, err := sequentialForwardCPU(input, branchCfg.ParallelBranches, batchSize)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to determine nested sequential output size: %w", err)
+				}
+				outputSize = len(dummyOut)
 			case LayerKMeans:
 				if branchCfg.KMeansOutputMode == "probabilities" {
 					outputSize = batchSize * branchCfg.NumClusters
@@ -1049,6 +1079,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
 				}
 				branchOutputSize = len(dummyOut)
+			case LayerSequential:
+				dummyOut, _, err := sequentialForwardCPU(input, branchCfg.ParallelBranches, batchSize)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to determine nested sequential output size: %w", err)
+				}
+				branchOutputSize = len(dummyOut)
 			case LayerKMeans:
 				if branchCfg.KMeansOutputMode == "probabilities" {
 					branchOutputSize = batchSize * branchCfg.NumClusters
@@ -1101,6 +1137,12 @@ func parallelBackwardCPU(input []float32, gradOutput []float32, branchPreActivat
 				dummyOut, _, err := parallelForwardCPU(input, branchCfg, batchSize, mode)
 				if err != nil {
 					return nil, nil, nil, fmt.Errorf("failed to determine nested parallel output size: %w", err)
+				}
+				branchOutputSize = len(dummyOut)
+			case LayerSequential:
+				dummyOut, _, err := sequentialForwardCPU(input, branchCfg.ParallelBranches, batchSize)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to determine nested sequential output size: %w", err)
 				}
 				branchOutputSize = len(dummyOut)
 			case LayerKMeans:

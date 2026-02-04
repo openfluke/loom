@@ -813,8 +813,8 @@ func (n *Network) InitializeWeights() {
 				}
 			}
 
-		case LayerParallel:
-			// Initialize each branch recursively
+		case LayerParallel, LayerSequential:
+			// Initialize each branch/layer recursively
 			for b := range cfg.ParallelBranches {
 				branchCfg := &cfg.ParallelBranches[b]
 

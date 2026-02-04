@@ -407,8 +407,8 @@ func (n *Network) printGradientStats() {
 	}
 }
 
-// calculateMSELoss computes Mean Squared Error loss
-func calculateMSELoss(output, target []float32) float64 {
+// CalculateMSELoss computes Mean Squared Error loss
+func CalculateMSELoss(output, target []float32) float64 {
 	sum := 0.0
 	for i := 0; i < len(output) && i < len(target); i++ {
 		diff := float64(output[i] - target[i])
@@ -417,8 +417,8 @@ func calculateMSELoss(output, target []float32) float64 {
 	return sum / float64(len(output))
 }
 
-// calculateMSEGradient computes gradient for MSE loss
-func calculateMSEGradient(output, target []float32) []float32 {
+// CalculateMSEGradient computes gradient for MSE loss
+func CalculateMSEGradient(output, target []float32) []float32 {
 	grad := make([]float32, len(output))
 	scale := float32(2.0) / float32(len(output))
 	for i := 0; i < len(output) && i < len(target); i++ {

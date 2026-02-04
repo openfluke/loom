@@ -352,6 +352,8 @@ func StepForwardGeneric[T Numeric](
 func getLayerOutputSize(config *LayerConfig, batchSize int) int {
 	if config.Type == LayerConv2D {
 		return config.Filters * config.OutputHeight * config.OutputWidth * batchSize
+	} else if config.Type == LayerConv1D {
+		return config.Conv1DFilters * config.OutputHeight * batchSize
 	} else if config.Type == LayerDense {
 		return config.OutputHeight
 	} else if config.Type == LayerRNN || config.Type == LayerLSTM {
