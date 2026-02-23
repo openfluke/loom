@@ -1,0 +1,13 @@
+name: loom
+description: Dart bindings for the Loom neural-network inference engine (via C ABI).
+version: 0.1.0
+homepage: https://github.com/openfluke/loom
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  ffi: ^2.1.0
+
+dev_dependencies:
+  lints: ^3.0.0
