@@ -15,7 +15,8 @@ type LayerNormSpec struct {
 }
 
 type LayerNormLayer struct {
-	Spec LayerNormSpec
+	Spec      LayerNormSpec
+	BatchSize int // Number of vectors to normalize
 
 	pipeline  *wgpu.ComputePipeline
 	bindGroup *wgpu.BindGroup
@@ -54,11 +55,11 @@ func (l *LayerNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error
 	var err error
 
 	// Ensure batch size is at least 1
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
-	totalSize := batch * l.Spec.NormSize
+	totalSize := batch * l.Spec.BatchSize * l.Spec.NormSize
 
 	// Input: batch * normSize elements
 	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -120,11 +121,11 @@ func (l *LayerNormLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix strin
 	var err error
 
 	// Ensure batch size is at least 1
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
-	totalSize := batch * l.Spec.NormSize
+	totalSize := batch * l.Spec.BatchSize * l.Spec.NormSize
 
 	// Input Grad: batch * normSize elements
 	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -480,7 +481,7 @@ func (l *LayerNormLayer) GenerateReduceShader() string {
 			final_gamma[idx] = final_gamma[idx] + sum_g;
 			final_beta[idx]  = final_beta[idx]  + sum_b;
 		}
-	`, l.Spec.NormSize, l.Spec.BatchSize)
+	`, l.Spec.NormSize, uint32(l.BatchSize)*uint32(l.Spec.BatchSize))
 }
 
 func (l *LayerNormLayer) Compile(ctx *Context, labelPrefix string) error {
@@ -665,12 +666,12 @@ func (l *LayerNormLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix strin
 func (l *LayerNormLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.SetPipeline(l.pipeline)
 	pass.SetBindGroup(0, l.bindGroup, nil)
-	// Launch one workgroup per batch sample
-	batch := l.Spec.BatchSize
+	// Launch one workgroup per vector (Batch * Spec.BatchSize)
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
-	pass.DispatchWorkgroups(uint32(batch), 1, 1)
+	pass.DispatchWorkgroups(uint32(batch*l.Spec.BatchSize), 1, 1)
 }
 
 func (l *LayerNormLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
@@ -679,12 +680,12 @@ func (l *LayerNormLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	// Pass 1: Backward Compute (Partial Gradients)
 	pass.SetPipeline(l.bwPipeline)
 	pass.SetBindGroup(0, l.bwBindGroup, nil)
-	// Launch one workgroup per batch sample
-	batch := l.Spec.BatchSize
+	// Launch one workgroup per vector (Batch * Spec.BatchSize)
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
-	pass.DispatchWorkgroups(uint32(batch), 1, 1)
+	pass.DispatchWorkgroups(uint32(batch*l.Spec.BatchSize), 1, 1)
 	pass.End()
 
 	// Pass 2: Reduction (Final Gradients)
@@ -776,7 +777,11 @@ func (l *LayerNormLayer) DownloadGradients(ctx *Context) ([]float32, []float32, 
 	}
 
 	// Input Grad
-	iGrad, err := ReadBuffer(l.InputGradientBuffer, l.Spec.NormSize) // Batch=1 assumed
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
+	iGrad, err := ReadBuffer(l.InputGradientBuffer, batch*l.Spec.BatchSize*l.Spec.NormSize)
 	if err != nil {
 		return nil, nil, nil, err
 	}

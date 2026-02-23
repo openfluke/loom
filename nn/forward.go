@@ -413,7 +413,12 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					data = probs
 				} else if config.Type == LayerDense {
 					// Dense/Fully-Connected layer with weight matrix
-					preAct, postAct := denseForwardCPU(data, config, n.BatchSize)
+					// Dynamic batch: for sequence models, len(data) / inputSize
+					actualBatch := n.BatchSize
+					if config.InputHeight > 0 && len(data)%config.InputHeight == 0 {
+						actualBatch = len(data) / config.InputHeight
+					}
+					preAct, postAct := denseForwardCPU(data, config, actualBatch)
 
 					// Store pre-activation values
 					n.preActivations[layerIdx] = preAct
@@ -445,7 +450,12 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					data = postAct
 				} else if config.Type == LayerNorm {
 					// Layer Normalization with residual connection
-					normalized := layerNormForwardCPU(data, residualInput, config, n.BatchSize)
+					// Dynamic batch: for sequence models, len(data) / normSize
+					actualBatch := n.BatchSize
+					if config.NormSize > 0 && len(data)%config.NormSize == 0 {
+						actualBatch = len(data) / config.NormSize
+					}
+					normalized := layerNormForwardCPU(data, residualInput, config, actualBatch)
 
 					// Store pre-normalization values
 					n.preActivations[layerIdx] = make([]float32, len(data))
@@ -612,7 +622,29 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 	wgx := n.deviceInfo.WorkgroupX
 
 	N := len(input)
-	bytes := uint64(N * 4)
+	maxFloatSize := N
+	// Scan layers for max intermediate size
+	for _, l := range n.Layers {
+		// Estimate output size
+		size := n.InputSize // fallback
+		switch l.Type {
+		case LayerDense:
+			size = l.OutputHeight
+		case LayerConv2D:
+			size = l.Filters * l.OutputHeight * l.OutputWidth
+		case LayerMultiHeadAttention:
+			size = l.DModel * l.SeqLength
+		case LayerLSTM, LayerRNN:
+			size = l.HiddenSize * l.SeqLength
+		case LayerSwiGLU:
+			size = l.OutputHeight * 4 // SwiGLU often expands
+		}
+		if size > maxFloatSize {
+			maxFloatSize = size
+		}
+	}
+
+	bytes := uint64(maxFloatSize * 4)
 	totalLayers := n.TotalLayers()
 
 	// Build pipelines for each unique activation type (cached after first call)

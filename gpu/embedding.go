@@ -16,7 +16,8 @@ type EmbeddingSpec struct {
 
 // EmbeddingLayer holds GPU resources for Embedding lookup
 type EmbeddingLayer struct {
-	Spec EmbeddingSpec
+	Spec      EmbeddingSpec
+	BatchSize int // Number of samples
 
 	pipeline  *wgpu.ComputePipeline
 	bindGroup *wgpu.BindGroup
@@ -42,17 +43,24 @@ func (l *EmbeddingLayer) GetInputGradientBuffer() *wgpu.Buffer { return nil } //
 func (l *EmbeddingLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
+
+	totalTokens := batch * l.Spec.SeqLength
+
 	// Token input buffer (u32 token IDs)
 	l.TokenBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Tokens",
-		Size:  uint64(l.Spec.SeqLength * 4), // u32 per token
+		Size:  uint64(totalTokens * 4), // u32 per token
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
 	})
 	if err != nil {
 		return err
 	}
 
-	outputSize := l.Spec.SeqLength * l.Spec.EmbeddingDim
+	outputSize := totalTokens * l.Spec.EmbeddingDim
 	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
 		Size:  uint64(outputSize * 4),
@@ -74,6 +82,7 @@ func (l *EmbeddingLayer) AllocateBuffers(ctx *Context, labelPrefix string) error
 		return err
 	}
 
+	outputSize = batch * l.Spec.SeqLength * l.Spec.EmbeddingDim
 	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(outputSize * 4),
@@ -120,7 +129,7 @@ func (l *EmbeddingLayer) GenerateShader() string {
 				output[idx] = 0.0;
 			}
 		}
-	`, l.Spec.SeqLength, l.Spec.EmbeddingDim, l.Spec.VocabSize)
+	`, uint32(l.BatchSize)*uint32(l.Spec.SeqLength), l.Spec.EmbeddingDim, l.Spec.VocabSize)
 }
 
 func (l *EmbeddingLayer) GenerateBackwardShader() string {
@@ -176,7 +185,7 @@ func (l *EmbeddingLayer) GenerateBackwardShader() string {
 			let current = d_weights[idx];
 			d_weights[idx] = current + grad_acc;
 		}
-	`, l.Spec.SeqLength, l.Spec.EmbeddingDim, l.Spec.VocabSize, l.Spec.SeqLength)
+	`, uint32(l.BatchSize)*uint32(l.Spec.SeqLength), l.Spec.EmbeddingDim, l.Spec.VocabSize, uint32(l.BatchSize)*uint32(l.Spec.SeqLength))
 }
 
 func (l *EmbeddingLayer) Compile(ctx *Context, labelPrefix string) error {
@@ -290,7 +299,11 @@ func (l *EmbeddingLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix strin
 func (l *EmbeddingLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.SetPipeline(l.pipeline)
 	pass.SetBindGroup(0, l.bindGroup, nil)
-	total := l.Spec.SeqLength * l.Spec.EmbeddingDim
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
+	total := batch * l.Spec.SeqLength * l.Spec.EmbeddingDim
 	wgx := (total + 255) / 256
 	pass.DispatchWorkgroups(uint32(wgx), 1, 1)
 }
@@ -299,7 +312,11 @@ func (l *EmbeddingLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(l.bwPipeline)
 	pass.SetBindGroup(0, l.bwBindGroup, nil)
-	total := l.Spec.SeqLength * l.Spec.EmbeddingDim
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
+	total := batch * l.Spec.SeqLength * l.Spec.EmbeddingDim
 	wgx := (total + 255) / 256
 	pass.DispatchWorkgroups(uint32(wgx), 1, 1)
 	pass.End()

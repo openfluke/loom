@@ -15,7 +15,8 @@ type SoftmaxSpec struct {
 
 // SoftmaxLayer holds GPU resources for Softmax
 type SoftmaxLayer struct {
-	Spec SoftmaxSpec
+	Spec      SoftmaxSpec
+	BatchSize int // Number of independent softmax operations
 
 	pipeline  *wgpu.ComputePipeline
 	bindGroup *wgpu.BindGroup
@@ -40,7 +41,7 @@ func (l *SoftmaxLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGra
 func (l *SoftmaxLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
@@ -75,7 +76,7 @@ func (l *SoftmaxLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 func (l *SoftmaxLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
@@ -340,7 +341,7 @@ func (l *SoftmaxLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string,
 func (l *SoftmaxLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.SetPipeline(l.pipeline)
 	pass.SetBindGroup(0, l.bindGroup, nil)
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
@@ -351,7 +352,7 @@ func (l *SoftmaxLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(l.bwPipeline)
 	pass.SetBindGroup(0, l.bwBindGroup, nil)
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
@@ -368,7 +369,7 @@ func (l *SoftmaxLayer) DownloadWeights(ctx *Context) ([]float32, []float32, erro
 }
 
 func (l *SoftmaxLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []float32, error) {
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}

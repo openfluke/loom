@@ -68,24 +68,51 @@ func (n *Network) WeightsToGPU() error {
 		}
 
 		if gpuLayer != nil {
-			// Set BatchSize if supported
+			// Determine the sequence multiplier for this layer
+			// LayerOutputSize is per-sample.
+			// Default multiplier is 1.
+
+			// For specific layers that are vector-wise, we set BatchSize = total_vectors
 			if dense, ok := gpuLayer.(*gpu.DenseLayer); ok {
-				dense.BatchSize = n.BatchSize
-			}
-			if conv2d, ok := gpuLayer.(*gpu.Conv2DLayer); ok {
-				conv2d.BatchSize = n.BatchSize
-			}
-			if conv1d, ok := gpuLayer.(*gpu.Conv1DLayer); ok {
-				conv1d.BatchSize = n.BatchSize
-			}
-			if rnn, ok := gpuLayer.(*gpu.RNNLayer); ok {
-				rnn.BatchSize = n.BatchSize
-			}
-			if lstm, ok := gpuLayer.(*gpu.LSTMLayer); ok {
-				lstm.BatchSize = n.BatchSize
-			}
-			if mha, ok := gpuLayer.(*gpu.MHALayer); ok {
-				mha.BatchSize = n.BatchSize
+				seqMult := 1
+				if dense.Spec.InputSize > 0 {
+					seqMult = outputSize / dense.Spec.InputSize // outputSize is previous layer's output
+				}
+				if seqMult < 1 {
+					seqMult = 1
+				}
+				dense.BatchSize = n.BatchSize * seqMult
+			} else if ln, ok := gpuLayer.(*gpu.LayerNormLayer); ok {
+				ln.BatchSize = n.BatchSize * ln.Spec.BatchSize // Spec.BatchSize is actually vectors-per-sample here
+			} else if rms, ok := gpuLayer.(*gpu.RMSNormLayer); ok {
+				rms.BatchSize = n.BatchSize * rms.Spec.BatchSize // Spec.BatchSize is actually vectors-per-sample
+			} else if swi, ok := gpuLayer.(*gpu.SwiGLULayer); ok {
+				swi.BatchSize = n.BatchSize * swi.Spec.SeqLen
+			} else if sm, ok := gpuLayer.(*gpu.SoftmaxLayer); ok {
+				seqMult := 1
+				if sm.Spec.Size > 0 {
+					seqMult = outputSize / sm.Spec.Size
+				}
+				if seqMult < 1 {
+					seqMult = 1
+				}
+				sm.BatchSize = n.BatchSize * seqMult
+			} else {
+				// Fallback generic batch size
+				// Use reflection-like check or just cast popular ones
+				if c2d, ok := gpuLayer.(*gpu.Conv2DLayer); ok {
+					c2d.BatchSize = n.BatchSize
+				} else if c1d, ok := gpuLayer.(*gpu.Conv1DLayer); ok {
+					c1d.BatchSize = n.BatchSize
+				} else if mha, ok := gpuLayer.(*gpu.MHALayer); ok {
+					mha.BatchSize = n.BatchSize
+				} else if emb, ok := gpuLayer.(*gpu.EmbeddingLayer); ok {
+					emb.BatchSize = n.BatchSize
+				} else if rnn, ok := gpuLayer.(*gpu.RNNLayer); ok {
+					rnn.BatchSize = n.BatchSize
+				} else if lstm, ok := gpuLayer.(*gpu.LSTMLayer); ok {
+					lstm.BatchSize = n.BatchSize
+				}
 			}
 
 			layers = append(layers, gpuLayer)
@@ -153,34 +180,37 @@ func (n *Network) WeightsToGPU() error {
 	}
 
 	// Initialize Residual Buffers/Pipeline
-	// Find max buffer size (max sequence length * hidden size)
-	maxSize := 0
-	for _, l := range layers {
-		if mha, ok := l.(*gpu.MHALayer); ok {
-			size := int(mha.GetInputBuffer().GetSize() / 4)
-			if size > maxSize {
-				maxSize = size
-			}
-		} else if swiglu, ok := l.(*gpu.SwiGLULayer); ok {
-			size := int(swiglu.GetInputBuffer().GetSize() / 4)
-			if size > maxSize {
-				maxSize = size
+	// Only allocated when EnableGPUResiduals=true (opt-in for transformer inference).
+	// Generic networks must NOT have implicit residuals injected between norm and MHA/SwiGLU.
+	if n.EnableGPUResiduals {
+		maxSize := 0
+		for _, l := range layers {
+			if mha, ok := l.(*gpu.MHALayer); ok {
+				size := int(mha.GetInputBuffer().GetSize() / 4)
+				if size > maxSize {
+					maxSize = size
+				}
+			} else if swiglu, ok := l.(*gpu.SwiGLULayer); ok {
+				size := int(swiglu.GetInputBuffer().GetSize() / 4)
+				if size > maxSize {
+					maxSize = size
+				}
 			}
 		}
-	}
-	if maxSize > 0 {
-		n.gpuResidualBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-			Label: "Network_ResidualBuf",
-			Size:  uint64(maxSize * 4),
-			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-		})
-		if err != nil {
-			return fmt.Errorf("create residual buffer: %w", err)
-		}
+		if maxSize > 0 {
+			n.gpuResidualBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+				Label: "Network_ResidualBuf",
+				Size:  uint64(maxSize * 4),
+				Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+			})
+			if err != nil {
+				return fmt.Errorf("create residual buffer: %w", err)
+			}
 
-		n.gpuResidualAdder, err = gpu.NewInPlaceResidual(ctx, maxSize)
-		if err != nil {
-			return fmt.Errorf("create residual adder: %w", err)
+			n.gpuResidualAdder, err = gpu.NewInPlaceResidual(ctx, maxSize)
+			if err != nil {
+				return fmt.Errorf("create residual adder: %w", err)
+			}
 		}
 	}
 
@@ -399,23 +429,35 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 		if mha, ok := l.(*gpu.MHALayer); ok {
 			isMHA = true
 			mhaLayer = mha
-			// Fix A: Correct Sequence Length (Tokens vs Floats)
-			mha.SetActualSeqLen(ctx, seqTokens)
+			// Fix A: Correct Sequence Length (Tokens vs Floats).
+			// seqTokens = len(input)/n.InputSize is only valid for embedding-first LLMs where
+			// n.InputSize == d_model (so seqTokens = actual token count).
+			// For any other network (e.g. Combined_Hybrid where n.InputSize=512, d_model=64),
+			// seqTokens would be 1 instead of 8, causing MHA to process only 1 token and
+			// leaving 7/8 of the output buffer as zeros/garbage.
+			// Fix: only override when the network is embedding-first (LLM inference).
+			_, firstIsEmbed := layers[0].(*gpu.EmbeddingLayer)
+			if firstIsEmbed {
+				mha.SetActualSeqLen(ctx, seqTokens)
+			}
+			// else: MHA uses its compiled Spec.SeqLen which was set in buildGPULayer
 		}
 
-		// Residual Start: Capture input of RMSNorm/LayerNorm
-		isNorm := false
-		if _, ok := l.(*gpu.RMSNormLayer); ok {
-			isNorm = true
-		}
-		if _, ok := l.(*gpu.LayerNormLayer); ok {
-			isNorm = true
-		}
-
-		if isNorm && n.gpuResidualBuffer != nil {
-			endPass()
-			// Copy this layer's input (which is the input to the block) to residual buffer
-			cmdEnc.CopyBufferToBuffer(l.GetInputBuffer(), 0, n.gpuResidualBuffer, 0, l.GetInputBuffer().GetSize())
+		// Residual Start: Capture input of RMSNorm/LayerNorm (transformer-block skip connection).
+		// Only active when EnableGPUResiduals=true to avoid polluting generic networks.
+		if n.EnableGPUResiduals && n.gpuResidualBuffer != nil {
+			isNorm := false
+			if _, ok := l.(*gpu.RMSNormLayer); ok {
+				isNorm = true
+			}
+			if _, ok := l.(*gpu.LayerNormLayer); ok {
+				isNorm = true
+			}
+			if isNorm {
+				endPass()
+				// Copy this layer's input (pre-norm) to residual buffer
+				cmdEnc.CopyBufferToBuffer(l.GetInputBuffer(), 0, n.gpuResidualBuffer, 0, l.GetInputBuffer().GetSize())
+			}
 		}
 
 		// 2. Dispatch Layer
@@ -428,27 +470,37 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 		}
 
 		// 3. Post-Layer Actions (Residual Add)
-		// Apply residual after MHA or SwiGLU (end of block)
-		isSwiGLU := false
-		if _, ok := l.(*gpu.SwiGLULayer); ok {
-			isSwiGLU = true
-		}
-
-		if (isMHA || isSwiGLU) && n.gpuResidualBuffer != nil && resAdder != nil {
-			// Add residual: Output = Output + ResidualBuf
-			ensurePass() // Must be in pass
-			bg, err := resAdder.Dispatch(ctx, pass, l.GetOutputBuffer(), n.gpuResidualBuffer)
-			if err != nil {
-				return nil, fmt.Errorf("residual bind group: %w", err)
+		// Apply residual after MHA or SwiGLU (end of transformer block).
+		// Only active when EnableGPUResiduals=true.
+		if n.EnableGPUResiduals && n.gpuResidualBuffer != nil && resAdder != nil {
+			isSwiGLU := false
+			if _, ok := l.(*gpu.SwiGLULayer); ok {
+				isSwiGLU = true
 			}
-			tempBindGroups = append(tempBindGroups, bg)
+			if isMHA || isSwiGLU {
+				// Add residual: Output = Output + ResidualBuf
+				ensurePass()
+				bg, err := resAdder.Dispatch(ctx, pass, l.GetOutputBuffer(), n.gpuResidualBuffer)
+				if err != nil {
+					return nil, fmt.Errorf("residual bind group: %w", err)
+				}
+				tempBindGroups = append(tempBindGroups, bg)
+			}
 		}
 
 		// 4. Data Flow (Copy Output to Next Layer)
 		if i < len(layers)-1 {
 			next := layers[i+1]
 			endPass() // Copy requires encoder level
-			cmdEnc.CopyBufferToBuffer(l.GetOutputBuffer(), 0, next.GetInputBuffer(), 0, l.GetOutputBuffer().GetSize())
+			sz := l.GetOutputBuffer().GetSize()
+			dsz := next.GetInputBuffer().GetSize()
+			if sz != dsz {
+				fmt.Printf("⚠️  GPU Buffer Size Mismatch at layer %d: %d -> %d\n", i, sz, dsz)
+				if sz > dsz {
+					sz = dsz
+				}
+			}
+			cmdEnc.CopyBufferToBuffer(l.GetOutputBuffer(), 0, next.GetInputBuffer(), 0, sz)
 		} else {
 			// Final output to staging
 			endPass()
@@ -610,19 +662,19 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		}
 	}
 
-	// Resolve a stable seqLen/batch for transformer-ish layers.
+	// Resolve a stable seqLen (per-sample) for transformer-ish layers.
 	// Priority:
 	//  1) l.SeqLength (you set this before mounting)
-	//  2) n.BatchSize (mount-time BatchSize)
-	//  3) fallback derived guess
+	//  2) fallback derived guess
+	//  3) 1
 	resolveSeqLen := func(derived int) int {
 		if l.SeqLength > 0 {
 			return l.SeqLength
 		}
-		if n.BatchSize > 0 {
-			return n.BatchSize
+		if derived > 0 {
+			return derived
 		}
-		return max1(derived)
+		return 1
 	}
 
 	switch l.Type {
@@ -664,7 +716,7 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 
 		spec := gpu.LayerNormSpec{
 			NormSize:  pixelSize,
-			BatchSize: batchSize,
+			BatchSize: batchSize, // Vectors per sample
 			Epsilon:   l.Epsilon,
 			Gamma:     l.Gamma,
 			Beta:      l.Beta,
@@ -685,7 +737,7 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 
 		spec := gpu.RMSNormSpec{
 			NormSize:  pixelSize,
-			BatchSize: batchSize,
+			BatchSize: batchSize, // Vectors per sample
 			Epsilon:   l.Epsilon,
 			Gamma:     l.Gamma,
 		}
@@ -698,7 +750,7 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		}
 		spec := gpu.SoftmaxSpec{
 			Size:        inputSize,
-			BatchSize:   resolveSeqLen(1),
+			BatchSize:   resolveSeqLen(1), // Usually 1 or SeqLen
 			Temperature: temp,
 		}
 		return &gpu.SoftmaxLayer{Spec: spec}, inputSize, nil

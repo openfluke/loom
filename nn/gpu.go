@@ -96,6 +96,15 @@ fn activate(v: f32) -> f32 {
     }
     return v;
 }`
+	case 5: // ActivationGELU
+		activationCode = `
+fn activate(v: f32) -> f32 {
+    let sqrt2Pi: f32 = 0.7978845608;
+    let coeff: f32 = 0.044715;
+    let x3 = v * v * v;
+    let inner = sqrt2Pi * (v + coeff * x3);
+    return 0.5 * v * (1.0 + tanh(inner));
+}`
 	}
 
 	return fmt.Sprintf(`
@@ -161,6 +170,18 @@ fn activate_derivative(pre_v: f32) -> f32 {
     }
     return 0.1;
 }`
+	case 5: // ActivationGELU
+		derivativeCode = `
+fn activate_derivative(v: f32) -> f32 {
+    let sqrt2Pi: f32 = 0.7978845608;
+    let coeff: f32 = 0.044715;
+    let x2 = v * v;
+    let x3 = x2 * v;
+    let inner = sqrt2Pi * (v + coeff * x3);
+    let tanhInner = tanh(inner);
+    let sech2 = 1.0 - tanhInner * tanhInner;
+    return 0.5 * (1.0 + tanhInner) + 0.5 * v * sech2 * sqrt2Pi * (1.0 + 3.0 * coeff * x2);
+}`
 	}
 
 	return fmt.Sprintf(`
@@ -217,6 +238,15 @@ fn activate(v: f32) -> f32 {
 fn activate(v: f32) -> f32 {
     if (v >= 0.0) { return v; }
     return 0.1 * v;
+}`
+	case 5: // ActivationGELU
+		activationCode = `
+fn activate(v: f32) -> f32 {
+    let sqrt2Pi: f32 = 0.7978845608;
+    let coeff: f32 = 0.044715;
+    let x3 = v * v * v;
+    let inner = sqrt2Pi * (v + coeff * x3);
+    return 0.5 * v * (1.0 + tanh(inner));
 }`
 	}
 

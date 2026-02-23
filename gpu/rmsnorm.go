@@ -17,7 +17,8 @@ type RMSNormSpec struct {
 
 // RMSNormLayer holds GPU resources for RMS Normalization
 type RMSNormLayer struct {
-	Spec RMSNormSpec
+	Spec      RMSNormSpec
+	BatchSize int // Number of vectors to normalize
 
 	pipeline  *wgpu.ComputePipeline
 	bindGroup *wgpu.BindGroup
@@ -50,7 +51,7 @@ func (l *RMSNormLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGra
 func (l *RMSNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
@@ -97,7 +98,7 @@ func (l *RMSNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 func (l *RMSNormLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
@@ -339,7 +340,7 @@ func (l *RMSNormLayer) GenerateReduceShader() string {
 			// Accumulate
 			final_gamma[idx] = final_gamma[idx] + sum_g;
 		}
-	`, l.Spec.NormSize, l.Spec.BatchSize)
+	`, l.Spec.NormSize, l.BatchSize)
 }
 
 func (l *RMSNormLayer) Compile(ctx *Context, labelPrefix string) error {
@@ -510,7 +511,7 @@ func (l *RMSNormLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string,
 func (l *RMSNormLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.SetPipeline(l.pipeline)
 	pass.SetBindGroup(0, l.bindGroup, nil)
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
@@ -521,7 +522,7 @@ func (l *RMSNormLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(l.bwPipeline)
 	pass.SetBindGroup(0, l.bwBindGroup, nil)
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}
@@ -575,7 +576,7 @@ func (l *RMSNormLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []
 		return nil, nil, nil, err
 	}
 
-	batch := l.Spec.BatchSize
+	batch := l.BatchSize
 	if batch < 1 {
 		batch = 1
 	}

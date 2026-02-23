@@ -22,7 +22,8 @@ type SwiGLUSpec struct {
 
 // SwiGLULayer holds GPU resources for SwiGLU
 type SwiGLULayer struct {
-	Spec SwiGLUSpec
+	Spec      SwiGLUSpec
+	BatchSize int // Number of vectors to process
 
 	// Forward pipelines (3 stages)
 	pipelineGateUp   *wgpu.ComputePipeline // Combined gate+up projection
@@ -61,8 +62,13 @@ func (l *SwiGLULayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGrad
 func (l *SwiGLULayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
-	inputTotal := l.Spec.SeqLen * l.Spec.InputSize
-	interTotal := l.Spec.SeqLen * l.Spec.IntermediateSize
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
+
+	inputTotal := batch * l.Spec.InputSize
+	interTotal := batch * l.Spec.IntermediateSize
 
 	// Input/Output
 	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -170,9 +176,13 @@ func (l *SwiGLULayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 func (l *SwiGLULayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
 	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_InGrad",
-		Size:  uint64(l.Spec.SeqLen * l.Spec.InputSize * 4),
+		Size:  uint64(batch * l.Spec.InputSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
 	return err
@@ -217,7 +227,7 @@ func (l *SwiGLULayer) GenerateGateUpShader() string {
 			}
 			up_out[idx] = up_sum;
 		}
-	`, l.Spec.SeqLen, l.Spec.InputSize, l.Spec.IntermediateSize)
+	`, l.BatchSize, l.Spec.InputSize, l.Spec.IntermediateSize)
 }
 
 func (l *SwiGLULayer) GenerateActivateShader() string {
@@ -239,7 +249,7 @@ func (l *SwiGLULayer) GenerateActivateShader() string {
 			let silu = x * sigmoid;
 			intermediate[idx] = silu * up_out[idx];
 		}
-	`, l.Spec.SeqLen*l.Spec.IntermediateSize)
+	`, uint32(l.BatchSize)*uint32(l.Spec.IntermediateSize))
 }
 
 func (l *SwiGLULayer) GenerateDownShader() string {
@@ -270,7 +280,7 @@ func (l *SwiGLULayer) GenerateDownShader() string {
 			}
 			output[idx] = sum;
 		}
-	`, l.Spec.SeqLen, l.Spec.InputSize, l.Spec.IntermediateSize)
+	`, l.BatchSize, l.Spec.InputSize, l.Spec.IntermediateSize)
 }
 
 func (l *SwiGLULayer) GenerateBackwardShader() string {
@@ -341,7 +351,7 @@ func (l *SwiGLULayer) GenerateBackwardShader() string {
 
 			d_input[idx] = d_in;
 		}
-	`, l.Spec.SeqLen, l.Spec.InputSize, l.Spec.IntermediateSize)
+	`, l.BatchSize, l.Spec.InputSize, l.Spec.IntermediateSize)
 }
 
 func (l *SwiGLULayer) Compile(ctx *Context, labelPrefix string) error {
@@ -575,8 +585,12 @@ func (l *SwiGLULayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, 
 }
 
 func (l *SwiGLULayer) Dispatch(pass *wgpu.ComputePassEncoder) {
-	interTotal := l.Spec.SeqLen * l.Spec.IntermediateSize
-	inputTotal := l.Spec.SeqLen * l.Spec.InputSize
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
+	interTotal := batch * l.Spec.IntermediateSize
+	inputTotal := batch * l.Spec.InputSize
 
 	// Stage 1: Gate + Up projections
 	pass.SetPipeline(l.pipelineGateUp)
@@ -595,8 +609,12 @@ func (l *SwiGLULayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 }
 
 func (l *SwiGLULayer) DispatchFull(enc *wgpu.CommandEncoder) {
-	interTotal := l.Spec.SeqLen * l.Spec.IntermediateSize
-	inputTotal := l.Spec.SeqLen * l.Spec.InputSize
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
+	interTotal := batch * l.Spec.IntermediateSize
+	inputTotal := batch * l.Spec.InputSize
 
 	// Stage 1
 	pass1 := enc.BeginComputePass(nil)
@@ -624,7 +642,11 @@ func (l *SwiGLULayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(l.bwPipeline)
 	pass.SetBindGroup(0, l.bwBindGroup, nil)
-	total := l.Spec.SeqLen * l.Spec.InputSize
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
+	total := batch * l.Spec.InputSize
 	pass.DispatchWorkgroups(uint32((total+255)/256), 1, 1)
 	pass.End()
 }
@@ -646,7 +668,11 @@ func (l *SwiGLULayer) DownloadWeights(ctx *Context) ([]float32, []float32, error
 }
 
 func (l *SwiGLULayer) DownloadGradients(ctx *Context) ([]float32, []float32, []float32, error) {
-	iGrad, err := ReadBuffer(l.InputGradientBuffer, l.Spec.SeqLen*l.Spec.InputSize)
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
+	iGrad, err := ReadBuffer(l.InputGradientBuffer, batch*l.Spec.InputSize)
 	return nil, nil, iGrad, err
 }
 

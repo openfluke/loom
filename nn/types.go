@@ -184,6 +184,7 @@ const (
 	ActivationTanh       ActivationType = 2 // tanh(v)
 	ActivationSoftplus   ActivationType = 3 // log(1 + exp(v))
 	ActivationLeakyReLU  ActivationType = 4 // v if v >= 0, else v * 0.1
+	ActivationGELU       ActivationType = 5 // Gaussian Error Linear Unit
 )
 
 // LayerType defines the type of neural network layer
@@ -448,8 +449,13 @@ type Network struct {
 	gpuGradParams   *wgpu.Buffer // Uniform buffer for learning rate
 
 	// Residual support
-	gpuResidualAdder  interface{} // *gpu.InPlaceResidual
-	gpuResidualBuffer *wgpu.Buffer
+	// EnableGPUResiduals: when true, forwardGPU automatically applies transformer-style
+	// residual connections (capture pre-norm input, add it back after MHA/SwiGLU).
+	// Default false — generic test networks must NOT have implicit residuals injected.
+	// Set this to true when loading actual transformer models (e.g. via LoadLlama).
+	EnableGPUResiduals bool
+	gpuResidualAdder   interface{} // *gpu.InPlaceResidual
+	gpuResidualBuffer  *wgpu.Buffer
 
 	// Layer configuration for each position in the grid
 	// Indexed by flattened position: row*GridCols*LayersPerCell + col*LayersPerCell + layer

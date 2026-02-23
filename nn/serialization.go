@@ -1468,12 +1468,11 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 		}
 		config = InitMHABrain(def.DModel, numHeads, 0.5)
 		config.SeqLength = def.SeqLength
+		// NOTE: Do NOT default SeqLength=1 here. A value of 0 means "derive from
+		// prev-layer output size at GPU build time" via resolveSeqLen in buildGPULayer.
 		config.RoPEFreqBase = def.RoPEFreqBase
 		if config.RoPEFreqBase == 0 {
 			config.RoPEFreqBase = 10000.0 // Default
-		}
-		if config.SeqLength == 0 {
-			config.SeqLength = 1
 		}
 
 	case "rnn":

@@ -9,7 +9,7 @@ import (
 func Activate[T Numeric](v T, activation ActivationType) T {
 	// Convert to float64 for math operations, then back to T
 	vf := float64(v)
-	
+
 	// For integer types, we assume input is scaled by 100*100=10000 (from MatMul)
 	// We need to normalize it back to ~1.0 range for activation functions
 	if IsIntegerType[T]() {
@@ -37,6 +37,16 @@ func Activate[T Numeric](v T, activation ActivationType) T {
 		} else {
 			result = vf
 		}
+	case ActivationGELU: // case 5
+		// Gaussian Error Linear Unit (GELU) approximation:
+		// 0.5 * x * (1 + tanh(sqrt(2 / pi) * (x + 0.044715 * x^3)))
+		const (
+			sqrt2Pi = 0.7978845608
+			coeff   = 0.044715
+		)
+		x3 := vf * vf * vf
+		inner := sqrt2Pi * (vf + coeff*x3)
+		result = 0.5 * vf * (1.0 + math.Tanh(inner))
 	default: // Linear / Unknown
 		result = vf
 	}
@@ -55,7 +65,7 @@ func Activate[T Numeric](v T, activation ActivationType) T {
 // Note: This computes the derivative with respect to the PRE-activation value.
 func ActivateDerivative[T Numeric](preActivation T, activation ActivationType) T {
 	vf := float64(preActivation)
-	
+
 	// For integer types, normalize pre-activation input (x10000 -> x1)
 	if IsIntegerType[T]() {
 		vf /= 10000.0
@@ -89,6 +99,20 @@ func ActivateDerivative[T Numeric](preActivation T, activation ActivationType) T
 		} else {
 			result = 0.1
 		}
+	case ActivationGELU: // case 5
+		// d/dx GELU(x) ~ 0.5 * (1 + tanh(s * (x + c*x^3))) +
+		//               0.5 * x * sech^2(s * (x + c*x^3)) * s * (1 + 3*c*x^2)
+		const (
+			sqrt2Pi = 0.7978845608
+			coeff   = 0.044715
+		)
+		x2 := vf * vf
+		x3 := x2 * vf
+		inner := sqrt2Pi * (vf + coeff*x3)
+		tanhInner := math.Tanh(inner)
+
+		sech2 := 1.0 - tanhInner*tanhInner
+		result = 0.5*(1.0+tanhInner) + 0.5*vf*sech2*sqrt2Pi*(1.0+3.0*coeff*x2)
 	default:
 		result = 1.0
 	}

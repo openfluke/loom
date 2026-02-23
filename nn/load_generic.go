@@ -99,7 +99,7 @@ func LayerTypeToName(lt LayerType) string {
 // Returns: LayerType, canLoad, specialType ("embedding", "bias", or "")
 func InferLoomLayerType(shape []int, nameHint string, config *GenericModelConfig) (LayerType, bool, string) {
 	nameLower := strings.ToLower(nameHint)
-	
+
 	// Get config values for smarter detection
 	hiddenSize := 0
 	intermediateSize := 0
@@ -109,7 +109,7 @@ func InferLoomLayerType(shape []int, nameHint string, config *GenericModelConfig
 		intermediateSize = config.IntermediateSize
 		numHeads = config.NumHeads
 	}
-	
+
 	switch len(shape) {
 	case 1:
 		// 1D tensors: Could be LayerNorm, RMSNorm, or bias
@@ -124,15 +124,15 @@ func InferLoomLayerType(shape []int, nameHint string, config *GenericModelConfig
 		}
 		// Default to RMSNorm for gamma-only (more common in modern models)
 		return LayerRMSNorm, true, ""
-		
+
 	case 2:
 		outDim, inDim := shape[0], shape[1]
-		
+
 		// Embedding: vocab >> hidden (typically vocab > 4x hidden)
 		if outDim > inDim*4 {
 			return LayerEmbedding, true, "" // Embeddings are lookup tables
 		}
-		
+
 		// Use config to detect SwiGLU: intermediate_size x hidden_size pattern
 		if intermediateSize > 0 && hiddenSize > 0 {
 			// SwiGLU gate/up: [intermediate, hidden]
@@ -144,15 +144,15 @@ func InferLoomLayerType(shape []int, nameHint string, config *GenericModelConfig
 				return LayerSwiGLU, true, ""
 			}
 		}
-		
+
 		// Use config to detect MHA: [hidden, hidden] with proper head count
 		if numHeads > 0 && hiddenSize > 0 {
 			if outDim == hiddenSize && inDim == hiddenSize {
 				// Q, K, V, O projections are [hidden, hidden]
-				if strings.Contains(nameLower, "q_proj") || strings.Contains(nameLower, "k_proj") || 
-				   strings.Contains(nameLower, "v_proj") || strings.Contains(nameLower, "o_proj") ||
-				   strings.Contains(nameLower, "query") || strings.Contains(nameLower, "key") ||
-				   strings.Contains(nameLower, "value") || strings.Contains(nameLower, "attn") {
+				if strings.Contains(nameLower, "q_proj") || strings.Contains(nameLower, "k_proj") ||
+					strings.Contains(nameLower, "v_proj") || strings.Contains(nameLower, "o_proj") ||
+					strings.Contains(nameLower, "query") || strings.Contains(nameLower, "key") ||
+					strings.Contains(nameLower, "value") || strings.Contains(nameLower, "attn") {
 					return LayerMultiHeadAttention, true, ""
 				}
 			}
@@ -162,20 +162,20 @@ func InferLoomLayerType(shape []int, nameHint string, config *GenericModelConfig
 				return LayerMultiHeadAttention, true, ""
 			}
 		}
-		
+
 		// Name-based attention detection fallback
-		if strings.Contains(nameLower, "q_proj") || strings.Contains(nameLower, "k_proj") || 
-		   strings.Contains(nameLower, "v_proj") || strings.Contains(nameLower, "o_proj") ||
-		   strings.Contains(nameLower, "attention") {
+		if strings.Contains(nameLower, "q_proj") || strings.Contains(nameLower, "k_proj") ||
+			strings.Contains(nameLower, "v_proj") || strings.Contains(nameLower, "o_proj") ||
+			strings.Contains(nameLower, "attention") {
 			return LayerMultiHeadAttention, true, ""
 		}
-		
+
 		// SwiGLU name-based fallback
-		if strings.Contains(nameLower, "gate") || strings.Contains(nameLower, "up_proj") || 
-		   strings.Contains(nameLower, "down_proj") || strings.Contains(nameLower, "mlp") {
+		if strings.Contains(nameLower, "gate") || strings.Contains(nameLower, "up_proj") ||
+			strings.Contains(nameLower, "down_proj") || strings.Contains(nameLower, "mlp") {
 			return LayerSwiGLU, true, ""
 		}
-		
+
 		// LSTM/RNN gates
 		if strings.Contains(nameLower, "_ih") || strings.Contains(nameLower, "_hh") {
 			if strings.Contains(nameLower, "lstm") {
@@ -183,18 +183,22 @@ func InferLoomLayerType(shape []int, nameHint string, config *GenericModelConfig
 			}
 			return LayerRNN, true, ""
 		}
-		
+
 		// Default: Dense layer
 		return LayerDense, true, ""
-		
+
 	case 3:
 		// 3D: Conv1D
+		// Skip if it looks like a token or position embedding
+		if strings.Contains(nameLower, "token") || strings.Contains(nameLower, "pos_embed") || strings.Contains(nameLower, "position_embeddings") {
+			return LayerConv1D, false, ""
+		}
 		return LayerConv1D, true, ""
-		
+
 	case 4:
 		// 4D: Conv2D
 		return LayerConv2D, true, ""
-		
+
 	default:
 		return LayerDense, false, "unknown"
 	}
@@ -269,13 +273,13 @@ func InspectModel(weightsData []byte, configData []byte) ([]DetectedTensor, int6
 		totalParams += int64(len(t.Values))
 
 		loomType, canLoad, specialType := InferLoomLayerType(t.Shape, name, config)
-		
+
 		// Build display name - use specialType if set
 		displayName := LayerTypeToName(loomType)
 		if specialType != "" {
 			displayName = specialType // "embedding", "bias", etc.
 		}
-		
+
 		d := DetectedTensor{
 			Name:         name,
 			Shape:        t.Shape,
@@ -321,7 +325,9 @@ func buildNetworkAuto(tensors map[string]TensorWithShape, config GenericModelCon
 	for name := range tensors {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool {
+		return naturalLess(names[i], names[j])
+	})
 
 	// First pass: detect and infer hidden size
 	for _, name := range names {
@@ -357,14 +363,16 @@ func buildNetworkAuto(tensors map[string]TensorWithShape, config GenericModelCon
 			if hiddenSize == 0 && t.Shape[0] == t.Shape[1] {
 				hiddenSize = t.Shape[0]
 			}
+		case 3:
+			d.OutSize = t.Shape[0]
+			d.InSize = t.Shape[1]
+			d.KernelH = t.Shape[2]
 		case 4:
 			d.OutSize = t.Shape[0]
 			d.InSize = t.Shape[1]
 			d.KernelH = t.Shape[2]
 			d.KernelW = t.Shape[3]
 		}
-
-
 
 		detected = append(detected, d)
 	}
@@ -426,12 +434,19 @@ func buildNetworkAuto(tensors map[string]TensorWithShape, config GenericModelCon
 				if bias == nil {
 					bias = make([]float32, d.OutSize)
 				}
+				activation := ActivationScaledReLU
+				nameLower := strings.ToLower(name)
+				if strings.Contains(nameLower, "fc1") || strings.Contains(nameLower, "mlp.0") || strings.Contains(nameLower, "mlp.gate") {
+					activation = ActivationGELU
+				}
+
 				network.Layers = append(network.Layers, LayerConfig{
 					Type:         LayerDense,
 					InputHeight:  d.InSize,
 					OutputHeight: d.OutSize,
 					Kernel:       transposed,
 					Bias:         bias,
+					Activation:   activation,
 				})
 			}
 
@@ -442,6 +457,12 @@ func buildNetworkAuto(tensors map[string]TensorWithShape, config GenericModelCon
 				if bias == nil {
 					bias = make([]float32, d.OutSize)
 				}
+				stride := 1
+				padding := d.KernelH / 2
+				if config.PatchSize > 0 && d.KernelH == config.PatchSize {
+					stride = config.PatchSize
+					padding = 0 // Valid padding for patch embeddings
+				}
 				network.Layers = append(network.Layers, LayerConfig{
 					Type:          LayerConv2D,
 					InputChannels: d.InSize,
@@ -449,8 +470,8 @@ func buildNetworkAuto(tensors map[string]TensorWithShape, config GenericModelCon
 					KernelSize:    d.KernelH, // Assuming square kernel
 					Kernel:        t.Values,
 					Bias:          bias,
-					Stride:        1,
-					Padding:       d.KernelH / 2,
+					Stride:        stride,
+					Padding:       padding,
 				})
 			}
 
@@ -483,8 +504,8 @@ func buildNetworkAuto(tensors map[string]TensorWithShape, config GenericModelCon
 				})
 			}
 
-		// Note: MultiHeadAttention, SwiGLU, LSTM, RNN require multiple tensors
-		// They need architecture-specific loading logic
+			// Note: MultiHeadAttention, SwiGLU, LSTM, RNN require multiple tensors
+			// They need architecture-specific loading logic
 		}
 	}
 
@@ -520,4 +541,39 @@ func GetLoomCompatibility(detected []DetectedTensor) map[string]int {
 		result["✗ "+k] = v
 	}
 	return result
+}
+
+// naturalLess implements alphanumeric/natural sorting
+func naturalLess(s1, s2 string) bool {
+	i, j := 0, 0
+	for i < len(s1) && j < len(s2) {
+		c1, c2 := s1[i], s2[j]
+		if isDigit(c1) && isDigit(c2) {
+			v1, i2 := extractNumber(s1, i)
+			v2, j2 := extractNumber(s2, j)
+			if v1 != v2 {
+				return v1 < v2
+			}
+			i, j = i2, j2
+		} else {
+			if c1 != c2 {
+				return c1 < c2
+			}
+			i++
+			j++
+		}
+	}
+	return len(s1) < len(s2)
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+func extractNumber(s string, start int) (int, int) {
+	end := start
+	for end < len(s) && isDigit(s[end]) {
+		end++
+	}
+	val := 0
+	fmt.Sscanf(s[start:end], "%d", &val)
+	return val, end
 }
