@@ -112,6 +112,12 @@ func (n *Network) WeightsToGPU() error {
 					rnn.BatchSize = n.BatchSize
 				} else if lstm, ok := gpuLayer.(*gpu.LSTMLayer); ok {
 					lstm.BatchSize = n.BatchSize
+				} else if ln, ok := gpuLayer.(*gpu.LayerNormLayer); ok {
+					ln.BatchSize = n.BatchSize
+				} else if rn, ok := gpuLayer.(*gpu.RMSNormLayer); ok {
+					rn.BatchSize = n.BatchSize
+				} else if sw, ok := gpuLayer.(*gpu.SwiGLULayer); ok {
+					sw.BatchSize = n.BatchSize
 				}
 			}
 
