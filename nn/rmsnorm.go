@@ -96,44 +96,44 @@ func RMSNormBackward[T Numeric](input, residual, gradOutput, gamma *Tensor[T], n
 
 		// Compute gradients
 		var sum_dxhat_x float64
-		
+
 		for i := start; i < end; i++ {
 			idx := i
 			localIdx := i - start
-			
+
 			dL_dy := float64(gradOutput.Data[idx])
 			val := float64(inputWithResidual.Data[idx])
-			
+
 			// Accumulate Gamma grad
 			// y = x_hat * gamma
 			x_hat := val * invRMS
 			gradGamma.Data[localIdx] += T(dL_dy * x_hat)
-			
+
 			// Part of input gradient calc
 			g := 1.0
 			if gamma != nil && localIdx < len(gamma.Data) {
 				g = float64(gamma.Data[localIdx])
 			}
-			
+
 			sum_dxhat_x += dL_dy * g * val
 		}
 
 		// Apply final formula for dL/dx
 		// dL/dx_i = (gamma_i * dL/dy_i / rms) - (x_i / rms^3) * (1/N) * sum(dL/dy_k * gamma_k * x_k)
-		
+
 		term2 := sum_dxhat_x * invRMS3 / float64(normSize)
-		
+
 		for i := start; i < end; i++ {
 			localIdx := i - start
-			
+
 			dL_dy := float64(gradOutput.Data[i])
 			val := float64(inputWithResidual.Data[i])
-			
+
 			g := 1.0
 			if gamma != nil && localIdx < len(gamma.Data) {
 				g = float64(gamma.Data[localIdx])
 			}
-			
+
 			dx := (dL_dy * g * invRMS) - (val * term2)
 			gradInput.Data[i] = T(dx)
 		}
@@ -184,3 +184,12 @@ func rmsNormBackwardCPU(input []float32, residual []float32, gradOutput []float3
 	return gradInputT.Data
 }
 
+// InitRMSNormLayer initializes an RMSNorm layer
+func InitRMSNormLayer(normSize int) LayerConfig {
+	return LayerConfig{
+		Type:     LayerRMSNorm,
+		NormSize: normSize,
+		Epsilon:  1e-6,
+		Gamma:    make([]float32, normSize), // Should be initialized to 1.0 conventionally
+	}
+}
