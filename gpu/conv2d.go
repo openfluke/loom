@@ -45,12 +45,18 @@ type Conv2DLayer struct {
 	bwGradBindGroup *wgpu.BindGroup
 
 	outputH, outputW int
+	InputAliased     bool
 }
 
 func (l *Conv2DLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
 func (l *Conv2DLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
 func (l *Conv2DLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
 func (l *Conv2DLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *Conv2DLayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
+}
 
 func (l *Conv2DLayer) computeOutputSize() (int, int) {
 	stride := l.Spec.Stride
@@ -105,13 +111,16 @@ func (l *Conv2DLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		outputSize = 1
 	}
 
-	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_In",
-		Size:  uint64(inputSize * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return err
+	// Input/Output
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(inputSize * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -745,8 +754,14 @@ func (l *Conv2DLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []f
 }
 
 func (l *Conv2DLayer) Cleanup() {
+	if l.InputBuffer != nil && !l.InputAliased {
+		l.InputBuffer.Destroy()
+	}
+	if l.OutputBuffer != nil {
+		l.OutputBuffer.Destroy()
+	}
 	bufs := []*wgpu.Buffer{
-		l.InputBuffer, l.OutputBuffer, l.StagingBuffer, l.WeightBuffer, l.BiasBuffer,
+		l.StagingBuffer, l.WeightBuffer, l.BiasBuffer,
 		l.InputGradientBuffer, l.WeightGradientBuffer, l.BiasGradientBuffer,
 	}
 	for _, b := range bufs {

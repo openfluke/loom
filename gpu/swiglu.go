@@ -53,12 +53,19 @@ type SwiGLULayer struct {
 	InputGradientBuffer *wgpu.Buffer
 	bwPipeline          *wgpu.ComputePipeline
 	bwBindGroup         *wgpu.BindGroup
+
+	InputAliased bool
 }
 
 func (l *SwiGLULayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
 func (l *SwiGLULayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
 func (l *SwiGLULayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
 func (l *SwiGLULayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *SwiGLULayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
+}
 
 func (l *SwiGLULayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
@@ -72,13 +79,15 @@ func (l *SwiGLULayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	interTotal := batch * l.Spec.IntermediateSize
 
 	// Input/Output
-	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_In",
-		Size:  uint64(inputTotal * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return err
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(inputTotal * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -715,8 +724,14 @@ func (l *SwiGLULayer) DownloadGradients(ctx *Context) ([]float32, []float32, []f
 }
 
 func (l *SwiGLULayer) Cleanup() {
+	if l.InputBuffer != nil && !l.InputAliased {
+		l.InputBuffer.Destroy()
+	}
+	if l.OutputBuffer != nil {
+		l.OutputBuffer.Destroy()
+	}
 	bufs := []*wgpu.Buffer{
-		l.InputBuffer, l.OutputBuffer, l.StagingBuffer,
+		l.StagingBuffer,
 		l.GateWeightBuffer, l.UpWeightBuffer, l.DownWeightBuffer,
 		l.GateBiasBuffer, l.UpBiasBuffer, l.DownBiasBuffer,
 		l.GateOutBuffer, l.UpOutBuffer, l.IntermediateBuffer,

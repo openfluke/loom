@@ -31,6 +31,8 @@ type ResidualLayer struct {
 
 	bwPipeline  *wgpu.ComputePipeline
 	bwBindGroup *wgpu.BindGroup
+
+	InputAliased bool
 }
 
 // Interface implementations
@@ -40,17 +42,24 @@ func (l *ResidualLayer) GetStagingBuffer() *wgpu.Buffer       { return l.Staging
 func (l *ResidualLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
 func (l *ResidualLayer) GetSkipGradientBuffer() *wgpu.Buffer  { return l.SkipGradientBuffer }
 
+func (l *ResidualLayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
+}
+
 func (l *ResidualLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 	size := l.Spec.Size
 
-	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_In",
-		Size:  uint64(size * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return err
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(size * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	l.SkipBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -295,7 +304,7 @@ func (l *ResidualLayer) DownloadGradients(ctx *Context) ([]float32, []float32, [
 }
 
 func (l *ResidualLayer) Cleanup() {
-	if l.InputBuffer != nil {
+	if l.InputBuffer != nil && !l.InputAliased {
 		l.InputBuffer.Destroy()
 	}
 	if l.SkipBuffer != nil {

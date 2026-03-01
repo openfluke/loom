@@ -45,12 +45,19 @@ type RNNLayer struct {
 	bwBindGroup     *wgpu.BindGroup
 	bwGradPipeline  *wgpu.ComputePipeline
 	bwGradBindGroup *wgpu.BindGroup
+
+	InputAliased bool
 }
 
 func (l *RNNLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
 func (l *RNNLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
 func (l *RNNLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
 func (l *RNNLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *RNNLayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
+}
 
 func (l *RNNLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
@@ -169,6 +176,18 @@ func (l *RNNLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 func (l *RNNLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
+
+	// Input [SeqLen * InputSize]
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(l.Spec.SeqLen * l.Spec.InputSize * l.BatchSize * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
+	}
 
 	// Input gradients
 	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -634,8 +653,14 @@ func (l *RNNLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []floa
 }
 
 func (l *RNNLayer) Cleanup() {
+	if l.InputBuffer != nil && !l.InputAliased {
+		l.InputBuffer.Destroy()
+	}
+	if l.OutputBuffer != nil {
+		l.OutputBuffer.Destroy()
+	}
 	bufs := []*wgpu.Buffer{
-		l.InputBuffer, l.OutputBuffer, l.StagingBuffer, l.HiddenBuffer,
+		l.StagingBuffer, l.HiddenBuffer,
 		l.WeightIHBuffer, l.WeightHHBuffer, l.BiasBuffer,
 		l.InputGradientBuffer, l.WeightIHGradientBuffer, l.WeightHHGradientBuffer, l.BiasGradientBuffer,
 	}

@@ -132,9 +132,19 @@ func (n *Network) WeightsToGPU() error {
 		return fmt.Errorf("no GPU-compatible layers found")
 	}
 
-	// Allocate buffers for all layers
+	// Allocate buffers for all layers and set up buffer aliasing (Zero-Copy Data Flow)
 	for i, l := range layers {
 		label := fmt.Sprintf("L%d", i)
+
+		// Set the input buffer to the previous layer's output buffer BEFORE allocating buffers
+		// We skip the first layer (i=0) because it takes the raw input.
+		if i > 0 {
+			prevOutput := layers[i-1].GetOutputBuffer()
+			if prevOutput != nil {
+				l.SetInputBuffer(prevOutput)
+			}
+		}
+
 		if err := l.AllocateBuffers(ctx, label); err != nil {
 			n.cleanupGPULayers(layers)
 			return fmt.Errorf("allocate buffers layer %d: %w", i, err)
@@ -502,16 +512,22 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 		// 4. Data Flow (Copy Output to Next Layer)
 		if i < len(layers)-1 {
 			next := layers[i+1]
-			endPass() // Copy requires encoder level
-			sz := l.GetOutputBuffer().GetSize()
-			dsz := next.GetInputBuffer().GetSize()
-			if sz != dsz {
-				fmt.Printf("⚠️  GPU Buffer Size Mismatch at layer %d: %d -> %d\n", i, sz, dsz)
-				if sz > dsz {
-					sz = dsz
+			outBuf := l.GetOutputBuffer()
+			nextInBuf := next.GetInputBuffer()
+			sz := outBuf.GetSize()
+			dsz := nextInBuf.GetSize()
+
+			if outBuf != nextInBuf {
+				endPass() // Copy requires encoder level
+				if sz != dsz {
+					fmt.Printf("⚠️  GPU Buffer Size Mismatch at layer %d: %d -> %d\n", i, sz, dsz)
+					if sz > dsz {
+						sz = dsz
+					}
 				}
+				cmdEnc.CopyBufferToBuffer(outBuf, 0, nextInBuf, 0, sz)
 			}
-			cmdEnc.CopyBufferToBuffer(l.GetOutputBuffer(), 0, next.GetInputBuffer(), 0, sz)
+			// If aliased, we DO NOT copy AND we DO NOT endPass, allowing the pass to continue!
 		} else {
 			// Final output to staging
 			endPass()

@@ -42,7 +42,8 @@ type LayerNormLayer struct {
 	reducePipeline  *wgpu.ComputePipeline
 	reduceBindGroup *wgpu.BindGroup // Binds BatchGrad -> FinalGrad
 
-	WorkgroupsX uint32
+	WorkgroupsX  uint32
+	InputAliased bool
 }
 
 // Implement GPULayer Interface
@@ -50,6 +51,11 @@ func (l *LayerNormLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputB
 func (l *LayerNormLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
 func (l *LayerNormLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
 func (l *LayerNormLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *LayerNormLayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
+}
 
 func (l *LayerNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
@@ -61,14 +67,16 @@ func (l *LayerNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error
 	}
 	totalSize := batch * l.Spec.BatchSize * l.Spec.NormSize
 
-	// Input: batch * normSize elements
-	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_In",
-		Size:  uint64(totalSize * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return err
+	// Input buffer
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(totalSize * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	// Output: batch * normSize elements
@@ -796,7 +804,7 @@ func (l *LayerNormLayer) DownloadGradients(ctx *Context) ([]float32, []float32, 
 }
 
 func (l *LayerNormLayer) Cleanup() {
-	if l.InputBuffer != nil {
+	if l.InputBuffer != nil && !l.InputAliased {
 		l.InputBuffer.Destroy()
 	}
 	if l.OutputBuffer != nil {

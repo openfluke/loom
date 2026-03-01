@@ -36,6 +36,18 @@ type ParallelLayer struct {
 	outputGatherBindGroups []*wgpu.BindGroup
 
 	BatchSize int
+
+	InputAliased bool
+}
+
+func (l *ParallelLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
+func (l *ParallelLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
+func (l *ParallelLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
+func (l *ParallelLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *ParallelLayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
 }
 
 // NewParallelLayer creates a new parallel container
@@ -144,6 +156,7 @@ func (l *ParallelLayer) setupPipelines(ctx *Context) error {
 }
 
 func (l *ParallelLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
+	var err error
 	// 1. Allocate buffers for all branches
 	for i, b := range l.Branches {
 		if err := b.AllocateBuffers(ctx, fmt.Sprintf("%s/b%d", labelPrefix, i)); err != nil {
@@ -162,11 +175,17 @@ func (l *ParallelLayer) AllocateBuffers(ctx *Context, labelPrefix string) error 
 	// Just use the first branch's input size request
 	// Note: Generic Parallel allows branches to take same input.
 
-	l.InputBuffer, _ = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_Input",
-		Size:  firstIn,
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
+	// Input buffer
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_Input",
+			Size:  firstIn,
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
+	}
 
 	// Output Size
 	var totalOut uint64
@@ -180,18 +199,24 @@ func (l *ParallelLayer) AllocateBuffers(ctx *Context, labelPrefix string) error 
 		totalOut = l.Branches[0].GetOutputBuffer().GetSize()
 	}
 
-	l.OutputBuffer, _ = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Output",
 		Size:  totalOut,
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+	if err != nil {
+		return err
+	}
 
 	// Staging for readback
-	l.StagingBuffer, _ = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  totalOut,
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -216,48 +241,10 @@ func (l *ParallelLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string
 	return nil
 }
 
-func (l *ParallelLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
-func (l *ParallelLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
-func (l *ParallelLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
-func (l *ParallelLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
-
-func (l *ParallelLayer) Cleanup() {
-	if l.InputBuffer != nil {
-		l.InputBuffer.Destroy()
-	}
-	if l.OutputBuffer != nil {
-		l.OutputBuffer.Destroy()
-	}
-	if l.StagingBuffer != nil {
-		l.StagingBuffer.Destroy()
-	}
-	if l.InputGradientBuffer != nil {
-		l.InputGradientBuffer.Destroy()
-	}
-
-	for _, b := range l.Branches {
-		b.Cleanup()
-	}
-
-	// Cleanup backward helper buffers
-	for _, b := range l.intermediateGradBuffers {
-		if b != nil {
-			b.Destroy()
-		}
-	}
-	if l.dOutputRef != nil {
-		// dOutputRef is not owned by ParallelLayer, it's passed in. Do not destroy.
-	}
-	for _, bg := range l.splitBindGroups {
-		if bg != nil {
-			bg.Release()
-		}
-	}
-	for _, bg := range l.sumBindGroups {
-		if bg != nil {
-			bg.Release()
-		}
-	}
+// Extra fields helper
+type ParallelLayerExtras struct {
+	branchGradRows []*wgpu.Buffer
+	dOutputRef     *wgpu.Buffer
 }
 
 func (l *ParallelLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
@@ -695,8 +682,53 @@ func (l *ParallelLayer) ZeroGradients(ctx *Context) {
 	}
 }
 
-// Extra fields helper
-type ParallelLayerExtras struct {
-	branchGradRows []*wgpu.Buffer
-	dOutputRef     *wgpu.Buffer
+func (l *ParallelLayer) Cleanup() {
+	if l.InputBuffer != nil && !l.InputAliased {
+		l.InputBuffer.Destroy()
+	}
+	if l.OutputBuffer != nil {
+		l.OutputBuffer.Destroy()
+	}
+	if l.StagingBuffer != nil {
+		l.StagingBuffer.Destroy()
+	}
+	if l.InputGradientBuffer != nil {
+		l.InputGradientBuffer.Destroy()
+	}
+	for _, b := range l.intermediateGradBuffers {
+		if b != nil {
+			b.Destroy()
+		}
+	}
+	if l.copyPipeline != nil {
+		l.copyPipeline.Release()
+	}
+	if l.sumPipeline != nil {
+		l.sumPipeline.Release()
+	}
+	for _, bg := range l.splitBindGroups {
+		if bg != nil {
+			bg.Release()
+		}
+	}
+	for _, bg := range l.sumBindGroups {
+		if bg != nil {
+			bg.Release()
+		}
+	}
+	for _, bg := range l.inputScatterBindGroups {
+		if bg != nil {
+			bg.Release()
+		}
+	}
+	for _, bg := range l.outputGatherBindGroups {
+		if bg != nil {
+			bg.Release()
+		}
+	}
+	for _, b := range l.Branches {
+		b.Cleanup()
+	}
 }
+
+// ... Extra fields helper block preserved above

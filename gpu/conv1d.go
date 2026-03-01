@@ -47,13 +47,19 @@ type Conv1DLayer struct {
 	GradientWeightBindGroup *wgpu.BindGroup
 	GradientBiasBindGroup   *wgpu.BindGroup
 
-	outputLen int
+	outputLen    int
+	InputAliased bool
 }
 
 func (l *Conv1DLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
 func (l *Conv1DLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
 func (l *Conv1DLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
 func (l *Conv1DLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *Conv1DLayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
+}
 
 func (l *Conv1DLayer) computeOutputLen() int {
 	stride := l.Spec.Stride
@@ -101,13 +107,16 @@ func (l *Conv1DLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		outputSize = 1
 	}
 
-	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_In",
-		Size:  uint64(inputSize * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return err
+	// Input/Output
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(inputSize * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -681,12 +690,31 @@ func (l *Conv1DLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []f
 }
 
 func (l *Conv1DLayer) Cleanup() {
-	bufs := []*wgpu.Buffer{l.InputBuffer, l.OutputBuffer, l.StagingBuffer, l.WeightBuffer, l.BiasBuffer, l.InputGradientBuffer, l.WeightGradientBuffer, l.BiasGradientBuffer}
-	for _, b := range bufs {
-		if b != nil {
-			b.Destroy()
-		}
+	if l.InputBuffer != nil && !l.InputAliased {
+		l.InputBuffer.Destroy()
 	}
+	if l.OutputBuffer != nil {
+		l.OutputBuffer.Destroy()
+	}
+	if l.StagingBuffer != nil {
+		l.StagingBuffer.Destroy()
+	}
+	if l.WeightBuffer != nil {
+		l.WeightBuffer.Destroy()
+	}
+	if l.BiasBuffer != nil {
+		l.BiasBuffer.Destroy()
+	}
+	if l.InputGradientBuffer != nil {
+		l.InputGradientBuffer.Destroy()
+	}
+	if l.WeightGradientBuffer != nil {
+		l.WeightGradientBuffer.Destroy()
+	}
+	if l.BiasGradientBuffer != nil {
+		l.BiasGradientBuffer.Destroy()
+	}
+
 	if l.pipeline != nil {
 		l.pipeline.Release()
 	}

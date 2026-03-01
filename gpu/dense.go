@@ -61,7 +61,8 @@ type DenseLayer struct {
 	GradientWeightBindGroup *wgpu.BindGroup
 	GradientBiasBindGroup   *wgpu.BindGroup
 
-	WorkgroupsX uint32
+	WorkgroupsX  uint32
+	InputAliased bool
 }
 
 // DenseSequence manages a sequence of dense layers executed on GPU
@@ -95,8 +96,13 @@ func (l *DenseLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuf
 func (l *DenseLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
 func (l *DenseLayer) GetDZBuffer() *wgpu.Buffer            { return l.dZBuffer }
 
+func (l *DenseLayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
+}
+
 func (l *DenseLayer) Cleanup() {
-	if l.InputBuffer != nil {
+	if l.InputBuffer != nil && !l.InputAliased {
 		l.InputBuffer.Destroy()
 	}
 	if l.OutputBuffer != nil {
@@ -345,18 +351,20 @@ func (l *DenseLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
 	batch := l.BatchSize
-	if batch <= 0 {
+	if batch < 1 {
 		batch = 1
 	}
 
 	// Input
-	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_In",
-		Size:  uint64(l.Spec.InputSize * batch * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return err
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(batch * l.Spec.InputSize * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	// Output

@@ -36,7 +36,8 @@ type LSTMSpec struct {
 type LSTMLayer struct {
 	Spec LSTMSpec
 
-	BatchSize int // Number of samples per batch
+	BatchSize    int
+	InputAliased bool
 
 	pipeline   *wgpu.ComputePipeline
 	bindGroups []*wgpu.BindGroup // One bind group per time step
@@ -82,6 +83,11 @@ func (l *LSTMLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffe
 func (l *LSTMLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
 func (l *LSTMLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
 
+func (l *LSTMLayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
+}
+
 func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 
@@ -96,9 +102,9 @@ func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		l.Spec.HiddenSize = 64
 	}
 
-	inputTotal := l.Spec.SeqLen * l.Spec.InputSize * l.BatchSize
-	if inputTotal < 1 {
-		inputTotal = 1
+	totalInputSize := l.Spec.SeqLen * l.Spec.InputSize * l.BatchSize
+	if totalInputSize < 1 {
+		totalInputSize = 1
 	}
 	outputTotal := l.Spec.SeqLen * l.Spec.HiddenSize * l.BatchSize
 	if outputTotal < 1 {
@@ -110,13 +116,16 @@ func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		hiddenSize = 1
 	}
 
-	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_In",
-		Size:  uint64(inputTotal * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return err
+	// Input buffer
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(totalInputSize * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -220,6 +229,18 @@ func (l *LSTMLayer) combineWeights(w1, w2, w3, w4 []float32, size int) []float32
 
 func (l *LSTMLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
+
+	// Input buffer
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(l.Spec.SeqLen * l.Spec.InputSize * l.BatchSize * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
+	}
 
 	// Input gradients
 	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -1065,11 +1086,19 @@ func (l *LSTMLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []flo
 }
 
 func (l *LSTMLayer) Cleanup() {
+	if l.InputBuffer != nil && !l.InputAliased {
+		l.InputBuffer.Destroy()
+	}
+	if l.OutputBuffer != nil {
+		l.OutputBuffer.Destroy()
+	}
+
 	bufs := []*wgpu.Buffer{
-		l.InputBuffer, l.OutputBuffer, l.StagingBuffer,
+		l.StagingBuffer,
 		l.HiddenBuffer, l.CellBuffer,
 		l.UnifiedWeightsBuffer, l.UnifiedWeightsGradientBuffer,
 		l.InputGradientBuffer,
+		l.GateGradientsBuffer,
 	}
 	for _, b := range bufs {
 		if b != nil {
@@ -1107,5 +1136,4 @@ func (l *LSTMLayer) Cleanup() {
 			bg.Release()
 		}
 	}
-	// Also clean arrays of bind groups if we add them
 }

@@ -34,6 +34,8 @@ type EmbeddingLayer struct {
 
 	bwPipeline  *wgpu.ComputePipeline
 	bwBindGroup *wgpu.BindGroup
+
+	InputAliased bool
 }
 
 // Interface implementations
@@ -41,6 +43,11 @@ func (l *EmbeddingLayer) GetInputBuffer() *wgpu.Buffer         { return l.TokenB
 func (l *EmbeddingLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
 func (l *EmbeddingLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
 func (l *EmbeddingLayer) GetInputGradientBuffer() *wgpu.Buffer { return nil } // No input grad for embeddings
+
+func (l *EmbeddingLayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.TokenBuffer = buf
+	l.InputAliased = true
+}
 
 func (l *EmbeddingLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
@@ -53,13 +60,15 @@ func (l *EmbeddingLayer) AllocateBuffers(ctx *Context, labelPrefix string) error
 	totalTokens := batch * l.Spec.SeqLength
 
 	// Token input buffer (u32 token IDs)
-	l.TokenBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_Tokens",
-		Size:  uint64(totalTokens * 4), // u32 per token
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
-	})
-	if err != nil {
-		return err
+	if !l.InputAliased {
+		l.TokenBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_Tokens",
+			Size:  uint64(totalTokens * 4), // u32 per token
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	outputSize := totalTokens * l.Spec.EmbeddingDim
@@ -373,7 +382,7 @@ func (l *EmbeddingLayer) DownloadGradients(ctx *Context) ([]float32, []float32, 
 }
 
 func (l *EmbeddingLayer) Cleanup() {
-	if l.TokenBuffer != nil {
+	if l.TokenBuffer != nil && !l.InputAliased {
 		l.TokenBuffer.Destroy()
 	}
 	if l.OutputBuffer != nil {

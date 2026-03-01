@@ -72,12 +72,19 @@ type MHALayer struct {
 	InputGradientBuffer *wgpu.Buffer
 	bwPipeline          *wgpu.ComputePipeline
 	bwBindGroup         *wgpu.BindGroup
+
+	InputAliased bool
 }
 
 func (l *MHALayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuffer }
 func (l *MHALayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
 func (l *MHALayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
 func (l *MHALayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *MHALayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
+}
 
 func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
@@ -97,13 +104,15 @@ func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	dKV := numKVHeads * l.Spec.HeadDim
 
 	// Input/Output
-	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_In",
-		Size:  uint64(seqDim * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return err
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(seqDim * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -965,7 +974,7 @@ func (l *MHALayer) SetActualSeqLen(ctx *Context, length int) {
 
 func (l *MHALayer) Cleanup() {
 	bufs := []*wgpu.Buffer{
-		l.InputBuffer, l.OutputBuffer, l.StagingBuffer,
+		l.OutputBuffer, l.StagingBuffer,
 		l.CombinedWeightsQKV, l.CombinedBiasesQKV, l.OWeightBuffer,
 		l.OBiasBuffer,
 		l.QBuffer, l.KBuffer, l.VBuffer, l.AttnBuffer,
@@ -976,6 +985,9 @@ func (l *MHALayer) Cleanup() {
 		if b != nil {
 			b.Destroy()
 		}
+	}
+	if l.InputBuffer != nil && !l.InputAliased {
+		l.InputBuffer.Destroy()
 	}
 
 	pipes := []*wgpu.ComputePipeline{l.pipelineQKV, l.pipelineAttn, l.pipelineOut, l.bwPipeline}

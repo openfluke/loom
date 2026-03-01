@@ -40,6 +40,8 @@ type RMSNormLayer struct {
 
 	reducePipeline  *wgpu.ComputePipeline
 	reduceBindGroup *wgpu.BindGroup
+
+	InputAliased bool
 }
 
 // Interface implementations
@@ -47,6 +49,11 @@ func (l *RMSNormLayer) GetInputBuffer() *wgpu.Buffer         { return l.InputBuf
 func (l *RMSNormLayer) GetOutputBuffer() *wgpu.Buffer        { return l.OutputBuffer }
 func (l *RMSNormLayer) GetStagingBuffer() *wgpu.Buffer       { return l.StagingBuffer }
 func (l *RMSNormLayer) GetInputGradientBuffer() *wgpu.Buffer { return l.InputGradientBuffer }
+
+func (l *RMSNormLayer) SetInputBuffer(buf *wgpu.Buffer) {
+	l.InputBuffer = buf
+	l.InputAliased = true
+}
 
 func (l *RMSNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	var err error
@@ -58,13 +65,15 @@ func (l *RMSNormLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	totalSize := batch * l.Spec.NormSize
 
 	// Input/Output buffers
-	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: labelPrefix + "_In",
-		Size:  uint64(totalSize * 4),
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return err
+	if !l.InputAliased {
+		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_In",
+			Size:  uint64(totalSize * 4),
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -595,7 +604,7 @@ func (l *RMSNormLayer) DownloadGradients(ctx *Context) ([]float32, []float32, []
 }
 
 func (l *RMSNormLayer) Cleanup() {
-	if l.InputBuffer != nil {
+	if l.InputBuffer != nil && !l.InputAliased {
 		l.InputBuffer.Destroy()
 	}
 	if l.OutputBuffer != nil {

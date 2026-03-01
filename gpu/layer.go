@@ -33,6 +33,7 @@ type GPULayer interface {
 
 	// Resource Access (for chaining)
 	GetInputBuffer() *wgpu.Buffer
+	SetInputBuffer(buf *wgpu.Buffer)
 	GetOutputBuffer() *wgpu.Buffer
 	GetStagingBuffer() *wgpu.Buffer
 	GetInputGradientBuffer() *wgpu.Buffer // For Backward Chaining
