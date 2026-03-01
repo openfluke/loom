@@ -23,6 +23,7 @@ type MHASpec struct {
 	VBias        []float32 // [D_KV]
 	OBias        []float32 // [DModel]
 	RoPEFreqBase float32   // Base frequency for RoPE (default 10000.0)
+	MaxSeq       int       // Maximum sequence length for KV cache
 }
 
 // MHALayer holds GPU resources for Multi-Head Attention
@@ -59,6 +60,14 @@ type MHALayer struct {
 	AttnBuffer *wgpu.Buffer // Attention output
 
 	ParamsBuffer *wgpu.Buffer // Uniforms: [ActualSeqLen, ...]
+
+	// KV Cache Buffers
+	KCacheBuffer *wgpu.Buffer
+	VCacheBuffer *wgpu.Buffer
+	CachePos     int
+
+	currentInputLen int
+	currentCachePos int
 
 	InputGradientBuffer *wgpu.Buffer
 	bwPipeline          *wgpu.ComputePipeline
@@ -209,9 +218,38 @@ func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	l.ParamsBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Params",
 		Size:  16,
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
+		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+
+	// KV Cache Buffers
+	maxSeq := l.Spec.MaxSeq
+	if maxSeq <= 0 {
+		maxSeq = l.Spec.SeqLen // Fallback
+	}
+	if maxSeq > 0 {
+		kvSize := uint64(maxSeq * dKV * 4)
+		l.KCacheBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_KCache",
+			Size:  kvSize,
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
+		l.VCacheBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: labelPrefix + "_VCache",
+			Size:  kvSize,
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (l *MHALayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
@@ -237,6 +275,13 @@ func (l *MHALayer) GenerateQKVShader() string {
 		@group(0) @binding(3) var<storage, read_write> q_out : array<f32>;
 		@group(0) @binding(4) var<storage, read_write> k_out : array<f32>;
 		@group(0) @binding(5) var<storage, read_write> v_out : array<f32>;
+		@group(0) @binding(6) var<storage, read_write> k_cache : array<f32>;
+		@group(0) @binding(7) var<storage, read_write> v_cache : array<f32>;
+		struct LayerParams {
+			input_len: u32,
+			cache_pos: u32,
+		};
+		@group(0) @binding(8) var<uniform> params : LayerParams;
 
 		const SEQ_LEN: u32 = %du;
 		const D_MODEL: u32 = %du;
@@ -324,7 +369,7 @@ func (l *MHALayer) GenerateQKVShader() string {
 				}
 				
 				let theta = pow(ROPE_BASE, -2.0 * f32(head_d) / f32(HEAD_DIM));
-				let angle = f32(seq) * theta;
+				let angle = f32(params.cache_pos + seq) * theta;
 				let c = cos(angle);
 				let s = sin(angle);
 				
@@ -357,7 +402,7 @@ func (l *MHALayer) GenerateQKVShader() string {
 				}
 				
 				let theta = pow(ROPE_BASE, -2.0 * f32(d_pair %% HEAD_DIM) / f32(HEAD_DIM));
-				let angle = f32(seq) * theta;
+				let angle = f32(params.cache_pos + seq) * theta;
 				let c = cos(angle);
 				let s = sin(angle);
 				
@@ -373,6 +418,13 @@ func (l *MHALayer) GenerateQKVShader() string {
 					
 					k_out[idx] = k_val * c + k_pair * s;
 				}
+			}
+
+			// Write to cache if KV
+			if (d < D_KV) {
+				let cache_idx = (params.cache_pos + seq) * D_KV + d;
+				k_cache[cache_idx] = k_out[idx];
+				v_cache[cache_idx] = v_val; // V is not rotated
 			}
 
 			// ---------------------------------------------------------
@@ -406,10 +458,14 @@ func (l *MHALayer) GenerateAttnShader() string {
 
 	return fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read> q : array<f32>;
-		@group(0) @binding(1) var<storage, read> k : array<f32>;
-		@group(0) @binding(2) var<storage, read> v : array<f32>;
+		@group(0) @binding(1) var<storage, read> k : array<f32>; // K Cache
+		@group(0) @binding(2) var<storage, read> v : array<f32>; // V Cache
 		@group(0) @binding(3) var<storage, read_write> attn_out : array<f32>;
-		@group(0) @binding(4) var<storage, read> params : array<u32>; // [0] = actual_seq_len
+		struct LayerParams {
+			input_len: u32,
+			cache_pos: u32,
+		};
+		@group(0) @binding(4) var<uniform> params : LayerParams;
 
 		const SEQ_LEN: u32 = %du;
 		const D_MODEL: u32 = %du;
@@ -438,15 +494,18 @@ func (l *MHALayer) GenerateAttnShader() string {
 			var max_score: f32 = -1e10;
 
 			// First pass: find max for stability
-			let actual_len = params[0];
-			for (var seq_j: u32 = 0u; seq_j < SEQ_LEN; seq_j++) {
-				if (seq_j >= actual_len) { continue; } // Padding mask
-				if (seq_j > seq_i) { continue; } // Causal mask
+			let input_len = params.input_len;
+			let cache_pos = params.cache_pos;
+			let total_len = input_len + cache_pos;
+			let D_KV = NUM_KV_HEADS * HEAD_DIM;
+
+			for (var seq_j: u32 = 0u; seq_j < total_len; seq_j++) {
+				if (seq_j > (cache_pos + seq_i)) { continue; } // Causal mask
 				var score: f32 = 0.0;
 				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
 					let q_idx = seq_i * D_MODEL + head * HEAD_DIM + hd;
-					// Read K from the correct mapped KV head
-					let k_idx = seq_j * D_MODEL + kv_head * HEAD_DIM + hd;
+					// Read K from the correct mapped KV head in cache
+					let k_idx = seq_j * D_KV + kv_head * HEAD_DIM + hd;
 					score += q[q_idx] * k[k_idx];
 				}
 				score *= SCALE;
@@ -455,20 +514,19 @@ func (l *MHALayer) GenerateAttnShader() string {
 
 			// Second pass: compute softmax and weighted V sum
 			var exp_sum: f32 = 0.0;
-			for (var seq_j: u32 = 0u; seq_j < SEQ_LEN; seq_j++) {
-				if (seq_j >= actual_len) { continue; } // Padding mask
-				if (seq_j > seq_i) { continue; }
+			for (var seq_j: u32 = 0u; seq_j < total_len; seq_j++) {
+				if (seq_j > (cache_pos + seq_i)) { continue; }
 				var score: f32 = 0.0;
 				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
 					let q_idx = seq_i * D_MODEL + head * HEAD_DIM + hd;
-					let k_idx = seq_j * D_MODEL + kv_head * HEAD_DIM + hd;
+					let k_idx = seq_j * D_KV + kv_head * HEAD_DIM + hd;
 					score += q[q_idx] * k[k_idx];
 				}
 				score = exp(score * SCALE - max_score);
 				exp_sum += score;
 				
-				// Read V from the correct mapped KV head
-				let v_idx = seq_j * D_MODEL + kv_head * HEAD_DIM + head_d;
+				// Read V from the correct mapped KV head in cache
+				let v_idx = seq_j * D_KV + kv_head * HEAD_DIM + head_d;
 				sum += score * v[v_idx];
 			}
 
@@ -603,6 +661,9 @@ func (l *MHALayer) Compile(ctx *Context, labelPrefix string) error {
 			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // q_out
 			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // k_out
 			{Binding: 5, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // v_out
+			{Binding: 6, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // k_cache
+			{Binding: 7, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // v_cache
+			{Binding: 8, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // params
 		},
 	})
 	if err != nil {
@@ -642,7 +703,7 @@ func (l *MHALayer) Compile(ctx *Context, labelPrefix string) error {
 			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // k
 			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // v
 			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // attn_out
-			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // params
+			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // params
 		},
 	})
 	if err != nil {
@@ -754,6 +815,9 @@ func (l *MHALayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 			{Binding: 3, Buffer: l.QBuffer, Size: l.QBuffer.GetSize()},
 			{Binding: 4, Buffer: l.KBuffer, Size: l.KBuffer.GetSize()},
 			{Binding: 5, Buffer: l.VBuffer, Size: l.VBuffer.GetSize()},
+			{Binding: 6, Buffer: l.KCacheBuffer, Size: l.KCacheBuffer.GetSize()},
+			{Binding: 7, Buffer: l.VCacheBuffer, Size: l.VCacheBuffer.GetSize()},
+			{Binding: 8, Buffer: l.ParamsBuffer, Size: l.ParamsBuffer.GetSize()},
 		},
 	})
 	if err != nil {
@@ -766,8 +830,8 @@ func (l *MHALayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 		Layout: l.pipelineAttn.GetBindGroupLayout(0),
 		Entries: []wgpu.BindGroupEntry{
 			{Binding: 0, Buffer: l.QBuffer, Size: l.QBuffer.GetSize()},
-			{Binding: 1, Buffer: l.KBuffer, Size: l.KBuffer.GetSize()},
-			{Binding: 2, Buffer: l.VBuffer, Size: l.VBuffer.GetSize()},
+			{Binding: 1, Buffer: l.KCacheBuffer, Size: l.KCacheBuffer.GetSize()},
+			{Binding: 2, Buffer: l.VCacheBuffer, Size: l.VCacheBuffer.GetSize()},
 			{Binding: 3, Buffer: l.AttnBuffer, Size: l.AttnBuffer.GetSize()},
 			{Binding: 4, Buffer: l.ParamsBuffer, Size: l.ParamsBuffer.GetSize()},
 		},
@@ -806,7 +870,11 @@ func (l *MHALayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string, dOu
 }
 
 func (l *MHALayer) Dispatch(pass *wgpu.ComputePassEncoder) {
-	total := l.Spec.SeqLen * l.Spec.DModel
+	inputLen := l.currentInputLen
+	if inputLen <= 0 {
+		inputLen = l.Spec.SeqLen
+	}
+	total := inputLen * l.Spec.DModel
 	wg := uint32((total + 255) / 256)
 
 	// Stage 1: QKV projection
@@ -815,9 +883,6 @@ func (l *MHALayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.DispatchWorkgroups(wg, 1, 1)
 
 	// Stage 2: Attention
-	// Note: Ideally this should be a separate pass for memory barriers,
-	// but within the current interface we must use the same pass.
-	// We rely on implicit synchronization or lack of overlapping hazards for now.
 	pass.SetPipeline(l.pipelineAttn)
 	pass.SetBindGroup(0, l.bindGroupAttn, nil)
 	pass.DispatchWorkgroups(wg, 1, 1)
@@ -829,7 +894,11 @@ func (l *MHALayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 }
 
 func (l *MHALayer) DispatchFull(enc *wgpu.CommandEncoder) {
-	total := l.Spec.SeqLen * l.Spec.DModel
+	inputLen := l.currentInputLen
+	if inputLen <= 0 {
+		inputLen = l.Spec.SeqLen
+	}
+	total := inputLen * l.Spec.DModel
 	wg := uint32((total + 255) / 256)
 
 	// Stage 1: QKV
@@ -882,10 +951,16 @@ func (l *MHALayer) DownloadGradients(ctx *Context) ([]float32, []float32, []floa
 	return nil, nil, iGrad, err
 }
 
-func (l *MHALayer) SetActualSeqLen(ctx *Context, length int) {
+func (l *MHALayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	l.currentInputLen = inputLen
+	l.currentCachePos = cachePos
 	if l.ParamsBuffer != nil {
-		ctx.Queue.WriteBuffer(l.ParamsBuffer, 0, wgpu.ToBytes([]uint32{uint32(length)}))
+		ctx.Queue.WriteBuffer(l.ParamsBuffer, 0, wgpu.ToBytes([]uint32{uint32(inputLen), uint32(cachePos)}))
 	}
+}
+
+func (l *MHALayer) SetActualSeqLen(ctx *Context, length int) {
+	l.UpdateParams(ctx, length, 0)
 }
 
 func (l *MHALayer) Cleanup() {

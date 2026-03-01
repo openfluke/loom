@@ -30,6 +30,8 @@ type EmbeddingLayer struct {
 	// Backward
 	WeightGradientBuffer *wgpu.Buffer
 
+	ParamsBuffer *wgpu.Buffer // Uniforms: [BatchSize * SeqLen, ...]
+
 	bwPipeline  *wgpu.ComputePipeline
 	bwBindGroup *wgpu.BindGroup
 }
@@ -83,9 +85,20 @@ func (l *EmbeddingLayer) AllocateBuffers(ctx *Context, labelPrefix string) error
 	}
 
 	outputSize = batch * l.Spec.SeqLength * l.Spec.EmbeddingDim
+	// Params Buffer
+	l.ParamsBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_Params",
+		Size:  16,
+		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Staging
 	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
-		Size:  uint64(outputSize * 4),
+		Size:  uint64(batch * l.Spec.SeqLength * l.Spec.EmbeddingDim * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
 	return err
@@ -109,14 +122,18 @@ func (l *EmbeddingLayer) GenerateShader() string {
 		@group(0) @binding(1) var<storage, read> weights : array<f32>;
 		@group(0) @binding(2) var<storage, read_write> output : array<f32>;
 
-		const SEQ_LEN: u32 = %du;
+		@group(0) @binding(3) var<uniform> params : LayerParams;
+		struct LayerParams {
+			batch_seq_total: u32,
+		};
+
 		const EMB_DIM: u32 = %du;
 		const VOCAB_SIZE: u32 = %du;
 
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let idx = gid.x;
-			let total = SEQ_LEN * EMB_DIM;
+			let total = params.batch_seq_total * EMB_DIM;
 			if (idx >= total) { return; }
 
 			let pos = idx / EMB_DIM;  // Which token position
@@ -129,7 +146,7 @@ func (l *EmbeddingLayer) GenerateShader() string {
 				output[idx] = 0.0;
 			}
 		}
-	`, uint32(l.BatchSize)*uint32(l.Spec.SeqLength), l.Spec.EmbeddingDim, l.Spec.VocabSize)
+	`, l.Spec.EmbeddingDim, l.Spec.VocabSize)
 }
 
 func (l *EmbeddingLayer) GenerateBackwardShader() string {
@@ -206,6 +223,7 @@ func (l *EmbeddingLayer) Compile(ctx *Context, labelPrefix string) error {
 			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // tokens
 			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // weights
 			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // output
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // params
 		},
 	})
 	if err != nil {
@@ -272,6 +290,7 @@ func (l *EmbeddingLayer) CreateBindGroup(ctx *Context, labelPrefix string) error
 		{Binding: 0, Buffer: l.TokenBuffer, Size: l.TokenBuffer.GetSize()},
 		{Binding: 1, Buffer: l.WeightBuffer, Size: l.WeightBuffer.GetSize()},
 		{Binding: 2, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+		{Binding: 3, Buffer: l.ParamsBuffer, Size: l.ParamsBuffer.GetSize()},
 	}
 	l.bindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:   labelPrefix + "_Bind",
@@ -306,6 +325,15 @@ func (l *EmbeddingLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	total := batch * l.Spec.SeqLength * l.Spec.EmbeddingDim
 	wgx := (total + 255) / 256
 	pass.DispatchWorkgroups(uint32(wgx), 1, 1)
+}
+
+func (l *EmbeddingLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+		if l.ParamsBuffer != nil {
+			ctx.Queue.WriteBuffer(l.ParamsBuffer, 0, wgpu.ToBytes([]uint32{uint32(inputLen)}))
+		}
+	}
 }
 
 func (l *EmbeddingLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
@@ -371,5 +399,8 @@ func (l *EmbeddingLayer) Cleanup() {
 	}
 	if l.bwBindGroup != nil {
 		l.bwBindGroup.Release()
+	}
+	if l.ParamsBuffer != nil {
+		l.ParamsBuffer.Destroy()
 	}
 }

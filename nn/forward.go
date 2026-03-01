@@ -286,6 +286,18 @@ func (n *Network) Forward(input []float32) ([]float32, time.Duration) {
 	return n.ForwardCPU(input)
 }
 
+// ForwardTransformer executes a single-token forward pass with KV caching.
+// It automatically manages position and inference state across MHA layers.
+func (n *Network) ForwardTransformer(input []float32, pos int) ([]float32, time.Duration) {
+	for i := range n.Layers {
+		if n.Layers[i].Type == LayerMultiHeadAttention {
+			n.Layers[i].IsInference = true
+			n.Layers[i].KVCachePos = pos
+		}
+	}
+	return n.Forward(input)
+}
+
 // ForwardCPU executes the grid network on CPU and stores intermediate activations for backprop
 func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
@@ -309,6 +321,7 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 			for layer := 0; layer < n.LayersPerCell; layer++ {
 				// Get layer configuration for this grid position
 				config := n.GetLayer(row, col, layer)
+				var preAct, postAct []float32
 
 				// Route to appropriate layer type
 				if config.IsDisabled {
@@ -319,7 +332,7 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 
 				} else if config.Type == LayerConv2D {
 					// Conv2D layer
-					preAct, postAct := conv2DForwardCPU(data, config, n.BatchSize)
+					preAct, postAct = conv2DForwardCPU(data, config, n.BatchSize)
 
 					// Store pre-activation values (before activation function)
 					n.preActivations[layerIdx] = preAct
@@ -331,7 +344,12 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					// In Pre-LN: x = Attention(Norm(x)) + x
 					// The norm happens before this layer, so we need to add the pre-norm input
 
-					preAct, postAct := MultiHeadAttentionForwardCPU(data, config, n.BatchSize)
+					// Dynamic batch: for sequence models, len(data) / inputSize
+					actualBatch := n.BatchSize
+					if config.InputHeight > 0 && len(data)%config.InputHeight == 0 {
+						actualBatch = len(data) / config.InputHeight
+					}
+					preAct, postAct = MultiHeadAttentionForwardCPU(data, config, actualBatch)
 
 					// Add residual connection if we have stored residual
 					if residualInput != nil && len(residualInput) == len(postAct) {
@@ -382,15 +400,23 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					// Softmax layer
 					// Function `ForwardSoftmaxCPU` computes softmax over the entire input slice.
 					// We must handle batching manually here.
-					inputSize := len(data)
-					if n.BatchSize > 0 {
-						inputSize = len(data) / n.BatchSize
+					inputSize := config.InputHeight
+					if inputSize == 0 && n.InputSize > 0 {
+						inputSize = n.InputSize
+					}
+					if inputSize == 0 {
+						inputSize = len(data)
+					}
+
+					actualBatch := len(data) / inputSize
+					if actualBatch == 0 {
+						actualBatch = 1
 					}
 
 					probs := make([]float32, len(data))
 
 					// Apply softmax per sample
-					for i := 0; i < n.BatchSize; i++ {
+					for i := 0; i < actualBatch; i++ {
 						start := i * inputSize
 						end := start + inputSize
 						if end > len(data) {
@@ -418,7 +444,7 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					if config.InputHeight > 0 && len(data)%config.InputHeight == 0 {
 						actualBatch = len(data) / config.InputHeight
 					}
-					preAct, postAct := denseForwardCPU(data, config, actualBatch)
+					preAct, postAct = denseForwardCPU(data, config, actualBatch)
 
 					// Store pre-activation values
 					n.preActivations[layerIdx] = preAct
@@ -430,7 +456,12 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					// In Pre-LN: x = SwiGLU(Norm(x)) + x
 					// The norm happens before this layer, so we need to add the pre-norm input
 
-					preAct, postAct := SwiGLUForwardCPU(data, config, n.BatchSize)
+					// Dynamic batch: for sequence models, len(data) / inputSize
+					actualBatch := n.BatchSize
+					if config.InputHeight > 0 && len(data)%config.InputHeight == 0 {
+						actualBatch = len(data) / config.InputHeight
+					}
+					preAct, postAct = SwiGLUForwardCPU(data, config, actualBatch)
 
 					// Add residual connection if we have stored residual
 					if residualInput != nil && len(residualInput) == len(postAct) {
@@ -471,7 +502,12 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					data = normalized
 				} else if config.Type == LayerRMSNorm {
 					// RMS Normalization (just normalize, no residual addition here)
-					normalized := rmsNormForwardCPU(data, nil, config, n.BatchSize)
+					// Dynamic batch: for sequence models, len(data) / normSize
+					actualBatch := n.BatchSize
+					if config.NormSize > 0 && len(data)%config.NormSize == 0 {
+						actualBatch = len(data) / config.NormSize
+					}
+					normalized := rmsNormForwardCPU(data, nil, config, actualBatch)
 
 					// Store pre-normalization values
 					n.preActivations[layerIdx] = make([]float32, len(data))

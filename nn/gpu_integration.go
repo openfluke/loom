@@ -191,15 +191,19 @@ func (n *Network) WeightsToGPU() error {
 	if n.EnableGPUResiduals {
 		maxSize := 0
 		for _, l := range layers {
-			if mha, ok := l.(*gpu.MHALayer); ok {
-				size := int(mha.GetInputBuffer().GetSize() / 4)
-				if size > maxSize {
-					maxSize = size
+			if l == nil {
+				continue
+			}
+			if b := l.GetInputBuffer(); b != nil {
+				s := int(b.GetSize() / 4)
+				if s > maxSize {
+					maxSize = s
 				}
-			} else if swiglu, ok := l.(*gpu.SwiGLULayer); ok {
-				size := int(swiglu.GetInputBuffer().GetSize() / 4)
-				if size > maxSize {
-					maxSize = size
+			}
+			if b := l.GetOutputBuffer(); b != nil {
+				s := int(b.GetSize() / 4)
+				if s > maxSize {
+					maxSize = s
 				}
 			}
 		}
@@ -428,25 +432,26 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 		seqTokens = 1
 	}
 
+	configIdx := 0
 	for i, l := range layers {
-		// 1. Pre-Layer Actions (Residual Capture, MHA Setup)
+		// Find corresponding config layer (skip disabled)
+		for configIdx < len(n.Layers) && n.Layers[configIdx].IsDisabled {
+			configIdx++
+		}
+		if configIdx >= len(n.Layers) {
+			break
+		}
+		conf := &n.Layers[configIdx]
+
+		// 1. Pre-Layer Actions (Residual Capture, MHA Setup, Parameter Updates)
+		cachePos := conf.KVCachePos
+		l.UpdateParams(ctx, seqTokens, cachePos)
+
 		isMHA := false
 		var mhaLayer *gpu.MHALayer
 		if mha, ok := l.(*gpu.MHALayer); ok {
 			isMHA = true
 			mhaLayer = mha
-			// Fix A: Correct Sequence Length (Tokens vs Floats).
-			// seqTokens = len(input)/n.InputSize is only valid for embedding-first LLMs where
-			// n.InputSize == d_model (so seqTokens = actual token count).
-			// For any other network (e.g. Combined_Hybrid where n.InputSize=512, d_model=64),
-			// seqTokens would be 1 instead of 8, causing MHA to process only 1 token and
-			// leaving 7/8 of the output buffer as zeros/garbage.
-			// Fix: only override when the network is embedding-first (LLM inference).
-			_, firstIsEmbed := layers[0].(*gpu.EmbeddingLayer)
-			if firstIsEmbed {
-				mha.SetActualSeqLen(ctx, seqTokens)
-			}
-			// else: MHA uses its compiled Spec.SeqLen which was set in buildGPULayer
 		}
 
 		// Residual Start: Capture input of RMSNorm/LayerNorm (transformer-block skip connection).
@@ -486,7 +491,7 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 			if isMHA || isSwiGLU {
 				// Add residual: Output = Output + ResidualBuf
 				ensurePass()
-				bg, err := resAdder.Dispatch(ctx, pass, l.GetOutputBuffer(), n.gpuResidualBuffer)
+				bg, err := resAdder.Dispatch(ctx, pass, l.GetOutputBuffer(), n.gpuResidualBuffer, seqTokens*n.InputSize)
 				if err != nil {
 					return nil, fmt.Errorf("residual bind group: %w", err)
 				}
@@ -512,6 +517,7 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 			endPass()
 			cmdEnc.CopyBufferToBuffer(l.GetOutputBuffer(), 0, l.GetStagingBuffer(), 0, l.GetOutputBuffer().GetSize())
 		}
+		configIdx++
 	}
 	endPass() // Ensure closed if last layer continued pass
 
@@ -727,7 +733,7 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			Gamma:     l.Gamma,
 			Beta:      l.Beta,
 		}
-		return &gpu.LayerNormLayer{Spec: spec}, pixelSize * batchSize, nil
+		return &gpu.LayerNormLayer{Spec: spec}, pixelSize, nil
 
 	case LayerRMSNorm:
 		pixelSize := l.NormSize
@@ -747,7 +753,7 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			Epsilon:   l.Epsilon,
 			Gamma:     l.Gamma,
 		}
-		return &gpu.RMSNormLayer{Spec: spec}, pixelSize * batchSize, nil
+		return &gpu.RMSNormLayer{Spec: spec}, pixelSize, nil
 
 	case LayerSoftmax:
 		temp := l.Temperature
@@ -920,7 +926,7 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			OBias:        l.OutputBias,
 			RoPEFreqBase: l.RoPEFreqBase,
 		}
-		return &gpu.MHALayer{Spec: spec}, l.DModel * seqLen, nil
+		return &gpu.MHALayer{Spec: spec}, l.DModel, nil
 
 	case LayerSwiGLU:
 
@@ -971,7 +977,7 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 		// For GPU layer build, I should return the ACTUAL output size of the block.
 		// Which is l.InputHeight * seqLen.
 
-		return &gpu.SwiGLULayer{Spec: spec}, l.InputHeight * seqLen, nil
+		return &gpu.SwiGLULayer{Spec: spec}, l.InputHeight, nil
 
 	case LayerRNN:
 		// Default parameters
@@ -1000,7 +1006,7 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			WeightHH:   l.WeightHH,
 			BiasH:      l.BiasH,
 		}
-		return &gpu.RNNLayer{Spec: spec}, hiddenSize * seqLen, nil
+		return &gpu.RNNLayer{Spec: spec}, hiddenSize, nil
 
 	case LayerParallel:
 		branches := make([]gpu.GPULayer, len(l.ParallelBranches))
@@ -1068,7 +1074,7 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			BiasH_g:    l.BiasH_g,
 			BiasH_o:    l.BiasH_o,
 		}
-		return &gpu.LSTMLayer{Spec: spec}, l.HiddenSize * seqLen, nil
+		return &gpu.LSTMLayer{Spec: spec}, l.HiddenSize, nil
 
 	default:
 		// Layer type not supported on GPU

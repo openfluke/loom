@@ -237,8 +237,9 @@ func InitMultiHeadAttentionLayer(config *LayerConfig, isGPU bool) {
 // MultiHeadAttentionForwardCPU (keeps existing logic)
 // Copy-paste original function to avoid deletion
 func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSize int) ([]float32, []float32) {
-	// ... (Complete implementation from previous view_file)
-	// I need to paste the full content here.
+	if config.IsInference {
+		return multiHeadAttentionInferenceCPU(input, config, batchSize)
+	}
 
 	// Extract dimensions
 	dModel := config.DModel
@@ -416,6 +417,152 @@ func MultiHeadAttentionForwardCPU(input []float32, config *LayerConfig, batchSiz
 	// Return output AND concatenated (attention output before final projection)
 	// concatenated is needed by backward pass for correct gradient calculation
 	return output, concatenated
+}
+
+func multiHeadAttentionInferenceCPU(input []float32, config *LayerConfig, batchSize int) ([]float32, []float32) {
+	dModel := config.DModel
+	numHeads := config.NumHeads
+	numKVHeads := config.NumKVHeads
+	if numKVHeads == 0 {
+		numKVHeads = numHeads
+	}
+	headDim := config.HeadDim
+	seqLen := len(input) / dModel // Usually 1 during auto-regressive gen
+	kvDim := numKVHeads * headDim
+
+	// 1. Projections
+	Q := make([]float32, seqLen*dModel)
+	K := make([]float32, seqLen*kvDim)
+	V := make([]float32, seqLen*kvDim)
+
+	for s := 0; s < seqLen; s++ {
+		for outDim := 0; outDim < dModel; outDim++ {
+			sum := config.QBias[outDim]
+			for inDim := 0; inDim < dModel; inDim++ {
+				sum += input[s*dModel+inDim] * config.QWeights[inDim*dModel+outDim]
+			}
+			Q[s*dModel+outDim] = sum
+		}
+		for outDim := 0; outDim < kvDim; outDim++ {
+			sumK := config.KBias[outDim]
+			sumV := config.VBias[outDim]
+			for inDim := 0; inDim < dModel; inDim++ {
+				sumK += input[s*dModel+inDim] * config.KWeights[inDim*kvDim+outDim]
+				sumV += input[s*dModel+inDim] * config.VWeights[inDim*kvDim+outDim]
+			}
+			K[s*kvDim+outDim] = sumK
+			V[s*kvDim+outDim] = sumV
+		}
+	}
+
+	// 2. RoPE
+	ropeTheta := float64(config.RoPEFreqBase)
+	if ropeTheta == 0 {
+		ropeTheta = 10000.0
+	}
+
+	// Apply RoPE to Q and K (at their specific positions)
+	for s := 0; s < seqLen; s++ {
+		pos := config.KVCachePos + s
+		for h := 0; h < numHeads; h++ {
+			applyRoPEOneHead(Q[s*dModel+h*headDim:s*dModel+(h+1)*headDim], pos, headDim, ropeTheta)
+		}
+		for h := 0; h < numKVHeads; h++ {
+			applyRoPEOneHead(K[s*kvDim+h*headDim:s*kvDim+(h+1)*headDim], pos, headDim, ropeTheta)
+		}
+	}
+
+	// 3. Update Cache
+	if len(config.KVCacheK) == 0 {
+		// Auto-init if not done (though ideally caller should)
+		maxSeq := config.SeqLength
+		if maxSeq == 0 {
+			maxSeq = 2048
+		}
+		config.KVCacheK = make([]float32, maxSeq*kvDim)
+		config.KVCacheV = make([]float32, maxSeq*kvDim)
+	}
+
+	cacheOffset := config.KVCachePos * kvDim
+	copy(config.KVCacheK[cacheOffset:cacheOffset+seqLen*kvDim], K)
+	copy(config.KVCacheV[cacheOffset:cacheOffset+seqLen*kvDim], V)
+
+	// 4. Attention
+	headsPerKV := numHeads / numKVHeads
+	scale := float32(1.0 / math.Sqrt(float64(headDim)))
+	attnOut := make([]float32, seqLen*dModel)
+
+	for s := 0; s < seqLen; s++ {
+		qPos := config.KVCachePos + s
+		for h := 0; h < numHeads; h++ {
+			kvHead := h / headsPerKV
+			qOff := s*dModel + h*headDim
+			qHead := Q[qOff : qOff+headDim]
+
+			scores := make([]float32, qPos+1)
+			maxScore := float32(-1e9)
+			for t := 0; t <= qPos; t++ {
+				kOff := t*kvDim + kvHead*headDim
+				var dot float32
+				for d := 0; d < headDim; d++ {
+					dot += qHead[d] * config.KVCacheK[kOff+d]
+				}
+				score := dot * scale
+				scores[t] = score
+				if score > maxScore {
+					maxScore = score
+				}
+			}
+
+			var expSum float32
+			for t := 0; t <= qPos; t++ {
+				val := float32(math.Exp(float64(scores[t] - maxScore)))
+				scores[t] = val
+				expSum += val
+			}
+
+			if expSum > 0 {
+				for d := 0; d < headDim; d++ {
+					var sum float32
+					for t := 0; t <= qPos; t++ {
+						vOff := t*kvDim + kvHead*headDim
+						sum += scores[t] * config.KVCacheV[vOff+d]
+					}
+					attnOut[qOff+d] = sum / expSum
+				}
+			}
+		}
+	}
+
+	// 5. Output Projection
+	output := make([]float32, seqLen*dModel)
+	for s := 0; s < seqLen; s++ {
+		for outDim := 0; outDim < dModel; outDim++ {
+			sum := config.OutputBias[outDim]
+			for inDim := 0; inDim < dModel; inDim++ {
+				sum += attnOut[s*dModel+inDim] * config.OutputWeight[inDim*dModel+outDim]
+			}
+			output[s*dModel+outDim] = sum
+		}
+	}
+
+	config.KVCachePos += seqLen
+	return attnOut, output
+}
+
+func applyRoPEOneHead(vec []float32, pos int, headDim int, theta float64) {
+	half := headDim / 2
+	for d := 0; d < half; d++ {
+		freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
+		angle := freq * float64(pos)
+		c := float32(math.Cos(angle))
+		s := float32(math.Sin(angle))
+
+		v0 := vec[d]
+		v1 := vec[d+half]
+		vec[d] = v0*c - v1*s
+		vec[d+half] = v0*s + v1*c
+	}
 }
 
 // applyRoPEPyTorchStyle (keeps existing logic)

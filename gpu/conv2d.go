@@ -682,6 +682,12 @@ func (l *Conv2DLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.DispatchWorkgroups(uint32((total+255)/256), 1, 1)
 }
 
+func (l *Conv2DLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+	}
+}
+
 func (l *Conv2DLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	// 1. Compute dInput
 	pass := enc.BeginComputePass(nil)

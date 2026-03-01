@@ -485,6 +485,14 @@ func (s *DenseSequence) Build() error {
 	return nil
 }
 
+func (l *DenseLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+		totalThreads := uint32(l.Spec.OutputSize * l.BatchSize)
+		l.WorkgroupsX = (totalThreads + 255) / 256
+	}
+}
+
 // Dispatch records the compute pass for this layer
 func (l *DenseLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	if Debug {

@@ -367,6 +367,12 @@ type LayerConfig struct {
 	// Training control
 	Frozen bool // If true, weights in this layer will not be updated during training
 
+	// KV Cache support (for inference)
+	IsInference bool      // Toggle transformer-style KV caching
+	KVCacheK    []float32 // Stored Key tensors [MaxSeq * KVDim]
+	KVCacheV    []float32 // Stored Value tensors [MaxSeq * KVDim]
+	KVCachePos  int       // Current token position in cache
+
 	// Transient state (for sub-layers like AttachedLayer in KMeans)
 	PreActivations []float32 // Stored pre-activations for backpropagation
 

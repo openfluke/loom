@@ -518,6 +518,12 @@ func (l *RMSNormLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.DispatchWorkgroups(uint32(batch), 1, 1)
 }
 
+func (l *RMSNormLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+	}
+}
+
 func (l *RMSNormLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(l.bwPipeline)

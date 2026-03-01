@@ -957,6 +957,12 @@ func (l *LSTMLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	}
 }
 
+func (l *LSTMLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+	}
+}
+
 func (l *LSTMLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	// Sequential BPTT: Iterate t from SeqLen-1 down to 0
 

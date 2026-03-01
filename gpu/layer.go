@@ -16,6 +16,9 @@ type GPULayer interface {
 	Dispatch(pass *wgpu.ComputePassEncoder)
 	DispatchBackward(enc *wgpu.CommandEncoder)
 
+	// Dynamic Parameters (Inference)
+	UpdateParams(ctx *Context, inputLen int, cachePos int)
+
 	// Data Transfer
 	UploadWeights(ctx *Context)
 	DownloadWeights(ctx *Context) ([]float32, []float32, error) // Might need to be generic or interface{}? Or just return raw buffers?

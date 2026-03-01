@@ -260,6 +260,16 @@ func (l *ParallelLayer) Cleanup() {
 	}
 }
 
+func (l *ParallelLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+	}
+	// Propagate to branches
+	for _, b := range l.Branches {
+		b.UpdateParams(ctx, inputLen, cachePos)
+	}
+}
+
 func (l *ParallelLayer) Compile(ctx *Context, labelPrefix string) error {
 	for i, b := range l.Branches {
 		if err := b.Compile(ctx, fmt.Sprintf("%s/b%d", labelPrefix, i)); err != nil {

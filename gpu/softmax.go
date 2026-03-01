@@ -348,6 +348,12 @@ func (l *SoftmaxLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.DispatchWorkgroups(uint32(batch), 1, 1)
 }
 
+func (l *SoftmaxLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+	}
+}
+
 func (l *SoftmaxLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(l.bwPipeline)

@@ -674,6 +674,12 @@ func (l *LayerNormLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.DispatchWorkgroups(uint32(batch*l.Spec.BatchSize), 1, 1)
 }
 
+func (l *LayerNormLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+	}
+}
+
 func (l *LayerNormLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	pass := enc.BeginComputePass(nil)
 

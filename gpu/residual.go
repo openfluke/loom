@@ -13,7 +13,8 @@ type ResidualSpec struct {
 
 // ResidualLayer holds GPU resources for Residual addition
 type ResidualLayer struct {
-	Spec ResidualSpec
+	Spec      ResidualSpec
+	BatchSize int
 
 	pipeline  *wgpu.ComputePipeline
 	bindGroup *wgpu.BindGroup
@@ -26,6 +27,7 @@ type ResidualLayer struct {
 	// Backward
 	InputGradientBuffer *wgpu.Buffer
 	SkipGradientBuffer  *wgpu.Buffer
+	ParamsBuffer        *wgpu.Buffer // Uniforms: [TotalSize, ...]
 
 	bwPipeline  *wgpu.ComputePipeline
 	bwBindGroup *wgpu.BindGroup
@@ -69,6 +71,11 @@ func (l *ResidualLayer) AllocateBuffers(ctx *Context, labelPrefix string) error 
 		return err
 	}
 
+	if err != nil {
+		return err
+	}
+
+	// Staging
 	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(size * 4),
@@ -101,19 +108,18 @@ func (l *ResidualLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string
 func (l *ResidualLayer) GenerateShader() string {
 	// Simple element-wise addition: output = input + skip
 	return fmt.Sprintf(`
-		@group(0) @binding(0) var<storage, read> input : array<f32>;
-		@group(0) @binding(1) var<storage, read> skip : array<f32>;
-		@group(0) @binding(2) var<storage, read_write> output : array<f32>;
-
-		const SIZE: u32 = %du;
+		@group(0) @binding(3) var<uniform> params : LayerParams;
+		struct LayerParams {
+			size: u32,
+		};
 
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let idx = gid.x;
-			if (idx >= SIZE) { return; }
+			if (idx >= params.size) { return; }
 			output[idx] = input[idx] + skip[idx];
 		}
-	`, l.Spec.Size)
+	`)
 }
 
 func (l *ResidualLayer) GenerateBackwardShader() string {
@@ -153,6 +159,7 @@ func (l *ResidualLayer) Compile(ctx *Context, labelPrefix string) error {
 			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Input
 			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // Skip
 			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Output
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // Params
 		},
 	})
 	if err != nil {
@@ -219,6 +226,7 @@ func (l *ResidualLayer) CreateBindGroup(ctx *Context, labelPrefix string) error 
 		{Binding: 0, Buffer: l.InputBuffer, Size: l.InputBuffer.GetSize()},
 		{Binding: 1, Buffer: l.SkipBuffer, Size: l.SkipBuffer.GetSize()},
 		{Binding: 2, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+		{Binding: 3, Buffer: l.ParamsBuffer, Size: l.ParamsBuffer.GetSize()},
 	}
 	l.bindGroup, err = ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:   labelPrefix + "_Bind",
@@ -246,8 +254,22 @@ func (l *ResidualLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string
 func (l *ResidualLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.SetPipeline(l.pipeline)
 	pass.SetBindGroup(0, l.bindGroup, nil)
-	wgx := (l.Spec.Size + 255) / 256
+	batch := l.BatchSize
+	if batch < 1 {
+		batch = 1
+	}
+	wgx := (batch*l.Spec.Size + 255) / 256
 	pass.DispatchWorkgroups(uint32(wgx), 1, 1)
+}
+
+func (l *ResidualLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+		total := uint32(inputLen * l.Spec.Size)
+		if l.ParamsBuffer != nil {
+			ctx.Queue.WriteBuffer(l.ParamsBuffer, 0, wgpu.ToBytes([]uint32{total}))
+		}
+	}
 }
 
 func (l *ResidualLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
@@ -303,6 +325,9 @@ func (l *ResidualLayer) Cleanup() {
 	if l.bwBindGroup != nil {
 		l.bwBindGroup.Release()
 	}
+	if l.ParamsBuffer != nil {
+		l.ParamsBuffer.Destroy()
+	}
 }
 
 // InPlaceResidual performs out += skip
@@ -317,14 +342,13 @@ func NewInPlaceResidual(ctx *Context, size int) (*InPlaceResidual, error) {
 	shader := fmt.Sprintf(`
 		@group(0) @binding(0) var<storage, read_write> out : array<f32>;
 		@group(0) @binding(1) var<storage, read> skip : array<f32>;
-		const SIZE: u32 = %du;
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let idx = gid.x;
-			if (idx >= SIZE) { return; }
+			if (idx >= arrayLength(&out)) { return; }
 			out[idx] = out[idx] + skip[idx];
 		}
-	`, size)
+	`)
 
 	module, err := ctx.Device.CreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:          "InPlaceResidual_Shader",
@@ -365,7 +389,11 @@ func NewInPlaceResidual(ctx *Context, size int) (*InPlaceResidual, error) {
 	return r, nil
 }
 
-func (r *InPlaceResidual) Dispatch(ctx *Context, pass *wgpu.ComputePassEncoder, outBuf, skipBuf *wgpu.Buffer) (*wgpu.BindGroup, error) {
+func (r *InPlaceResidual) Dispatch(ctx *Context, pass *wgpu.ComputePassEncoder, outBuf, skipBuf *wgpu.Buffer, count int) (*wgpu.BindGroup, error) {
+	if count < 1 {
+		count = 1
+	}
+
 	// Create temporary bind group for this dispatch
 	bg, err := ctx.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Label:  "InPlaceResidual_Bind",
@@ -383,7 +411,7 @@ func (r *InPlaceResidual) Dispatch(ctx *Context, pass *wgpu.ComputePassEncoder, 
 	pass.SetPipeline(r.pipeline)
 	pass.SetBindGroup(0, bg, nil)
 
-	wg := (uint32(r.Size) + 255) / 256
+	wg := (uint32(count) + 255) / 256
 	pass.DispatchWorkgroups(wg, 1, 1)
 
 	return bg, nil

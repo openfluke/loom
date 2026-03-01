@@ -574,6 +574,12 @@ func (l *RNNLayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	}
 }
 
+func (l *RNNLayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+	}
+}
+
 func (l *RNNLayer) DispatchBackward(enc *wgpu.CommandEncoder) {
 	// 1. dInput
 	pass := enc.BeginComputePass(nil)

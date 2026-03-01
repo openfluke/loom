@@ -47,6 +47,7 @@ type SwiGLULayer struct {
 	GateOutBuffer      *wgpu.Buffer // Intermediate: gate projection output
 	UpOutBuffer        *wgpu.Buffer // Intermediate: up projection output
 	IntermediateBuffer *wgpu.Buffer // After activation
+	ParamsBuffer       *wgpu.Buffer // Uniforms: [BatchSize, ...]
 
 	// Backward (simplified - just input gradient for now)
 	InputGradientBuffer *wgpu.Buffer
@@ -162,12 +163,25 @@ func (l *SwiGLULayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		return err
 	}
 
+	// Params Buffer
+	l.ParamsBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: labelPrefix + "_Params",
+		Size:  16,
+		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
+	})
+	if err != nil {
+		return err
+	}
+
 	// Staging
 	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(inputTotal * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+	if err != nil {
+		return err
+	}
 
 	_ = gateUpSize
 	_ = downSize
@@ -198,15 +212,18 @@ func (l *SwiGLULayer) GenerateGateUpShader() string {
 		@group(0) @binding(4) var<storage, read> up_b : array<f32>;
 		@group(0) @binding(5) var<storage, read_write> gate_out : array<f32>;
 		@group(0) @binding(6) var<storage, read_write> up_out : array<f32>;
+		@group(0) @binding(7) var<uniform> params : LayerParams;
+		struct LayerParams {
+			batch: u32,
+		};
 
-		const SEQ_LEN: u32 = %du;
 		const INPUT_SIZE: u32 = %du;
 		const INTER_SIZE: u32 = %du;
 
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let idx = gid.x;
-			let total = SEQ_LEN * INTER_SIZE;
+			let total = params.batch * INTER_SIZE;
 			if (idx >= total) { return; }
 
 			let s = idx / INTER_SIZE;
@@ -215,19 +232,19 @@ func (l *SwiGLULayer) GenerateGateUpShader() string {
 
 			// Gate projection
 			var gate_sum: f32 = gate_b[i];
-			for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
-				gate_sum += input[input_offset + j] * gate_w[j * INTER_SIZE + i];
+			for (var i: u32 = 0u; i < INPUT_SIZE; i++) {
+				gate_sum += input[input_offset + i] * gate_w[i * INTER_SIZE + idx %% INTER_SIZE];
 			}
 			gate_out[idx] = gate_sum;
 
 			// Up projection
 			var up_sum: f32 = up_b[i];
-			for (var j: u32 = 0u; j < INPUT_SIZE; j++) {
-				up_sum += input[input_offset + j] * up_w[j * INTER_SIZE + i];
+			for (var i: u32 = 0u; i < INPUT_SIZE; i++) {
+				up_sum += input[input_offset + i] * up_w[i * INTER_SIZE + idx %% INTER_SIZE];
 			}
 			up_out[idx] = up_sum;
 		}
-	`, l.BatchSize, l.Spec.InputSize, l.Spec.IntermediateSize)
+	`, l.Spec.InputSize, l.Spec.IntermediateSize)
 }
 
 func (l *SwiGLULayer) GenerateActivateShader() string {
@@ -236,20 +253,23 @@ func (l *SwiGLULayer) GenerateActivateShader() string {
 		@group(0) @binding(0) var<storage, read> gate_out : array<f32>;
 		@group(0) @binding(1) var<storage, read> up_out : array<f32>;
 		@group(0) @binding(2) var<storage, read_write> intermediate : array<f32>;
-
-		const TOTAL: u32 = %du;
+		@group(0) @binding(3) var<uniform> params : LayerParams;
+		struct LayerParams {
+			batch: u32,
+		};
 
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let idx = gid.x;
-			if (idx >= TOTAL) { return; }
+			let total = params.batch * %du;
+			if (idx >= total) { return; }
 
 			let x = gate_out[idx];
 			let sigmoid = 1.0 / (1.0 + exp(-x));
 			let silu = x * sigmoid;
 			intermediate[idx] = silu * up_out[idx];
 		}
-	`, uint32(l.BatchSize)*uint32(l.Spec.IntermediateSize))
+	`, l.Spec.IntermediateSize)
 }
 
 func (l *SwiGLULayer) GenerateDownShader() string {
@@ -259,15 +279,18 @@ func (l *SwiGLULayer) GenerateDownShader() string {
 		@group(0) @binding(1) var<storage, read> down_w : array<f32>;
 		@group(0) @binding(2) var<storage, read> down_b : array<f32>;
 		@group(0) @binding(3) var<storage, read_write> output : array<f32>;
+		@group(0) @binding(4) var<uniform> params : LayerParams;
+		struct LayerParams {
+			batch: u32,
+		};
 
-		const SEQ_LEN: u32 = %du;
 		const INPUT_SIZE: u32 = %du;
 		const INTER_SIZE: u32 = %du;
 
 		@compute @workgroup_size(256)
 		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 			let idx = gid.x;
-			let total = SEQ_LEN * INPUT_SIZE;
+			let total = params.batch * INPUT_SIZE;
 			if (idx >= total) { return; }
 
 			let s = idx / INPUT_SIZE;
@@ -280,7 +303,7 @@ func (l *SwiGLULayer) GenerateDownShader() string {
 			}
 			output[idx] = sum;
 		}
-	`, l.BatchSize, l.Spec.InputSize, l.Spec.IntermediateSize)
+	`, l.Spec.InputSize, l.Spec.IntermediateSize)
 }
 
 func (l *SwiGLULayer) GenerateBackwardShader() string {
@@ -378,6 +401,7 @@ func (l *SwiGLULayer) Compile(ctx *Context, labelPrefix string) error {
 			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // UpB
 			{Binding: 5, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // GateOut
 			{Binding: 6, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // UpOut
+			{Binding: 7, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // Params
 		},
 	})
 	if err != nil {
@@ -416,6 +440,7 @@ func (l *SwiGLULayer) Compile(ctx *Context, labelPrefix string) error {
 			{Binding: 0, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // GateOut
 			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // UpOut
 			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Intermediate
+			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // Params
 		},
 	})
 	if err != nil {
@@ -455,6 +480,7 @@ func (l *SwiGLULayer) Compile(ctx *Context, labelPrefix string) error {
 			{Binding: 1, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // DownW
 			{Binding: 2, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeReadOnlyStorage}}, // DownB
 			{Binding: 3, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeStorage}},         // Output
+			{Binding: 4, Visibility: wgpu.ShaderStageCompute, Buffer: wgpu.BufferBindingLayout{Type: wgpu.BufferBindingTypeUniform}},         // Params
 		},
 	})
 	if err != nil {
@@ -532,6 +558,7 @@ func (l *SwiGLULayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 			{Binding: 4, Buffer: l.UpBiasBuffer, Size: l.UpBiasBuffer.GetSize()},
 			{Binding: 5, Buffer: l.GateOutBuffer, Size: l.GateOutBuffer.GetSize()},
 			{Binding: 6, Buffer: l.UpOutBuffer, Size: l.UpOutBuffer.GetSize()},
+			{Binding: 7, Buffer: l.ParamsBuffer, Size: l.ParamsBuffer.GetSize()},
 		},
 	})
 	if err != nil {
@@ -546,6 +573,7 @@ func (l *SwiGLULayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 			{Binding: 0, Buffer: l.GateOutBuffer, Size: l.GateOutBuffer.GetSize()},
 			{Binding: 1, Buffer: l.UpOutBuffer, Size: l.UpOutBuffer.GetSize()},
 			{Binding: 2, Buffer: l.IntermediateBuffer, Size: l.IntermediateBuffer.GetSize()},
+			{Binding: 3, Buffer: l.ParamsBuffer, Size: l.ParamsBuffer.GetSize()},
 		},
 	})
 	if err != nil {
@@ -561,6 +589,7 @@ func (l *SwiGLULayer) CreateBindGroup(ctx *Context, labelPrefix string) error {
 			{Binding: 1, Buffer: l.DownWeightBuffer, Size: l.DownWeightBuffer.GetSize()},
 			{Binding: 2, Buffer: l.DownBiasBuffer, Size: l.DownBiasBuffer.GetSize()},
 			{Binding: 3, Buffer: l.OutputBuffer, Size: l.OutputBuffer.GetSize()},
+			{Binding: 4, Buffer: l.ParamsBuffer, Size: l.ParamsBuffer.GetSize()},
 		},
 	})
 	return err
@@ -606,6 +635,15 @@ func (l *SwiGLULayer) Dispatch(pass *wgpu.ComputePassEncoder) {
 	pass.SetPipeline(l.pipelineDown)
 	pass.SetBindGroup(0, l.bindGroupDown, nil)
 	pass.DispatchWorkgroups(uint32((inputTotal+255)/256), 1, 1)
+}
+
+func (l *SwiGLULayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
+	if inputLen > 0 {
+		l.BatchSize = inputLen
+		if l.ParamsBuffer != nil {
+			ctx.Queue.WriteBuffer(l.ParamsBuffer, 0, wgpu.ToBytes([]uint32{uint32(inputLen)}))
+		}
+	}
 }
 
 func (l *SwiGLULayer) DispatchFull(enc *wgpu.CommandEncoder) {
@@ -682,7 +720,7 @@ func (l *SwiGLULayer) Cleanup() {
 		l.GateWeightBuffer, l.UpWeightBuffer, l.DownWeightBuffer,
 		l.GateBiasBuffer, l.UpBiasBuffer, l.DownBiasBuffer,
 		l.GateOutBuffer, l.UpOutBuffer, l.IntermediateBuffer,
-		l.InputGradientBuffer,
+		l.InputGradientBuffer, l.ParamsBuffer,
 	}
 	for _, b := range bufs {
 		if b != nil {
