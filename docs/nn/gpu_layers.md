@@ -35,7 +35,7 @@ All layer types below support both CPU and GPU execution with automatic parity c
 | **RNN / LSTM** | ✅ **Stable** | ⚠️ **Experimental** | Verified parity, BPTT limited. |
 | **SwiGLU** | ✅ **Stable** | ⚠️ **Experimental** | Works perfectly. |
 | **Norms** | ✅ **Stable** | ⚠️ **Experimental** | LayerNorm and RMSNorm supported. |
-| **MHA** | ✅ **Stable** | ⚠️ **Experimental** | Multi-Head Attention supported. |
+| **MHA + KV Cache** | ✅ **Stable** | ⚠️ **Experimental** | GQA, RoPE, KV caching. ~30 t/s on 135M. |
 
 ---
 
@@ -387,6 +387,105 @@ Where:
 | `input_height` | Input feature size |
 | `output_height` | Output feature size (typically same as input) |
 
+---
+
+## Multi-Head Attention Layer (GPU)
+
+The `MHALayer` is loom's GPU-accelerated transformer attention block. It implements full Grouped Query Attention (GQA), Rotary Position Embedding (RoPE), and KV caching — the three essential features for efficient LLM inference.
+
+### What It Does
+
+```
+Input [seqLen × dModel]
+      │
+      ▼ QKV Projection + RoPE shader
+  Q [seqLen × dModel]    K [seqLen × dKV]    V [seqLen × dKV]
+      │                         │                    │
+      │              Write to KV Cache         Write to KV Cache
+      │              KCache[pos]               VCache[pos]
+      │
+      ▼ Attention shader (reads full KV cache, causal mask)
+  AttnOut [seqLen × dModel]
+      │
+      ▼ Output projection shader (W_O)
+  Output [seqLen × dModel]
+```
+
+Three compute shaders run in sequence:
+1. **QKV shader** — projects input to Q/K/V, applies RoPE, writes to KV cache
+2. **Attention shader** — scaled dot-product attention over all cached positions
+3. **Output shader** — projects attention result back to model dimension
+
+### Grouped Query Attention (GQA)
+
+GQA shares KV heads across multiple Q heads, reducing memory and compute:
+
+```
+// SmolLM2-135M: 9 Q heads, 3 KV heads → 3 Q heads per KV head
+heads_per_kv = NUM_HEADS / NUM_KV_HEADS  // = 3
+kv_head = query_head / heads_per_kv
+```
+
+This is configured automatically from `config.json` via `LoadTransformerFromSafetensors`.
+
+### Rotary Position Embedding (RoPE)
+
+RoPE encodes sequence position into Q and K by rotating embedding pairs. The shader uses the "rotate half" strategy:
+
+```wgsl
+// First half of head: x' = x·cos(θ) - y·sin(θ)
+// Second half:        y' = y·cos(θ) + x·sin(θ)
+// θ = pos × base^(-2i/headDim)
+```
+
+Position is `cache_pos + seq` — so single-token decodes correctly use the absolute position in the growing sequence.
+
+### KV Cache
+
+Each `MHALayer` holds two persistent GPU buffers:
+
+```go
+KCacheBuffer  // [maxSeq × dKV × 4 bytes]
+VCacheBuffer  // [maxSeq × dKV × 4 bytes]
+CachePos      // int — tracks next write position
+```
+
+On each decode step, K and V for the new token are written at `cache_pos`, and attention reads all positions `0..cache_pos`. This gives O(1) per-step memory writes instead of O(N) recomputation.
+
+### Configuration
+
+```go
+// In quick_talk.go style setup:
+network.BatchSize = 1
+for i := range network.Layers {
+    network.Layers[i].SeqLength = maxSeqLen  // e.g. 512
+}
+network.GPU = true
+network.GPUInferenceOnly = true    // No backward buffers allocated
+network.EnableGPUResiduals = true  // Skip connections between MHA/FFN
+network.WeightsToGPU()
+```
+
+### MHASpec Fields
+
+| Field | Description |
+|---|---|
+| `DModel` | Model hidden dimension (e.g. 576 for SmolLM2-135M) |
+| `NumHeads` | Number of query heads |
+| `NumKVHeads` | Number of key/value heads (< NumHeads for GQA) |
+| `HeadDim` | Dimension per head (`DModel / NumHeads`) |
+| `SeqLen` | Maximum sequence length for buffer allocation |
+| `MaxSeq` | Maximum positions in KV cache |
+| `RoPEFreqBase` | RoPE base frequency (default 10000.0) |
+
+### Performance
+
+| Model | GPU | KV Cache | Tokens/s |
+|---|---|---|---|
+| SmolLM2-135M | ✅ | ✅ | ~30 |
+| SmolLM2-360M | ✅ | ✅ | ~12 |
+| Qwen2.5-1.5B | ✅ (FP32) | ✅ | ~3-5 |
+(havent seen what other models do other then 135m lol)
 ---
 
 ## RNN Layer

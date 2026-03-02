@@ -509,7 +509,7 @@ LSTM Layer - Orthogonal + Forget Bias:
 
 ## File Organization: Where to Find Things
 
-The `nn/` directory has 53 Go files. Here's how they're organized logically:
+The `nn/` directory has 58 Go files. Here's how they're organized logically:
 
 ```
 Core Architecture (start here to understand the system):
@@ -585,7 +585,15 @@ GPU Acceleration:
 Now that you understand the architecture, explore these topics in depth:
 
 - **[Layers Guide](./layers.md)** - How each layer type works internally
+- **[GPU Layers Guide](./gpu_layers.md)** - MHA, KV cache, GQA, RoPE, all GPU layer types
+- **[Transformer Inference](./transformer.md)** - Prefill/decode loop, KV caching, GPU LLM inference
+- **[Tokenizer Package](./tokenizer.md)** - BPE tokenizer, LLMEngine, sampling, chat templates
+- **[Architecture Generation](./architecture.md)** - BrainType, ArchConfig, NAS random generation, diverse network builder
+- **[Clustering Utilities](./clustering.md)** - KMeansCluster, silhouette score, NAS analysis pipeline
+- **[Network Grafting](./grafting.md)** - Combining trained networks into a Super-Hive
+- **[Type Conversion](./type_conversion.md)** - Multi-precision dtypes, F16/BF16/F4 encoding, ConvertSlice
 - **[KMeans Layer](./kmeans.md)** - Differentiable clustering and recursive concept learning
 - **[Training Guide](./training.md)** - The complete training process
 - **[Tween Guide](./tween.md)** - The bidirectional training algorithm
+- **[Serialization](./serialization.md)** - Save/load models, safetensors, geometry loader
 - **[Quick Reference](./quick_reference.md)** - Concise code examples

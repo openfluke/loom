@@ -498,6 +498,60 @@ For each of N layers:
 
 ---
 
+## Universal Geometrical Loading (v0.0.9+)
+
+The geometry-based loader in `tva/testing/universal_safetensor_loading` detects layer types from **tensor shapes and value statistics** — no architecture-specific prefix mapping required.
+
+```go
+// Load and probe any safetensors file
+totalTensors, archetypes, missed, geometries, err := LoadUniversalDetailed(path)
+```
+
+### How Detection Works
+
+Instead of matching tensor names like `"model.layers.0.self_attn.q_proj"`, the geometry prober analyses shapes and value distributions:
+
+| Pattern | Detected As | Why |
+|---|---|---|
+| 4 consecutive `[D×D]` matrices | MHA | Q/K/V/O projections are always square and same-dim |
+| `[4H × H]` matrix pair | LSTM | 4× expansion = concatenated i/f/g/o gates |
+| 3 matrices: two `[I×H]`, one `[H×I]` | SwiGLU | Down projection shape uniquely identifies it |
+| `[V × H]` where V > 10×H | Embedding | Vocabulary is always much larger than hidden dim |
+| Rank-1 tensor with `MeanAbs > 0.4` | RMSNorm/Gamma | Norm weights are initialised near 1.0 |
+| Rank-1 tensor with `MeanAbs < 0.2` | Bias | Biases are initialised near zero |
+| Rank-4 tensor | Conv2D | Shape `[filters, channels, kH, kW]` |
+| Rank-3 tensor | Conv1D | Shape `[filters, channels, kLen]` |
+
+### Coverage Reporting
+
+```
+>>> Analytical Audit: downloads/llama/model.safetensors
+  [STRUCTURE] Found 147 functional archetypes
+  [CLEAN] 100% geometrical assignment coverage.
+  [STABLE] 410/410 parameter slots verified for engine execution.
+```
+
+If some tensors are not matched:
+
+```
+  [ORPHANS] 3/150 tensors unassigned (98.0% Coverage)
+    - Potential Bias (Rank-1)         : [12, 47, 89]
+    - Metadata/Small                  : [0]
+```
+
+### Overriding With Hints
+
+For ambiguous cases, override a specific tensor index manually:
+
+```go
+nn.UserHints[42] = nn.LayerMultiHeadAttention  // Force this tensor to MHA
+```
+
+This system will replace `LoadTransformerFromSafetensors`'s prefix maps in v0.0.9, making model loading architecture-agnostic.
+
+
+---
+
 ## Cross-Platform Deployment
 
 One of Loom's strengths is that saved models work across all platforms:

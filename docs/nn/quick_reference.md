@@ -333,3 +333,52 @@ network, detected, _ := nn.LoadGenericFromBytes(weightsData, configData)
 ```go
 network, _ := nn.LoadTransformerFromSafetensors("./model_dir/")
 ```
+
+---
+
+## Transformer Inference
+
+```go
+import "github.com/openfluke/loom/tokenizer"
+
+// Load tokenizer
+tk, _ := tokenizer.LoadFromFile("tokenizer.json")
+
+// Map weights
+mapper := tokenizer.NewWeightMapper()
+embeddings, lmHead, finalNorm, _ := mapper.MapWeights(tensors)
+
+// Build engine
+engine := tokenizer.NewLLMEngine(network, embeddings, lmHead, finalNorm, tokenizer.ChatML)
+
+// Generate
+opts := tokenizer.GenOptions{
+    MaxTokens:     200,
+    Temperature:   0,
+    TopK:          1,
+    Deterministic: true,
+    UseKVCache:    true,
+    EOSTokens:     []int{2},
+}
+reply := engine.Generate(tk, chatTurns, systemPrompt, userMsg, opts)
+```
+
+See [transformer.md](transformer.md) and [tokenizer.md](tokenizer.md) for full details.
+
+---
+
+## GPU: Transformer Inference Setup
+
+```go
+gpu.SetAdapterPreference("nvidia")
+network.BatchSize = 1
+for i := range network.Layers {
+    network.Layers[i].SeqLength = 512
+}
+network.GPU = true
+network.GPUInferenceOnly = true
+network.EnableGPUResiduals = true
+if err := network.WeightsToGPU(); err != nil {
+    network.GPU = false  // CPU fallback
+}
+```
