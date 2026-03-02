@@ -64,11 +64,24 @@ func LoadTransformerFromSafetensors(modelDir string) (*Network, error) {
 	fmt.Printf("  Attention heads: %d (Q), %d (KV)\n", config.NumHeads, config.NumKVHeads)
 	fmt.Printf("  Intermediate size: %d\n", config.IntermediateSize)
 
-	// Load weights
-	weightsPath := filepath.Join(modelDir, "model.safetensors")
-	tensors, err := LoadSafetensors(weightsPath)
+	// Load weights (support single or sharded safetensors)
+	safetensorFiles, err := filepath.Glob(filepath.Join(modelDir, "*.safetensors"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to load weights: %w", err)
+		return nil, fmt.Errorf("failed to list safetensors files: %w", err)
+	}
+	if len(safetensorFiles) == 0 {
+		return nil, fmt.Errorf("no .safetensors files found in %s", modelDir)
+	}
+
+	tensors := make(map[string][]float32)
+	for _, f := range safetensorFiles {
+		t, err := LoadSafetensors(f)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load weights from %s: %w", filepath.Base(f), err)
+		}
+		for k, v := range t {
+			tensors[k] = v
+		}
 	}
 
 	fmt.Printf("Loaded %d tensors\n", len(tensors))
