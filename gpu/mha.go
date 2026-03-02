@@ -497,7 +497,7 @@ func (l *MHALayer) GenerateAttnShader() string {
 			// GQA: Map Query head to KV head
 			let heads_per_kv = NUM_HEADS / NUM_KV_HEADS;
 			let kv_head = head / heads_per_kv;
-
+			
 			// Compute attention weights and weighted sum of V
 			var sum: f32 = 0.0;
 			var max_score: f32 = -1e10;

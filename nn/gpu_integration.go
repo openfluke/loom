@@ -149,9 +149,11 @@ func (n *Network) WeightsToGPU() error {
 			n.cleanupGPULayers(layers)
 			return fmt.Errorf("allocate buffers layer %d: %w", i, err)
 		}
-		if err := l.AllocateBackwardBuffers(ctx, label); err != nil {
-			n.cleanupGPULayers(layers)
-			return fmt.Errorf("allocate backward buffers layer %d: %w", i, err)
+		if !n.GPUInferenceOnly {
+			if err := l.AllocateBackwardBuffers(ctx, label); err != nil {
+				n.cleanupGPULayers(layers)
+				return fmt.Errorf("allocate backward buffers layer %d: %w", i, err)
+			}
 		}
 	}
 
@@ -162,13 +164,15 @@ func (n *Network) WeightsToGPU() error {
 			n.cleanupGPULayers(layers)
 			return fmt.Errorf("compile layer %d: %w", i, err)
 		}
-		if err := l.CompileBackward(ctx, label); err != nil {
-			n.cleanupGPULayers(layers)
-			return fmt.Errorf("compile backward layer %d: %w", i, err)
-		}
 		if err := l.CreateBindGroup(ctx, label); err != nil {
 			n.cleanupGPULayers(layers)
 			return fmt.Errorf("create bind group layer %d: %w", i, err)
+		}
+		if !n.GPUInferenceOnly {
+			if err := l.CompileBackward(ctx, label); err != nil {
+				n.cleanupGPULayers(layers)
+				return fmt.Errorf("compile backward layer %d: %w", i, err)
+			}
 		}
 	}
 
@@ -177,22 +181,24 @@ func (n *Network) WeightsToGPU() error {
 		l.UploadWeights(ctx)
 	}
 
-	// Create gradient application bind groups (init pipeline first)
-	// This ensures we don't do it lazily later (which would fail to create cached bind groups)
-	if err := n.EnsureGradientPipeline(ctx); err == nil {
-		for _, l := range layers {
-			if denseLayer, ok := l.(*gpu.DenseLayer); ok {
-				createGradientBindGroups(ctx, n.gpuGradPipeline, n.gpuGradParams, denseLayer)
+	if !n.GPUInferenceOnly {
+		// Create gradient application bind groups (init pipeline first)
+		// This ensures we don't do it lazily later (which would fail to create cached bind groups)
+		if err := n.EnsureGradientPipeline(ctx); err == nil {
+			for _, l := range layers {
+				if denseLayer, ok := l.(*gpu.DenseLayer); ok {
+					createGradientBindGroups(ctx, n.gpuGradPipeline, n.gpuGradParams, denseLayer)
+				}
+				if lstmLayer, ok := l.(*gpu.LSTMLayer); ok {
+					createGradientBindGroupsForLSTM(ctx, n.gpuGradPipeline, n.gpuGradParams, lstmLayer)
+				}
+				if conv1dLayer, ok := l.(*gpu.Conv1DLayer); ok {
+					createGradientBindGroupsForConv1D(ctx, n.gpuGradPipeline, n.gpuGradParams, conv1dLayer)
+				}
 			}
-			if lstmLayer, ok := l.(*gpu.LSTMLayer); ok {
-				createGradientBindGroupsForLSTM(ctx, n.gpuGradPipeline, n.gpuGradParams, lstmLayer)
-			}
-			if conv1dLayer, ok := l.(*gpu.Conv1DLayer); ok {
-				createGradientBindGroupsForConv1D(ctx, n.gpuGradPipeline, n.gpuGradParams, conv1dLayer)
-			}
+		} else {
+			fmt.Printf("Warning: Failed to initialize gradient pipeline: %v\n", err)
 		}
-	} else {
-		fmt.Printf("Warning: Failed to initialize gradient pipeline: %v\n", err)
 	}
 
 	// Initialize Residual Buffers/Pipeline
@@ -542,32 +548,24 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 		return nil, fmt.Errorf("command encoder finish: %w", err)
 	}
 	ctx.Queue.Submit(cmd)
-	n.SyncGPU()
 
-	// Read output from staging buffer
+	// Read only the "real" output region required for this forward.
+	// Staging buffers are allocated for max seq length, but token-by-token decode
+	// only needs a tiny prefix (typically hidden size).
 	lastLayer := layers[len(layers)-1]
-
-	// IMPORTANT: staging buffer is already allocated to the compiled shape.
-	// Do NOT multiply by n.BatchSize here (it changes during generation).
 	outFloats := int(lastLayer.GetStagingBuffer().GetSize() / 4)
-	output, err := readStagingBuffer(ctx, lastLayer.GetStagingBuffer(), outFloats)
-	if err != nil {
-		return nil, fmt.Errorf("read output: %w", err)
+
+	expected := outFloats
+	if seqTokens > 0 && n.gpuOutputSize > 0 {
+		want := seqTokens * n.gpuOutputSize
+		if want > 0 && want <= outFloats {
+			expected = want
+		}
 	}
 
-	// Optional: slice down to the "real" output length implied by input embeddings.
-	// For transformer blocks, output length should match input length (seqLen * hidden).
-	// But we must compute expected size carefully.
-	if seqTokens > 0 {
-		// We don't easily know "lastLayer.OutputDim" here without casting.
-		// But usually Output matches Input for transformers.
-		// Let's assume full buffer read is safe, or slice if we are sure.
-		// Safest fix: slice to (seqTokens * n.gpuOutputSize) if known?
-		// n.gpuOutputSize was set in WeightsToGPU.
-		expected := seqTokens * n.gpuOutputSize
-		if expected > 0 && expected <= len(output) {
-			return output[:expected], nil
-		}
+	output, err := readStagingBuffer(ctx, lastLayer.GetStagingBuffer(), expected)
+	if err != nil {
+		return nil, fmt.Errorf("read output: %w", err)
 	}
 	return output, nil
 }
@@ -1175,8 +1173,9 @@ func readStagingBuffer(ctx *gpu.Context, buf *wgpu.Buffer, size int) ([]float32,
 		close(done)
 	})
 
-	// Poll until mapped
-	timeout := time.After(2 * time.Second)
+	// Poll until mapped.
+	// Large/long-context inference can legitimately exceed a short timeout.
+	timeout := time.After(20 * time.Second)
 Loop:
 	for {
 		ctx.Device.Poll(false, nil)
@@ -1184,7 +1183,7 @@ Loop:
 		case <-done:
 			break Loop
 		case <-timeout:
-			return nil, fmt.Errorf("map timeout")
+			return nil, fmt.Errorf("map timeout after 20s (size=%d floats, bytes=%d)", size, wantBytes)
 		default:
 			time.Sleep(time.Millisecond)
 		}

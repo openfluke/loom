@@ -449,6 +449,9 @@ type Network struct {
 	gpuCtx        interface{} // *gpu.Context (interface{} to avoid import cycle)
 	gpuMounted    bool        // True if weights are currently on GPU
 	gpuOutputSize int         // Size of final layer output for GPU
+	// GPUInferenceOnly skips allocating/compiling backward resources on GPU mount.
+	// This significantly reduces VRAM usage for inference-only workloads.
+	GPUInferenceOnly bool
 
 	// Cached gradient application pipeline (created once, reused many times)
 	gpuGradPipeline *wgpu.ComputePipeline

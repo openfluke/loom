@@ -41,6 +41,21 @@ func SetAdapterPreference(name string) {
 	preferredAdapter = strings.ToLower(name)
 }
 
+func adapterTypeString(t wgpu.AdapterType) string {
+	switch t {
+	case wgpu.AdapterTypeDiscreteGPU:
+		return "DiscreteGPU"
+	case wgpu.AdapterTypeIntegratedGPU:
+		return "IntegratedGPU"
+	case wgpu.AdapterTypeCPU:
+		return "CPU"
+	case wgpu.AdapterTypeUnknown:
+		return "Unknown"
+	default:
+		return "Other"
+	}
+}
+
 // GetContext returns the singleton GPU context, initializing it if necessary
 func GetContext() (*Context, error) {
 	var initErr error
@@ -75,9 +90,14 @@ func GetContext() (*Context, error) {
 			isDiscrete := info.AdapterType == wgpu.AdapterTypeDiscreteGPU
 			isIntegrated := info.AdapterType == wgpu.AdapterTypeIntegratedGPU
 
-			// Detect "Fake" Discrete GPU (llvmpipe / Mesa software rasterizer)
-			// Vendor 0x10005 is Mesa. "llvmpipe" usually appears in name.
-			isFake := info.VendorId == 0x10005 || strings.Contains(name, "llvmpipe") || strings.Contains(name, "soft")
+			// Detect software/fallback adapters (WARP / Mesa / software rasterizers).
+			// 0x10005 = Mesa, 0x1414 = Microsoft (often Basic Render Driver / WARP).
+			isFake := info.VendorId == 0x10005 ||
+				info.VendorId == 0x1414 ||
+				strings.Contains(name, "llvmpipe") ||
+				strings.Contains(name, "soft") ||
+				strings.Contains(name, "warp") ||
+				strings.Contains(name, "basic render")
 
 			if isDiscrete && !isFake {
 				score += 1000 // Real Discrete GPU (Nvidia, AMD)
@@ -95,6 +115,9 @@ func GetContext() (*Context, error) {
 			if isFake {
 				score -= 1000
 			}
+			if info.AdapterType == wgpu.AdapterTypeCPU {
+				score -= 5000
+			}
 
 			if score > bestScore {
 				bestScore = score
@@ -104,9 +127,8 @@ func GetContext() (*Context, error) {
 
 		if bestAdapter != nil {
 			info := bestAdapter.GetInfo()
-			if Debug {
-				fmt.Printf("--> Selected Best Adapter: %s (Type: %d, Score: %d)\n", info.Name, info.AdapterType, bestScore)
-			}
+			fmt.Printf("Selected WebGPU adapter: %s (vendor=0x%X type=%s score=%d)\n",
+				info.Name, info.VendorId, adapterTypeString(info.AdapterType), bestScore)
 			ctx.Adapter = bestAdapter
 		}
 
@@ -147,9 +169,8 @@ func GetContext() (*Context, error) {
 
 		// Initialize Device
 		info := ctx.Adapter.GetInfo()
-		if Debug {
-			fmt.Printf("Using GPU Adapter: %s (Vendor: %s)\n", info.Name, info.VendorName)
-		}
+		fmt.Printf("Using WebGPU adapter: %s (vendor=%s/0x%X type=%s)\n",
+			info.Name, info.VendorName, info.VendorId, adapterTypeString(info.AdapterType))
 
 		var err error
 		// Request device with increased limits if needed

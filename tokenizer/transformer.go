@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/openfluke/loom/nn"
@@ -13,19 +15,20 @@ import (
 
 // Transformer coordinates high-level generation logic using the underlying NN
 type Transformer struct {
-	Network    *nn.Network
-	Embeddings []float32
-	LMHead     []float32
-	FinalNorm  []float32
-	HiddenSize int
-	VocabSize  int
-	Template   Template
+	Network         *nn.Network
+	Embeddings      []float32
+	LMHead          []float32
+	FinalNorm       []float32
+	HiddenSize      int
+	VocabSize       int
+	Template        Template
+	finalNormConfig *nn.LayerConfig
 }
 
 func NewTransformer(network *nn.Network, embeddings, lmHead, finalNorm []float32, template Template) *Transformer {
 	hiddenSize := network.InputSize
 	vocabSize := len(embeddings) / hiddenSize
-	return &Transformer{
+	tr := &Transformer{
 		Network:    network,
 		Embeddings: embeddings,
 		LMHead:     lmHead,
@@ -34,6 +37,15 @@ func NewTransformer(network *nn.Network, embeddings, lmHead, finalNorm []float32
 		VocabSize:  vocabSize,
 		Template:   template,
 	}
+	if finalNorm != nil {
+		tr.finalNormConfig = &nn.LayerConfig{
+			Type:     nn.LayerRMSNorm,
+			NormSize: hiddenSize,
+			Gamma:    finalNorm,
+			Epsilon:  1e-6,
+		}
+	}
+	return tr
 }
 
 // Generate starts a generation loop and returns the final string
@@ -66,13 +78,20 @@ func (t *Transformer) Generate(tk *Tokenizer, turns []Turn, systemPrompt, userMs
 	// 2. Generate
 	start := time.Now()
 	generatedCount := 0
+	var lmHeadTime time.Duration
+	var sampleTime time.Duration
+	var decodeForwardTime time.Duration
 
 	for i := 0; i < opts.MaxTokens; i++ {
 		// Get logits from last hidden state
+		lmStart := time.Now()
 		logits := t.applyLMHead(hidden)
 		t.applyRepetitionPenalty(logits, tokens, opts)
+		lmHeadTime += time.Since(lmStart)
 
+		sampleStart := time.Now()
 		nextToken := SampleTopK(logits, opts.TopK, opts.Temperature, opts.Deterministic)
+		sampleTime += time.Since(sampleStart)
 		tokens = append(tokens, uint32(nextToken))
 		generatedCount++
 
@@ -83,49 +102,94 @@ func (t *Transformer) Generate(tk *Tokenizer, turns []Turn, systemPrompt, userMs
 		}
 
 		// Forward next token
-		input := t.getEmbedding(nextToken)
-		hidden, _ = t.Network.ForwardTransformer(input, len(tokens)-1)
+		fwdStart := time.Now()
+		if opts.UseKVCache {
+			// Fast path: single-token decode with cached KV states on GPU.
+			input := t.getEmbedding(nextToken)
+			hidden, _ = t.Network.ForwardTransformer(input, len(tokens)-1)
+		} else {
+			// Fallback path: recompute from full context each step.
+			allEmbeds := make([]float32, len(tokens)*t.HiddenSize)
+			for j, tok := range tokens {
+				copy(allEmbeds[j*t.HiddenSize:], t.getEmbedding(int(tok)))
+			}
+			out, _ := t.Network.ForwardTransformer(allEmbeds, 0)
+			if len(out) >= t.HiddenSize {
+				hidden = append(hidden[:0], out[len(out)-t.HiddenSize:]...)
+			} else {
+				hidden = append(hidden[:0], out...)
+			}
+		}
+		decodeForwardTime += time.Since(fwdStart)
 	}
 
 	elapsed := time.Since(start)
 	if generatedCount > 0 {
 		fmt.Printf("\n\n(%.2f tokens/s, %d tokens total)\n", float64(generatedCount)/elapsed.Seconds(), generatedCount)
+		fmt.Printf("timing: forward=%.1fms/token lm_head=%.1fms/token sample=%.1fms/token\n",
+			float64(decodeForwardTime)/float64(time.Millisecond)/float64(generatedCount),
+			float64(lmHeadTime)/float64(time.Millisecond)/float64(generatedCount),
+			float64(sampleTime)/float64(time.Millisecond)/float64(generatedCount),
+		)
 	}
 
 	return stream.String()
 }
 
 func (t *Transformer) getEmbedding(tokenID int) []float32 {
-	input := make([]float32, t.HiddenSize)
 	offset := tokenID * t.HiddenSize
 	if offset+t.HiddenSize > len(t.Embeddings) {
-		return input
+		return make([]float32, t.HiddenSize)
 	}
-	copy(input, t.Embeddings[offset:offset+t.HiddenSize])
-	return input
+	// Return a view into embedding storage to avoid per-token allocation/copy.
+	return t.Embeddings[offset : offset+t.HiddenSize]
 }
 
 func (t *Transformer) applyLMHead(hidden []float32) []float32 {
 	normalized := hidden
-	if t.FinalNorm != nil {
-		finalNormConfig := &nn.LayerConfig{
-			Type:     nn.LayerRMSNorm,
-			NormSize: t.HiddenSize,
-			Gamma:    t.FinalNorm,
-			Epsilon:  1e-6,
-		}
-		normalized = nn.RmsNormForwardCPU(hidden, nil, finalNormConfig, 1)
+	if t.finalNormConfig != nil {
+		normalized = nn.RmsNormForwardCPU(hidden, nil, t.finalNormConfig, 1)
 	}
 
 	logits := make([]float32, t.VocabSize)
-	for v := 0; v < t.VocabSize; v++ {
-		var sum float32
-		offset := v * t.HiddenSize
-		for d := 0; d < t.HiddenSize; d++ {
-			sum += normalized[d] * t.LMHead[offset+d]
-		}
-		logits[v] = sum
+	workers := runtime.GOMAXPROCS(0)
+	if workers > t.VocabSize {
+		workers = t.VocabSize
 	}
+	if workers <= 1 || t.VocabSize < 4096 {
+		for v := 0; v < t.VocabSize; v++ {
+			var sum float32
+			offset := v * t.HiddenSize
+			for d := 0; d < t.HiddenSize; d++ {
+				sum += normalized[d] * t.LMHead[offset+d]
+			}
+			logits[v] = sum
+		}
+		return logits
+	}
+
+	chunk := (t.VocabSize + workers - 1) / workers
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		start := w * chunk
+		end := start + chunk
+		if end > t.VocabSize {
+			end = t.VocabSize
+		}
+		go func(s, e int) {
+			defer wg.Done()
+			for v := s; v < e; v++ {
+				var sum float32
+				offset := v * t.HiddenSize
+				for d := 0; d < t.HiddenSize; d++ {
+					sum += normalized[d] * t.LMHead[offset+d]
+				}
+				logits[v] = sum
+			}
+		}(start, end)
+	}
+	wg.Wait()
 	return logits
 }
 
