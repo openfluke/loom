@@ -99,16 +99,28 @@ func GetContext() (*Context, error) {
 				strings.Contains(name, "warp") ||
 				strings.Contains(name, "basic render")
 
+			// Detect Apple Silicon GPU.
+			// On macOS/Metal, Apple GPUs report as IntegratedGPU with VendorId=0 and
+			// Name="Apple" (or blank). They are high-performance unified-memory GPUs
+			// and should be ranked above generic integrated (Intel) but below discrete.
+			isApple := strings.Contains(name, "apple") ||
+				(isIntegrated && info.VendorId == 0 && info.DeviceId == 0)
+
 			if isDiscrete && !isFake {
 				score += 1000 // Real Discrete GPU (Nvidia, AMD)
 			}
-			if isIntegrated {
+			if isApple {
+				score += 700 // Apple Silicon GPU (Metal) — above plain integrated
+			} else if isIntegrated {
 				score += 500 // Integrated GPU (Intel, etc.) - Better than software!
 			}
 
 			// Vendor specifics
 			if strings.Contains(name, "nvidia") || info.VendorId == 0x10DE {
 				score += 200
+			}
+			if strings.Contains(name, "amd") || info.VendorId == 0x1002 {
+				score += 100
 			}
 
 			// Penalize Fake/Software
@@ -125,8 +137,12 @@ func GetContext() (*Context, error) {
 			}
 		}
 
+		var selectedIsApple bool
 		if bestAdapter != nil {
 			info := bestAdapter.GetInfo()
+			name := strings.ToLower(info.Name)
+			selectedIsApple = strings.Contains(name, "apple") ||
+				(info.AdapterType == wgpu.AdapterTypeIntegratedGPU && info.VendorId == 0 && info.DeviceId == 0)
 			fmt.Printf("Selected WebGPU adapter: %s (vendor=0x%X type=%s score=%d)\n",
 				info.Name, info.VendorId, adapterTypeString(info.AdapterType), bestScore)
 			ctx.Adapter = bestAdapter
@@ -173,8 +189,16 @@ func GetContext() (*Context, error) {
 			info.Name, info.VendorName, info.VendorId, adapterTypeString(info.AdapterType))
 
 		var err error
-		// Request device with increased limits if needed
-		ctx.Device, err = ctx.Adapter.RequestDevice(nil)
+		// On Apple Silicon (Metal backend), request the device with a label so
+		// Metal can identify the command queue; nil descriptor otherwise.
+		var deviceDesc *wgpu.DeviceDescriptor
+		if selectedIsApple {
+			fmt.Println("🍎 Apple Silicon GPU detected — using Metal optimised device descriptor")
+			deviceDesc = &wgpu.DeviceDescriptor{
+				Label: "loom-apple-silicon",
+			}
+		}
+		ctx.Device, err = ctx.Adapter.RequestDevice(deviceDesc)
 		if err != nil {
 			initErr = err
 			return
