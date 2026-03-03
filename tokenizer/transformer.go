@@ -48,7 +48,9 @@ func NewTransformer(network *nn.Network, embeddings, lmHead, finalNorm []float32
 	return tr
 }
 
-// Generate starts a generation loop and returns the final string
+// Generate is the original stateless interface — it rebuilds the full prompt
+// every call.  Kept for backward compatibility; use GenerateWithSession (via
+// LLMEngine.Generate with UseKVCache=true) for multi-turn chat.
 func (t *Transformer) Generate(tk *Tokenizer, turns []Turn, systemPrompt, userMsg string, opts GenOptions) string {
 	prompt := t.Template.BuildPrompt(turns, systemPrompt, userMsg)
 	inputIDs := tk.Encode(prompt, false)
@@ -134,6 +136,130 @@ func (t *Transformer) Generate(tk *Tokenizer, turns []Turn, systemPrompt, userMs
 	}
 
 	return stream.String()
+}
+
+// ---------------------------------------------------------------------------
+//  KV-Session (cross-turn cache persistence)
+// ---------------------------------------------------------------------------
+
+// KVSession holds the GPU KV-cache state between conversation turns.
+// Pass it to GenerateWithSession to skip re-prefilling prior context.
+// A nil session means "start fresh" (equivalent to the old Generate behaviour).
+type KVSession struct {
+	TokenIDs   []uint32  // every token in the conversation so far
+	LastHidden []float32 // hidden state at the last generated position
+}
+
+// GenerateWithSession runs one generation step, reusing the KV cache from a
+// previous turn when session is non-nil.
+//
+//	session == nil  → fresh start: full prefill from the complete prompt
+//	session != nil  → incremental: only prefill the new user-turn segment
+//
+// Returns the assistant reply and an updated session to pass to the next call.
+func (t *Transformer) GenerateWithSession(
+	tk *Tokenizer,
+	session *KVSession,
+	turns []Turn,
+	systemPrompt, userMsg string,
+	opts GenOptions,
+) (string, *KVSession) {
+	var tokens []uint32
+	var hidden []float32
+
+	if session == nil || len(session.TokenIDs) == 0 {
+		// ── First turn: full prefill ───────────────────────────────────────
+		prompt := t.Template.BuildPrompt(turns, systemPrompt, userMsg)
+		tokens = tk.Encode(prompt, false)
+
+		if len(tokens) > 0 {
+			allEmbeds := make([]float32, len(tokens)*t.HiddenSize)
+			for i, tok := range tokens {
+				copy(allEmbeds[i*t.HiddenSize:], t.getEmbedding(int(tok)))
+			}
+			out, _ := t.Network.ForwardTransformer(allEmbeds, 0)
+			if len(out) >= t.HiddenSize {
+				hidden = append([]float32(nil), out[len(out)-t.HiddenSize:]...)
+			} else {
+				hidden = out
+			}
+		}
+	} else {
+		// ── Subsequent turn: incremental prefill of new segment only ──────
+		// The KV cache in t.Network already holds all prior tokens.
+		// We only need to feed: userPrefix + userMsg + userSuffix + assistantPrefix
+		newSegment := t.Template.BuildNextTurnSegment(userMsg)
+		newTokens := tk.Encode(newSegment, false)
+
+		startPos := len(session.TokenIDs)
+		tokens = make([]uint32, startPos+len(newTokens))
+		copy(tokens, session.TokenIDs)
+		copy(tokens[startPos:], newTokens)
+
+		if len(newTokens) > 0 {
+			allEmbeds := make([]float32, len(newTokens)*t.HiddenSize)
+			for i, tok := range newTokens {
+				copy(allEmbeds[i*t.HiddenSize:], t.getEmbedding(int(tok)))
+			}
+			// pos = startPos tells the GPU to append to existing KV cache
+			out, _ := t.Network.ForwardTransformer(allEmbeds, startPos)
+			if len(out) >= t.HiddenSize {
+				hidden = append([]float32(nil), out[len(out)-t.HiddenSize:]...)
+			} else {
+				hidden = out
+			}
+		} else {
+			hidden = append([]float32(nil), session.LastHidden...)
+		}
+	}
+
+	// ── Generation loop (same as stateless Generate) ─────────────────────
+	stream := NewStreamer(tk, tokens)
+	start := time.Now()
+	generatedCount := 0
+	var lmHeadTime, sampleTime, decodeForwardTime time.Duration
+
+	for i := 0; i < opts.MaxTokens; i++ {
+		lmStart := time.Now()
+		logits := t.applyLMHead(hidden)
+		t.applyRepetitionPenalty(logits, tokens, opts)
+		lmHeadTime += time.Since(lmStart)
+
+		sampleStart := time.Now()
+		nextToken := SampleTopK(logits, opts.TopK, opts.Temperature, opts.Deterministic)
+		sampleTime += time.Since(sampleStart)
+		tokens = append(tokens, uint32(nextToken))
+		generatedCount++
+
+		stream.Push(tokens)
+
+		if t.isEOS(nextToken, opts.EOSTokens) || stream.HasNewUserTurn(tokens) {
+			break
+		}
+
+		fwdStart := time.Now()
+		input := t.getEmbedding(nextToken)
+		hidden, _ = t.Network.ForwardTransformer(input, len(tokens)-1)
+		decodeForwardTime += time.Since(fwdStart)
+	}
+
+	elapsed := time.Since(start)
+	if generatedCount > 0 {
+		fmt.Printf("\n\n(%.2f tokens/s, %d tokens total)\n", float64(generatedCount)/elapsed.Seconds(), generatedCount)
+		fmt.Printf("timing: forward=%.1fms/token lm_head=%.1fms/token sample=%.1fms/token\n",
+			float64(decodeForwardTime)/float64(time.Millisecond)/float64(generatedCount),
+			float64(lmHeadTime)/float64(time.Millisecond)/float64(generatedCount),
+			float64(sampleTime)/float64(time.Millisecond)/float64(generatedCount),
+		)
+	}
+
+	// Build updated session — includes all tokens from prompt + generation
+	updatedSession := &KVSession{
+		TokenIDs:   append([]uint32(nil), tokens...),
+		LastHidden: append([]float32(nil), hidden...),
+	}
+
+	return stream.String(), updatedSession
 }
 
 func (t *Transformer) getEmbedding(tokenID int) []float32 {

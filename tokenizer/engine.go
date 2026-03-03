@@ -27,6 +27,7 @@ type LLMEngine struct {
 	VocabSize    int
 	Template     Template
 	Transformer  *Transformer
+	session      *KVSession // persistent KV cache across turns
 }
 
 // NewLLMEngine creates a new inference engine
@@ -47,7 +48,22 @@ func NewLLMEngine(network *nn.Network, embeddings, lmHead, finalNorm []float32, 
 	}
 }
 
-// Generate starts a generation loop and returns the final string
+// Generate runs one generation step, transparently reusing the KV cache
+// from prior turns when UseKVCache is enabled.  The session is managed
+// internally — callers never touch it.
 func (e *LLMEngine) Generate(tk *Tokenizer, turns []Turn, systemPrompt, userMsg string, opts GenOptions) string {
-	return e.Transformer.Generate(tk, turns, systemPrompt, userMsg, opts)
+	if !opts.UseKVCache {
+		// Stateless path — no session, full rebuild each time.
+		return e.Transformer.Generate(tk, turns, systemPrompt, userMsg, opts)
+	}
+
+	reply, updated := e.Transformer.GenerateWithSession(tk, e.session, turns, systemPrompt, userMsg, opts)
+	e.session = updated
+	return reply
+}
+
+// ResetSession clears the KV cache, forcing a full prefill on the next call.
+// Call this on "!reset" or when the conversation context changes.
+func (e *LLMEngine) ResetSession() {
+	e.session = nil
 }
