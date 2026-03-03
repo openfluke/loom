@@ -61,11 +61,20 @@ gcc -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/universal_test" universal_test.c -L"$OUTPUT_
 echo "✓ Universal test compiled: $OUTPUT_DIR/universal_test"
 echo ""
 
+# Build quick_talk REPL
+echo "Building quick_talk..."
+gcc -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/quick_talk" quick_talk.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,'$ORIGIN' -lm
+
+echo "✓ quick_talk compiled: $OUTPUT_DIR/quick_talk"
+echo ""
+
 # Show files
 ls -lh "$OUTPUT_DIR"
 
 echo ""
 echo "=== Build Complete ==="
-echo "Run with: cd $OUTPUT_DIR && ./universal_test"
+echo "Run with:"
+echo "  cd $OUTPUT_DIR && ./universal_test"
+echo "  cd $OUTPUT_DIR && ./quick_talk"
 
 

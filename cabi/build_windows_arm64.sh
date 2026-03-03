@@ -43,12 +43,19 @@ $CC -static-libgcc -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/universal_test.exe" universal
 echo "✓ Universal test compiled: $OUTPUT_DIR/universal_test.exe"
 echo ""
 
+# Build quick_talk REPL
+echo "Building quick_talk.exe..."
+$CC -static-libgcc -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/quick_talk.exe" quick_talk.c -L"$OUTPUT_DIR" -lloom -lm
+
+echo "✓ quick_talk compiled: $OUTPUT_DIR/quick_talk.exe"
+echo ""
+
 # Show files
 ls -lh "$OUTPUT_DIR"
 
 echo ""
 echo "=== Build Complete ==="
-echo "Run on Windows ARM64 device: cd $OUTPUT_DIR && universal_test.exe"
+echo "Run on Windows ARM64 device: cd $OUTPUT_DIR && universal_test.exe  (or quick_talk.exe)"
 echo ""
 echo "Deploy to Windows on ARM (Surface Pro X, etc.):"
 echo "  Copy compiled/windows_arm64/ folder to device"

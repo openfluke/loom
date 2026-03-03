@@ -34,6 +34,14 @@ build_arch() {
         else
             echo "⚠ Could not compile universal_test for $DIR_ARCH (cross-compile not available)"
         fi
+
+        # Build quick_talk REPL
+        echo "Building quick_talk..."
+        if clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/quick_talk" quick_talk.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm 2>&1; then
+            echo "✓ quick_talk compiled: $OUTPUT_DIR/quick_talk"
+        else
+            echo "⚠ Could not compile quick_talk for $DIR_ARCH"
+        fi
         
         echo ""
         ls -lh "$OUTPUT_DIR"
@@ -86,6 +94,10 @@ if $BUILD_SUCCESS_ARM64 && $BUILD_SUCCESS_X64; then
     echo "Building universal_test..."
     clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/universal_test" universal_test.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
     echo "✓ Universal test compiled: $OUTPUT_DIR/universal_test"
+
+    echo "Building quick_talk (universal)..."
+    clang -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/quick_talk" quick_talk.c -L"$OUTPUT_DIR" -lloom -Wl,-rpath,@loader_path -lm
+    echo "✓ quick_talk compiled: $OUTPUT_DIR/quick_talk"
     
     echo ""
     ls -lh "$OUTPUT_DIR"
@@ -122,8 +134,8 @@ echo "=== Build Complete ==="
 echo ""
 echo ""
  echo "Run with:"
- echo "  cd compiled/macos_arm64 && ./universal_test"
- echo "  cd compiled/macos_x86_64 && ./universal_test"
- echo "  cd compiled/macos_universal && ./universal_test"
+ echo "  cd compiled/macos_arm64 && ./universal_test   (or ./quick_talk)"
+ echo "  cd compiled/macos_x86_64 && ./universal_test  (or ./quick_talk)"
+ echo "  cd compiled/macos_universal && ./universal_test (or ./quick_talk)"
 
 

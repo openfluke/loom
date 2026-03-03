@@ -9,12 +9,15 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 	"unsafe"
 
 	"github.com/openfluke/loom/gpu"
 	"github.com/openfluke/loom/nn"
+	"github.com/openfluke/loom/tokenizer"
 )
 
 // Helper functions for JSON responses
@@ -1048,6 +1051,350 @@ func LoomSafeTensorRegistryFree(handle C.longlong) {
 	safeTensorMu.Lock()
 	delete(safeTensorRegistry, int64(handle))
 	safeTensorMu.Unlock()
+}
+
+// ============================================================================
+// QuickTalk (QT_*) C-ABI Exports
+//
+// Handle-based primitives that expose the tokenizer and LLMEngine packages
+// directly to C callers. All state (conversation history, system prompt,
+// generation options) is owned by the C caller and passed per-call.
+// Nothing is hardcoded here - this is a thin C-ABI shim over the real Go API.
+// ============================================================================
+
+// ── Tokenizer handles ────────────────────────────────────────────────────────
+
+var (
+	qtTokenizers        = make(map[int64]*tokenizer.Tokenizer)
+	qtTokenizerID int64 = 1
+	qtTokenizerMu sync.RWMutex
+)
+
+// QT_LoadTokenizer loads a BPE tokenizer from a tokenizer.json file.
+// Returns a handle > 0 on success, or -1 on error.
+//
+//export QT_LoadTokenizer
+func QT_LoadTokenizer(path *C.char) C.longlong {
+	tk, err := tokenizer.LoadFromFile(C.GoString(path))
+	if err != nil {
+		fmt.Printf("QT_LoadTokenizer: %v\n", err)
+		return -1
+	}
+	qtTokenizerMu.Lock()
+	id := qtTokenizerID
+	qtTokenizerID++
+	qtTokenizers[id] = tk
+	qtTokenizerMu.Unlock()
+	return C.longlong(id)
+}
+
+// QT_TokenizerVocabSize returns the vocabulary size for a tokenizer handle.
+//
+//export QT_TokenizerVocabSize
+func QT_TokenizerVocabSize(handle C.longlong) C.int {
+	qtTokenizerMu.RLock()
+	tk, ok := qtTokenizers[int64(handle)]
+	qtTokenizerMu.RUnlock()
+	if !ok {
+		return -1
+	}
+	return C.int(tk.VocabSize())
+}
+
+// QT_Encode encodes text into a JSON array of token IDs.
+// addSpecial: 1 = include special tokens, 0 = raw encode.
+//
+//export QT_Encode
+func QT_Encode(handle C.longlong, text *C.char, addSpecial C.int) *C.char {
+	qtTokenizerMu.RLock()
+	tk, ok := qtTokenizers[int64(handle)]
+	qtTokenizerMu.RUnlock()
+	if !ok {
+		return errJSON("QT_Encode: invalid tokenizer handle")
+	}
+	ids := tk.Encode(C.GoString(text), addSpecial != 0)
+	return asJSON(ids)
+}
+
+// QT_Decode decodes a JSON array of uint32 token IDs back to a string.
+// skipSpecial: 1 = strip special tokens, 0 = keep them.
+//
+//export QT_Decode
+func QT_Decode(handle C.longlong, idsJSON *C.char, skipSpecial C.int) *C.char {
+	qtTokenizerMu.RLock()
+	tk, ok := qtTokenizers[int64(handle)]
+	qtTokenizerMu.RUnlock()
+	if !ok {
+		return errJSON("QT_Decode: invalid tokenizer handle")
+	}
+	var ids []uint32
+	if err := json.Unmarshal([]byte(C.GoString(idsJSON)), &ids); err != nil {
+		return errJSON("QT_Decode: " + err.Error())
+	}
+	return C.CString(tk.Decode(ids, skipSpecial != 0))
+}
+
+// QT_FreeTokenizer releases a tokenizer handle.
+//
+//export QT_FreeTokenizer
+func QT_FreeTokenizer(handle C.longlong) {
+	qtTokenizerMu.Lock()
+	delete(qtTokenizers, int64(handle))
+	qtTokenizerMu.Unlock()
+}
+
+// ── LLM Engine handles ───────────────────────────────────────────────────────
+
+var (
+	qtEngines        = make(map[int64]*tokenizer.LLMEngine)
+	qtEngineID int64 = 1
+	qtEngineMu sync.RWMutex
+)
+
+// QT_LoadEngine loads a HuggingFace-format model snapshot directory.
+//
+//	modelDir  - directory containing *.safetensors, config.json
+//	useGPU    - 1 to mount weights to GPU, 0 for CPU-only
+//	maxSeqLen - GPU sequence length; ignored for CPU (0 -> 512)
+//	template  - "chatml" or "llama3"
+//
+// Returns a handle > 0 on success, or -1 on failure.
+//
+//export QT_LoadEngine
+func QT_LoadEngine(modelDir *C.char, useGPU C.int, maxSeqLen C.int, template *C.char) C.longlong {
+	dir := C.GoString(modelDir)
+	seqLen := int(maxSeqLen)
+	if seqLen <= 0 {
+		seqLen = 512
+	}
+
+	// ── Network structure from safetensors metadata ───────────────────────────
+	network, err := nn.LoadTransformerFromSafetensors(dir)
+	if err != nil {
+		fmt.Printf("QT_LoadEngine: network: %v\n", err)
+		return -1
+	}
+
+	// ── Load all weight tensors ──────────────────────────────────────────────
+	files, err := filepath.Glob(dir + "/*.safetensors")
+	if err != nil || len(files) == 0 {
+		fmt.Printf("QT_LoadEngine: no .safetensors files in %s\n", dir)
+		return -1
+	}
+	tensors := make(map[string][]float32)
+	for _, f := range files {
+		t, err := nn.LoadSafetensors(f)
+		if err != nil {
+			fmt.Printf("QT_LoadEngine: load weights: %v\n", err)
+			return -1
+		}
+		for k, v := range t {
+			tensors[k] = v
+		}
+	}
+
+	// ── Map embeddings / lm_head / final_norm ────────────────────────────────
+	mapper := tokenizer.NewWeightMapper()
+	embeddings, lmHead, finalNorm, _ := mapper.MapWeights(tensors)
+
+	// ── Optional GPU mount ───────────────────────────────────────────────────
+	if useGPU != 0 {
+		gpu.SetAdapterPreference("nvidia")
+		network.BatchSize = 1
+		for i := range network.Layers {
+			network.Layers[i].SeqLength = seqLen
+		}
+		network.GPU = true
+		network.GPUInferenceOnly = true
+		network.EnableGPUResiduals = true
+		if err := network.WeightsToGPU(); err != nil {
+			fmt.Printf("QT_LoadEngine: GPU mount failed (%v), falling back to CPU\n", err)
+			network.GPU = false
+		}
+	}
+
+	// ── Select chat template ─────────────────────────────────────────────────
+	tmpl := tokenizer.ChatML
+	if C.GoString(template) == "llama3" {
+		tmpl = tokenizer.Llama3
+	}
+
+	engine := tokenizer.NewLLMEngine(network, embeddings, lmHead, finalNorm, tmpl)
+
+	qtEngineMu.Lock()
+	id := qtEngineID
+	qtEngineID++
+	qtEngines[id] = engine
+	qtEngineMu.Unlock()
+
+	return C.longlong(id)
+}
+
+// QT_GetEngineInfo returns metadata for a loaded engine as JSON.
+//
+//export QT_GetEngineInfo
+func QT_GetEngineInfo(handle C.longlong) *C.char {
+	qtEngineMu.RLock()
+	engine, ok := qtEngines[int64(handle)]
+	qtEngineMu.RUnlock()
+	if !ok {
+		return errJSON("QT_GetEngineInfo: invalid handle")
+	}
+	return asJSON(map[string]interface{}{
+		"hidden_size": engine.HiddenSize,
+		"vocab_size":  engine.VocabSize,
+		"num_layers":  len(engine.Network.Layers),
+		"template":    engine.Template.Name,
+		"gpu":         engine.Network.GPU,
+	})
+}
+
+// QT_Generate runs one generation step.
+//
+//	engineHandle - from QT_LoadEngine
+//	tokHandle    - from QT_LoadTokenizer
+//	historyJSON  - JSON array [{"user":"...","assistant":"..."},...] (pass "[]" for no history)
+//	systemPrompt - system prompt string (pass "" for none)
+//	userMsg      - current user message
+//	optsJSON     - JSON with optional keys:
+//	                 max_tokens, temperature, top_k, use_kv_cache,
+//	                 repetition_penalty, repetition_window,
+//	                 deterministic, eos_tokens (int array)
+//
+// Returns JSON: {"reply":"..."}
+//
+//export QT_Generate
+func QT_Generate(
+	engineHandle C.longlong,
+	tokHandle C.longlong,
+	historyJSON *C.char,
+	systemPrompt *C.char,
+	userMsg *C.char,
+	optsJSON *C.char,
+) *C.char {
+	qtEngineMu.RLock()
+	engine, eok := qtEngines[int64(engineHandle)]
+	qtEngineMu.RUnlock()
+	qtTokenizerMu.RLock()
+	tk, tok := qtTokenizers[int64(tokHandle)]
+	qtTokenizerMu.RUnlock()
+
+	if !eok {
+		return errJSON("QT_Generate: invalid engine handle")
+	}
+	if !tok {
+		return errJSON("QT_Generate: invalid tokenizer handle")
+	}
+
+	// ── Parse conversation history ──────────────────────────────────────────
+	var turns []tokenizer.Turn
+	if h := C.GoString(historyJSON); h != "" && h != "[]" && h != "null" {
+		if err := json.Unmarshal([]byte(h), &turns); err != nil {
+			return errJSON("QT_Generate: history: " + err.Error())
+		}
+	}
+
+	// ── Parse generation options ────────────────────────────────────────────
+	opts := tokenizer.GenOptions{
+		MaxTokens:         128,
+		Temperature:       0.9,
+		TopK:              40,
+		UseKVCache:        true,
+		RepetitionPenalty: 1.0,
+		RepetitionWindow:  64,
+	}
+	if raw := C.GoString(optsJSON); raw != "" && raw != "{}" && raw != "null" {
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &m); err == nil {
+			if v, ok := m["max_tokens"].(float64); ok {
+				opts.MaxTokens = int(v)
+			}
+			if v, ok := m["temperature"].(float64); ok {
+				opts.Temperature = float32(v)
+			}
+			if v, ok := m["top_k"].(float64); ok {
+				opts.TopK = int(v)
+			}
+			if v, ok := m["use_kv_cache"].(bool); ok {
+				opts.UseKVCache = v
+			}
+			if v, ok := m["repetition_penalty"].(float64); ok {
+				opts.RepetitionPenalty = float32(v)
+			}
+			if v, ok := m["repetition_window"].(float64); ok {
+				opts.RepetitionWindow = int(v)
+			}
+			if v, ok := m["deterministic"].(bool); ok {
+				opts.Deterministic = v
+				if v {
+					opts.Temperature = 0
+					opts.TopK = 1
+				}
+			}
+			if arr, ok := m["eos_tokens"].([]interface{}); ok {
+				for _, e := range arr {
+					if f, ok := e.(float64); ok {
+						opts.EOSTokens = append(opts.EOSTokens, int(f))
+					}
+				}
+			}
+		}
+	}
+
+	reply := engine.Generate(tk, turns, C.GoString(systemPrompt), C.GoString(userMsg), opts)
+	return asJSON(map[string]interface{}{"reply": reply})
+}
+
+// QT_FreeEngine releases a loaded LLMEngine and its GPU resources.
+//
+//export QT_FreeEngine
+func QT_FreeEngine(handle C.longlong) {
+	qtEngineMu.Lock()
+	engine, ok := qtEngines[int64(handle)]
+	if ok {
+		if engine.Network != nil {
+			engine.Network.ReleaseGPUWeights()
+		}
+		delete(qtEngines, int64(handle))
+	}
+	qtEngineMu.Unlock()
+}
+
+// readConfigEOSTokens reads eos_token_id and pad_token_id from a config.json.
+// Used by C callers that want to pass eos_tokens in optsJSON to QT_Generate.
+//
+//export QT_ReadEOSFromConfig
+func QT_ReadEOSFromConfig(configPath *C.char) *C.char {
+	data, err := os.ReadFile(C.GoString(configPath))
+	if err != nil {
+		return errJSON("QT_ReadEOSFromConfig: " + err.Error())
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return errJSON("QT_ReadEOSFromConfig: " + err.Error())
+	}
+	var tokens []int
+	if eosID, ok := cfg["eos_token_id"]; ok {
+		switch v := eosID.(type) {
+		case float64:
+			tokens = append(tokens, int(v))
+		case []interface{}:
+			for _, id := range v {
+				if f, ok := id.(float64); ok {
+					tokens = append(tokens, int(f))
+				}
+			}
+		}
+	}
+	if padID, ok := cfg["pad_token_id"]; ok {
+		if f, ok := padID.(float64); ok {
+			tokens = append(tokens, int(f))
+		}
+	}
+	if len(tokens) == 0 {
+		tokens = []int{2, 0}
+	}
+	return asJSON(map[string]interface{}{"eos_tokens": tokens})
 }
 
 func main() {}

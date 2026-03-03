@@ -81,11 +81,18 @@ $CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/universal_test.exe" universal_test.c -L"$OUT
 echo "✓ Universal test compiled: $OUTPUT_DIR/universal_test.exe"
 echo ""
 
+# Build quick_talk REPL
+echo "Building quick_talk.exe..."
+$CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/quick_talk.exe" quick_talk.c -L"$OUTPUT_DIR" -lloom -lm
+
+echo "✓ quick_talk compiled: $OUTPUT_DIR/quick_talk.exe"
+echo ""
+
 # Show files
 ls -lh "$OUTPUT_DIR"
 
 echo ""
 echo "=== Build Complete ==="
-echo "Run on Windows: cd $OUTPUT_DIR && universal_test.exe"
+echo "Run on Windows: cd $OUTPUT_DIR && universal_test.exe  (or quick_talk.exe)"
 
 
