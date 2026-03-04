@@ -504,6 +504,15 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 			if _, ok := l.(*gpu.SwiGLULayer); ok {
 				isSwiGLU = true
 			}
+			if _, ok := l.(*gpu.FP4SwiGLULayer); ok {
+				isSwiGLU = true
+			}
+			// FP4 dense layers that act as projection layers also close a residual block
+			if _, ok := l.(*gpu.FP4DenseLayer); ok {
+				// Only add residual if this is the last layer of a subblock
+				// (determined by whether previous config layer was also dense/attn)
+				// Conservative: leave FP4Dense residual to float32 fallback.
+			}
 			if isMHA || isSwiGLU {
 				// Add residual: Output = Output + ResidualBuf
 				ensurePass()
