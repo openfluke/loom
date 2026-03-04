@@ -109,21 +109,23 @@ func (l *Conv1DLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	// Input/Output
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_In",
 			Size:  uint64(inputSize * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
 	}
 
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
 		Size:  uint64(outputSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -154,11 +156,12 @@ func (l *Conv1DLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		return err
 	}
 
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(outputSize * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	return err
 }
 
@@ -169,30 +172,33 @@ func (l *Conv1DLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) 
 		l.BatchSize = 1
 	}
 	inputSize := l.Spec.SeqLen * l.Spec.InChannels * l.BatchSize
-	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.InputGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_InGrad",
 		Size:  uint64(inputSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	weightSize := l.Spec.OutChannels * l.Spec.InChannels * l.Spec.KernelSize
-	l.WeightGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.WeightGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_WGrad",
 		Size:  uint64(weightSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
-	l.BiasGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.BiasGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_BGrad",
 		Size:  uint64(l.Spec.OutChannels * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	return err
 }
 

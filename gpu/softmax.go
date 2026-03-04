@@ -55,30 +55,33 @@ func (l *SoftmaxLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	totalSize := batch * l.Spec.Size
 
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_In",
 			Size:  uint64(totalSize * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
 	}
 
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
 		Size:  uint64(totalSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(totalSize * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	return err
 }
 
@@ -91,11 +94,12 @@ func (l *SoftmaxLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string)
 	}
 	totalSize := batch * l.Spec.Size
 
-	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.InputGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_InGrad",
 		Size:  uint64(totalSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	return err
 }
 

@@ -61,22 +61,24 @@ func (l *EmbeddingLayer) AllocateBuffers(ctx *Context, labelPrefix string) error
 
 	// Token input buffer (u32 token IDs)
 	if !l.InputAliased {
-		l.TokenBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.TokenBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_Tokens",
-			Size:  uint64(totalTokens * 4), // u32 per token
+			Size:  uint64(totalTokens * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
 		})
+
 		if err != nil {
 			return err
 		}
 	}
 
 	outputSize := totalTokens * l.Spec.EmbeddingDim
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
 		Size:  uint64(outputSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -95,32 +97,35 @@ func (l *EmbeddingLayer) AllocateBuffers(ctx *Context, labelPrefix string) error
 
 	outputSize = batch * l.Spec.SeqLength * l.Spec.EmbeddingDim
 	// Params Buffer
-	l.ParamsBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.ParamsBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Params",
 		Size:  16,
 		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Staging
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(batch * l.Spec.SeqLength * l.Spec.EmbeddingDim * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	return err
 }
 
 func (l *EmbeddingLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
 	size := l.Spec.VocabSize * l.Spec.EmbeddingDim
-	l.WeightGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.WeightGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_WGrad",
 		Size:  uint64(size * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	return err
 }
 

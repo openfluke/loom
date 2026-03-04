@@ -234,6 +234,8 @@ func (n *Network) WeightsFP4ToGPU(fp4w map[int]*FP4LayerWeights) error {
 	n.gpuMounted = true
 	n.gpuOutputSize = outputSize
 
+	gpu.RecordLayerCounts(len(layers), fp4Count)
+
 	if fp4Count > 0 {
 		savings := 100.0 * (1.0 - float64(fp4VRAM)/math.Max(1, float64(f32VRAM)))
 		fmt.Printf("   FP4 GPU layers: %d  │  weight VRAM saved ≈ %.0f%%\n", fp4Count, savings)

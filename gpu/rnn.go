@@ -82,29 +82,32 @@ func (l *RNNLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	hiddenSize := l.Spec.HiddenSize * l.BatchSize
 
-	l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_In",
 		Size:  uint64(inputTotal * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
 		Size:  uint64(outputTotal * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
-	l.HiddenBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.HiddenBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Hidden",
 		Size:  uint64(hiddenSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -155,22 +158,24 @@ func (l *RNNLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	l.StepBuffers = make([]*wgpu.Buffer, l.Spec.SeqLen)
 	for step := 0; step < l.Spec.SeqLen; step++ {
 		stepData := []uint32{uint32(step)}
-		l.StepBuffers[step], err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.StepBuffers[step], err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: fmt.Sprintf("%s_Step%d", labelPrefix, step),
-			Size:  4, // u32
+			Size:  4,
 			Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
 		})
+
 		if err != nil {
 			return err
 		}
 		ctx.Queue.WriteBuffer(l.StepBuffers[step], 0, wgpu.ToBytes(stepData))
 	}
 
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(outputTotal * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	return err
 }
 
@@ -179,52 +184,57 @@ func (l *RNNLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) err
 
 	// Input [SeqLen * InputSize]
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_In",
 			Size:  uint64(l.Spec.SeqLen * l.Spec.InputSize * l.BatchSize * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
 	}
 
 	// Input gradients
-	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.InputGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_InGrad",
 		Size:  uint64(l.Spec.SeqLen * l.Spec.InputSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Weight IH gradients [HiddenSize * InputSize]
-	l.WeightIHGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.WeightIHGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_WIHGrad",
 		Size:  uint64(l.Spec.HiddenSize * l.Spec.InputSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Weight HH gradients [HiddenSize * HiddenSize]
-	l.WeightHHGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.WeightHHGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_WHHGrad",
 		Size:  uint64(l.Spec.HiddenSize * l.Spec.HiddenSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Bias gradients [HiddenSize]
-	l.BiasGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.BiasGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_BGrad",
 		Size:  uint64(l.Spec.HiddenSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	return err
 }
 

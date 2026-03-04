@@ -118,48 +118,53 @@ func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	// Input buffer
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_In",
 			Size:  uint64(totalInputSize * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
 	}
 
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
 		Size:  uint64(outputTotal * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
-	l.HiddenBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.HiddenBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Hidden",
 		Size:  uint64(hiddenSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
-	l.CellBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.CellBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Cell",
-		Size:  uint64(outputTotal * 4), // Store cell state for all steps [SeqLen * HiddenSize]
+		Size:  uint64(outputTotal * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(outputTotal * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -194,11 +199,12 @@ func (l *LSTMLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	l.StepBuffers = make([]*wgpu.Buffer, l.Spec.SeqLen)
 	for step := 0; step < l.Spec.SeqLen; step++ {
 		stepData := []uint32{uint32(step)}
-		l.StepBuffers[step], err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.StepBuffers[step], err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: fmt.Sprintf("%s_Step%d", labelPrefix, step),
-			Size:  4, // u32
+			Size:  4,
 			Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
 		})
+
 		if err != nil {
 			return err
 		}
@@ -232,22 +238,24 @@ func (l *LSTMLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) er
 
 	// Input buffer
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_In",
 			Size:  uint64(l.Spec.SeqLen * l.Spec.InputSize * l.BatchSize * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
 	}
 
 	// Input gradients
-	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.InputGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_InGrad",
 		Size:  uint64(l.Spec.SeqLen * l.Spec.InputSize * l.BatchSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -256,43 +264,47 @@ func (l *LSTMLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) er
 	ihSize := l.Spec.HiddenSize * l.Spec.InputSize
 	hhSize := l.Spec.HiddenSize * l.Spec.HiddenSize
 	totalSize := 4*ihSize + 4*hhSize + 4*l.Spec.HiddenSize
-	l.UnifiedWeightsGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.UnifiedWeightsGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_UnifiedGrad",
 		Size:  uint64(totalSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Gate Gradients [SeqLen * 4 * HiddenSize * BatchSize]
 	gateGradSize := l.Spec.SeqLen * 4 * l.Spec.HiddenSize * l.BatchSize
-	l.GateGradientsBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.GateGradientsBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_GateGrads",
 		Size:  uint64(gateGradSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// dHidden State [BatchSize * HiddenSize]
 	dHiddenSize := l.BatchSize * l.Spec.HiddenSize
-	l.dHiddenBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.dHiddenBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_dHidden",
 		Size:  uint64(dHiddenSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// dCell State [BatchSize * HiddenSize]
-	l.dCellBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.dCellBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_dCell",
 		Size:  uint64(dHiddenSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	return err
 }
 

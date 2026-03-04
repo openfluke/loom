@@ -245,41 +245,45 @@ func (l *DenseLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) e
 	}
 
 	// Weight Gradient (accumulated over batch)
-	l.WeightGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.WeightGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_WGrad",
 		Size:  uint64(len(l.Spec.Weights) * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Bias Gradient (accumulated)
-	l.BiasGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.BiasGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_BGrad",
 		Size:  uint64(len(l.Spec.Biases) * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Input Gradients (Result of backward pass for this layer)
-	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.InputGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_IGrad",
 		Size:  uint64(l.Spec.InputSize * batch * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// dZ Buffer (Intermediate derivative w.r.t pre-activation)
-	l.dZBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.dZBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_dZ",
 		Size:  uint64(l.Spec.OutputSize * batch * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -357,22 +361,24 @@ func (l *DenseLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	// Input
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_In",
 			Size:  uint64(batch * l.Spec.InputSize * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
 	}
 
 	// Output
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
 		Size:  uint64(l.Spec.OutputSize * batch * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -390,11 +396,12 @@ func (l *DenseLayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	}
 
 	// Staging
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(l.Spec.OutputSize * batch * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}

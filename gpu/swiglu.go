@@ -80,49 +80,54 @@ func (l *SwiGLULayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	// Input/Output
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_In",
 			Size:  uint64(inputTotal * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
 	}
 
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
 		Size:  uint64(inputTotal * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Intermediate buffers
-	l.GateOutBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.GateOutBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_GateOut",
 		Size:  uint64(interTotal * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
-	l.UpOutBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.UpOutBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_UpOut",
 		Size:  uint64(interTotal * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
-	l.IntermediateBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.IntermediateBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Intermediate",
 		Size:  uint64(interTotal * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -173,21 +178,23 @@ func (l *SwiGLULayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	}
 
 	// Params Buffer
-	l.ParamsBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.ParamsBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Params",
 		Size:  16,
 		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Staging
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(inputTotal * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -203,11 +210,12 @@ func (l *SwiGLULayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) 
 	if batch < 1 {
 		batch = 1
 	}
-	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.InputGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_InGrad",
 		Size:  uint64(batch * l.Spec.InputSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	return err
 }
 

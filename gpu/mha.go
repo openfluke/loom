@@ -105,55 +105,61 @@ func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 	// Input/Output
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_In",
 			Size:  uint64(seqDim * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
 	}
 
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Out",
 		Size:  uint64(seqDim * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Q/K/V intermediate buffers
-	l.QBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.QBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Q",
 		Size:  uint64(seqDim * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
-	l.KBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.KBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_K",
 		Size:  uint64(seqDim * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
-	l.VBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.VBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_V",
 		Size:  uint64(seqDim * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
-	l.AttnBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.AttnBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Attn",
 		Size:  uint64(seqDim * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -214,21 +220,23 @@ func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 		return err
 	}
 
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  uint64(seqDim * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Params Buffer (Uniforms)
-	l.ParamsBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.ParamsBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Params",
 		Size:  16,
 		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -240,19 +248,21 @@ func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 	}
 	if maxSeq > 0 {
 		kvSize := uint64(maxSeq * dKV * 4)
-		l.KCacheBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.KCacheBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_KCache",
 			Size:  kvSize,
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
-		l.VCacheBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.VCacheBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_VCache",
 			Size:  kvSize,
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
@@ -263,11 +273,12 @@ func (l *MHALayer) AllocateBuffers(ctx *Context, labelPrefix string) error {
 
 func (l *MHALayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string) error {
 	var err error
-	l.InputGradientBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.InputGradientBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_InGrad",
 		Size:  uint64(l.Spec.SeqLen * l.Spec.DModel * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	return err
 }
 

@@ -177,11 +177,12 @@ func (l *ParallelLayer) AllocateBuffers(ctx *Context, labelPrefix string) error 
 
 	// Input buffer
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: labelPrefix + "_Input",
 			Size:  firstIn,
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
@@ -199,21 +200,23 @@ func (l *ParallelLayer) AllocateBuffers(ctx *Context, labelPrefix string) error 
 		totalOut = l.Branches[0].GetOutputBuffer().GetSize()
 	}
 
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Output",
 		Size:  totalOut,
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	// Staging for readback
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_Staging",
 		Size:  totalOut,
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -232,7 +235,7 @@ func (l *ParallelLayer) AllocateBackwardBuffers(ctx *Context, labelPrefix string
 	// 2. My Input Gradient is w.r.t my Input (which is shared input)
 	// Size matches my InputBuffer
 	size := l.InputBuffer.GetSize()
-	l.InputGradientBuffer, _ = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.InputGradientBuffer, _ = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: labelPrefix + "_GradInput",
 		Size:  size,
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
@@ -422,11 +425,12 @@ func (l *ParallelLayer) CreateBackwardBindGroup(ctx *Context, labelPrefix string
 
 		// Create a persistent buffer for this branch's received gradient (dOutput for the branch)
 		var gradBuf *wgpu.Buffer
-		gradBuf, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		gradBuf, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: fmt.Sprintf("%s_GradOut_B%d", labelPrefix, i),
 			Size:  branchOutSize,
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}

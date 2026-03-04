@@ -126,28 +126,31 @@ func (l *FP4SwiGLULayer) AllocateBuffers(ctx *Context, label string) error {
 
 	// Input / Output
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: label + "_FP4SIn",
 			Size:  uint64(batch * l.Spec.InputSize * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
 	}
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: label + "_FP4SOut",
 		Size:  uint64(batch * l.Spec.InputSize * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return err
 	}
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: label + "_FP4SStg",
 		Size:  uint64(batch * l.Spec.InputSize * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return err
 	}
@@ -156,11 +159,12 @@ func (l *FP4SwiGLULayer) AllocateBuffers(ctx *Context, label string) error {
 	interSize := uint64(batch * l.Spec.IntermediateSize * 4)
 	for i, ptr := range []*(*wgpu.Buffer){&l.GateOutBuf, &l.UpOutBuf, &l.InterBuf} {
 		names := []string{"_GateOut", "_UpOut", "_Inter"}
-		*ptr, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		*ptr, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: label + names[i],
 			Size:  interSize,
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return err
 		}
@@ -169,11 +173,12 @@ func (l *FP4SwiGLULayer) AllocateBuffers(ctx *Context, label string) error {
 	// Packed weight buffers — helper
 	allocPacked := func(packed []uint8, lbl string) (*wgpu.Buffer, error) {
 		u32 := packBytesToU32(packed)
-		buf, err := ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		buf, err := ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: label + lbl,
 			Size:  uint64(len(u32) * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
 		})
+
 		return buf, err
 	}
 	allocScale := func(scales []float32, lbl string) (*wgpu.Buffer, error) {

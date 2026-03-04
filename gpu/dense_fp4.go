@@ -104,22 +104,24 @@ func (l *FP4DenseLayer) AllocateBuffers(ctx *Context, label string) error {
 
 	// Input buffer (float32)
 	if !l.InputAliased {
-		l.InputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		l.InputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 			Label: label + "_FP4In",
 			Size:  uint64(batch * l.Spec.InputSize * 4),
 			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 		})
+
 		if err != nil {
 			return fmt.Errorf("fp4 input buf: %w", err)
 		}
 	}
 
 	// Output buffer (float32)
-	l.OutputBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.OutputBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: label + "_FP4Out",
 		Size:  uint64(l.Spec.OutputSize * batch * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
 	})
+
 	if err != nil {
 		return fmt.Errorf("fp4 output buf: %w", err)
 	}
@@ -129,21 +131,23 @@ func (l *FP4DenseLayer) AllocateBuffers(ctx *Context, label string) error {
 	packedByteLen := len(l.Spec.PackedData)
 	// Pad to multiple of 4 for u32 buffer
 	paddedU32Len := (packedByteLen + 3) / 4
-	l.PackedBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.PackedBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: label + "_FP4W",
 		Size:  uint64(paddedU32Len * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return fmt.Errorf("fp4 packed buf: %w", err)
 	}
 
 	// Scale buffer (float32, per-column per-row-group)
-	l.ScaleBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.ScaleBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: label + "_FP4S",
 		Size:  uint64(len(l.Spec.Scales) * 4),
 		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return fmt.Errorf("fp4 scale buf: %w", err)
 	}
@@ -159,11 +163,12 @@ func (l *FP4DenseLayer) AllocateBuffers(ctx *Context, label string) error {
 	}
 
 	// Staging buffer
-	l.StagingBuffer, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuffer, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: label + "_FP4Stg",
 		Size:  uint64(l.Spec.OutputSize * batch * 4),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return fmt.Errorf("fp4 staging buf: %w", err)
 	}

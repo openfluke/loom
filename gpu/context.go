@@ -216,3 +216,21 @@ func GetContext() (*Context, error) {
 
 	return &ctx, nil
 }
+
+// CreateBuffer creates a buffer on the device and tracks its VRAM usage
+func (c *Context) CreateBuffer(desc *wgpu.BufferDescriptor) (*wgpu.Buffer, error) {
+	b, err := c.Device.CreateBuffer(desc)
+	if err == nil && desc != nil {
+		TrackVRAM(desc.Label, desc.Size)
+	}
+	return b, err
+}
+
+// CreateBufferInit creates a buffer with data and tracks its VRAM usage
+func (c *Context) CreateBufferInit(desc *wgpu.BufferInitDescriptor) (*wgpu.Buffer, error) {
+	b, err := c.Device.CreateBufferInit(desc)
+	if err == nil && desc != nil {
+		TrackVRAM(desc.Label, uint64(len(desc.Contents)))
+	}
+	return b, err
+}

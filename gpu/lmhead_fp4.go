@@ -101,32 +101,36 @@ func (l *GPULMHead) allocate(ctx *Context, gamma, lmWeights []float32) error {
 	sz := func(n int) uint64 { return uint64(n * 4) }
 	rw := wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc
 
-	l.HiddenBuf, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.HiddenBuf, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: "LMH_hidden", Size: sz(l.HiddenSize), Usage: rw,
 	})
+
 	if err != nil {
 		return fmt.Errorf("LMH hidden buf: %w", err)
 	}
 
-	l.NormBuf, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.NormBuf, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: "LMH_norm", Size: sz(l.HiddenSize), Usage: rw,
 	})
+
 	if err != nil {
 		return fmt.Errorf("LMH norm buf: %w", err)
 	}
 
-	l.LogitsBuf, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.LogitsBuf, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: "LMH_logits", Size: sz(l.VocabSize), Usage: rw,
 	})
+
 	if err != nil {
 		return fmt.Errorf("LMH logits buf: %w", err)
 	}
 
-	l.StagingBuf, err = ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	l.StagingBuf, err = ctx.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: "LMH_staging",
 		Size:  sz(l.VocabSize),
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return fmt.Errorf("LMH staging buf: %w", err)
 	}

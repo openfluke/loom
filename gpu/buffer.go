@@ -20,10 +20,11 @@ func NewFloatBuffer(data []float32, usage wgpu.BufferUsage) (*wgpu.Buffer, error
 		return nil, err
 	}
 
-	buf, err := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
+	buf, err := c.CreateBufferInit(&wgpu.BufferInitDescriptor{
 		Contents: wgpu.ToBytes(data),
 		Usage:    usage,
 	})
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create buffer: %v", err)
 	}
@@ -39,11 +40,12 @@ func ReadBuffer(buffer *wgpu.Buffer, size int) ([]float32, error) {
 
 	// Create staging buffer
 	sizeBytes := uint64(size * 4)
-	stagingBuf, err := c.Device.CreateBuffer(&wgpu.BufferDescriptor{
+	stagingBuf, err := c.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: "ReadStaging",
 		Size:  sizeBytes,
 		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
 	})
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create staging buffer: %v", err)
 	}
