@@ -124,6 +124,8 @@ func StepForwardGeneric[T Numeric](
 						size = config.InputHeight
 					case LayerConv2D:
 						size = config.InputHeight * config.InputWidth * config.InputChannels
+					case LayerConv3D:
+						size = config.InputDepth * config.InputHeight * config.InputWidth * config.InputChannels
 					case LayerRNN, LayerLSTM:
 						size = config.RNNInputSize
 					case LayerMultiHeadAttention:
@@ -166,6 +168,16 @@ func StepForwardGeneric[T Numeric](
 							config.InputHeight, config.InputWidth, config.InputChannels,
 							config.KernelSize, config.Stride, config.Padding, config.Filters,
 							config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
+						postAct = post
+						context = pre
+
+					case LayerConv3D:
+						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv3DKernel, len(config.Conv3DKernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv3DBias, len(config.Conv3DBias)))
+						pre, post := Conv3DForward(input, weights, bias,
+							config.InputDepth, config.InputHeight, config.InputWidth, config.Conv3DInChannels,
+							config.Conv3DKernelSize, config.Conv3DStride, config.Conv3DPadding, config.Conv3DFilters,
+							config.OutputDepth, config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
 						postAct = post
 						context = pre
 
@@ -350,7 +362,9 @@ func StepForwardGeneric[T Numeric](
 
 // Helper to calculate output size recursively
 func getLayerOutputSize(config *LayerConfig, batchSize int) int {
-	if config.Type == LayerConv2D {
+	if config.Type == LayerConv3D {
+		return config.Conv3DFilters * config.OutputDepth * config.OutputHeight * config.OutputWidth * batchSize
+	} else if config.Type == LayerConv2D {
 		return config.Filters * config.OutputHeight * config.OutputWidth * batchSize
 	} else if config.Type == LayerConv1D {
 		return config.Conv1DFilters * config.OutputHeight * batchSize
@@ -554,10 +568,11 @@ func (n *Network) StepForward(state *StepState) time.Duration {
 				var preAct, postAct []float32
 
 				switch config.Type {
+				case LayerConv3D:
+					preAct, postAct = conv3DForwardCPU(input, config, n.BatchSize)
+
 				case LayerConv2D:
 					preAct, postAct = conv2DForwardCPU(input, config, n.BatchSize)
-
-				case LayerConv1D:
 					preAct, postAct = conv1DForwardCPU(input, config, n.BatchSize)
 
 				case LayerMultiHeadAttention:
@@ -758,6 +773,9 @@ func (n *Network) StepForwardSingle(state *StepState, layerIdx int) time.Duratio
 
 	// Same processing as StepForward but for single layer
 	switch config.Type {
+	case LayerConv3D:
+		preAct, postAct = conv3DForwardCPU(input, config, n.BatchSize)
+
 	case LayerConv2D:
 		preAct, postAct = conv2DForwardCPU(input, config, n.BatchSize)
 

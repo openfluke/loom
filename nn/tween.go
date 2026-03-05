@@ -322,6 +322,8 @@ func (ts *GenericTweenState[T]) propagateGradients(n *Network, gradOutput []floa
 			inputGrad = ts.chainRuleBackwardDenseGeneric(cfg, input, output, currentGrad, depthScale)
 		case LayerConv2D:
 			inputGrad = ts.chainRuleBackwardConv2DGeneric(cfg, input, output, currentGrad, depthScale)
+		case LayerConv3D:
+			inputGrad = ts.chainRuleBackwardConv3DGeneric(cfg, input, output, currentGrad, depthScale)
 		case LayerEmbedding:
 			inputGrad = ts.chainRuleBackwardEmbeddingGeneric(cfg, input, output, currentGrad, depthScale)
 		case LayerConv1D:
@@ -394,6 +396,30 @@ func (ts *GenericTweenState[T]) chainRuleBackwardDenseGeneric(cfg *LayerConfig, 
 
 // chainRuleBackwardConv2DGeneric computes gradient for Conv2D layer
 func (ts *GenericTweenState[T]) chainRuleBackwardConv2DGeneric(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
+	gradInput := make([]float32, len(input.Data))
+
+	avgGrad := float32(0)
+	for j := 0; j < len(gradOutput) && j < len(output.Data); j++ {
+		outVal := float32(output.Data[j])
+		if IsIntegerType[T]() {
+			outVal /= 100.0
+		}
+		deriv := ts.activateDerivativeFromOutputGeneric(outVal, cfg.Activation)
+		avgGrad += gradOutput[j] * deriv
+	}
+	if len(gradOutput) > 0 {
+		avgGrad /= float32(len(gradOutput))
+	}
+	avgGrad *= depthScale
+
+	for i := range gradInput {
+		gradInput[i] = avgGrad
+	}
+	return gradInput
+}
+
+// chainRuleBackwardConv3DGeneric computes gradient for Conv3D layer
+func (ts *GenericTweenState[T]) chainRuleBackwardConv3DGeneric(cfg *LayerConfig, input, output *Tensor[T], gradOutput []float32, depthScale float32) []float32 {
 	gradInput := make([]float32, len(input.Data))
 
 	avgGrad := float32(0)
@@ -603,6 +629,8 @@ func (ts *GenericTweenState[T]) TweenWeightsChainRule(n *Network, rate float32) 
 			ts.chainRuleUpdateDenseGeneric(cfg, input, outputGrad, rate*ts.Config.DenseRate, mom, i)
 		case LayerConv2D:
 			ts.chainRuleUpdateConv2DGeneric(cfg, input, outputGrad, rate*ts.Config.Conv2DRate, mom, i)
+		case LayerConv3D:
+			ts.chainRuleUpdateConv3DGeneric(cfg, input, outputGrad, rate*ts.Config.Conv3DRate, mom, i)
 		case LayerMultiHeadAttention:
 			ts.chainRuleUpdateAttentionGeneric(cfg, outputGrad, rate*ts.Config.AttentionRate)
 		case LayerRNN:
@@ -688,6 +716,37 @@ func (ts *GenericTweenState[T]) chainRuleUpdateConv2DGeneric(cfg *LayerConfig, i
 	}
 	for i := range cfg.Bias {
 		cfg.Bias[i] += clipGradGeneric(rate*avgGrad, 0.1)
+	}
+}
+
+// chainRuleUpdateConv3DGeneric applies gradient update to Conv3D layer
+func (ts *GenericTweenState[T]) chainRuleUpdateConv3DGeneric(cfg *LayerConfig, input *Tensor[T], outputGrad []float32, rate, mom float32, layerIdx int) {
+	avgInput := float32(0)
+	for _, v := range input.Data {
+		val := float32(v)
+		if IsIntegerType[T]() {
+			val /= 100.0
+		}
+		avgInput += val
+	}
+	if len(input.Data) > 0 {
+		avgInput /= float32(len(input.Data))
+	}
+
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+
+	delta := clipGradGeneric(rate*avgInput*avgGrad, 0.1)
+	for i := range cfg.Conv3DKernel {
+		cfg.Conv3DKernel[i] += delta
+	}
+	for i := range cfg.Conv3DBias {
+		cfg.Conv3DBias[i] += clipGradGeneric(rate*avgGrad, 0.1)
 	}
 }
 
@@ -1078,6 +1137,7 @@ type TweenConfig struct {
 	NormRate        float32 // Default: 0.1
 	SwiGLURate      float32 // Default: 0.2
 	Conv2DRate      float32 // Default: 0.1
+	Conv3DRate      float32 // Default: 0.1
 	EmbeddingRate   float32 // Default: 0.1
 	Conv1DRate      float32 // Default: 0.1
 
@@ -1141,6 +1201,7 @@ func DefaultTweenConfig(totalLayers int) *TweenConfig {
 		NormRate:             0.1,
 		SwiGLURate:           0.2,
 		Conv2DRate:           0.1,
+		Conv3DRate:           0.1,
 		EmbeddingRate:        0.1,
 		Conv1DRate:           0.1,
 		Momentum:             0.9,
@@ -1477,6 +1538,8 @@ func (ts *TweenState) propagateGradients(n *Network, gradOutput []float32) {
 			currentGrad = ts.chainRuleBackwardDense(cfg, layerInput, layerOutput, currentGrad, depthScale, i)
 		case LayerConv2D:
 			currentGrad = ts.chainRuleBackwardConv2D(cfg, layerInput, layerOutput, currentGrad, depthScale)
+		case LayerConv3D:
+			currentGrad = ts.chainRuleBackwardConv3D(cfg, layerInput, layerOutput, currentGrad, depthScale)
 		case LayerMultiHeadAttention:
 			currentGrad = ts.chainRuleBackwardAttention(cfg, layerInput, layerOutput, currentGrad, depthScale)
 		case LayerRNN:
@@ -1644,6 +1707,26 @@ func (ts *TweenState) chainRuleBackwardConv2D(cfg *LayerConfig, input, output, g
 		}
 	}
 
+	return gradInput
+}
+
+// chainRuleBackwardConv3D: Chain rule for Conv3D layers
+func (ts *TweenState) chainRuleBackwardConv3D(cfg *LayerConfig, input, output, gradOutput []float32, depthScale float32) []float32 {
+	gradInput := make([]float32, len(input))
+
+	avgGrad := float32(0)
+	for j := 0; j < len(gradOutput) && j < len(output); j++ {
+		actDeriv := ts.activateDerivativeFromOutput(output[j], cfg.Activation)
+		avgGrad += gradOutput[j] * actDeriv
+	}
+	if len(gradOutput) > 0 {
+		avgGrad /= float32(len(gradOutput))
+	}
+	avgGrad *= depthScale
+
+	for i := range gradInput {
+		gradInput[i] = avgGrad
+	}
 	return gradInput
 }
 
@@ -2006,6 +2089,8 @@ func (ts *TweenState) TweenWeights(n *Network, rate float32) {
 			ts.tweenDense(cfg, input, outputGaps, layerRate*ts.Config.DenseRate, mom, i)
 		case LayerConv2D:
 			ts.tweenConv2D(cfg, input, outputGaps, layerRate*ts.Config.Conv2DRate, mom)
+		case LayerConv3D:
+			ts.tweenConv3D(cfg, input, outputGaps, layerRate*ts.Config.Conv3DRate, mom)
 		case LayerMultiHeadAttention:
 			ts.tweenAttention(cfg, input, outputGaps, layerRate*ts.Config.AttentionRate, mom)
 		case LayerRNN:
@@ -2070,6 +2155,8 @@ func (ts *TweenState) TweenWeightsChainRule(n *Network, rate float32) {
 			ts.chainRuleUpdateDense(cfg, input, output, outputGrad, rate*ts.Config.DenseRate*depthScale, mom, i)
 		case LayerConv2D:
 			ts.chainRuleUpdateConv2D(cfg, input, output, outputGrad, rate*ts.Config.Conv2DRate*depthScale, mom)
+		case LayerConv3D:
+			ts.chainRuleUpdateConv3D(cfg, input, output, outputGrad, rate*ts.Config.Conv3DRate*depthScale, mom)
 		case LayerMultiHeadAttention:
 			ts.chainRuleUpdateAttention(cfg, input, output, outputGrad, rate*ts.Config.AttentionRate*depthScale, mom)
 		case LayerRNN:
@@ -2187,6 +2274,33 @@ func (ts *TweenState) chainRuleUpdateConv2D(cfg *LayerConfig, input, output, out
 		if f < len(cfg.Bias) {
 			cfg.Bias[f] += rate * filterGrad
 		}
+	}
+}
+
+// chainRuleUpdateConv3D: Apply gradient update to Conv3D layer
+func (ts *TweenState) chainRuleUpdateConv3D(cfg *LayerConfig, input, output, outputGrad []float32, rate, mom float32) {
+	avgInput := float32(0)
+	for _, v := range input {
+		avgInput += v
+	}
+	if len(input) > 0 {
+		avgInput /= float32(len(input))
+	}
+
+	avgGrad := float32(0)
+	for _, g := range outputGrad {
+		avgGrad += g
+	}
+	if len(outputGrad) > 0 {
+		avgGrad /= float32(len(outputGrad))
+	}
+
+	delta := clipGrad(rate*avgInput*avgGrad, 0.1)
+	for i := range cfg.Conv3DKernel {
+		cfg.Conv3DKernel[i] += delta
+	}
+	for i := range cfg.Conv3DBias {
+		cfg.Conv3DBias[i] += clipGrad(rate*avgGrad, 0.1)
 	}
 }
 
@@ -2524,6 +2638,33 @@ func (ts *TweenState) tweenConv2D(cfg *LayerConfig, input, gaps []float32, rate,
 		if f < len(cfg.Bias) {
 			cfg.Bias[f] += perFilterGap[f] * rate * ts.Config.BiasRateMultiplier
 		}
+	}
+}
+
+// tweenConv3D handles 3D Convolutional layers
+func (ts *TweenState) tweenConv3D(cfg *LayerConfig, input, gaps []float32, rate, mom float32) {
+	avgInput := float32(0)
+	for _, v := range input {
+		avgInput += v
+	}
+	if len(input) > 0 {
+		avgInput /= float32(len(input))
+	}
+
+	avgGap := float32(0)
+	for _, g := range gaps {
+		avgGap += g
+	}
+	if len(gaps) > 0 {
+		avgGap /= float32(len(gaps))
+	}
+
+	delta := clipGrad(rate*avgInput*avgGap, 0.1)
+	for i := range cfg.Conv3DKernel {
+		cfg.Conv3DKernel[i] += delta
+	}
+	for i := range cfg.Conv3DBias {
+		cfg.Conv3DBias[i] += clipGrad(rate*avgGap, 0.1)
 	}
 }
 
@@ -2989,6 +3130,8 @@ func (ts *TweenState) TweenBatchApply(n *Network, rate float32) {
 				ts.chainRuleUpdateDense(cfg, input, output, avgGaps, rate*ts.Config.DenseRate*depthScale, mom, i)
 			case LayerConv2D:
 				ts.chainRuleUpdateConv2D(cfg, input, output, avgGaps, rate*ts.Config.Conv2DRate*depthScale, mom)
+			case LayerConv3D:
+				ts.chainRuleUpdateConv3D(cfg, input, output, avgGaps, rate*ts.Config.Conv3DRate*depthScale, mom)
 			case LayerMultiHeadAttention:
 				ts.chainRuleUpdateAttention(cfg, input, output, avgGaps, rate*ts.Config.AttentionRate*depthScale, mom)
 			case LayerRNN:
@@ -3010,6 +3153,8 @@ func (ts *TweenState) TweenBatchApply(n *Network, rate float32) {
 				ts.tweenDense(cfg, input, avgGaps, layerRate*ts.Config.DenseRate, mom, i)
 			case LayerConv2D:
 				ts.tweenConv2D(cfg, input, avgGaps, layerRate*ts.Config.Conv2DRate, mom)
+			case LayerConv3D:
+				ts.tweenConv3D(cfg, input, avgGaps, layerRate*ts.Config.Conv3DRate, mom)
 			case LayerMultiHeadAttention:
 				ts.tweenAttention(cfg, input, avgGaps, layerRate*ts.Config.AttentionRate, mom)
 			case LayerRNN:

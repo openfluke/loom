@@ -92,6 +92,18 @@ func StepBackwardGeneric[T Numeric](
 			kernelGrads[layerIdx] = gKernel
 			biasGrads[layerIdx] = gBias
 
+		case LayerConv3D:
+			weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv3DKernel, len(config.Conv3DKernel)))
+			preAct, _ := context.(*Tensor[T])
+			gInput, gKernel, gBias := Conv3DBackward(gradOut, input, preAct, weights,
+				config.InputDepth, config.InputHeight, config.InputWidth, config.Conv3DInChannels,
+				config.Conv3DKernelSize, config.Conv3DStride, config.Conv3DPadding, config.Conv3DFilters,
+				config.OutputDepth, config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
+
+			accumulateGradient(grads, layerIdx, gInput)
+			kernelGrads[layerIdx] = gKernel
+			biasGrads[layerIdx] = gBias
+
 		case LayerRNN:
 			wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
 			wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
@@ -297,6 +309,9 @@ func (n *Network) StepBackward(state *StepState, gradOutput []float32) ([]float3
 
 		// Route to appropriate layer type
 		switch config.Type {
+		case LayerConv3D:
+			gradInput, kernelGrads, biasGrads = conv3DBackwardCPU(grad, input, preAct, config, n.BatchSize)
+
 		case LayerConv2D:
 			gradInput, kernelGrads, biasGrads = conv2DBackwardCPU(grad, input, preAct, config, n.BatchSize)
 

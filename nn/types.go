@@ -206,6 +206,7 @@ const (
 	LayerConv1D             LayerType = 12 // 1D Convolutional layer (for audio/sequence data)
 	LayerSequential         LayerType = 13 // Sequential layer (runs multiple sub-layers in sequence)
 	LayerKMeans             LayerType = 14 // Learnable K-Means clustering with attached sub-network
+	LayerConv3D             LayerType = 15 // 3D Convolutional layer (for volumetric/video data)
 )
 
 // SoftmaxType defines the variant of softmax to use
@@ -237,10 +238,12 @@ type LayerConfig struct {
 	Kernel     []float32 // Convolution kernel weights [filters][inChannels][kernelH][kernelW]
 	Bias       []float32 // Bias terms [filters]
 
-	// Shape information (for Conv2D)
+	// Shape information (for Conv2D and Conv3D)
+	InputDepth    int
 	InputHeight   int
 	InputWidth    int
 	InputChannels int
+	OutputDepth   int
 	OutputHeight  int
 	OutputWidth   int
 
@@ -326,6 +329,15 @@ type LayerConfig struct {
 	Conv1DKernel     []float32 // Kernel weights [filters][inChannels][kernelSize]
 	Conv1DBias       []float32 // Bias terms [filters]
 	Conv1DInChannels int       // Input channels
+
+	// Conv3D specific parameters (for volumetric/video data)
+	Conv3DFilters    int       // Number of output filters
+	Conv3DKernelSize int       // Size of 3D kernel (assumed cubic, or size for Depth/Height/Width if symmetrical)
+	Conv3DStride     int       // Stride for convolution
+	Conv3DPadding    int       // Padding for convolution
+	Conv3DKernel     []float32 // Kernel weights [filters][inChannels][kernelSize][kernelSize][kernelSize]
+	Conv3DBias       []float32 // Bias terms [filters]
+	Conv3DInChannels int       // Input channels
 
 	// Parallel layer specific parameters
 	ParallelBranches []LayerConfig  // Sub-layers to run in parallel

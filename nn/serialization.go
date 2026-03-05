@@ -50,8 +50,10 @@ type LayerDefinition struct {
 	KernelSize    int `json:"kernel_size,omitempty"`
 	Stride        int `json:"stride,omitempty"`
 	Padding       int `json:"padding,omitempty"`
+	InputDepth    int `json:"input_depth,omitempty"`
 	InputHeight   int `json:"input_height,omitempty"`
 	InputWidth    int `json:"input_width,omitempty"`
+	OutputDepth   int `json:"output_depth,omitempty"`
 	OutputHeight  int `json:"output_height,omitempty"`
 	OutputWidth   int `json:"output_width,omitempty"`
 
@@ -142,6 +144,10 @@ type LayerWeights struct {
 	// Conv2D weights
 	Kernel   []float32 `json:"kernel,omitempty"`
 	ConvBias []float32 `json:"conv_bias,omitempty"`
+
+	// Conv3D weights
+	Conv3DKernel []float32 `json:"conv3d_kernel,omitempty"`
+	Conv3DBias   []float32 `json:"conv3d_bias,omitempty"`
 
 	// MHA weights
 	QWeights     []float32 `json:"q_weights,omitempty"`
@@ -251,6 +257,18 @@ func serializeBranches(branches []LayerConfig) []LayerDefinition {
 			def.InputWidth = branch.InputWidth
 			def.OutputHeight = branch.OutputHeight
 			def.OutputWidth = branch.OutputWidth
+		case LayerConv3D:
+			def.InputChannels = branch.Conv3DInChannels
+			def.Filters = branch.Conv3DFilters
+			def.KernelSize = branch.Conv3DKernelSize
+			def.Stride = branch.Conv3DStride
+			def.Padding = branch.Conv3DPadding
+			def.InputDepth = branch.InputDepth
+			def.InputHeight = branch.InputHeight
+			def.InputWidth = branch.InputWidth
+			def.OutputDepth = branch.OutputDepth
+			def.OutputHeight = branch.OutputHeight
+			def.OutputWidth = branch.OutputWidth
 		case LayerMultiHeadAttention:
 			def.DModel = branch.DModel
 			def.NumHeads = branch.NumHeads
@@ -348,6 +366,9 @@ func serializeBranchWeights(branches []LayerConfig) []LayerWeights {
 		case LayerConv2D:
 			w.Kernel = branch.Kernel
 			w.ConvBias = branch.Bias
+		case LayerConv3D:
+			w.Conv3DKernel = branch.Conv3DKernel
+			w.Conv3DBias = branch.Conv3DBias
 		case LayerMultiHeadAttention:
 			w.QWeights = branch.QWeights
 			w.KWeights = branch.KWeights
@@ -444,6 +465,24 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				OutputWidth:   def.OutputWidth,
 				Kernel:        w.Kernel,
 				Bias:          w.ConvBias,
+			}
+		case "conv3d":
+			config = LayerConfig{
+				Type:             LayerConv3D,
+				Activation:       stringToActivation(def.Activation),
+				Conv3DInChannels: def.InputChannels,
+				Conv3DFilters:    def.Filters,
+				Conv3DKernelSize: def.KernelSize,
+				Conv3DStride:     def.Stride,
+				Conv3DPadding:    def.Padding,
+				InputDepth:       def.InputDepth,
+				InputHeight:      def.InputHeight,
+				InputWidth:       def.InputWidth,
+				OutputDepth:      def.OutputDepth,
+				OutputHeight:     def.OutputHeight,
+				OutputWidth:      def.OutputWidth,
+				Conv3DKernel:     w.Conv3DKernel,
+				Conv3DBias:       w.Conv3DBias,
 			}
 		case "multi_head_attention", "mha":
 			config = LayerConfig{
@@ -671,6 +710,21 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 			layerDef.OutputWidth = layerConfig.OutputWidth
 			layerWeights.Kernel = layerConfig.Kernel
 			layerWeights.ConvBias = layerConfig.Bias
+
+		case LayerConv3D:
+			layerDef.InputChannels = layerConfig.Conv3DInChannels
+			layerDef.Filters = layerConfig.Conv3DFilters
+			layerDef.KernelSize = layerConfig.Conv3DKernelSize
+			layerDef.Stride = layerConfig.Conv3DStride
+			layerDef.Padding = layerConfig.Conv3DPadding
+			layerDef.InputDepth = layerConfig.InputDepth
+			layerDef.InputHeight = layerConfig.InputHeight
+			layerDef.InputWidth = layerConfig.InputWidth
+			layerDef.OutputDepth = layerConfig.OutputDepth
+			layerDef.OutputHeight = layerConfig.OutputHeight
+			layerDef.OutputWidth = layerConfig.OutputWidth
+			layerWeights.Conv3DKernel = layerConfig.Conv3DKernel
+			layerWeights.Conv3DBias = layerConfig.Conv3DBias
 
 		case LayerMultiHeadAttention:
 			layerDef.DModel = layerConfig.DModel

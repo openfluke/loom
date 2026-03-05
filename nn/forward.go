@@ -70,6 +70,17 @@ func GenericForwardPass[T Numeric](
 						activations[layerIdx+1] = post
 						context = pre // Store pre-activation
 
+					case LayerConv3D:
+						weights := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv3DKernel, len(config.Conv3DKernel)))
+						bias := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.Conv3DBias, len(config.Conv3DBias)))
+						pre, post := Conv3DForward(data, weights, bias,
+							config.InputDepth, config.InputHeight, config.InputWidth, config.Conv3DInChannels,
+							config.Conv3DKernelSize, config.Conv3DStride, config.Conv3DPadding, config.Conv3DFilters,
+							config.OutputDepth, config.OutputHeight, config.OutputWidth, n.BatchSize, config.Activation)
+						data = post
+						activations[layerIdx+1] = post
+						context = pre // Store pre-activation
+
 					case LayerRNN:
 						wIH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightIH, len(config.WeightIH)))
 						wHH := ConvertTensorFloat32ToT[T](NewTensorFromSlice(config.WeightHH, len(config.WeightHH)))
@@ -335,6 +346,15 @@ func (n *Network) ForwardCPU(input []float32) ([]float32, time.Duration) {
 					preAct, postAct = conv2DForwardCPU(data, config, n.BatchSize)
 
 					// Store pre-activation values (before activation function)
+					n.preActivations[layerIdx] = preAct
+
+					// Use post-activation for next layer
+					data = postAct
+				} else if config.Type == LayerConv3D {
+					// Conv3D layer
+					preAct, postAct = conv3DForwardCPU(data, config, n.BatchSize)
+
+					// Store pre-activation values
 					n.preActivations[layerIdx] = preAct
 
 					// Use post-activation for next layer
