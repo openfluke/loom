@@ -11,13 +11,22 @@ GPU acceleration is enabled per-network with two steps:
 ```go
 network, _ := nn.BuildNetworkFromJSON(config)
 network.GPU = true                    // Enable GPU mode
+
+// Standard FP32:
 err := network.WeightsToGPU()         // Transfer weights to GPU memory
+
+// Or FP4 NVFP4 E2M1 (Dense + SwiGLU only):
+fp4w := network.BuildFP4Weights()
+err = network.WeightsFP4ToGPU(fp4w)
+
 if err != nil {
     log.Fatal("GPU not available:", err)
 }
 
 // Forward automatically routes to GPU
 output, duration := network.Forward(input)
+// Or if you used FP4:
+// output, duration := network.ForwardFP4GPU(input)
 
 // When done, release GPU resources
 network.ReleaseGPUWeights()
@@ -25,15 +34,17 @@ network.ReleaseGPUWeights()
 
 All layer types below support both CPU and GPU execution with automatic parity checking.
 
+For deep LLMs running on consumer hardware, see [FP4 Quantization](./fp4_quantization.md).
+
 ### Supported Layers Status
 
 | Layer | Forward | Backward | Notes |
 |:------|:-------:|:--------:|:------|
-| **Dense** | ✅ **Stable** | ✅ **Stable** | Best speedup (up to 20x). |
+| **Dense** | ✅ **Stable** | ✅ **Stable** | Best speedup (up to 20x). Supports FP4. |
 | **Conv2D** | ✅ **Stable** | ✅ **Stable** | Good for large batches/kernels. |
 | **Conv1D** | ✅ **Stable** | ⚠️ **Experimental** | Accuracy under review. |
 | **RNN / LSTM** | ✅ **Stable** | ⚠️ **Experimental** | Verified parity, BPTT limited. |
-| **SwiGLU** | ✅ **Stable** | ⚠️ **Experimental** | Works perfectly. |
+| **SwiGLU** | ✅ **Stable** | ⚠️ **Experimental** | Works perfectly. Supports FP4. |
 | **Norms** | ✅ **Stable** | ⚠️ **Experimental** | LayerNorm and RMSNorm supported. |
 | **MHA + KV Cache** | ✅ **Stable** | ⚠️ **Experimental** | GQA, RoPE, KV caching. ~30 t/s on 135M. |
 
@@ -95,6 +106,27 @@ network.SetLayer(0, 0, 2, nn.InitDenseLayer(512, 10, nn.ActivationSigmoid))
 | `input_height` | Number of input features |
 | `output_height` | Number of output features |
 | `activation` | Activation function: `relu`, `leaky_relu`, `sigmoid`, `tanh`, `linear` |
+
+---
+
+## FP4 Dense Layer
+
+The FP4 Dense layer (`gpu.FP4DenseLayer`) is a hyper-optimized version of the standard Dense layer that runs directly on **NVFP4 E2M1** compressed weights. 
+
+### What It Does
+
+Rather than downloading 32-bit floats across the PCIe bus, it loads packed 4-bit weights and a shared 32-bit float scale factor per micro-block. 
+
+Inside the WebGPU compute shader, it:
+1. Reads 32 bits from VRAM (8 weights at once).
+2. Unpacks the nibbles into GPU registers.
+3. Converts the 4-bit format back to `f32` natively using bitwise math.
+4. Multiplies the decompressed weights with the inputs.
+5. Scales the chunk result by the block scale.
+
+This reduces VRAM bandwidth requirements by ~81% with practically no compute overhead on modern GPUs.
+
+For more details on quantizing your network, see [FP4 Quantization](./fp4_quantization.md).
 
 ---
 
@@ -386,6 +418,27 @@ Where:
 |-----------|-------------|
 | `input_height` | Input feature size |
 | `output_height` | Output feature size (typically same as input) |
+
+---
+
+## FP4 SwiGLU Layer
+
+The FP4 SwiGLU layer (`gpu.FP4SwiGLULayer`) is a 4-bit quantized version of SwiGLU, implementing all three projections (`Gate`, `Up`, `Down`) in a single fused WebGPU shader using **NVFP4 E2M1** weights.
+
+### What It Does
+
+Because LLM feedforward blocks are heavily memory-bound, this layer packs the weight matrices for all three projections into VRAM. 
+
+The shader executes:
+1. `Gate_val = unpack_and_dot(Gate_weights, input)`
+2. `Up_val = unpack_and_dot(Up_weights, input)`
+3. `SiLU_val = Gate_val * sigmoid(Gate_val)`
+4. `Mid_val = SiLU_val * Up_val`
+5. `Out_val = unpack_and_dot(Down_weights, Mid_val)`
+
+By performing the SiLU activation and the element-wise multiplication on-chip, it completely avoids intermediate VRAM allocations for `Gate` and `Up` outputs, leading to extremely high tokens/second scaling even on low-end hardware.
+
+For more details on quantizing your network, see [FP4 Quantization](./fp4_quantization.md).
 
 ---
 

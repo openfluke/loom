@@ -16,12 +16,44 @@ The [MNIST demo](file:///home/samuel/git/loom/tva/demo/mnist/main.go) is the def
 ### Numerical Type Comparison Summary
 The following table from the demo results showcases Loom's versatility in precision vs. compression:
 
-| DType | Quality Score | Avg Dev | File Size | RAM Usage |
-|-------|---------------|---------|-----------|-----------|
 | **F32** | 100.00% | 0.0000% | 2.92 MB | 5.86 MB |
 | **BF16**| 100.00% | 0.0009% | 1.46 MB | 4.40 MB |
 | **F4 (FP4)** | **99.40%** | **0.6029%** | **374 KB** | **3.30 MB** |
 | **I8**  | 99.61% | 0.3855% | 747 KB | 3.67 MB |
+
+---
+
+## Featured Example: FP4 Large Language Models
+
+Loom includes dedicated tools for testing and chatting with large language models using its **NVFP4 E2M1** compression and WebGPU shaders. These are located in the `tva/` directory.
+
+### \`tva/fp4_quicktalk\` (CLI Chatbot)
+
+`fp4_quicktalk` is an interactive command-line LLM chatbot. It allows you to download, quantize, and run modern models (like HuggingFace SmolLM2 and Alibaba Qwen2.5) entirely on your local GPU using only a fraction of their original VRAM.
+
+**Usage:**
+```bash
+cd tva/fp4_quicktalk
+go run main.go
+```
+Features demonstrated:
+1. **On-the-fly Quantization**: Loads Safetensors and compresses `Dense` and `SwiGLU` layers into FP4.
+2. **WebGPU Inference**: Runs the `ForwardFP4GPU` pipeline with register-level unpacking.
+3. **KV Caching & RoPE**: Showcases Loom's full transformer stack.
+4. **VRAM Profiling**: Type `vram` during a chat session to see an interactive memory breakdown.
+
+### \`tva/fp4_test\` (Automated Benchmarking)
+
+`fp4_test` is a benchmarking utility for validating the determinism and performance of the FP4 implementation.
+
+**Usage:**
+```bash
+cd tva/fp4_test
+go run main.go
+```
+Features demonstrated:
+1. **Determinism Verification**: Compares the exact outputs of `ForwardFP4CPU` against `ForwardFP4GPU` to ensure the WebGPU shaders perfectly match the Go reference implementation.
+2. **Speed & Memory Profiling**: Measures the throughput (tokens/second) of the compressed model against standard metrics.
 
 ---
 

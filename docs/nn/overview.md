@@ -88,6 +88,14 @@ This validates Loom's mission to be a the **Neural Operating System** for roboti
 
 ---
 
+## FP4 Weight Quantization for LLMs
+
+To support massive language models on consumer hardware, Loom features built-in **NVFP4 E2M1** (4-bit floating point) quantization for Dense and SwiGLU layers. 
+
+By packing two weights into every byte and sharing scale factors across micro-blocks, Loom reduces memory consumption by ~81%. The GPU backend includes specialized WebGPU shaders (`FP4DenseLayer` and `FP4SwiGLULayer`) that multiply directly against the packed 4-bit representation in VRAM, eliminating the need to decompress the model.
+
+---
+
 ## The Big Picture: What Makes Loom Different
 
 Most neural network frameworks organize layers in a simple chain: input flows through layer 1, then layer 2, then layer 3, and so on. Loom does something different. It organizes layers in a **2D grid**, like cells in a spreadsheet.
@@ -586,6 +594,7 @@ Now that you understand the architecture, explore these topics in depth:
 
 - **[Layers Guide](./layers.md)** - How each layer type works internally
 - **[GPU Layers Guide](./gpu_layers.md)** - MHA, KV cache, GQA, RoPE, all GPU layer types
+- **[FP4 Quantization](./fp4_quantization.md)** - NVFP4 E2M1 bitwise quantization and VRAM optimization
 - **[Transformer Inference](./transformer.md)** - Prefill/decode loop, KV caching, GPU LLM inference
 - **[Tokenizer Package](./tokenizer.md)** - BPE tokenizer, LLMEngine, sampling, chat templates
 - **[Architecture Generation](./architecture.md)** - BrainType, ArchConfig, NAS random generation, diverse network builder
