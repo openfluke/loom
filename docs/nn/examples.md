@@ -57,6 +57,21 @@ Features demonstrated:
 
 ---
 
+## Featured Example: Spatial Volumetric Tracking (Conv3D & Tween)
+
+The [Conv3D optimization demo](file:///home/samuel/git/loom/tva/demo/conv3/main.go) serves as the primary benchmark verifying 3-Dimensional GPU implementations, as well as showcasing how Loom's **Optimization-less Tweening** works natively on spatial targets.
+
+### The Scenario
+A script dynamically generates an $8 \times 8 \times 8$ environment (represented as `[]float32`), heavily masking a subset of coordinates to mimic a moving $3 \times 3 \times 3$ Cube. The goal of the network is to distinguish spatial placement without exploding on gradients.
+
+### Key Learnings Demonstrated:
+1. **GPU Superiority**: `Conv3D` calculates $Z$, $Y$, and $X$ intersections, drastically increasing computational complexity over `Conv2D`. The demonstration compares standard `CPU` forward calls taking **~154ms** versus `GPU` calls taking **~1.2s** due to WebGPU pipeline spinups on small workloads. This demonstrates that GPU execution is primarily useful on batch-heavy scenarios.
+2. **Optimizer-less Updates**: By manually applying the residual backpropagation via `net.ApplyGradients()`, developers can tightly control execution loops independently of predefined `Train()` environments.
+3. **Execution Modes for Online Learning**:
+   - `TweenStep(UseChainRule=true)` - Live continuous integration of loss via formal algebraic backpropagation.
+   - `TweenStep(UseChainRule=false)` - Legacy geometric morphing gradient calculations, best for RL environments since weights are bounded from mathematical explosions.
+   - `GenericTweenStep[T]` - Same tween logic applicable generically regardless of float tracking precision (`float64`, `int8`, etc).
+
 ## The Discovery: Grid Softmax = Mixture of Experts
 
 One of Loom's most significant features was an **accidental discovery**: Grid Softmax is mathematically equivalent to Mixture of Experts (MoE)—the same architecture used in GPT-4, Switch Transformer, and Mixtral.

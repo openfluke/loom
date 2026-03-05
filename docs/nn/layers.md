@@ -196,15 +196,42 @@ The **Conv2D** layer is the absolute champion of the v5.0 benchmark.
 *   **Accuracy (Bicameral)**: **18.6%** (Highest in class)
 *   **Real-Time Behavior**: When in a "Warm Constant State," Conv2D filters stabilize into **Spatio-Temporal Sensors**, tracking features at high-frequency and achieving the engine's best Balanced Power Score.
 
-> [!WARNING]
-> **The Dimensionality Cliff (Conv2D vs Conv3D)**
-> While the math for `Conv3D` exists, it represents a catastrophic jump in CPU complexity. A $3 \times 3$ kernel has **9** weights; a $3 \times 3 \times 3$ kernel has **27**. When combined with the depth dimension ($z$), a CPU must jump across massive memory offsets, causing **Cache Thrashing**.
->
-> **Loom Discovery:** By running `Conv2D` at **600 Hz** in a "Constant State," we achieve the same temporal awareness as a 3D volume, but at **1/60th of the computational cost**.
-
 ---
 
-## Conv1D Layers: Local Patterns in Sequences
+## Conv3D Layers: Processing Spatial Volumes
+
+Conv3D is the 3-dimensional version of convolution. It slides a **3D kernel spatial volume (width, height, depth)**. It's essentially Conv2D with an extra dimension.
+
+### The Key Insight
+Instead of tracking features in a flat image, Conv3D tracks patterns across a volumetric space (e.g., MRI scans, voxel grids, or physical simulations like Loom's dynamic environments).
+
+```
+Input Volume               Kernel
+(Depth × Height × Width)   (Slice Depth × Slice Height × Slice Width)
+┌──────────┐               ┌─────┐
+│ 00000000 │    ─────▶     │ abc │
+│ 00000000 │               │ def │
+│ 00000000 │               │ ghi │
+└──────────┘               └─────┘
+```
+
+**Output Size (per dimension)**:
+```
+outDim = (inDim + 2*padding - kernelSize) / stride + 1
+```
+
+### The Performance Breakthrough
+Historically, CPU-bound Conv3D operations suffered from massive memory jumping gaps (Cache Thrashing) when iterating over the $z$-axis. A $3 \times 3 \times 3$ kernel contains 27 parameters per filter, dramatically increasing access latency.
+
+> [!NOTE]
+> **Conv3D on GPU**
+> Loom completely bypasses the CPU cache thrashing problem by utilizing **WebGPU**. 
+> The GPU effortlessly maps spatial volumes horizontally across GPU invocations, bringing WebGPU matrix multiplication latency effectively to zero for intensive Conv3D operations.
+
+Use Conv3D when:
+- Inputs are purely **volumetric** (voxels, 3D tracking)
+- Finding object boundaries or shapes spanning 3 dimensions
+- Processing spatio-temporal sequences where the "Z" dimension acts as time (e.g. video frame stacking)
 
 Conv1D is the 1D version of convolution. Instead of sliding a 2D kernel across an image, it slides a **1D kernel along a sequence** (audio, time series, token embeddings). The key idea is the same: learn a local pattern once and reuse it everywhere.
 

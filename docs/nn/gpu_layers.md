@@ -41,6 +41,7 @@ For deep LLMs running on consumer hardware, see [FP4 Quantization](./fp4_quantiz
 | Layer | Forward | Backward | Notes |
 |:------|:-------:|:--------:|:------|
 | **Dense** | ✅ **Stable** | ✅ **Stable** | Best speedup (up to 20x). Supports FP4. |
+| **Conv3D** | ✅ **Stable** | ✅ **Stable** | Excellent scaling on large volumes. |
 | **Conv2D** | ✅ **Stable** | ✅ **Stable** | Good for large batches/kernels. |
 | **Conv1D** | ✅ **Stable** | ⚠️ **Experimental** | Accuracy under review. |
 | **RNN / LSTM** | ✅ **Stable** | ⚠️ **Experimental** | Verified parity, BPTT limited. |
@@ -382,6 +383,56 @@ layer := nn.InitConv2DLayer(16, 16, 8, 3, 1, 1, 8, nn.ActivationReLU)
 
 ---
 
+## Conv3D Layer
+
+3D Convolution slides a kernel over spatial volumes (like voxel grids or spatio-temporal frames), detecting 3-dimensional patterns.
+
+### What It Does
+
+```
+Input: [batch][channels][depth][height][width]
+
+3×3×3 Kernel slides across 3D volume, convolving 
+27 scalar points at each position to produce one output value.
+
+Output: [batch][filters][out_depth][out_height][out_width]
+```
+
+### JSON Configuration
+
+```json
+{
+  "layers": [
+    {"type": "dense", "activation": "leaky_relu", "input_height": 4096, "output_height": 4096},
+    {"type": "conv3d", "input_channels": 1, "filters": 16, "kernel_size": 3, 
+     "stride": 1, "padding": 1, "input_depth": 8, "input_height": 8, "input_width": 8},
+    {"type": "dense", "activation": "sigmoid", "input_height": 8192, "output_height": 2}
+  ]
+}
+```
+
+The input 4096 = 8×8×8×1 (depth × height × width × channels). With padding=1, stride=1, kernel=3, output becomes 8×8×8×16 = 8192.
+
+### Go Code Example
+
+```go
+// Conv3D: 8x8x8 volume, 1 input channel, 3x3x3 kernel, stride 1, padding 1, 16 filters
+layer := nn.InitConv3DLayer(8, 8, 8, 1, 3, 1, 1, 16, nn.ActivationReLU)
+```
+
+### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `input_depth`, `input_height`, `input_width` | Spatial dimensions of input |
+| `input_channels` | Number of input channels |
+| `filters` | Number of output filters/channels |
+| `kernel_size` | Size of the cubic kernel (e.g., 3 for 3×3×3) |
+| `stride` | Step size for kernel movement along all 3 axes |
+| `padding` | Zero-padding added to input edges |
+
+---
+
 ## SwiGLU Layer
 
 SwiGLU is a gated activation used in modern LLMs (Llama, Mistral, etc.). It combines three projections with a gating mechanism.
@@ -676,6 +727,7 @@ func abs(x float32) float64 {
 | Softmax | Probabilities | Medium |
 | Conv1D | Sequence patterns | High |
 | Conv2D | Image patterns | Very High |
+| Conv3D | Volumetric spatial patterns | Extremely High |
 | SwiGLU | LLM activations | High |
 | RNN | Sequential memory | Medium |
 
