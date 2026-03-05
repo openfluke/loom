@@ -1247,6 +1247,8 @@ func layerTypeToString(lt LayerType) string {
 		return "dense"
 	case LayerConv2D:
 		return "conv2d"
+	case LayerConv3D:
+		return "conv3d"
 	case LayerConv1D:
 		return "conv1d"
 	case LayerMultiHeadAttention:
@@ -1677,6 +1679,14 @@ func buildLayerConfig(def LayerDefinition) (LayerConfig, error) {
 	case "embedding":
 		// Use InitEmbeddingLayer to properly initialize weights
 		config = InitEmbeddingLayer(def.VocabSize, def.EmbeddingDim)
+
+	case "conv3d":
+		// Use InitConv3DLayer to properly initialize weights
+		config = InitConv3DLayer(
+			def.InputDepth, def.InputHeight, def.InputWidth, def.InputChannels,
+			def.KernelSize, def.Stride, def.Padding, def.Filters,
+			stringToActivation(def.Activation),
+		)
 
 	case "conv1d":
 		// Use InitConv1DLayer to properly initialize weights

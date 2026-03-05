@@ -29,6 +29,8 @@ type MultiPrecisionLayer struct {
 	// The bytes are interpreted according to DType
 	Kernel       string `json:"kernel,omitempty"`
 	Biases       string `json:"biases,omitempty"`
+	Conv3DKernel string `json:"conv3d_kernel,omitempty"`
+	Conv3DBias   string `json:"conv3d_bias,omitempty"`
 	QWeights     string `json:"q_weights,omitempty"`
 	KWeights     string `json:"k_weights,omitempty"`
 	VWeights     string `json:"v_weights,omitempty"`
@@ -777,6 +779,18 @@ func (n *Network) SaveModelWithDType(modelID string, dtype string) (string, erro
 			layerDef.InputWidth = layerConfig.InputWidth
 			layerDef.OutputHeight = layerConfig.OutputHeight
 			layerDef.OutputWidth = layerConfig.OutputWidth
+		case LayerConv3D:
+			layerDef.InputChannels = layerConfig.Conv3DInChannels
+			layerDef.Filters = layerConfig.Conv3DFilters
+			layerDef.KernelSize = layerConfig.Conv3DKernelSize
+			layerDef.Stride = layerConfig.Conv3DStride
+			layerDef.Padding = layerConfig.Conv3DPadding
+			layerDef.InputDepth = layerConfig.InputDepth
+			layerDef.InputHeight = layerConfig.InputHeight
+			layerDef.InputWidth = layerConfig.InputWidth
+			layerDef.OutputDepth = layerConfig.OutputDepth
+			layerDef.OutputHeight = layerConfig.OutputHeight
+			layerDef.OutputWidth = layerConfig.OutputWidth
 		case LayerConv1D:
 			layerDef.InputChannels = layerConfig.InputChannels
 			layerDef.Filters = layerConfig.Filters
@@ -872,6 +886,9 @@ func serializeLayerMultiPrecision(cfg *LayerConfig, dtype string, scale float64)
 	case LayerConv2D:
 		mp.Kernel = EncodeSliceWithDType(cfg.Kernel, dtype, scale)
 		mp.Biases = EncodeSliceWithDType(cfg.Bias, dtype, scale)
+	case LayerConv3D:
+		mp.Conv3DKernel = EncodeSliceWithDType(cfg.Conv3DKernel, dtype, scale)
+		mp.Conv3DBias = EncodeSliceWithDType(cfg.Conv3DBias, dtype, scale)
 	case LayerMultiHeadAttention:
 		mp.QWeights = EncodeSliceWithDType(cfg.QWeights, dtype, scale)
 		mp.KWeights = EncodeSliceWithDType(cfg.KWeights, dtype, scale)
@@ -1171,6 +1188,20 @@ func deserializeLayerMultiPrecision(def LayerDefinition, mp MultiPrecisionLayer,
 		cfg.OutputWidth = def.OutputWidth
 		cfg.Kernel = DecodeSliceWithDType(mp.Kernel, dtype, scale)
 		cfg.Bias = DecodeSliceWithDType(mp.Biases, dtype, scale)
+	case LayerConv3D:
+		cfg.Conv3DInChannels = def.InputChannels
+		cfg.Conv3DFilters = def.Filters
+		cfg.Conv3DKernelSize = def.KernelSize
+		cfg.Conv3DStride = def.Stride
+		cfg.Conv3DPadding = def.Padding
+		cfg.InputDepth = def.InputDepth
+		cfg.InputHeight = def.InputHeight
+		cfg.InputWidth = def.InputWidth
+		cfg.OutputDepth = def.OutputDepth
+		cfg.OutputHeight = def.OutputHeight
+		cfg.OutputWidth = def.OutputWidth
+		cfg.Conv3DKernel = DecodeSliceWithDType(mp.Conv3DKernel, dtype, scale)
+		cfg.Conv3DBias = DecodeSliceWithDType(mp.Conv3DBias, dtype, scale)
 	case LayerMultiHeadAttention:
 		cfg.DModel = def.DModel
 		cfg.NumHeads = def.NumHeads
@@ -1451,6 +1482,8 @@ func stringToLayerType(s string) LayerType {
 		return LayerDense
 	case "conv2d":
 		return LayerConv2D
+	case "conv3d":
+		return LayerConv3D
 	case "conv1d":
 		return LayerConv1D
 	case "multi_head_attention", "mha":

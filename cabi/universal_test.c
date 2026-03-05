@@ -395,6 +395,19 @@ const char* getLayerConfig(const char* layerType, const char* dtype) {
             "    {\"type\": \"dense\", \"activation\": \"sigmoid\", \"input_height\": 32, \"output_height\": 4}"
             "  ]"
             "}", dtype);
+    } else if (strcmp(layerType, "Conv3D") == 0) {
+        snprintf(buffer, sizeof(buffer),
+            "{"
+            "  \"dtype\": \"%s\","
+            "  \"batch_size\": 1,"
+            "  \"grid_rows\": 1,"
+            "  \"grid_cols\": 1,"
+            "  \"layers_per_cell\": 2,"
+            "  \"layers\": ["
+            "    {\"type\": \"conv3d\", \"input_depth\": 4, \"input_height\": 4, \"input_width\": 4, \"input_channels\": 1, \"kernel_size\": 2, \"stride\": 1, \"padding\": 0, \"filters\": 2, \"activation\": \"leaky_relu\"},"
+            "    {\"type\": \"dense\", \"activation\": \"sigmoid\", \"input_height\": 54, \"output_height\": 4}"
+            "  ]"
+            "}", dtype);
     } else if (strcmp(layerType, "Conv1D") == 0) {
         snprintf(buffer, sizeof(buffer),
             "{"
@@ -495,6 +508,7 @@ int getInputSize(const char* layerType) {
     if (strcmp(layerType, "RMSNorm") == 0) return 16;
     if (strcmp(layerType, "SwiGLU") == 0) return 32;
     if (strcmp(layerType, "SwiGLU") == 0) return 32;
+    if (strcmp(layerType, "Conv3D") == 0) return 64;
     if (strcmp(layerType, "Conv2D") == 0) return 16;
     if (strcmp(layerType, "Conv1D") == 0) return 8;
     if (strcmp(layerType, "Embedding") == 0) return 1; // Token index
@@ -579,10 +593,10 @@ int testLayerWithDType(const char* layerName, const char* dtype) {
 
 // Branch types that can be combined in parallel
 const char* allBranchTypes[] = {
-    "Dense", "Conv2D", "Conv1D", "MHA", "RNN", "LSTM",
+    "Dense", "Conv3D", "Conv2D", "Conv1D", "MHA", "RNN", "LSTM",
     "LayerNorm", "RMSNorm", "SwiGLU", "Softmax"
 };
-const int numBranchTypes = 10;
+const int numBranchTypes = 11;
 
 // Combine modes for parallel layers
 const char* allCombineModes[] = {"concat", "add", "avg"};
@@ -612,6 +626,13 @@ const char* getBranchLayerSnippet(const char* branchType, int outputSize) {
             "{\"type\": \"sequential\", \"branches\": ["
             "{\"type\": \"conv2d\", \"input_channels\": 1, \"filters\": 2, \"kernel_size\": 2, \"stride\": 1, \"padding\": 0, \"input_height\": 4, \"input_width\": 2, \"activation\": \"relu\"},"
             "{\"type\": \"dense\", \"activation\": \"relu\", \"input_height\": 6, \"output_height\": %d}"
+            "]}", outputSize);
+    } else if (strcmp(branchType, "Conv3D") == 0) {
+        // Conv3D [1,2,2,2,0] on 2x2x2 -> 1x1x1 -> 1 element * 2 filters = 2 elements, add Dense to get 8
+        snprintf(buffer, sizeof(buffer),
+            "{\"type\": \"sequential\", \"branches\": ["
+            "{\"type\": \"conv3d\", \"input_channels\": 1, \"filters\": 2, \"kernel_size\": 2, \"stride\": 1, \"padding\": 0, \"input_depth\": 2, \"input_height\": 2, \"input_width\": 2, \"activation\": \"relu\"},"
+            "{\"type\": \"dense\", \"activation\": \"relu\", \"input_height\": 2, \"output_height\": %d}"
             "]}", outputSize);
     } else if (strcmp(branchType, "Conv1D") == 0) {
         // Conv1D [1,2,2,1,0] on len 8 -> 7*2=14, add Dense to get 8
@@ -1011,6 +1032,45 @@ int testConv1DLayer() {
     FreeLoomString(output);
 
     printf("  ✅ PASSED: Conv1D Layer\n");
+    return 1;
+}
+
+int testConv3DLayer() {
+    printf("\n┌──────────────────────────────────────────────────────────────────────┐\n");
+    printf("│ Conv3D Layer                                                        │\n");
+    printf("└──────────────────────────────────────────────────────────────────────┘\n");
+
+    const char* config = 
+        "{"
+        "  \"batch_size\": 1,"
+        "  \"grid_rows\": 1,"
+        "  \"grid_cols\": 1,"
+        "  \"layers_per_cell\": 2,"
+        "  \"layers\": ["
+        "    {\"type\": \"conv3d\", \"input_depth\": 4, \"input_height\": 4, \"input_width\": 4, \"input_channels\": 1, \"kernel_size\": 2, \"stride\": 1, \"padding\": 0, \"filters\": 2, \"activation\": \"leaky_relu\"},"
+        "    {\"type\": \"dense\", \"activation\": \"sigmoid\", \"input_height\": 54, \"output_height\": 4}"
+        "  ]"
+        "}";
+
+    char* result = CreateLoomNetwork((char*)config);
+    if (json_has_error(result)) {
+        printf("  ❌ Failed: %s\n", result);
+        FreeLoomString(result);
+        return 0;
+    }
+    FreeLoomString(result);
+
+    float input[64];
+    for (int i = 0; i < 64; i++) input[i] = i * 0.01f;
+    
+    char* output = LoomForward(input, 64);
+    float out[4];
+    parse_float_array(output, out, 4);
+    printf("  ✓ Conv3D: [64] volume → [54] extracted features → Dense → [4]\n");
+    printf("  ✓ Output: [%.3f, %.3f, %.3f, %.3f]\n", out[0], out[1], out[2], out[3]);
+    FreeLoomString(output);
+
+    printf("  ✅ PASSED: Conv3D Layer\n");
     SafeFreeLoomNetwork();
     return 1;
 }
@@ -1957,6 +2017,7 @@ int main() {
     if (testSoftmaxVariants()) { TEST_PASS(); p3++; } else { TEST_FAIL(); f3++; }
     if (testEmbeddingLayer()) { TEST_PASS(); p3++; } else { TEST_FAIL(); f3++; }
     if (testConv1DLayer()) { TEST_PASS(); p3++; } else { TEST_FAIL(); f3++; }
+    if (testConv3DLayer()) { TEST_PASS(); p3++; } else { TEST_FAIL(); f3++; }
     if (testStepTween()) { TEST_PASS(); p3++; } else { TEST_FAIL(); f3++; }
     if (testSteppingAPI()) { TEST_PASS(); p3++; } else { TEST_FAIL(); f3++; }
     if (testResidualConnection()) { TEST_PASS(); p3++; } else { TEST_FAIL(); f3++; }

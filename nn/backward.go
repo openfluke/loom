@@ -489,6 +489,13 @@ func (n *Network) BackwardCPU(gradOutput []float32) ([]float32, time.Duration) {
 			// Update gradient for next layer
 			grad = gradInput
 
+		} else if config.Type == LayerConv3D {
+			input := n.activations[layerIdx]
+			gradInput, gradKernel, gradBias := conv3DBackwardCPU(grad, input, preAct, config, n.BatchSize)
+			n.kernelGradients[layerIdx] = gradKernel
+			n.biasGradients[layerIdx] = gradBias
+			grad = gradInput
+
 		} else if config.Type == LayerSoftmax {
 			// Softmax layer backward - NOT element-wise!
 			// Get the softmax output (which is stored in activations)
