@@ -1,8 +1,8 @@
 /*
- * LOOM v0.0.8 Complete Feature Test Suite
+ * LOOM v0.0.9 Complete Feature Test Suite
  * Comprehensive C ABI validation matching tva/muniversal_testing.go
  * 
- * Tests all v0.0.8 features:
+ * Tests all v0.0.9 features:
  *   Part 1: Core Features
  *   Part 2: Multi-Precision Serialization
  *   Part 3: Advanced Math Tests
@@ -2051,7 +2051,7 @@ int testInMemorySafeTensors() {
 
 int main() {
     printf("+----------------------------------------------------------------------+\n");
-    printf("|               LOOM v0.0.8 Complete C ABI Test Suite                  |\n");
+    printf("|               LOOM v0.0.9 Complete C ABI Test Suite                  |\n");
     printf("+----------------------------------------------------------------------+\n\n");
 
     // Section counters for detailed report
@@ -2275,7 +2275,7 @@ int main() {
         printf("\n- Total %d test(s) failed. See output above for details.\n", totalFailed);
         return 1;
     } else {
-        printf("\n* All tests passed! Ready for 0.0.8 release!\n");
+        printf("\n* All tests passed! Ready for 0.0.9 release!\n");
         return 0;
     }
 }
