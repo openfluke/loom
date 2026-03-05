@@ -195,6 +195,9 @@ type LayerWeights struct {
 
 	// KMeans weights
 	ClusterCenters []float32 `json:"cluster_centers,omitempty"`
+
+	// Embedding weights
+	EmbeddingWeights []float32 `json:"embedding_weights,omitempty"`
 }
 
 // SaveModel saves a single model to a file
@@ -413,6 +416,10 @@ func serializeBranchWeights(branches []LayerConfig) []LayerWeights {
 		case LayerSequential:
 			// Recursively serialize nested sequential layer weights
 			w.BranchWeights = serializeBranchWeights(branch.ParallelBranches)
+		case LayerEmbedding:
+			w.EmbeddingWeights = branch.EmbeddingWeights
+		case LayerResidual:
+			// Residual has no weights
 		case LayerConv1D:
 			w.Kernel = branch.Kernel
 			w.ConvBias = branch.Bias
@@ -622,8 +629,19 @@ func deserializeBranches(defs []LayerDefinition, weights []LayerWeights) ([]Laye
 				Conv1DStride:     def.Stride,
 				Conv1DPadding:    def.Padding,
 				InputHeight:      def.InputLength, // Map input_length to InputHeight for internal use
-				// OutputHeight calculated dynamically or from definition if available
-				// deserialization usually trusts correct input
+				Kernel:           w.Kernel,
+				Bias:             w.ConvBias,
+			}
+		case "embedding":
+			config = LayerConfig{
+				Type:             LayerEmbedding,
+				VocabSize:        def.VocabSize,
+				EmbeddingDim:     def.EmbeddingDim,
+				EmbeddingWeights: w.EmbeddingWeights,
+			}
+		case "residual":
+			config = LayerConfig{
+				Type: LayerResidual,
 			}
 		case "kmeans":
 			config = LayerConfig{
@@ -851,6 +869,14 @@ func (n *Network) SerializeModel(modelID string) (SavedModel, error) {
 					layerWeights.BranchWeights = serializeBranchWeights(subNet.Layers)
 				}
 			}
+
+		case LayerResidual:
+			// Residual has no weights or special config in LayerDefinition
+
+		case LayerEmbedding:
+			layerDef.VocabSize = layerConfig.VocabSize
+			layerDef.EmbeddingDim = layerConfig.EmbeddingDim
+			layerWeights.EmbeddingWeights = layerConfig.EmbeddingWeights
 		}
 
 		config.Layers = append(config.Layers, layerDef)
@@ -986,9 +1012,29 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 
 	config := saved.Config
 
+	// Determine input size from first layer configuration (matching BuildNetworkFromJSONWithDType)
+	inputSize := 1
+	if len(config.Layers) > 0 {
+		l0 := config.Layers[0]
+		if l0.InputHeight > 0 {
+			inputSize = l0.InputHeight
+		} else if l0.InputSize > 0 {
+			inputSize = l0.InputSize
+		} else if l0.InputChannels > 0 {
+			// Estimate for conv layers
+			if l0.InputHeight > 0 && l0.InputWidth > 0 {
+				inputSize = l0.InputChannels * l0.InputHeight * l0.InputWidth
+			} else if l0.InputLength > 0 {
+				inputSize = l0.InputChannels * l0.InputLength
+			} else {
+				inputSize = l0.InputChannels // Fallback
+			}
+		}
+	}
+
 	// Create network
 	network := NewNetwork(
-		config.BatchSize,
+		inputSize,
 		config.GridRows,
 		config.GridCols,
 		config.LayersPerCell,
@@ -1047,6 +1093,25 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				OutputWidth:   layerDef.OutputWidth,
 				Kernel:        layerWeights.Kernel,
 				Bias:          layerWeights.ConvBias,
+			}
+
+		case "conv3d":
+			layerConfig = LayerConfig{
+				Type:             LayerConv3D,
+				Activation:       stringToActivation(layerDef.Activation),
+				Conv3DInChannels: layerDef.InputChannels,
+				Conv3DFilters:    layerDef.Filters,
+				Conv3DKernelSize: layerDef.KernelSize,
+				Conv3DStride:     layerDef.Stride,
+				Conv3DPadding:    layerDef.Padding,
+				InputDepth:       layerDef.InputDepth,
+				InputHeight:      layerDef.InputHeight,
+				InputWidth:       layerDef.InputWidth,
+				OutputDepth:      layerDef.OutputDepth,
+				OutputHeight:     layerDef.OutputHeight,
+				OutputWidth:      layerDef.OutputWidth,
+				Conv3DKernel:     layerWeights.Conv3DKernel,
+				Conv3DBias:       layerWeights.Conv3DBias,
 			}
 
 		case "mha", "multi_head_attention":
@@ -1152,6 +1217,19 @@ func DeserializeModel(saved SavedModel) (*Network, error) {
 				GateBias:     layerWeights.GateBias,
 				UpBias:       layerWeights.UpBias,
 				DownBias:     layerWeights.DownBias,
+			}
+
+		case "embedding":
+			layerConfig = LayerConfig{
+				Type:             LayerEmbedding,
+				VocabSize:        layerDef.VocabSize,
+				EmbeddingDim:     layerDef.EmbeddingDim,
+				EmbeddingWeights: layerWeights.EmbeddingWeights,
+			}
+
+		case "residual":
+			layerConfig = LayerConfig{
+				Type: LayerResidual,
 			}
 
 		case "conv1d":

@@ -1121,9 +1121,29 @@ func LoadModelWithDType(jsonString string, modelID string, targetDType string) (
 func deserializeMultiPrecisionModel(saved SavedModel, targetDType string) (*Network, string, error) {
 	config := saved.Config
 
+	// Determine input size from first layer configuration (matching BuildNetworkFromJSONWithDType)
+	inputSize := 1
+	if len(config.Layers) > 0 {
+		l0 := config.Layers[0]
+		if l0.InputHeight > 0 {
+			inputSize = l0.InputHeight
+		} else if l0.InputSize > 0 {
+			inputSize = l0.InputSize
+		} else if l0.InputChannels > 0 {
+			// Estimate for conv layers
+			if l0.InputHeight > 0 && l0.InputWidth > 0 {
+				inputSize = l0.InputChannels * l0.InputHeight * l0.InputWidth
+			} else if l0.InputLength > 0 {
+				inputSize = l0.InputChannels * l0.InputLength
+			} else {
+				inputSize = l0.InputChannels // Fallback
+			}
+		}
+	}
+
 	// Create network
 	network := NewNetwork(
-		config.BatchSize,
+		inputSize,
 		config.GridRows,
 		config.GridCols,
 		config.LayersPerCell,
@@ -1256,15 +1276,12 @@ func deserializeLayerMultiPrecision(def LayerDefinition, mp MultiPrecisionLayer,
 		cfg.BiasH_g = DecodeSliceWithDType(mp.BiasG, dtype, scale)
 		cfg.BiasH_o = DecodeSliceWithDType(mp.BiasO, dtype, scale)
 	case LayerConv1D:
-		cfg.InputChannels = def.InputChannels
-		cfg.Filters = def.Filters
-		cfg.KernelSize = def.KernelSize
-		cfg.Stride = def.Stride
-		cfg.Padding = def.Padding
-		cfg.InputHeight = def.InputHeight
-		cfg.InputWidth = def.InputWidth
-		cfg.OutputHeight = def.OutputHeight
-		cfg.OutputWidth = def.OutputWidth
+		cfg.Conv1DInChannels = def.InputChannels
+		cfg.Conv1DFilters = def.Filters
+		cfg.Conv1DKernelSize = def.KernelSize
+		cfg.Conv1DStride = def.Stride
+		cfg.Conv1DPadding = def.Padding
+		cfg.InputHeight = def.InputLength // Map input_length to InputHeight for internal use
 		cfg.Kernel = DecodeSliceWithDType(mp.Kernel, dtype, scale)
 		cfg.Bias = DecodeSliceWithDType(mp.Biases, dtype, scale)
 	case LayerEmbedding:
