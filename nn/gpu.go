@@ -52,10 +52,25 @@ func (n *Network) InitGPU() error {
 		Queue:      q,
 		WorkgroupX: wgx,
 		release: func() {
-			dev.Release()
-			ad.Release()
-			inst.Release()
+			// (Assuming we capture the struct instance so we can release fields)
+			// Wait, in Go we can't cleanly self-reference inside the struct literal like this.
+			// Let's create the struct first, then assign the release function.
 		},
+	}
+
+	n.deviceInfo.release = func() {
+		if n.deviceInfo.forwardBufA != nil {
+			n.deviceInfo.forwardBufA.Release()
+		}
+		if n.deviceInfo.forwardBufB != nil {
+			n.deviceInfo.forwardBufB.Release()
+		}
+		if n.deviceInfo.backwardReadbackBuf != nil {
+			n.deviceInfo.backwardReadbackBuf.Release()
+		}
+		dev.Release()
+		ad.Release()
+		inst.Release()
 	}
 
 	return nil

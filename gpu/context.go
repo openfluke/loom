@@ -189,15 +189,22 @@ func GetContext() (*Context, error) {
 			info.Name, info.VendorName, info.VendorId, adapterTypeString(info.AdapterType))
 
 		var err error
-		// On Apple Silicon (Metal backend), request the device with a label so
-		// Metal can identify the command queue; nil descriptor otherwise.
-		var deviceDesc *wgpu.DeviceDescriptor
+		// Request the device with all supported limits from the adapter.
+		// This ensures we can allocate large buffers (like the 188MB LM head)
+		// without crashing the device request or being blocked by 128MB defaults.
+		limits := ctx.Adapter.GetLimits().Limits
+
+		deviceDesc := &wgpu.DeviceDescriptor{
+			RequiredLimits: &wgpu.RequiredLimits{
+				Limits: limits,
+			},
+		}
+
 		if selectedIsApple {
 			fmt.Println("🍎 Apple Silicon GPU detected — using Metal optimised device descriptor")
-			deviceDesc = &wgpu.DeviceDescriptor{
-				Label: "loom-apple-silicon",
-			}
+			deviceDesc.Label = "loom-apple-silicon"
 		}
+
 		ctx.Device, err = ctx.Adapter.RequestDevice(deviceDesc)
 		if err != nil {
 			initErr = err

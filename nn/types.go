@@ -514,6 +514,11 @@ type GPUDeviceInfo struct {
 	backwardPipelines []*wgpu.ComputePipeline
 	backwardBGLs      []*wgpu.BindGroupLayout
 
+	// Cached persistent buffers for ForwardGPU to avoid reallocation per-step
+	forwardBufA       *wgpu.Buffer
+	forwardBufB       *wgpu.Buffer
+	forwardCachedSize int
+
 	// Cached persistent buffers for BackwardGPU to avoid reallocation per-step
 	backwardGradBufA    *wgpu.Buffer
 	backwardGradBufB    *wgpu.Buffer

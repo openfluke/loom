@@ -467,9 +467,13 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 
 		isMHA := false
 		var mhaLayer *gpu.MHALayer
+		var mhaFP4Layer *gpu.FP4MHALayer
 		if mha, ok := l.(*gpu.MHALayer); ok {
 			isMHA = true
 			mhaLayer = mha
+		} else if mhaFP4, ok := l.(*gpu.FP4MHALayer); ok {
+			isMHA = true
+			mhaFP4Layer = mhaFP4
 		}
 
 		// Residual Start: Capture input of RMSNorm/LayerNorm (transformer-block skip connection).
@@ -492,7 +496,11 @@ func (n *Network) forwardGPU(input []float32) ([]float32, error) {
 		// 2. Dispatch Layer
 		if isMHA {
 			endPass() // MHA uses DispatchFull
-			mhaLayer.DispatchFull(cmdEnc)
+			if mhaLayer != nil {
+				mhaLayer.DispatchFull(cmdEnc)
+			} else if mhaFP4Layer != nil {
+				mhaFP4Layer.DispatchFull(cmdEnc)
+			}
 		} else {
 			ensurePass()
 			l.Dispatch(pass)

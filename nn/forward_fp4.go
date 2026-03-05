@@ -18,6 +18,12 @@ type FP4LayerWeights struct {
 	Gate   *PackedWeights // SwiGLU gate_proj weights
 	Up     *PackedWeights // SwiGLU up_proj weights
 	Down   *PackedWeights // SwiGLU down_proj weights
+
+	// MHA weights
+	Q *PackedWeights
+	K *PackedWeights
+	V *PackedWeights
+	O *PackedWeights
 }
 
 // BuildFP4Weights walks all layers of a Network and pre-quantises every
@@ -56,6 +62,33 @@ func (n *Network) BuildFP4Weights() map[int]*FP4LayerWeights {
 							Gate: NewPackedWeights(cfg.GateWeights, inputSize, intermediateSize),
 							Up:   NewPackedWeights(cfg.UpWeights, inputSize, intermediateSize),
 							Down: NewPackedWeights(cfg.DownWeights, intermediateSize, inputSize),
+						}
+						result[layerIdx] = fw
+					}
+
+				case LayerMultiHeadAttention:
+					// MHA projections: input size is DModel.
+					// Output sizes:
+					// Q: NumHeads * HeadDim
+					// K, V: NumKVHeads * HeadDim
+					// O: DModel * DModel
+
+					qOut := cfg.NumHeads * cfg.HeadDim
+					kvOut := cfg.NumKVHeads * cfg.HeadDim
+
+					if len(cfg.QWeights) > 0 && cfg.DModel > 0 {
+						fw := &FP4LayerWeights{}
+						if len(cfg.QWeights) > 0 {
+							fw.Q = NewPackedWeights(cfg.QWeights, cfg.DModel, qOut)
+						}
+						if len(cfg.KWeights) > 0 {
+							fw.K = NewPackedWeights(cfg.KWeights, cfg.DModel, kvOut)
+						}
+						if len(cfg.VWeights) > 0 {
+							fw.V = NewPackedWeights(cfg.VWeights, cfg.DModel, kvOut)
+						}
+						if len(cfg.OutputWeight) > 0 {
+							fw.O = NewPackedWeights(cfg.OutputWeight, cfg.DModel, cfg.DModel)
 						}
 						result[layerIdx] = fw
 					}

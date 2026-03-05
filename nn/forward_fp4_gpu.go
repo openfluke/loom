@@ -83,6 +83,27 @@ func (n *Network) WeightsFP4ToGPU(fp4w map[int]*FP4LayerWeights) error {
 			if buildErr != nil || gpuLayer == nil {
 				gpuLayer, layerOutputSize, buildErr = n.buildGPULayer(&l, outputSize, i)
 			}
+		case LayerMultiHeadAttention:
+			if fw != nil && fw.Q != nil && fw.O != nil {
+				gpuLayer, layerOutputSize, buildErr = n.buildFP4MHALayer(&l, fw, outputSize, i)
+				if buildErr == nil {
+					fp4Count++
+					fp4VRAM += nibbleVRAM(fw.Q) + nibbleVRAM(fw.K) + nibbleVRAM(fw.V) + nibbleVRAM(fw.O)
+
+					// F32 original VRAM calculation
+					qkvSize := l.DModel * l.DModel
+					if l.NumHeads != l.NumKVHeads {
+						qkvSize += 2 * (l.DModel * l.NumKVHeads * l.HeadDim)
+					} else {
+						qkvSize *= 3
+					}
+					oSize := l.DModel * l.DModel
+					f32VRAM += (qkvSize + oSize) * 4
+				}
+			}
+			if buildErr != nil || gpuLayer == nil {
+				gpuLayer, layerOutputSize, buildErr = n.buildGPULayer(&l, outputSize, i)
+			}
 		default:
 			gpuLayer, layerOutputSize, buildErr = n.buildGPULayer(&l, outputSize, i)
 		}
@@ -139,6 +160,8 @@ func (n *Network) WeightsFP4ToGPU(fp4w map[int]*FP4LayerWeights) error {
 				sm.BatchSize = n.BatchSize * seqMult
 			} else if mha, ok := gpuLayer.(*gpu.MHALayer); ok {
 				mha.BatchSize = n.BatchSize
+			} else if mhaFP4, ok := gpuLayer.(*gpu.FP4MHALayer); ok {
+				mhaFP4.BatchSize = n.BatchSize
 			} else if emb, ok := gpuLayer.(*gpu.EmbeddingLayer); ok {
 				emb.BatchSize = n.BatchSize
 			}
@@ -302,6 +325,45 @@ func buildFP4SwiGLULayer(l *LayerConfig, fw *FP4LayerWeights, prevOutSize, _ int
 		return nil, prevOutSize, nil
 	}
 	return &gpu.FP4SwiGLULayer{Spec: spec}, l.InputHeight, nil
+}
+
+func (n *Network) buildFP4MHALayer(l *LayerConfig, fw *FP4LayerWeights, prevOutSize, _ int) (gpu.GPULayer, int, error) {
+	if fw.Q == nil || fw.O == nil {
+		return nil, prevOutSize, nil
+	}
+
+	spec := gpu.FP4MHASpec{
+		DModel:       l.DModel,
+		NumHeads:     l.NumHeads,
+		NumKVHeads:   l.NumKVHeads,
+		SeqLen:       l.SeqLength,
+		HeadDim:      l.HeadDim,
+		QData:        fw.Q.Data,
+		QScales:      fw.Q.Scales,
+		KData:        nil,
+		KScales:      nil,
+		VData:        nil,
+		VScales:      nil,
+		OData:        fw.O.Data,
+		OScales:      fw.O.Scales,
+		QBias:        l.QBias,
+		KBias:        l.KBias,
+		VBias:        l.VBias,
+		OBias:        l.OutputBias,
+		MaxSeq:       l.SeqLength,
+		RoPEFreqBase: l.RoPEFreqBase,
+	}
+
+	if fw.K != nil {
+		spec.KData = fw.K.Data
+		spec.KScales = fw.K.Scales
+	}
+	if fw.V != nil {
+		spec.VData = fw.V.Data
+		spec.VScales = fw.V.Scales
+	}
+
+	return &gpu.FP4MHALayer{Spec: spec}, l.DModel, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

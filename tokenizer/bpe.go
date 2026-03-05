@@ -35,10 +35,10 @@ type PreTokenizer struct {
 // TokenizerJSON represents the HuggingFace tokenizer.json format
 type TokenizerJSON struct {
 	Model struct {
-		Type         string         `json:"type"`
-		Vocab        map[string]int `json:"vocab"`
-		Merges       []string       `json:"merges"`
-		ByteFallback bool           `json:"byte_fallback,omitempty"`
+		Type         string          `json:"type"`
+		Vocab        map[string]int  `json:"vocab"`
+		Merges       json.RawMessage `json:"merges"`
+		ByteFallback bool            `json:"byte_fallback,omitempty"`
 	} `json:"model"`
 	AddedTokens []struct {
 		ID      int    `json:"id"`
@@ -86,9 +86,22 @@ func LoadFromBytes(data []byte) (*Tokenizer, error) {
 		t.ReverseVocab[id] = token
 	}
 
-	// Parse merges
-	t.Merges = make([]MergePair, len(tokJSON.Model.Merges))
-	for i, merge := range tokJSON.Model.Merges {
+	// Parse merges flexibly (handles both []string and [][]string)
+	var stringMerges []string
+	if err := json.Unmarshal(tokJSON.Model.Merges, &stringMerges); err != nil {
+		// Try [][]string fallback
+		var stringSliceMerges [][]string
+		if err2 := json.Unmarshal(tokJSON.Model.Merges, &stringSliceMerges); err2 == nil {
+			for _, pair := range stringSliceMerges {
+				if len(pair) == 2 {
+					stringMerges = append(stringMerges, pair[0]+" "+pair[1])
+				}
+			}
+		}
+	}
+
+	t.Merges = make([]MergePair, len(stringMerges))
+	for i, merge := range stringMerges {
 		parts := strings.Split(merge, " ")
 		if len(parts) != 2 {
 			continue

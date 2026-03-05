@@ -778,26 +778,46 @@ func (n *Network) ForwardGPU(input []float32) ([]float32, time.Duration, error) 
 		bgls = n.deviceInfo.forwardBGLs
 	}
 
-	// Create buffers
-	bufA, err := dev.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: "nn_fwd_A",
-		Size:  bytes,
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	defer bufA.Release()
+	// Create or reuse buffers
+	var bufA, bufB *wgpu.Buffer
 
-	bufB, err := dev.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: "nn_fwd_B",
-		Size:  bytes,
-		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return nil, 0, err
+	if n.deviceInfo.forwardBufA == nil || n.deviceInfo.forwardCachedSize < maxFloatSize {
+		// Need to (re)allocate buffers
+		if n.deviceInfo.forwardBufA != nil {
+			n.deviceInfo.forwardBufA.Release()
+		}
+		if n.deviceInfo.forwardBufB != nil {
+			n.deviceInfo.forwardBufB.Release()
+		}
+
+		var errA, errB error
+		bufA, errA = dev.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: "nn_fwd_A",
+			Size:  bytes,
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if errA != nil {
+			return nil, 0, errA
+		}
+
+		bufB, errB = dev.CreateBuffer(&wgpu.BufferDescriptor{
+			Label: "nn_fwd_B",
+			Size:  bytes,
+			Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst | wgpu.BufferUsageCopySrc,
+		})
+		if errB != nil {
+			bufA.Release()
+			return nil, 0, errB
+		}
+
+		n.deviceInfo.forwardBufA = bufA
+		n.deviceInfo.forwardBufB = bufB
+		n.deviceInfo.forwardCachedSize = maxFloatSize
+	} else {
+		// Reuse cached buffers
+		bufA = n.deviceInfo.forwardBufA
+		bufB = n.deviceInfo.forwardBufB
 	}
-	defer bufB.Release()
 
 	readback, err := dev.CreateBuffer(&wgpu.BufferDescriptor{
 		Label: "nn_fwd_RB",
