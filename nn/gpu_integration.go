@@ -102,6 +102,8 @@ func (n *Network) WeightsToGPU() error {
 				// Use reflection-like check or just cast popular ones
 				if c2d, ok := gpuLayer.(*gpu.Conv2DLayer); ok {
 					c2d.BatchSize = n.BatchSize
+				} else if c3d, ok := gpuLayer.(*gpu.Conv3DLayer); ok {
+					c3d.BatchSize = n.BatchSize
 				} else if c1d, ok := gpuLayer.(*gpu.Conv1DLayer); ok {
 					c1d.BatchSize = n.BatchSize
 				} else if mha, ok := gpuLayer.(*gpu.MHALayer); ok {
@@ -920,6 +922,67 @@ func (n *Network) buildGPULayer(l *LayerConfig, prevOutputSize int, idx int) (gp
 			Activation:  "relu",
 		}
 		return &gpu.Conv2DLayer{Spec: spec}, outH * outW * filters, nil
+
+	case LayerConv3D:
+		inChannels := l.Conv3DInChannels
+		if inChannels <= 0 {
+			inChannels = 3
+		}
+		filters := l.Conv3DFilters
+		if filters <= 0 {
+			filters = 8
+		}
+		kernelSize := l.Conv3DKernelSize
+		if kernelSize <= 0 {
+			kernelSize = 3
+		}
+		stride := l.Conv3DStride
+		if stride < 1 {
+			stride = 1
+		}
+
+		inD := 4
+		inH := 8
+		inW := 8
+
+		if l.InputDepth > 0 && l.InputHeight > 0 && l.InputWidth > 0 {
+			inD = l.InputDepth
+			inH = l.InputHeight
+			inW = l.InputWidth
+		}
+
+		outD := (inD+2*l.Conv3DPadding-kernelSize)/stride + 1
+		outH := (inH+2*l.Conv3DPadding-kernelSize)/stride + 1
+		outW := (inW+2*l.Conv3DPadding-kernelSize)/stride + 1
+
+		weightSize := filters * inChannels * kernelSize * kernelSize * kernelSize
+		weights := l.Conv3DKernel
+		if len(weights) != weightSize {
+			weights = make([]float32, weightSize)
+			for i := range weights {
+				weights[i] = float32(i%100) * 0.01
+			}
+		}
+
+		bias := l.Conv3DBias
+		if len(bias) != filters {
+			bias = make([]float32, filters)
+		}
+
+		spec := gpu.Conv3DSpec{
+			InputDepth:  inD,
+			InputWidth:  inW,
+			InputHeight: inH,
+			InChannels:  inChannels,
+			OutChannels: filters,
+			KernelSize:  kernelSize,
+			Stride:      stride,
+			Padding:     l.Conv3DPadding,
+			Weights:     weights,
+			Bias:        bias,
+			Activation:  "relu",
+		}
+		return &gpu.Conv3DLayer{Spec: spec}, outD * outH * outW * filters, nil
 
 	case LayerMultiHeadAttention:
 		headDim := 0
