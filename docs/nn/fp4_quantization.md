@@ -109,8 +109,26 @@ To reconstruct the weights:
 Currently, FP4 quantization is exclusively supported for:
 - **Dense Layer** (`gpu.FP4DenseLayer`)
 - **SwiGLU Layer** (`gpu.FP4SwiGLULayer`)
+- **Multi-Head Attention** (`gpu.FP4MHALayer`) - FP4 weight projections with FP32 KV-Cache for quality.
 
-Other layers like Convolution, Multi-Head Attention, and LayerNorm remain in FP32 because they either contain too few weights to justify the quantization cost or are highly sensitive to precision loss.
+### Scaling & High-Vocabulary Models
+
+Large models (e.g., Qwen2.5-0.5B with 151k vocab) often exceed standard WebGPU buffer limits (128MB). Loom handles this by:
+1. **Adaptive Limit Requests**: Dynamically requesting the maximum supported buffer binding size from the adapter (up to 1GB).
+2. **Resilient Fallback**: Automatically falling back to default limits if high-request is rejected, ensuring the application remains functional.
+3. **Numerical Stability**: Implementing stable softmax with exponential clamping (`exp(clamp(score, -80, 0))`) to prevent repetition loops and NaNs in larger models.
+
+---
+
+## Performance Benchmarks
+
+Inference speeds using FP4 E2M1 on a Discrete GPU:
+
+| Model | Parameters | Vocab | Tokens/s | VRAM Footprint |
+| :--- | :--- | :--- | :--- | :--- |
+| **SmolLM2-135M** | 135M | 49k | 10.8 t/s | ~0.8 GB |
+| **SmolLM2-360M** | 360M | 49k | 7.0 t/s | ~1.5 GB |
+| **Qwen2.5-0.5B** | 490M | 151k | 5.1 t/s | ~1.9 GB |
 
 ---
 

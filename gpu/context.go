@@ -79,19 +79,14 @@ func GetContext() (*Context, error) {
 
 			score := 0
 			name := strings.ToLower(info.Name)
-			// info.AdapterType: 0=Other, 1=Integrated, 2=Discrete, 3=Virtual, 4=CPU
 
-			// 1. Preference override
 			if preferredAdapter != "" && strings.Contains(name, preferredAdapter) {
-				score += 10000 // Massive boost for manual selection
+				score += 10000
 			}
 
-			// 2. Hardware Tiers
 			isDiscrete := info.AdapterType == wgpu.AdapterTypeDiscreteGPU
 			isIntegrated := info.AdapterType == wgpu.AdapterTypeIntegratedGPU
 
-			// Detect software/fallback adapters (WARP / Mesa / software rasterizers).
-			// 0x10005 = Mesa, 0x1414 = Microsoft (often Basic Render Driver / WARP).
 			isFake := info.VendorId == 0x10005 ||
 				info.VendorId == 0x1414 ||
 				strings.Contains(name, "llvmpipe") ||
@@ -99,23 +94,18 @@ func GetContext() (*Context, error) {
 				strings.Contains(name, "warp") ||
 				strings.Contains(name, "basic render")
 
-			// Detect Apple Silicon GPU.
-			// On macOS/Metal, Apple GPUs report as IntegratedGPU with VendorId=0 and
-			// Name="Apple" (or blank). They are high-performance unified-memory GPUs
-			// and should be ranked above generic integrated (Intel) but below discrete.
 			isApple := strings.Contains(name, "apple") ||
 				(isIntegrated && info.VendorId == 0 && info.DeviceId == 0)
 
 			if isDiscrete && !isFake {
-				score += 1000 // Real Discrete GPU (Nvidia, AMD)
+				score += 1000
 			}
 			if isApple {
-				score += 700 // Apple Silicon GPU (Metal) — above plain integrated
+				score += 700
 			} else if isIntegrated {
-				score += 500 // Integrated GPU (Intel, etc.) - Better than software!
+				score += 500
 			}
 
-			// Vendor specifics
 			if strings.Contains(name, "nvidia") || info.VendorId == 0x10DE {
 				score += 200
 			}
@@ -123,7 +113,6 @@ func GetContext() (*Context, error) {
 				score += 100
 			}
 
-			// Penalize Fake/Software
 			if isFake {
 				score -= 1000
 			}
@@ -148,17 +137,15 @@ func GetContext() (*Context, error) {
 			ctx.Adapter = bestAdapter
 		}
 
-		// Helper to try init with an adapter option
 		tryInit := func(opts *wgpu.RequestAdapterOptions) error {
 			if ctx.Adapter != nil {
-				return nil // Already found
+				return nil
 			}
 			var err error
 			ctx.Adapter, err = ctx.Instance.RequestAdapter(opts)
 			return err
 		}
 
-		// 1. Try High Performance (if not found above)
 		if ctx.Adapter == nil {
 			initErr = tryInit(&wgpu.RequestAdapterOptions{
 				PowerPreference: wgpu.PowerPreferenceHighPerformance,
@@ -167,7 +154,6 @@ func GetContext() (*Context, error) {
 
 		if initErr != nil && ctx.Adapter == nil {
 			fmt.Printf("High performance adapter failed: %v. Falling back...\n", initErr)
-			// 2. Try Low Power / Default
 			initErr = tryInit(&wgpu.RequestAdapterOptions{
 				PowerPreference: wgpu.PowerPreferenceLowPower,
 			})
@@ -189,10 +175,27 @@ func GetContext() (*Context, error) {
 			info.Name, info.VendorName, info.VendorId, adapterTypeString(info.AdapterType))
 
 		var err error
-		// Request the device with all supported limits from the adapter.
-		// This ensures we can allocate large buffers (like the 188MB LM head)
-		// without crashing the device request or being blocked by 128MB defaults.
-		limits := ctx.Adapter.GetLimits().Limits
+		// ─────────────────────────────────────────────────────────────────────────────
+		// LIMIT REQUEST STRATEGY
+		// ─────────────────────────────────────────────────────────────────────────────
+		// Large models like Qwen2.5-0.5B need >512MB for their LM head.
+		// Blindly cloning all limits can fail if the driver is pickier than it reports.
+		// Instead, we specifically target the limits we know we need.
+
+		adapterLimits := ctx.Adapter.GetLimits().Limits
+		Log("Adapter Max Storage Buffer Binding: %d MB", adapterLimits.MaxStorageBufferBindingSize/(1024*1024))
+
+		// 1. Build a baseline from adapter limits
+		limits := adapterLimits
+
+		// 2. Cap buffer limits at 1GB unless adapter is smaller (safety measure)
+		// Many NVIDIA drivers report 4GB+, but sometimes requesting the absolute max fails.
+		if limits.MaxStorageBufferBindingSize > 1024*1024*1024 {
+			limits.MaxStorageBufferBindingSize = 1024 * 1024 * 1024
+		}
+		if limits.MaxBufferSize > 1024*1024*1024 {
+			limits.MaxBufferSize = 1024 * 1024 * 1024
+		}
 
 		deviceDesc := &wgpu.DeviceDescriptor{
 			RequiredLimits: &wgpu.RequiredLimits{
@@ -205,10 +208,16 @@ func GetContext() (*Context, error) {
 			deviceDesc.Label = "loom-apple-silicon"
 		}
 
+		// Try with high limits
 		ctx.Device, err = ctx.Adapter.RequestDevice(deviceDesc)
 		if err != nil {
-			initErr = err
-			return
+			fmt.Printf("⚠️  High GPU limits request failed: %v. Falling back to default limits (this may break large models)\n", err)
+			// Try with default limits (nil descriptor)
+			ctx.Device, err = ctx.Adapter.RequestDevice(nil)
+			if err != nil {
+				initErr = err
+				return
+			}
 		}
 
 		ctx.Queue = ctx.Device.GetQueue()
