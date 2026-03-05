@@ -104,17 +104,17 @@ GOOS=android GOARCH=$GOARCH CGO_ENABLED=1 CC=$CC go build -buildmode=c-shared -o
 
 echo "✓ Shared library built: $OUTPUT_DIR/$LIB_NAME"
 
-# Build C benchmark
-echo "Building simple_bench..."
-$CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/simple_bench" simple_bench.c -L"$OUTPUT_DIR" -lloom -lm -pie
+# Build universal_test
+echo "Building universal_test..."
+$CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/universal_test" universal_test.c -L"$OUTPUT_DIR" -lloom -lm -pie
 
-echo "✓ Benchmark compiled: $OUTPUT_DIR/simple_bench"
+echo "✓ Universal test compiled: $OUTPUT_DIR/universal_test"
 
-# Build test18_adaptation
-echo "Building test18_adaptation..."
-$CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/test18_adaptation" test18_adaptation.c -L"$OUTPUT_DIR" -lloom -lm -pie
+# Build quick_talk REPL
+echo "Building quick_talk..."
+$CC -I"$OUTPUT_DIR" -o "$OUTPUT_DIR/quick_talk" quick_talk.c -L"$OUTPUT_DIR" -lloom -lm -pie
 
-echo "✓ Test18 compiled: $OUTPUT_DIR/test18_adaptation"
+echo "✓ quick_talk compiled: $OUTPUT_DIR/quick_talk"
 echo ""
 
 # Show files
@@ -124,8 +124,8 @@ echo ""
 echo "=== Build Complete ==="
 echo "Deploy to Android device:"
 echo "  adb push $OUTPUT_DIR/libloom.so /data/local/tmp/"
-echo "  adb push $OUTPUT_DIR/simple_bench /data/local/tmp/"
-echo "  adb push $OUTPUT_DIR/test18_adaptation /data/local/tmp/"
-echo "  adb shell 'cd /data/local/tmp && chmod +x simple_bench && ./simple_bench'"
-echo "  adb shell 'cd /data/local/tmp && chmod +x test18_adaptation && ./test18_adaptation'"
+echo "  adb push $OUTPUT_DIR/universal_test /data/local/tmp/"
+echo "  adb push $OUTPUT_DIR/quick_talk /data/local/tmp/"
+echo "  adb shell 'cd /data/local/tmp && chmod +x universal_test && ./universal_test'"
+echo "  adb shell 'cd /data/local/tmp && chmod +x quick_talk && ./quick_talk'"
 
