@@ -1,5 +1,8 @@
 # Quick Reference
 
+> [!CAUTION]
+> **ALPHA STATUS**: Loom is in Alpha. This reference covers APIs that are functionally stable but may undergo naming adjustments as we finalize the Edge-First roadmap.
+
 Concise reference for common operations in the `nn` package — Loom's **Deterministic Neural Virtual Machine** core.
 
 ---

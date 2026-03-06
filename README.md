@@ -2,6 +2,10 @@
 
 **"The SQLite of AI" — A Polyglot Neural VM with Bit-Exact Reproducibility**
 
+> [!CAUTION]
+> **Project Status: ALPHA**
+> Loom is currently in Alpha. Core APIs and file formats are stable, but the orchestration layer is undergoing a strategic pivot toward Edge-First efficiency. High-performance training kernels are still under refinement.
+
 Loom is a **Deterministic Neural Virtual Machine (DNVM)** — a portable execution environment for neural networks that guarantees **bitwise-identical results** across all platforms, backends, and language bindings. It combines a JIT compiler (generating WebGPU shaders at runtime) with a pure Go CPU backend to deliver the same numerical results everywhere:
 
 *   **Portable IR:** JSON network configs are your "bytecode" — define once, execute anywhere.
@@ -31,6 +35,7 @@ Models trained in **any platform** work instantly in all others. **Bit-for-bit i
 | **C#/.NET** | [NuGet](https://www.nuget.org/packages/Welvet) | `dotnet add package Welvet` |
 | **TypeScript/Node** | [NPM](https://www.npmjs.com/package/@openfluke/welvet) | `npm install @openfluke/welvet` |
 | **Browser** | WASM | `import { init } from "@openfluke/welvet"` |
+| **Java / Dart** | *Roadmap* | [Full Roadmap →](docs/version.md) |
 
 ### Supported Platforms
 
@@ -160,7 +165,7 @@ Unlike typical ML runtimes that disclaim cross-platform reproducibility, Loom en
 ### Key Limitations
 
 - **Ecosystem Maturity**: No central "Model Zoo" or pip-installable convenience; relies on loading external checkpoints.
-- **GPU Support**: **WebGPU** acceleration is implemented (Dense, Conv2D, MHA) but is **beta/experimental** and less stable than CuDNN/CUDA.
+- **GPU Support**: **WebGPU** acceleration is implemented (Dense, Conv2D, MHA, SwiGLU) with native **FP4/NVFP4** support. While production-ready for many inference tasks, training kernels are still under refinement.
 - **Operator Coverage**: While "Deep" support is good (MHA, LSTM), "Broad" support (e.g., 3D Conv, Deformable Attn, FFTs) is missing compared to SciPy/JAX.
 - **Math Backend**: Relies on custom explicit forward/backward passes rather than a general-purpose symbolic autograd graph.
 
@@ -216,9 +221,13 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 
 ## What's New
 
+> 🎉 **Universal Roadmap Milestone**: Reached **70.0% completion (v0.70.0)** against the universal AI framework roadmap.
+
+> ⚡ **Extreme Quantization**: Native bitwise FP4 (E2M1) and NVFP4 support for both CPU and GPU. Achieves massive memory savings with specialized bit-packed kernels.
+
 > 🧠 **Recursive Neuro-Symbolic Architecture**: The differentiable `KMeansLayer` enables models to learn hierarchical concept taxonomies. Perfect for OOD detection and robust classification. See `docs/research_paper_7_recursive_neuro_symbolic.md`.
 
-> 🎉 **Transformer Inference**: SmolLM2-135M-Instruct runs entirely in browser WASM with pure Go implementation.
+> 🎉 **Transformer Inference**: Qwen-0.5B, SmolLM2-360M, and SmolLM2-135M run entirely in browser WASM with pure Go and WebGPU implementation.
 
 > 🤯 **Grid Softmax = Native MoE**: Mathematically proven equivalent to PyTorch MoE with 97.1% loss reduction. See `examples/moe_proof_demo.go`.
 
@@ -228,7 +237,7 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 
 > 📦 **Recursive Safetensors**: Full support for deeply nested architectures (MoE, Sequential, Parallel) with 100% bitwise save/load consistency. Verified with `tva/testing/safetensors_recursive.go`.
 
-> 🔢 **Numerical Type Benchmarking**: Compare network behavior across 13 numerical types (F64, F32, F16, BF16, F4, I64, I32, I16, I8, U64, U32, U16, U8) with in-memory quantization. WASM-compatible for browser deployment testing.
+> 🔢 **Numerical Type Benchmarking**: Compare network behavior across 15 numerical types (F64, F32, F16, BF16, F8, F4, NVFP4, I64, I32, I16, I8, U64, U32, U16, U8) with in-memory quantization. WASM-compatible for browser deployment testing.
 
 > 🧪 **MNIST Verification**: End-to-end demo `tva/demo/conv2d-mnist/main.go` proving exact CPU/GPU consistency, training convergence, and multi-precision save/load integrity.
 
@@ -326,6 +335,7 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 | **All Layers** | **Float32** | ✅ | ✅ | ✅ | ✅ (Float64) | ✅ |
 | (Dense, Conv, | **Float64 (High Prec)** | ✅ **Native** | ✅ | ✅ | ✅ | ✅ |
 | RNN, Attn) | **Float16 / BF16** | ⚠️ (Storage) | ✅ (XLA) | ❌ | ❌ | ✅ |
+| | **FP4 / NVFP4** | ✅ **Native** | ❌ | ❌ | ❌ | ❌ |
 | | **Int8 (Training)** | ✅ **Native** | ❌ | ❌ | ❌ | ⚠️ (QAT Wrapper) |
 | | **Int8 (Inference)** | ✅ | ❌ | ❌ | ❌ | ✅ (Quant) |
 | | **Int16, Int32, Int64** | ✅ **Native** | ✅ (XLA) | ⚠️ (Tensor) | ❌ | ❌ (Tensor Only) |
@@ -363,6 +373,7 @@ Benchmark methodology and results live in [docs/step_tween_assessment.md](docs/s
 | KMeans | `kmeans` | Differentiable recursive clustering layer |
 | Softmax | `softmax` | 10 variants (Standard, Grid, Hierarchical, Temperature, Gumbel, Masked, Sparsemax, Entmax, Adaptive, Mixture) |
 | Embedding | `embedding` | Token embedding |
+| RoPE | `rope` | Rotary Position Embeddings (Go & WebGPU Optimized) |
 | Parallel | `parallel` | Branching with 6 combine modes (add, concat, multiply, average, grid_scatter, filter) |
 | Sequential | `sequential` | Grouped sub-layers |
 
@@ -615,7 +626,7 @@ Loom includes a rigorous verification suite in `tva/muniversal_testing.go` and `
 | **Part 7: In-Memory/WASM** | 144 | SafeTensors round-trip without filesystem (11 layers × 13 dtypes) |
 
 > [!NOTE]
-> **GPU Acceleration Limits:** As of v0.0.8, WebGPU acceleration is enabled for standard `Forward/Backward` passes. 
+> **GPU Acceleration Limits:** As of v0.70.0, WebGPU acceleration is enabled for standard `Forward/Backward` passes including native FP4 MHA, Dense, and SwiGLU. 
 > The structural API `nn/step_forward.go` (Step-based execution), `nn/tween.go` (Neural Tweening), and `nn/kmeans_layer.go` (K-Means) currently run on **CPU only**.
 >
 > **Browser Testing (v0.3.0):** The universal test suite can now be run directly in the browser with full parity. See `typescript/README.md` for details on running `serve.py`.

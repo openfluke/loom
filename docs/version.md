@@ -107,25 +107,25 @@ Our semantic version number directly reflects our progress against this absolute
 
 ---
 
-## 3. Distributed Infrastructure & Scaling
+## 3. Edge-First Orchestration & Efficiency
 
-### 3.1 Network Communication Collectives
-- [ ] NCCL/Gloo-equivalent backend orchestration
-- [ ] All-Reduce & All-Gather primitives
-- [ ] Reduce-Scatter
+### 3.1 Device-Aware Compute
+- [ ] Thermal-Throttling Aware Scheduling (Dynamic load balancing)
+- [ ] Power-Profile Execution Modes (Low-power / Balanced / Performance)
+- [ ] Background Task Lifecycle Management (Mobile OS compatibility)
 
-### 3.2 3D Model Parallelism
-- [ ] Data Parallelism (DP) - Micro-batch sharding
-- [ ] Tensor Parallelism (TP) - Intra-layer GPU sharding
-- [ ] Pipeline Parallelism (PP) - Splitting a model's layers across separate physical machines
+### 3.2 Memory & I/O Optimization
+- [ ] Unified Memory (UMA) Buffer Pinning (Apple Silicon/Snapdragon optimizations)
+- [ ] Memory-Mapped (mmap) Model Weights (Zero-copy loading)
+- [ ] Circular/Evicting KV-Cache (VRAM-efficient infinite context)
+- [ ] Asynchronous IO/Compute Overlap (UI responsiveness)
 
-### 3.3 Advanced Memory Management
-- [ ] Fully Sharded Data Parallel (FSDP)
-- [ ] Gradient Checkpointing / Activation Recomputation
-- [ ] Asynchronous Memory Transfers (Overlapping compute with network latency)
-- [ ] Unified Memory Architecture (UMA) awareness
+### 3.3 Hardware Acceleration & Adaptation
+- [ ] NPU / Apple Neural Engine (ANE) / NNAPI Backend support
+- [ ] On-Device Low-Rank Adaptation (LoRA-lite fine-tuning)
+- [ ] Low-Bit Inference Kernels (Non-standard 2-bit/1-bit targets)
 
-**Distributed Progress: 0 / 10**
+**Edge Optimization Progress: 0 / 10**
 
 ---
 
@@ -228,7 +228,7 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 | :--- | :---: | :---: |
 | 1. Numerical Core | 20 | 32 |
 | 2. Architectural Layers | 28 | 35 |
-| 3. Distributed Scaling | 0 | 10 |
+| 3. Edge Orchestration | 0 | 10 |
 | 4. Training Automation | 12 | 16 |
 | 5. Deployment Ecosystem | 16 | 22 |
 | 6. LLM & Tokenization | 15 | 15 |
@@ -236,5 +236,5 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 
 ### **Completion Ratio: 70.0%**
 
-## **Version 0.70.0**
-*(Status: Mathematical tensor representations and local architectural structures are robustly established up to transformer scale. Advanced deployment bindings are stable. Numerical precision support is exceptionally deep, with native FP4 acceleration on both CPU (Dense/SwiGLU) and GPU (MHA/RoPE). Calibration via observer statistics is native. Scaling logic and Distributed pipeline/NAS orchestrations are the final frontier.)*
+## **Version 0.70.0 (Alpha)**
+*(Status: Mathematical tensor representations and local architectural structures are robustly established up to transformer scale. Advanced deployment bindings are stable. Numerical precision support is exceptionally deep, with native FP4 acceleration on both CPU (Dense/SwiGLU) and GPU (MHA/RoPE). Calibration via observer statistics is native. Loom remains in **Alpha** as we transition from a general-purpose backend to specialized **Edge-First** orchestration (Thermal-Awareness, UMA, mmap) required for mobile and wearable deployment.)*

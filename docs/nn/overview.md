@@ -1,5 +1,8 @@
 # Understanding the Neural Network Package
 
+> [!CAUTION]
+> **ALPHA STATUS**: This package is under active development. While the core "Neural VM" math is stable, the high-level orchestration APIs are subject to change during the pivot to Edge-First efficiency.
+
 This document explains how Loom's neural network system actually works—not just what functions to call, but what's really happening under the hood when you build and train a network.
 
 ---
