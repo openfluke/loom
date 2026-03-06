@@ -16,34 +16,39 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] FP16 (Half Precision)
 - [x] BF16 (Brain Float - ML Standard)
 
-### 1.2 Extreme Quantization Types
+### 1.2 Low-Precision & Bit-Level Types
 - [x] FP8 E4M3 (Activations / Weights)
 - [ ] FP8 E5M2 (Gradients / High Dynamic Range)
-- [x] FP4 / E2M1 (Extreme Compression)
+- [x] FP4 E2M1 (Standard Bitwise Extreme Compression)
+- [x] NVFP4 (NVIDIA-flavor FP4 Compatibility)
 
-### 1.3 Integer & Unsigned Types
-- [x] INT64, INT32, INT16
-- [x] INT8 (Inference Operations)
-- [x] INT4 (Quantized Weights)
+### 1.3 Integer & Fixed-Point Infrastructure
+- [x] INT64, INT32, INT16, INT8
 - [x] UINT64, UINT32, UINT16, UINT8
+- [x] INT4 / UINT4 (Packed Weight Storage)
+- [x] Bit-Packed Nibble Tensors (4-bit representation)
+- [x] Quantization-Aware Scaling (Fixed-point factor logic)
 
 ### 1.4 Complex & Hypercomplex Mathematics
 - [ ] Complex64 & Complex128 Tensors
 - [ ] Quaternion Neural Networks (4D Associative Algebras)
 - [ ] Octonion / Cayley-Dickson Algebra Support
 
-### 1.5 Quantization & Precision Mechanics
-- [ ] Quantization-Aware Training (QAT) 
-- [ ] Post-Training Quantization (PTQ) conversion passes
-- [ ] Straight-Through Estimator (STE) for discrete non-differentiable rounding
-- [ ] Automatic Loss Scaling (Preventing FP16 numerical underflow)
+### 1.5 Quantization & Numerical Deep-Dive
+- [x] Bitwise MAC (Multiply-Accumulate) for E2M1 CPU
+- [x] Bitwise MatMul for E2M1 GPU (WebGPU)
+- [x] On-the-fly Max/Min Statistics Collection (Layer Observers)
+- [x] Dynamic Scale Calibration (Row-wise quantization)
+- [ ] Quantization-Aware Training (QAT) Fake-Quant Layers
+- [x] Post-Training Quantization (PTQ) weight conversion passes
+- [ ] Automatic Loss Scaling (Preventing numerical underflow)
 
 ### 1.6 Automatic Differentiation Calculus
-- [x] Real-valued Automatic Differentiation (Forward/Backward Propagation via Chain Rule)
+- [x] Real-valued Automatic Differentiation
 - [ ] Complex-valued Differentiation (Wirtinger Calculus)
 - [ ] Hypercomplex Differentiation (Generalized HR Calculus)
 
-**Core Engine Progress: 11 / 21**
+**Numerical Progress: 20 / 32**
 
 ---
 
@@ -221,17 +226,15 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 
 | Category | Completed | Total |
 | :--- | :---: | :---: |
-| 1. Core Engine | 11 | 21 |
+| 1. Numerical Core | 20 | 32 |
 | 2. Architectural Layers | 28 | 35 |
 | 3. Distributed Scaling | 0 | 10 |
 | 4. Training Automation | 12 | 16 |
 | 5. Deployment Ecosystem | 16 | 22 |
 | 6. LLM & Tokenization | 15 | 15 |
-| **GRAND TOTAL** | **82** | **119** |
+| **GRAND TOTAL** | **91** | **130** |
 
-### **Completion Ratio: 68.9%**
+### **Completion Ratio: 70.0%**
 
-Based on supporting 82 out of the 119 foundational pillars of the AI industry, we are technically at:
-
-## **Version 0.68.9**
-*(Status: Mathematical tensor representations and local architectural structures are robustly established up to transformer scale. Advanced deployment bindings are stable. Introspection, Evaluation Heatmaps, and Differentiable Clustering are now first-class core features. Scaling logic and Distributed pipeline or NAS orchestrations are the final frontier.)*
+## **Version 0.70.0**
+*(Status: Mathematical tensor representations and local architectural structures are robustly established up to transformer scale. Advanced deployment bindings are stable. Numerical precision support is exceptionally deep, with native FP4 acceleration on both CPU (Dense/SwiGLU) and GPU (MHA/RoPE). Calibration via observer statistics is native. Scaling logic and Distributed pipeline/NAS orchestrations are the final frontier.)*
