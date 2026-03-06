@@ -1,136 +1,237 @@
-# Loom Version Roadmap (roughly)
+# Omni-Neural Framework: The Road to v1.0.0
 
-## Current: v0.0.8 — The GPU Era
-GPU inference working. 30 t/s on 135M models in pure Go. WebGPU pipeline stable for MHA, SwiGLU, RMSNorm. FP32 path solid. Cross-language bindings across 5 ecosystems. 2,298 passing tests.
+To build a true "Universal AI Framework" from first principles, we must map out every theoretical and practical requirement across the entire AI industry. 
 
----
+**Version 1.0.0 will only be achieved when EVERY SINGLE ITEM on this exhaustive checklist is natively supported.** 
 
-## v0.1.0 — The Integration Update *(next release)*
-
-Merging the pieces that already exist into a unified engine. No new capabilities — rough edges from v0.0.7/v0.0.8 get resolved.
-
-- [ ] Integrate geometry prober (`universal_safetensor_loading`) into `nn/load_transformer.go` — replace prefix maps with shape-based detection
-- [ ] Validate against all 40 HuggingFace test models
-- [ ] Merge `GenericTweenState[T]` into the generic `[T Numeric]` forward/backward paths
-- [ ] Merge `ForwardCPU` / `BackwardCPU` into `GenericForwardPass[T]` / `GenericBackwardPass[T]`
-- [ ] Collapse `parallelForwardCPU` / `ParallelForward[T]` dual path into one
-- [ ] GPU layers feed into the same `LayerConfig` dispatch as CPU via unified backend
-- [ ] Complete and pass `arcagitesting/test43a`
-- [ ] Minor: remove `_ = gateUpSize` / `_ = downSize`, fix deprecated `rand.Seed`, mark approximate backward as experimental
-
-**Release test:** Any conforming safetensors model loads and runs through a single unified forward path, CPU or GPU, any supported dtype, zero architecture-specific code.
+Our semantic version number directly reflects our progress against this absolute, industry-scale roadmap. By calculating the ratio of completed features to the total required features, we derive our exact technical version.
 
 ---
 
-## v0.1.0 — API Stabilisation
+## 1. Core Engine & Numerical Precision
 
-- [ ] Public API locked — no planned breaking changes from here
-- [ ] Complete `nn` package godoc coverage
-- [ ] `LayerConfig.Validate() error` to catch misconfiguration early
-- [ ] Unified serialization: single `serialization.go` handles all dtypes (replace split float32 / multiprecision files)
-- [ ] TVA green across all layer types × all 15 supported dtypes
+### 1.1 Standard Floating-Point Types
+- [x] FP64 (Double Precision - Scientific / Accumulation)
+- [x] FP32 (Single Precision - Baseline)
+- [x] FP16 (Half Precision)
+- [x] BF16 (Brain Float - ML Standard)
 
----
+### 1.2 Extreme Quantization Types
+- [x] FP8 E4M3 (Activations / Weights)
+- [ ] FP8 E5M2 (Gradients / High Dynamic Range)
+- [x] FP4 / E2M1 (Extreme Compression)
 
-## v0.2.0 — Multi-Dtype GPU
+### 1.3 Integer & Unsigned Types
+- [x] INT64, INT32, INT16
+- [x] INT8 (Inference Operations)
+- [x] INT4 (Quantized Weights)
+- [x] UINT64, UINT32, UINT16, UINT8
 
-- [ ] fp16 weights packed on upload, GPU shaders operate natively in f16
-- [ ] Weight management refactored: no duplicate copies in RAM during GPU mount
-- [ ] int8 inference path on GPU (quantised weights, dequant in shader)
-- [ ] VRAM budget estimation before mounting — graceful fallback to CPU if OOM
-- [ ] Benchmark suite: fp32 vs fp16 vs int8 t/s and quality tradeoffs documented
+### 1.4 Complex & Hypercomplex Mathematics
+- [ ] Complex64 & Complex128 Tensors
+- [ ] Quaternion Neural Networks (4D Associative Algebras)
+- [ ] Octonion / Cayley-Dickson Algebra Support
 
----
+### 1.5 Quantization & Precision Mechanics
+- [ ] Quantization-Aware Training (QAT) 
+- [ ] Post-Training Quantization (PTQ) conversion passes
+- [ ] Straight-Through Estimator (STE) for discrete non-differentiable rounding
+- [ ] Automatic Loss Scaling (Preventing FP16 numerical underflow)
 
-## v0.3.0 — NAS (Neural Architecture Search)
+### 1.6 Automatic Differentiation Calculus
+- [x] Real-valued Automatic Differentiation (Forward/Backward Propagation via Chain Rule)
+- [ ] Complex-valued Differentiation (Wirtinger Calculus)
+- [ ] Hypercomplex Differentiation (Generalized HR Calculus)
 
-- [ ] Architecture search over the 2D grid structure — layer composition, branch topology, combine modes
-- [ ] Fitness function interface: plug in any evaluation metric
-- [ ] Evolutionary / random search over `LayerConfig` space
-- [ ] Results serialise to standard `Network` for immediate use
-- [ ] Integration with `tween.go` for rapid fitness evaluation without full training
-
----
-
-## v0.4.0 — Mobile & UMA
-
-- [ ] Validated inference on Snapdragon X (Adreno) via native ARM64 + WebGPU
-- [ ] UMA-aware memory model: CPU and GPU share physical memory, eliminate redundant copies
-- [ ] 1B parameter model running on-device on phone
-- [ ] iOS and Android inference demo via C-ABI
-- [ ] Power/thermal profiling for edge deployment
-
----
-
-## v0.5.0 — Training Maturity
-
-- [ ] Accurate MHA backward pass (replace simplified/approximate shader)
-- [ ] Full GPU training verified for all layer types including MHA and SwiGLU
-- [ ] Gradient checkpointing for large model training under memory pressure
-- [ ] Mixed precision training (fp16 forward, fp32 accumulation)
-- [ ] Stable fine-tuning of HuggingFace models through loom
+**Core Engine Progress: 11 / 21**
 
 ---
 
-## v0.6.0 — Primecraft & Spatial AI Integration
+## 2. Architectural Components & Layers
 
-- [ ] Loom inference callable from Primecraft 3D engine
-- [ ] 3D object spawning driven by LLM output (structured generation → object spec)
-- [ ] On-device models powering planet/world simulation AI
-- [ ] Agent loop: perception → loom inference → action in 3D space
-- [ ] Demo: language model controlling entity behaviour on a planet
+### 2.1 Foundational Layers
+- [x] Linear / Dense / Fully Connected
+- [x] Convolutional 1D
+- [x] Convolutional 2D
+- [x] Convolutional 3D / Volumetric
+- [x] Embeddings & Lookup Tables
+
+### 2.2 Sequence & Temporal Layers
+- [x] Basic RNN (Recurrent Neural Network)
+- [x] LSTM (Long Short-Term Memory)
+- [x] GRU (Gated Recurrent Unit)
+
+### 2.3 Attention & Transformer Mechanisms
+- [x] Multi-Head Attention (MHA)
+- [x] Grouped-Query Attention (GQA) & Multi-Query Attention (MQA)
+- [x] RoPE (Rotary Position Embedding)
+- [ ] ALiBi (Attention with Linear Biases)
+- [ ] Flash Attention (Hardware-level O(N) exact attention)
+
+### 2.4 Feed-Forward & Activations
+- [x] Standard Activations (ReLU, GELU, Tanh, Sigmoid, Swish, Mish)
+- [x] Softmax (10 variants: Standard, Grid, Hierarchical, Temperature, Gumbel, Masked, Sparsemax, Entmax, Adaptive, Mixture)
+- [x] SwiGLU / Gated Linear Units
+
+### 2.5 Normalization
+- [x] LayerNorm
+- [x] RMSNorm
+- [ ] BatchNorm (1D/2D/3D)
+- [ ] GroupNorm
+
+### 2.6 Advanced Topological Structures
+- [x] Residual & Skip Connections
+- [x] Sequential & Parallel Branching
+- [x] Mixture of Experts (MoE) Routing Mechanisms
+- [x] Parallel Grid Scattering (Spatial Distribution)
+- [x] Layer Ensembles & Complementary Match Discovery
+- [ ] Graph Neural Networks (GCN, GAT, Message Passing)
+- [ ] Capsule Networks & Routing-by-Agreement
+- [ ] Liquid Neural Networks (LNN) & Continuous-Time ODE Solvers
+- [x] K-Means / Differentiable Clustering Layers
+
+### 2.7 Introspection & Telemetry
+- [x] Network Blueprint Extraction (Structure & Parameter Counts)
+- [x] Recursive Layer Inspection
+- [x] Memory Usage Analysis
+- [x] Dynamic Grid Topology Visualization
+- [x] Reflection-based Method Discovery (JSON API Export)
+- [x] Observer-pattern Layer Monitoring
+
+**Architectural Progress: 28 / 35**
 
 ---
 
-## v0.7.0 — Performance
+## 3. Distributed Infrastructure & Scaling
 
-- [ ] Flash Attention implementation in WGSL (O(N) memory instead of O(N²))
-- [ ] Fused kernels: RMSNorm + residual add in single GPU shader
-- [ ] Speculative decoding support (draft model + verifier)
-- [ ] Multi-batch inference on GPU
-- [ ] Target: 100+ t/s on 135M model, 30+ t/s on 1B model
+### 3.1 Network Communication Collectives
+- [ ] NCCL/Gloo-equivalent backend orchestration
+- [ ] All-Reduce & All-Gather primitives
+- [ ] Reduce-Scatter
 
----
+### 3.2 3D Model Parallelism
+- [ ] Data Parallelism (DP) - Micro-batch sharding
+- [ ] Tensor Parallelism (TP) - Intra-layer GPU sharding
+- [ ] Pipeline Parallelism (PP) - Splitting a model's layers across separate physical machines
 
-## v0.8.0 — Ecosystem & Tooling
+### 3.3 Advanced Memory Management
+- [ ] Fully Sharded Data Parallel (FSDP)
+- [ ] Gradient Checkpointing / Activation Recomputation
+- [ ] Asynchronous Memory Transfers (Overlapping compute with network latency)
+- [ ] Unified Memory Architecture (UMA) awareness
 
-- [ ] Loom model hub: publish/pull trained networks similarly to HuggingFace
-- [ ] Network visualiser: render the 2D grid structure with live activation telemetry
-- [ ] ONNX export path (loom network → ONNX for interop)
-- [ ] Python `welvet` catches up: full parity with Go on all new capabilities
-- [ ] Browser inference demo updated: 1B model in WASM
-
----
-
-## v0.9.0 — Pre-Production
-
-- [ ] Everything from v0.1–v0.8 stable and passing TVA
-- [ ] Security audit of C-ABI and WASM surface
-- [ ] Versioned API documentation site
-- [ ] Loom paper: architecture, design decisions, benchmarks — publishable
-- [ ] Cross-platform binary release for all 13 platforms verified at this capability level
-
-**v0.9.0 is the "if nothing breaks after this, we call it 1.0" release.**
+**Distributed Progress: 0 / 10**
 
 ---
 
-## Summary Table
+## 4. Advanced Training Logic & Automation
 
-| Version | Theme | Key Unlock |
-|---|---|---|
-| v0.0.8 | GPU Era | 30 t/s, WebGPU, cross-language ✅ |
-| v0.1.0 | Integration | Unified path, geometry loader |
-| v0.1.0 | API Stability | Locked public API |
-| v0.2.0 | Multi-Dtype GPU | fp16/int8 on GPU |
-| v0.3.0 | NAS | Architecture search over grid |
-| v0.4.0 | Mobile/UMA | 1B model on phone |
-| v0.5.0 | Training | Accurate backward, fine-tuning |
-| v0.6.0 | Primecraft | 3D spatial AI integration |
-| v0.7.0 | Performance | Flash attention, 100+ t/s |
-| v0.8.0 | Ecosystem | Tooling, hub, visualiser |
-| v0.9.0 | Pre-Production | Stable, documented, publishable |
-| **v1.0.0** | **Release** | **Everything works. Ship it.** |
+### 4.1 Execution Flow
+- [x] Static Computation Graphs
+- [ ] Dynamic Computation Graphs (Define-by-run)
+- [x] Atomic Time-Step execution (StepForward/StepBackward)
+- [x] Neural Tweening / Hybrid Geometric Training
+- [x] Neural Tweening Chain Rule Support
+- [x] Gradient Explosion Detection & Damping
 
+### 4.2 Optimizers & Schedulers
+- [x] Standard Optimizers (SGD, AdamW, RMSProp)
+- [ ] Higher-order Optimizers (L-BFGS, K-FAC)
+- [x] 8 Variants of Learning Rate Schedulers
+- [x] Adaptive Rate Calculation (VGStepBP)
+- [x] Tweening Momentum & Link-Budgeting
+- [x] Adaptation Performance Tracking (Recovery Metrics)
+- [ ] Automated Mixed Precision Training Loop
 
+### 4.3 Automated Evolutionary Logic
+- [ ] Population-Based Training (PBT)
+- [x] Neural Architecture Search (NAS)
+- [x] Random Architecture Generation & Mutation
+- [ ] Net2Net Morphism Operators
 
-"rough estimate ehhh good enough  lol"
+**Automation Progress: 12 / 16**
+
+---
+
+## 5. Deployment, Compilation & Ecosystem
+
+### 5.1 Backends
+- [x] Deterministic Pure CPU Backend (Go framework)
+- [x] WebGPU JIT Compiled Backend (WGPU)
+- [ ] Native CUDA Backend
+- [ ] Metal / ROCm Backends
+- [ ] Specialized Edge/AI Accelerator / NPU Backend
+
+### 5.2 Compiler Integration
+- [ ] Kernel Fusion (Translating sequential operations into single SRAM-bound kernels to eliminate memory bottleneck)
+- [ ] Triton eDSL / WGSL AST transpilation
+- [ ] MLIR (Multi-Level Intermediate Representation) Lowering passes
+
+### 5.3 Polyglot Ecosystem & I/O
+- [x] Universal C-ABI Core API
+- [x] Python Bindings (`welvet`)
+- [x] Node.js / TypeScript Bindings
+- [x] C# / .NET Bindings
+- [x] Java Bindings
+- [x] Dart Bindings
+- [x] WebAssembly (WASM) browser execution
+- [x] Universal SafeTensors Support (Load / Save / V2 Multi-type)
+- [x] HuggingFace Checkpoint Interoperability (Weight Extraction)
+
+### 5.4 Benchmarks & Validation
+- [x] ARC-AGI Task Benchmark (K-Means Implementation)
+- [x] Numerical Deviation Metrics (Accuracy Heatmaps)
+- [x] Task-Switching Adaptation Benchmarks
+- [x] Model Ensemble Diversity Metrics
+- [x] Training Method Comparison Analysis
+
+**Ecosystem Progress: 16 / 22**
+
+---
+
+## 6. LLM Engine & Tokenization
+
+### 6.1 Tokenization Core
+- [x] BPE (Byte-Pair Encoding) Implementation
+- [x] HuggingFace `tokenizer.json` Compatibility
+- [x] ChatML & Prompt Template Engine
+- [x] Recursive Multi-turn Turn Tracking
+
+### 6.2 Generation Logic
+- [x] KV Cache Optimization (Stateful incremental inference)
+- [x] Batched Prefill & Autoregressive Decoding
+- [x] Sampling Suite (Top-K, Temperature, Nucleus Placeholder)
+- [x] Repetition Penalty & Windowed Logit Bias
+- [x] Deterministic vs Stochastic Inference Modes
+- [x] Real-time Token Streaming (Streamer primitives)
+
+### 6.3 LLM Tooling & Profiling
+- [x] HuggingFace Hub Cache Auto-Discovery
+- [x] FP4 Quantized Specialist Chat Implementation
+- [x] WebGPU LM-Head Offloading
+- [x] VRAM Usage Profiling & Distribution Metrics
+
+**LLM Progress: 15 / 15**
+
+---
+
+## 📊 True Version Calculation
+
+Instead of arbitrarily bumping version numbers, we derive our exact semantic version by measuring the framework's strictly verified capabilities against the absolute "Universal Version 1.0.0" checklist.
+
+| Category | Completed | Total |
+| :--- | :---: | :---: |
+| 1. Core Engine | 11 | 21 |
+| 2. Architectural Layers | 28 | 35 |
+| 3. Distributed Scaling | 0 | 10 |
+| 4. Training Automation | 12 | 16 |
+| 5. Deployment Ecosystem | 16 | 22 |
+| 6. LLM & Tokenization | 15 | 15 |
+| **GRAND TOTAL** | **82** | **119** |
+
+### **Completion Ratio: 68.9%**
+
+Based on supporting 82 out of the 119 foundational pillars of the AI industry, we are technically at:
+
+## **Version 0.68.9**
+*(Status: Mathematical tensor representations and local architectural structures are robustly established up to transformer scale. Advanced deployment bindings are stable. Introspection, Evaluation Heatmaps, and Differentiable Clustering are now first-class core features. Scaling logic and Distributed pipeline or NAS orchestrations are the final frontier.)*
