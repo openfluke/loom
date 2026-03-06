@@ -463,50 +463,80 @@ func (l *FP4MHALayer) GenerateAttnShader() string {
 		const HEAD_DIM: u32 = %du;
 		const SCALE: f32 = %f;
 
-		var<workgroup> shared_q : array<f32, 128>; // Covers HEAD_DIM up to 128
+		var<workgroup> shared_q : array<f32, 256>; // Supports HEAD_DIM up to 256
+		var<workgroup> scores : array<f32, 4096>;  // Supports MaxSeqLen up to 4096
+		var<workgroup> max_s : f32;
+		var<workgroup> exp_sum : f32;
 
-		@compute @workgroup_size(256)
-		fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
-			if (gid.x >= params.input_len * D_MODEL) { return; }
-			let seq_i = gid.x / D_MODEL; let d = gid.x %% D_MODEL;
-			let head = d / HEAD_DIM; let head_d = d %% HEAD_DIM;
-			let heads_per_kv = NUM_HEADS / NUM_KV_HEADS; let kv_head = head / heads_per_kv;
+		@compute @workgroup_size(64) 
+		fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+			let head_idx = wid.x;
+			let seq_i = head_idx / NUM_HEADS;
+			let head = head_idx %% NUM_HEADS;
+			let head_d = lid.x;
+			let heads_per_kv = NUM_HEADS / NUM_KV_HEADS;
+			let kv_head = head / heads_per_kv;
 			let total_len = params.input_len + params.cache_pos;
 			let D_KV = NUM_KV_HEADS * HEAD_DIM;
 
-			// Shared Memory Optimization: Load Query head once
-            // (Note: with 256 threads, many threads share the same head)
-			if (head_d < HEAD_DIM) {
-				shared_q[head_d] = q_in[seq_i*D_MODEL + head*HEAD_DIM + head_d];
+			// 0. Collaborative initialization of scores
+			for (var j: u32 = head_d; j < 4096u; j += 64u) {
+				scores[j] = -1e10;
 			}
 			workgroupBarrier();
 
-			var max_s: f32 = -1e10;
-			// 1. Max pass (Stable softmax)
-			for (var j: u32 = 0u; j < total_len; j++) {
-				if (j > (params.cache_pos + seq_i)) { continue; }
-				var score: f32 = 0.0;
-				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
-                    let qi = head*HEAD_DIM + hd;
-					score += q_in[seq_i*D_MODEL + qi] * kv_cache[params.k_cache_offset + j*D_KV + kv_head*HEAD_DIM + hd];
-				}
-				max_s = max(max_s, score * SCALE);
+			// 1. Collaborative load Q into shared
+			for (var hd: u32 = head_d; hd < HEAD_DIM; hd += 64u) {
+				shared_q[hd] = q_in[seq_i*D_MODEL + head*HEAD_DIM + hd];
 			}
+			workgroupBarrier();
 
-			// 2. Sum and V pass
-			var sum_v: f32 = 0.0; var exp_sum: f32 = 0.0;
-			for (var j: u32 = 0u; j < total_len; j++) {
-				if (j > (params.cache_pos + seq_i)) { continue; }
+			// 2. Collaborative score calculation: Q * K
+			for (var j: u32 = head_d; j < total_len; j += 64u) {
+				if (j > (params.cache_pos + seq_i)) { scores[j] = -1e10; continue; }
 				var score: f32 = 0.0;
 				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
-                    let qi = head*HEAD_DIM + hd;
-					score += q_in[seq_i*D_MODEL + qi] * kv_cache[params.k_cache_offset + j*D_KV + kv_head*HEAD_DIM + hd];
+					score += shared_q[hd] * kv_cache[params.k_cache_offset + j*D_KV + kv_head*HEAD_DIM + hd];
 				}
-				let e = exp(clamp(score * SCALE - max_s, -80.0, 0.0));
-				exp_sum += e;
-				sum_v += e * kv_cache[params.v_cache_offset + j*D_KV + kv_head*HEAD_DIM + head_d];
+				scores[j] = score * SCALE;
 			}
-			attn_out[gid.x] = select(0.0, sum_v / (exp_sum + 1e-9), exp_sum > 0.0);
+			workgroupBarrier();
+
+			// 3. Collaborative Softmax: Max pass
+			if (head_d == 0u) {
+				var ms: f32 = -1e10;
+				for (var j: u32 = 0u; j < total_len; j++) {
+					ms = max(ms, scores[j]);
+				}
+				max_s = ms;
+			}
+			workgroupBarrier();
+
+			// 4. Collaborative Softmax: Sum pass
+			if (head_d == 0u) {
+				var es: f32 = 0.0;
+				for (var j: u32 = 0u; j < total_len; j++) {
+					if (scores[j] > -1e9) {
+						let e = exp(clamp(scores[j] - max_s, -80.0, 0.0));
+						scores[j] = e; // Store exp(s) in the scores array
+						es += e;
+					} else {
+						scores[j] = 0.0;
+					}
+				}
+				exp_sum = es;
+			}
+			workgroupBarrier();
+
+			// 5. Collaborative weighted sum: Softmax * V
+			// Each thread in the workgroup handles one dimension out_d of the output head.
+            for (var hd: u32 = head_d; hd < HEAD_DIM; hd += 64u) {
+				var sum_v: f32 = 0.0;
+				for (var j: u32 = 0u; j < total_len; j++) {
+					sum_v += scores[j] * kv_cache[params.v_cache_offset + j*D_KV + kv_head*HEAD_DIM + hd];
+				}
+				attn_out[seq_i*D_MODEL + head*HEAD_DIM + hd] = select(0.0, sum_v / (exp_sum + 1e-9), exp_sum > 0.0);
+			}
 		}
 	`, l.Spec.SeqLen, l.Spec.DModel, l.Spec.NumHeads, numKVHeads, headDim, scale)
 }
@@ -620,7 +650,7 @@ func (l *FP4MHALayer) DispatchFull(enc *wgpu.CommandEncoder) {
 	p2 := enc.BeginComputePass(nil)
 	p2.SetPipeline(l.pipelineAttn)
 	p2.SetBindGroup(0, l.bindGroupAttn, nil)
-	p2.DispatchWorkgroups(uint32((b*l.Spec.DModel+255)/256), 1, 1)
+	p2.DispatchWorkgroups(uint32(b*l.Spec.NumHeads), 1, 1)
 	p2.End()
 
 	p3 := enc.BeginComputePass(nil)

@@ -1197,9 +1197,18 @@ func QT_LoadEngine(modelDir *C.char, useGPU C.int, maxSeqLen C.int, template *C.
 	mapper := tokenizer.NewWeightMapper()
 	embeddings, lmHead, finalNorm, _ := mapper.MapWeights(tensors)
 
+	// ── Select chat template ─────────────────────────────────────────────────
+	tmpl := tokenizer.ChatML
+	if C.GoString(template) == "llama3" {
+		tmpl = tokenizer.Llama3
+	}
+
+	vocabSize := len(embeddings) / network.InputSize
+	engine := tokenizer.NewLLMEngine(network, embeddings, lmHead, finalNorm, tmpl)
+
 	// ── Optional GPU mount ───────────────────────────────────────────────────
 	if useGPU != 0 {
-		gpu.SetAdapterPreference("nvidia")
+		// No hardcoded preference - let gpu/context.go scoring handle it.
 		network.BatchSize = 1
 		for i := range network.Layers {
 			network.Layers[i].SeqLength = seqLen
@@ -1210,16 +1219,17 @@ func QT_LoadEngine(modelDir *C.char, useGPU C.int, maxSeqLen C.int, template *C.
 		if err := network.WeightsToGPU(); err != nil {
 			fmt.Printf("QT_LoadEngine: GPU mount failed (%v), falling back to CPU\n", err)
 			network.GPU = false
+		} else {
+			// Initialize GPU LM Head if GPU mount succeeded
+			ctx, _ := gpu.GetContext()
+			lmh, err := gpu.NewGPULMHead(ctx, network.InputSize, vocabSize, finalNorm, lmHead)
+			if err == nil {
+				engine.SetGPULMHead(lmh)
+			} else {
+				fmt.Printf("QT_LoadEngine: GPULMHead init failed: %v\n", err)
+			}
 		}
 	}
-
-	// ── Select chat template ─────────────────────────────────────────────────
-	tmpl := tokenizer.ChatML
-	if C.GoString(template) == "llama3" {
-		tmpl = tokenizer.Llama3
-	}
-
-	engine := tokenizer.NewLLMEngine(network, embeddings, lmHead, finalNorm, tmpl)
 
 	qtEngineMu.Lock()
 	id := qtEngineID
@@ -1354,6 +1364,9 @@ func QT_FreeEngine(handle C.longlong) {
 	if ok {
 		if engine.Network != nil {
 			engine.Network.ReleaseGPUWeights()
+		}
+		if engine.GPULMHead != nil {
+			engine.GPULMHead.Cleanup()
 		}
 		delete(qtEngines, int64(handle))
 	}

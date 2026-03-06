@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openfluke/loom/gpu"
 	"github.com/openfluke/loom/nn"
 )
 
@@ -23,6 +24,7 @@ type Transformer struct {
 	VocabSize       int
 	Template        Template
 	finalNormConfig *nn.LayerConfig
+	GPULMHead       *gpu.GPULMHead
 }
 
 func NewTransformer(network *nn.Network, embeddings, lmHead, finalNorm []float32, template Template) *Transformer {
@@ -272,6 +274,14 @@ func (t *Transformer) getEmbedding(tokenID int) []float32 {
 }
 
 func (t *Transformer) applyLMHead(hidden []float32) []float32 {
+	if t.GPULMHead != nil {
+		ctx, _ := gpu.GetContext()
+		logits, err := t.GPULMHead.Infer(ctx, hidden)
+		if err == nil {
+			return logits
+		}
+	}
+
 	normalized := hidden
 	if t.finalNormConfig != nil {
 		normalized = nn.RmsNormForwardCPU(hidden, nil, t.finalNormConfig, 1)

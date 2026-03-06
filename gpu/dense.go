@@ -592,6 +592,7 @@ Loop:
 		case <-done:
 			break Loop
 		default:
+			// No-op, Poll(true) blocks anyway
 		}
 	}
 

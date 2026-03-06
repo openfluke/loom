@@ -1,6 +1,7 @@
 package tokenizer
 
 import (
+	"github.com/openfluke/loom/gpu"
 	"github.com/openfluke/loom/nn"
 )
 
@@ -27,6 +28,7 @@ type LLMEngine struct {
 	VocabSize    int
 	Template     Template
 	Transformer  *Transformer
+	GPULMHead    *gpu.GPULMHead
 	session      *KVSession // persistent KV cache across turns
 }
 
@@ -45,6 +47,13 @@ func NewLLMEngine(network *nn.Network, embeddings, lmHead, finalNorm []float32, 
 		VocabSize:    vocabSize,
 		Template:     template,
 		Transformer:  NewTransformer(network, embeddings, lmHead, finalNorm, template),
+	}
+}
+
+func (e *LLMEngine) SetGPULMHead(lmh *gpu.GPULMHead) {
+	e.GPULMHead = lmh
+	if e.Transformer != nil {
+		e.Transformer.GPULMHead = lmh
 	}
 }
 

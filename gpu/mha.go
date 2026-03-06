@@ -477,10 +477,11 @@ func (l *MHALayer) GenerateAttnShader() string {
 	}
 
 	return fmt.Sprintf(`
-		@group(0) @binding(0) var<storage, read> q : array<f32>;
-		@group(0) @binding(1) var<storage, read> k : array<f32>; // K Cache
-		@group(0) @binding(2) var<storage, read> v : array<f32>; // V Cache
+		@group(0) @binding(0) var<storage, read> q_in : array<f32>;
+		@group(0) @binding(1) var<storage, read> kv_cache : array<f32>;
+		@group(0) @binding(2) var<storage, read> v_cache : array<f32>;
 		@group(0) @binding(3) var<storage, read_write> attn_out : array<f32>;
+
 		struct LayerParams {
 			input_len: u32,
 			cache_pos: u32,
@@ -494,66 +495,78 @@ func (l *MHALayer) GenerateAttnShader() string {
 		const HEAD_DIM: u32 = %du;
 		const SCALE: f32 = %f;
 
-		@compute @workgroup_size(256)
-		fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-			let idx = gid.x;
-			let total = SEQ_LEN * D_MODEL;
-			if (idx >= total) { return; }
+		var<workgroup> shared_q : array<f32, 256>; // Supports HEAD_DIM up to 256
+		var<workgroup> scores : array<f32, 4096>;  // Supports MaxSeqLen up to 4096
+		var<workgroup> max_s : f32;
+		var<workgroup> exp_sum : f32;
 
-			let seq_i = idx / D_MODEL;
-			let d = idx %% D_MODEL;
-			let head = d / HEAD_DIM;
-			let head_d = d %% HEAD_DIM;
-			
-			// GQA: Map Query head to KV head
+		@compute @workgroup_size(64) 
+		fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+			let head_idx = wid.x;
+			let seq_i = head_idx / NUM_HEADS;
+			let head = head_idx %% NUM_HEADS;
+			let head_d = lid.x;
 			let heads_per_kv = NUM_HEADS / NUM_KV_HEADS;
 			let kv_head = head / heads_per_kv;
-			
-			// Compute attention weights and weighted sum of V
-			var sum: f32 = 0.0;
-			var max_score: f32 = -1e10;
-
-			// First pass: find max for stability
-			let input_len = params.input_len;
-			let cache_pos = params.cache_pos;
-			let total_len = input_len + cache_pos;
+			let total_len = params.input_len + params.cache_pos;
 			let D_KV = NUM_KV_HEADS * HEAD_DIM;
 
-			for (var seq_j: u32 = 0u; seq_j < total_len; seq_j++) {
-				if (seq_j > (cache_pos + seq_i)) { continue; } // Causal mask
+			// 0. Collaborative initialization of scores
+			for (var j: u32 = head_d; j < 4096u; j += 64u) {
+				scores[j] = -1e10;
+			}
+			workgroupBarrier();
+
+			// 1. Collaborative load Q into shared
+			for (var hd: u32 = head_d; hd < HEAD_DIM; hd += 64u) {
+				shared_q[hd] = q_in[seq_i*D_MODEL + head*HEAD_DIM + hd];
+			}
+			workgroupBarrier();
+
+			// 2. Collaborative score calculation: Q * K
+			for (var j: u32 = head_d; j < total_len; j += 64u) {
+				if (j > (params.cache_pos + seq_i)) { scores[j] = -1e10; continue; }
 				var score: f32 = 0.0;
 				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
-					let q_idx = seq_i * D_MODEL + head * HEAD_DIM + hd;
-					// Read K from the correct mapped KV head in cache
-					let k_idx = seq_j * D_KV + kv_head * HEAD_DIM + hd;
-					score += q[q_idx] * k[k_idx];
+					score += shared_q[hd] * kv_cache[j*D_KV + kv_head*HEAD_DIM + hd];
 				}
-				score *= SCALE;
-				max_score = max(max_score, score);
+				scores[j] = score * SCALE;
 			}
+			workgroupBarrier();
 
-			// Second pass: compute softmax and weighted V sum
-			var exp_sum: f32 = 0.0;
-			for (var seq_j: u32 = 0u; seq_j < total_len; seq_j++) {
-				if (seq_j > (cache_pos + seq_i)) { continue; }
-				var score: f32 = 0.0;
-				for (var hd: u32 = 0u; hd < HEAD_DIM; hd++) {
-					let q_idx = seq_i * D_MODEL + head * HEAD_DIM + hd;
-					let k_idx = seq_j * D_KV + kv_head * HEAD_DIM + hd;
-					score += q[q_idx] * k[k_idx];
+			// 3. Collaborative Softmax: Max pass
+			if (head_d == 0u) {
+				var ms: f32 = -1e10;
+				for (var j: u32 = 0u; j < total_len; j++) {
+					ms = max(ms, scores[j]);
 				}
-				score = exp(score * SCALE - max_score);
-				exp_sum += score;
-				
-				// Read V from the correct mapped KV head in cache
-				let v_idx = seq_j * D_KV + kv_head * HEAD_DIM + head_d;
-				sum += score * v[v_idx];
+				max_s = ms;
 			}
+			workgroupBarrier();
 
-			if (exp_sum == 0.0) {
-				attn_out[idx] = 0.0;
-			} else {
-				attn_out[idx] = sum / exp_sum;
+			// 4. Collaborative Softmax: Sum pass
+			if (head_d == 0u) {
+				var es: f32 = 0.0;
+				for (var j: u32 = 0u; j < total_len; j++) {
+					if (scores[j] > -1e9) {
+						let e = exp(clamp(scores[j] - max_s, -80.0, 0.0));
+						scores[j] = e; 
+						es += e;
+					} else {
+						scores[j] = 0.0;
+					}
+				}
+				exp_sum = es;
+			}
+			workgroupBarrier();
+
+			// 5. Collaborative weighted sum: Softmax * V
+			for (var hd: u32 = head_d; hd < HEAD_DIM; hd += 64u) {
+				var sum_v: f32 = 0.0;
+				for (var j: u32 = 0u; j < total_len; j++) {
+					sum_v += scores[j] * v_cache[j*D_KV + kv_head*HEAD_DIM + hd];
+				}
+				attn_out[seq_i*D_MODEL + head*HEAD_DIM + hd] = select(0.0, sum_v / (exp_sum + 1e-9), exp_sum > 0.0);
 			}
 		}
 	`, l.Spec.SeqLen, l.Spec.DModel, l.Spec.NumHeads, numKVHeads, headDim, scale)
@@ -929,11 +942,11 @@ func (l *MHALayer) DispatchFull(enc *wgpu.CommandEncoder) {
 	pass1.End()
 
 	// Stage 2: Attention
-	pass2 := enc.BeginComputePass(nil)
-	pass2.SetPipeline(l.pipelineAttn)
-	pass2.SetBindGroup(0, l.bindGroupAttn, nil)
-	pass2.DispatchWorkgroups(wg, 1, 1)
-	pass2.End()
+	p2 := enc.BeginComputePass(nil)
+	p2.SetPipeline(l.pipelineAttn)
+	p2.SetBindGroup(0, l.bindGroupAttn, nil)
+	p2.DispatchWorkgroups(uint32(inputLen*l.Spec.NumHeads), 1, 1)
+	p2.End()
 
 	// Stage 3: Output projection
 	pass3 := enc.BeginComputePass(nil)
@@ -974,6 +987,7 @@ func (l *MHALayer) DownloadGradients(ctx *Context) ([]float32, []float32, []floa
 func (l *MHALayer) UpdateParams(ctx *Context, inputLen int, cachePos int) {
 	l.currentInputLen = inputLen
 	l.currentCachePos = cachePos
+	l.BatchSize = inputLen
 	if l.ParamsBuffer != nil {
 		ctx.Queue.WriteBuffer(l.ParamsBuffer, 0, wgpu.ToBytes([]uint32{uint32(inputLen), uint32(cachePos)}))
 	}
