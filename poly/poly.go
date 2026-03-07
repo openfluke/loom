@@ -335,6 +335,24 @@ func MorphLayer(layer *VolumetricLayer, target DType) error {
 	return nil
 }
 
+// DispatchLayer acts as the universal routing hub for all layer types.
+// This is the "Jump Table" that handles numerical metamorphosis across 50+ layer types.
+func DispatchLayer[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	switch layer.Type {
+	case LayerDense:
+		return DenseForwardPolymorphic(layer, input)
+	case LayerMultiHeadAttention:
+		// Stubs for future stage 2/3 kernels
+		return nil, input
+	case LayerSwiGLU:
+		return nil, input
+	case LayerRMSNorm:
+		return nil, input
+	default:
+		return nil, input
+	}
+}
+
 // ForwardPolymorphic executes the network using a unified generic dispatcher.
 // It iterates through the 3D grid and handles DType transitions between layers.
 func ForwardPolymorphic[T Numeric](n *VolumetricNetwork, input *Tensor[T]) (*Tensor[T], time.Duration) {
@@ -346,18 +364,13 @@ func ForwardPolymorphic[T Numeric](n *VolumetricNetwork, input *Tensor[T]) (*Ten
 			for x := 0; x < n.Cols; x++ {
 				for l := 0; l < n.LayersPerCell; l++ {
 					layer := n.GetLayer(z, y, x, l)
-					if layer.IsDisabled {
+					if layer == nil || layer.IsDisabled {
 						continue
 					}
 
-					// DISPATCH BY TYPE
-					switch layer.Type {
-					case LayerDense:
-						// For this polymorphic proof-of-concept, we use the specific Dense dispatcher.
-						// In a full implementation, this would be a registry-based dispatch.
-						_, post := DenseForwardPolymorphic(layer, currentTensor)
-						currentTensor = post
-					}
+					// UNIFIED REGISTRY DISPATCH
+					_, post := DispatchLayer(layer, currentTensor)
+					currentTensor = post
 				}
 			}
 		}

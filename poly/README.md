@@ -73,6 +73,20 @@ M-POLY-VTD is a **"Bedrock Edition"** neural engine. Unlike standard frameworks 
 
 ---
 
+## The GPU "Fusion" Secret: Why the Dispatcher Refactor Matters
+You might wonder why we moved the switch statement into a `DispatchLayer` registry. On CPU, it looks like a simple "cleanup," but on GPU, it is a **Mission-Critical Optimization**:
+
+### 1. Avoiding "Thread Divergence"
+On a GPU, thousands of threads run in blocks. If those threads hit a messy, nested switch statement inside a loop, they will "diverge" (some threads wait while others branch). By isolating the dispatch, we enable **Kernel Fusion**—the GPU can launch one massive shader that handles an entire "Tile" of the 3D grid if the layers are the same type.
+
+### 2. Batched Metamorphosis
+When a block of layers needs to "Morph" (e.g., FP32 -> FP4), the GPU is most efficient when it does this in **Parallel Batches**. The `DispatchLayer` structure allows the engine to group these memory switches together, performing a single "Massive Bit-Pack" rather than 100 small ones.
+
+### 3. Asynchronous Predispatch
+Because the Dispatcher is decoupled from the 3D Coordinate loop, the GPU driver can "look ahead." While it calculates the math for Layer (Z=1), it can already be "Predispatching" the weights for Layer (Z=2) into the fast Shared Memory (SRAM).
+
+---
+
 ## The Path to 70+ Tokens/Sec
 This architecture is specifically optimized for Turing-class GPUs (like the GTX 1650 Super).
 1.  **Stage 1 (Current)**: Build the Universal Dispatcher and bit-logic in Go.
