@@ -38,6 +38,10 @@ type SystolicState[T Numeric] struct {
 	// Grid Metadata
 	StepCount uint64
 	mu        sync.RWMutex
+
+	// Neural Target Propagation Bridge
+	tpState   *TargetPropState[T]
+	lastInput *Tensor[T]
 }
 
 // NewSystolicState initializes a state for a specific Volumetric Network.
@@ -55,6 +59,7 @@ func NewSystolicState[T Numeric](n *VolumetricNetwork) *SystolicState[T] {
 func (s *SystolicState[T]) SetInput(input *Tensor[T]) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastInput = input
 	if len(s.LayerData) > 0 {
 		s.LayerData[0] = input
 	}
@@ -206,6 +211,45 @@ func SystolicBackward[T Numeric](n *VolumetricNetwork, s *SystolicState[T], grad
 	}
 
 	return gradBuffers[0], layerGradients, nil
+}
+
+// SystolicApplyTargetProp bridges the Systolic state with the Target Propagation machinery.
+// It uses the core 'Gap-Bridging' logic to update weights across the volumetric mesh.
+func SystolicApplyTargetProp[T Numeric](n *VolumetricNetwork, s *SystolicState[T], globalTarget *Tensor[T], lr float32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 1. Initialize or update TargetPropState
+	if s.tpState == nil {
+		config := DefaultTargetPropConfig()
+		config.UseChainRule = false // Default to Gap-Based for Systolic Mesh o_O
+		s.tpState = NewTargetPropState[T](n, config)
+	}
+
+	// 2. Capture current mesh state as Forward Activations
+	// Note: s.LayerData[idx] is the output of layer idx.
+	// TargetProp expects s.ForwardActs[0] to be input, s.ForwardActs[1] to be output of Layer 0, etc.
+	if len(s.LayerData) > 0 {
+		s.tpState.ForwardActs[0] = s.lastInput
+		for i := 0; i < len(s.LayerData); i++ {
+			s.tpState.ForwardActs[i+1] = s.LayerData[i]
+		}
+	}
+
+	// 3. SECONARY: If history is available, we could do BPTT-style Target Prop,
+	// but for now, we do steady-state grid refinement.
+	
+	// Use the standard Target Prop Backward (sequential index assuming)
+	// or implement mesh-aware variant.
+	// Since n.Layers is the linear order of the grid, the standard backward 
+	// usually works if the grid is designed sequentially.
+	TargetPropBackward(n, s.tpState, globalTarget)
+
+	// 4. Update Diagnostics
+	s.tpState.CalculateLinkBudgets()
+
+	// 5. Apply Gaps (Neural Weight Mutation)
+	ApplyTargetPropGaps(n, s.tpState, lr)
 }
 
 // accumulateMeshGrad finds the source for layer 'idx' and adds 'grad' to its entry in 'buffers'.
