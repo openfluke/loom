@@ -34,6 +34,13 @@ Replaces the traditional 2D sequential execution with a **3D Volumetric Coordina
 *   **Recursive Backpropagation**: A hierarchical training system that caches intermediates in a "Neural Tree," allowing signals to flow bidirectionally through arbitrary nesting.
 *   **Tiling Strategy**: Built for future GPU integration where each 3D coordinate maps to a Shared Memory workgroup tile, aiming for a **70+ token/s** performance ceiling for models like SmolLM2.
 
+### IV. Neural Target Propagation (TargetProp)
+A bidirectional learning alternative to traditional backpropagation that bridges the gap beTargetProp actual activations and idealized targets.
+*   **True Target Estimation**: Heuristically estimates what a layer *should* have produced by aggregating importance signals through weights (high-fidelity support for **RNN/LSTM** weight mappings).
+*   **Gap-Based Learning**: Updates weights using a Hebbian-style `delta = learningRate * input * gap` logic, bypassing the chain rule for localized, non-differentiable optimization.
+*   **Mesh Fidelity (Link Budgets)**: Accurately calculates info-preservation (Cosine Similarity) across the mesh.
+*   **Gated Learning**: Automatically prevents weight corruption in "dead layers" (Alignment < 0.2) via dynamic Link Budget gating.
+
 ## Performance Benchmarking
 A comprehensive benchmarking suite is provided to measure the speed and memory efficiency of the polymorphic dispatcher.
 
@@ -77,9 +84,10 @@ Unlike the standard sequential flow, the **Systolic Engine** treats the 3D grid 
 - **Double Buffering**: Prevents race conditions, ensuring a stable wave of data through space-time.
 - **Spatial Feedback**: Remote links can hop signals backwards in coordinates, creating dynamic recurrence (RNN-like behavior) across the 3D mesh.
 - **BPTT (Backpropagation Through Time)**: Gradients are unrolled through clock cycles and spatial junctions, allowing the grid to learn complex temporal patterns.
+- **Dynamic Learning Bridge**: Supports `poly.SystolicApplyTargetProp` for localized, gap-based learning that updates the mesh in real-time based on temporal performance. o_O
 
 > [!TIP]
-> Use `poly.SystolicForward` and `poly.SystolicBackward` when you need a "living network" that evolves over time rather than a static pipeline. o_O
+> Use `poly.SystolicForward` and `poly.SystolicApplyTargetProp` when you need a "living network" that evolves and learns over time rather than a static pipeline. o_O
 
 ### 5. Recursive Neural Trees (`Tensor.Nested`)
 **Decision**: Implementing a recursive `Nested` field in the `Tensor` struct.
