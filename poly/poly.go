@@ -29,6 +29,30 @@ const (
 	LayerSequential         LayerType = 17
 )
 
+func (t LayerType) String() string {
+	switch t {
+	case LayerDense:              return "Dense"
+	case LayerMultiHeadAttention: return "MultiHeadAttention"
+	case LayerSwiGLU:             return "SwiGLU"
+	case LayerRMSNorm:            return "RMSNorm"
+	case LayerCNN1:               return "CNN1"
+	case LayerCNN2:               return "CNN2"
+	case LayerCNN3:               return "CNN3"
+	case LayerRNN:                return "RNN"
+	case LayerLSTM:               return "LSTM"
+	case LayerLayerNorm:          return "LayerNorm"
+	case LayerConvTransposed1D:   return "ConvTransposed1D"
+	case LayerConvTransposed2D:   return "ConvTransposed2D"
+	case LayerConvTransposed3D:   return "ConvTransposed3D"
+	case LayerEmbedding:          return "Embedding"
+	case LayerKMeans:             return "KMeans"
+	case LayerSoftmax:            return "Softmax"
+	case LayerParallel:           return "Parallel"
+	case LayerSequential:         return "Sequential"
+	default:                      return fmt.Sprintf("LayerType(%d)", t)
+	}
+}
+
 // ActivationType defines the activation function
 type ActivationType int
 
@@ -368,6 +392,8 @@ type VolumetricLayer struct {
 	TargetL      int
 
 	SequentialLayers []VolumetricLayer
+
+	Observer PolyObserver
 }
 
 // NewVolumetricNetwork initializes a 3D grid of layers.
