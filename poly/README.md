@@ -14,8 +14,10 @@ The engine provides a "Universal Dispatcher" supporting native forward and backw
     *   **Optimized**: Float16, BFloat16, Int8, Uint8
     *   **Low-Bit**: FP8 (E4M3/E5M2), Int4, Uint4, FP4 (E2M1)
     *   **Extreme**: Int2, Uint2, Ternary (-1, 0, 1), Binary (1-bit)
-*   **CNN Support**: Native support for **LayerCNN1**, **LayerCNN2**, and **LayerCNN3** (1D, 2D, and 3D Convolutions) across all numerical types.
-*   **RNN/LSTM/SwiGLU Support**: Native support for **LayerRNN**, **LayerLSTM**, and **LayerSwiGLU** with full polymorphism.
+*   **CNN/ConvTransposed Support**: Native support for **LayerCNN1-3** and **LayerConvTransposed1-3** (1D, 2D, and 3D) across all numerical types.
+*   **Transformer Support**: Native **LayerMultiHeadAttention** (with RoPE, GQA/MQA, and Causal Masking), **LayerSwiGLU**, **LayerRMSNorm**, and **LayerLayerNorm**.
+*   **RNN Support**: Native support for **LayerRNN** and **LayerLSTM** with full polymorphism.
+*   **Embedding Support**: Efficient **LayerEmbedding** lookups for large vocabularies.
 *   **Bandwidth Optimization**: Targets a 75-80% reduction in weight size, specifically designed to break the memory bandwidth bottleneck on consumer hardware (e.g., Turing/GTX 1650 Super).
 
 ### II. Polymorphic Layer-Morphing (POLY)
@@ -39,8 +41,8 @@ go run tva/poly/example.go
 ```
 
 ### Key Performance Insights
-*   **Memory Savings**: Low-bit types achieve up to **96.4% memory reduction** for LSTMs and **96.9%** for CNNs compared to FP32.
-*   **Deterministic CPU Anchor**: On CPU, the engine handles all 21 types with explicit loops (and future SIMD/AVX paths), providing a low-power, **Deterministic Reference** for hardware-agnostic research.
+*   **Memory Savings**: Low-bit types achieve up to **96.9% memory reduction** across all major layers (MHA, Conv, LSTM, SwiGLU).
+*   **Deterministic CPU Anchor**: On CPU, the engine handles all 21 types with explicit loops, providing a low-power, **Deterministic Reference** for hardware-agnostic research.
 *   **GPU "High Gear" (Tiling)**: Moving from CPU to GPU flips the bottleneck. By using **Tiling (L1 Caching)** and massive parallelism, the GPU bypasses the 192 GB/s bandwidth wall. The same deterministic logic from the CPU is executed at hardware-saturation speeds, aiming for **90+ tokens/s** for models like SmolLM2 135M.
 
 ---

@@ -22,6 +22,7 @@ const (
 	LayerConvTransposed1D   LayerType = 10
 	LayerConvTransposed2D   LayerType = 11
 	LayerConvTransposed3D   LayerType = 12
+	LayerEmbedding          LayerType = 13
 )
 
 // ActivationType defines the activation function
@@ -264,6 +265,9 @@ type VolumetricLayer struct {
 	DModel     int
 	SeqLength    int
 	RoPEFreqBase float64
+
+	VocabSize    int
+	EmbeddingDim int
 }
 
 // NewVolumetricNetwork initializes a 3D grid of layers.
