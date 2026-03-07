@@ -15,7 +15,7 @@ The engine provides a "Universal Dispatcher" supporting native forward and backw
     *   **Low-Bit**: FP8 (E4M3/E5M2), Int4, Uint4, FP4 (E2M1)
     *   **Extreme**: Int2, Uint2, Ternary (-1, 0, 1), Binary (1-bit)
 *   **CNN Support**: Native support for **LayerCNN1**, **LayerCNN2**, and **LayerCNN3** (1D, 2D, and 3D Convolutions) across all numerical types.
-*   **RNN/LSTM Support**: Native support for **LayerRNN** and **LayerLSTM** with BPTT (Backpropagation Through Time) across all numerical types.
+*   **RNN/LSTM/SwiGLU Support**: Native support for **LayerRNN**, **LayerLSTM**, and **LayerSwiGLU** with full polymorphism.
 *   **Bandwidth Optimization**: Targets a 75-80% reduction in weight size, specifically designed to break the memory bandwidth bottleneck on consumer hardware (e.g., Turing/GTX 1650 Super).
 
 ### II. Polymorphic Layer-Morphing (POLY)

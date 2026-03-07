@@ -24,7 +24,7 @@ func DispatchLayerBackward[T Numeric](layer *VolumetricLayer, gradOutput, input,
 		// Stubs for future stage 2/3 kernels
 		return gradOutput, nil
 	case LayerSwiGLU:
-		return gradOutput, nil
+		return SwiGLUBackwardPolymorphic(layer, gradOutput, input, preAct)
 	case LayerRMSNorm:
 		return RMSNormBackwardPolymorphic(layer, gradOutput, input, preAct)
 	case LayerLayerNorm:

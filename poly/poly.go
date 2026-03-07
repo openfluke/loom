@@ -41,6 +41,13 @@ func Activate[T Numeric](v T, act ActivationType) T {
 			return 0
 		}
 		return v
+	case ActivationSilu:
+		// x * sigmoid(x)
+		return v * T(1.0/(1.0+math.Exp(-float64(v))))
+	case ActivationGELU:
+		// 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+		v64 := float64(v)
+		return T(0.5 * v64 * (1.0 + math.Tanh(math.Sqrt(2.0/math.Pi)*(v64+0.044715*math.Pow(v64, 3)))))
 	case ActivationTanh:
 		return T(math.Tanh(float64(v)))
 	case ActivationSigmoid:
@@ -60,6 +67,19 @@ func ActivateDerivative[T Numeric](v T, act ActivationType) T {
 			return 0
 		}
 		return 1
+	case ActivationSilu:
+		// SiLU(x) = x * sig(x)
+		// d/dx = sig(x) + x * sig(x) * (1 - sig(x)) = sig(x) * (1 + x*(1-sig(x)))
+		x := float64(v)
+		sig := 1.0 / (1.0 + math.Exp(-x))
+		return T(sig * (1.0 + x*(1.0-sig)))
+	case ActivationGELU:
+		// Approximate derivative: 0.5 * (1 + erf(x/sqrt(2))) + (x/sqrt(2*pi)) * exp(-x^2/2)
+		// For simplicity using the tanh approximation derivative form:
+		v64 := float64(v)
+		cdf := 0.5 * (1.0 + math.Tanh(math.Sqrt(2.0/math.Pi)*(v64+0.044715*math.Pow(v64, 3))))
+		pdf := math.Exp(-0.5*v64*v64) / math.Sqrt(2.0*math.Pi)
+		return T(cdf + v64*pdf)
 	case ActivationTanh:
 		v64 := float64(v)
 		return T(1.0 - v64*v64)
