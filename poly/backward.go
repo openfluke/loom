@@ -40,6 +40,10 @@ func DispatchLayerBackward[T Numeric](layer *VolumetricLayer, gradOutput, input,
 		return KMeansBackwardPolymorphic(layer, gradOutput, input, preAct)
 	case LayerSoftmax:
 		return SoftmaxBackwardPolymorphic(layer, gradOutput, input, preAct)
+	case LayerParallel:
+		return ParallelBackwardPolymorphic(layer, gradOutput, input, preAct)
+	case LayerSequential:
+		return SequentialBackwardPolymorphic(layer, gradOutput, input, preAct)
 	default:
 		return DenseBackwardPolymorphic(layer, gradOutput, input, preAct)
 	}

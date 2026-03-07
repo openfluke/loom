@@ -84,9 +84,9 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 			// 4. Update Weights
 			for idx := range n.Layers {
 				l := &n.Layers[idx]
-				if l.WeightStore != nil && layerGradients[idx][1] != nil {
+				if layerGradients[idx][1] != nil {
 					gW := ConvertTensor[T, float32](layerGradients[idx][1])
-					l.WeightStore.ApplyGradients(gW, config.LearningRate)
+					ApplyRecursiveGradients(l, gW, config.LearningRate)
 				}
 			}
 		}
@@ -158,4 +158,37 @@ func ComputeLossGradient[T Numeric](output, target *Tensor[T], lossType string) 
 		}
 	}
 	return grad
+}
+// ApplyRecursiveGradients traverses the layer hierarchy and updates weights in all nested WeightStores.
+func ApplyRecursiveGradients(layer *VolumetricLayer, gradWeights *Tensor[float32], lr float32) {
+	if layer == nil || gradWeights == nil {
+		return
+	}
+
+	// 1. Update local weights if they exist
+	if layer.WeightStore != nil {
+		layer.WeightStore.ApplyGradients(gradWeights, lr)
+	}
+
+	// 2. Recursively update Parallel branches
+	if layer.Type == LayerParallel && len(layer.ParallelBranches) > 0 && len(gradWeights.Nested) > 0 {
+		for i := range layer.ParallelBranches {
+			if i < len(gradWeights.Nested) {
+				ApplyRecursiveGradients(&layer.ParallelBranches[i], gradWeights.Nested[i], lr)
+			}
+		}
+	}
+
+	// 3. Recursively update Sequential stages
+	if layer.Type == LayerSequential && len(layer.SequentialLayers) > 0 && len(gradWeights.Nested) > 0 {
+		for i := range layer.SequentialLayers {
+			if i < len(gradWeights.Nested) {
+				// Sequential intermediates are containers: [0]=bPre, [1]=bInput
+				// But gradWeights for Sequential is just a tree of weights.
+				// Wait, SequentialBackward returns &Tensor[T]{Nested: branchGradWeights}
+				// So gradWeights.Nested[i] IS the gradWeights for sub-layer i.
+				ApplyRecursiveGradients(&layer.SequentialLayers[i], gradWeights.Nested[i], lr)
+			}
+		}
+	}
 }

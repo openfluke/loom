@@ -25,6 +25,8 @@ const (
 	LayerEmbedding          LayerType = 13
 	LayerKMeans             LayerType = 14
 	LayerSoftmax            LayerType = 15
+	LayerParallel           LayerType = 16
+	LayerSequential         LayerType = 17
 )
 
 // ActivationType defines the activation function
@@ -201,9 +203,10 @@ type Numeric interface {
 
 // Tensor wraps numerical data with metadata.
 type Tensor[T Numeric] struct {
-	Data  []T
-	DType DType
-	Shape []int
+	Data   []T
+	DType  DType
+	Shape  []int
+	Nested []*Tensor[T] // For recursive activation caching in Parallel/Sequential layers
 }
 
 // NewTensor creates a new tensor with the given shape.
@@ -228,13 +231,27 @@ func NewTensorFromSlice[T Numeric](data []T, shape ...int) *Tensor[T] {
 
 // ConvertTensor converts a tensor from one numeric type to another.
 func ConvertTensor[In Numeric, Out Numeric](in *Tensor[In]) *Tensor[Out] {
+	if in == nil {
+		return nil
+	}
 	outData := make([]Out, len(in.Data))
 	for i, v := range in.Data {
 		outData[i] = Out(v)
 	}
+	
+	var nested []*Tensor[Out]
+	if len(in.Nested) > 0 {
+		nested = make([]*Tensor[Out], len(in.Nested))
+		for i, n := range in.Nested {
+			nested[i] = ConvertTensor[In, Out](n)
+		}
+	}
+
 	return &Tensor[Out]{
-		Data:  outData,
-		Shape: in.Shape,
+		Data:   outData,
+		Shape:  in.Shape,
+		DType:  in.DType,
+		Nested: nested,
 	}
 }
 
@@ -251,7 +268,8 @@ type VolumetricNetwork struct {
 
 // VolumetricLayer represents a processing unit in the 3D volumetric grid.
 type VolumetricLayer struct {
-	Type        LayerType
+	Network *VolumetricNetwork
+	Type    LayerType
 	Activation  ActivationType
 	DType       DType
 	WeightStore *WeightStore
@@ -299,6 +317,19 @@ type VolumetricLayer struct {
 	EntmaxAlpha     float64
 	Mask            []bool
 	GumbelNoise     bool
+
+	ParallelBranches []VolumetricLayer
+	CombineMode      string // "concat", "add", "avg", "filter", "grid_scatter"
+	FilterGateConfig *VolumetricLayer
+
+	// Spatial Routing (Remote Links)
+	IsRemoteLink bool
+	TargetZ      int
+	TargetY      int
+	TargetX      int
+	TargetL      int
+
+	SequentialLayers []VolumetricLayer
 }
 
 // NewVolumetricNetwork initializes a 3D grid of layers.
@@ -321,6 +352,7 @@ func NewVolumetricNetwork(depth, rows, cols, layersPerCell int) *VolumetricNetwo
 				for l := 0; l < layersPerCell; l++ {
 					idx := n.GetIndex(z, y, x, l)
 					layers[idx] = VolumetricLayer{
+						Network:    n,
 						Type:       LayerDense,
 						Activation: ActivationReLU,
 						DType:      DTypeFloat32,

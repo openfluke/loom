@@ -40,6 +40,10 @@ func DispatchLayer[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct,
 		return KMeansForwardPolymorphic(layer, input)
 	case LayerSoftmax:
 		return SoftmaxForwardPolymorphic(layer, input)
+	case LayerParallel:
+		return ParallelForwardPolymorphic(layer, input)
+	case LayerSequential:
+		return SequentialForwardPolymorphic(layer, input)
 	default:
 		return DenseForwardPolymorphic(layer, input)
 	}
