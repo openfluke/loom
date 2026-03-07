@@ -12,7 +12,7 @@ func SoftmaxForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[
 
 	n := len(input.Data)
 	preAct = input
-	postAct = NewTensor[T](n)
+	postAct = NewTensor[T](input.Shape...)
 
 	// Determine logic based on variant
 	switch layer.SoftmaxType {
@@ -114,9 +114,9 @@ func GetLogits[T Numeric](data []T, temp float64, dtype DType) []float32 {
 }
 
 // SoftmaxBackwardPolymorphic computes gradients for ALL Softmax variants.
-func SoftmaxBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
-	n := len(gradOutput.Data)
-	gradInput = NewTensor[T](n)
+func SoftmaxBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, postAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	n := len(input.Data)
+	gradInput = NewTensor[T](input.Shape...)
 	gradWeights = nil
 
 	rows := 1
@@ -148,7 +148,7 @@ func SoftmaxBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, i
 			// In VTD, the probabilities are in the post-activation state.
 			// The caller (Backward) usually passes preAct, but for activation-layers,
 			// preAct IS the output in some conventions, or we assume it's cached.
-			probs[i-start] = float32(preAct.Data[i])
+			probs[i-start] = float32(postAct.Data[i])
 			grads[i-start] = float32(gradOutput.Data[i])
 		}
 

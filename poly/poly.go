@@ -105,8 +105,8 @@ func ActivateDerivative[T Numeric](v T, act ActivationType) T {
 		pdf := math.Exp(-0.5*v64*v64) / math.Sqrt(2.0*math.Pi)
 		return T(cdf + v64*pdf)
 	case ActivationTanh:
-		v64 := float64(v)
-		return T(1.0 - v64*v64)
+		t := math.Tanh(float64(v))
+		return T(1.0 - t*t)
 	case ActivationSigmoid:
 		s := 1.0 / (1.0 + math.Exp(-float64(v)))
 		return T(s * (1.0 - s))

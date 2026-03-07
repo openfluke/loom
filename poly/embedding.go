@@ -6,8 +6,10 @@ func EmbeddingForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tenso
 	embeddingDim := layer.EmbeddingDim
 	seqLen := len(input.Data)
 
-	preAct = NewTensor[T](seqLen, embeddingDim)
-	postAct = NewTensor[T](seqLen, embeddingDim)
+	outShape := append([]int{}, input.Shape...)
+	outShape = append(outShape, embeddingDim)
+	preAct = NewTensor[T](outShape...)
+	postAct = NewTensor[T](outShape...)
 
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil { weights = layer.WeightStore.Master }

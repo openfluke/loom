@@ -14,8 +14,10 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 	seqLen := len(input.Data) / dModel
 	kvDim := numKVHeads * headDim
 	
-	preAct = NewTensor[T](seqLen, dModel)
-	postAct = NewTensor[T](seqLen, dModel)
+	outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)
+	outShape = append(outShape, dModel)
+	preAct = NewTensor[T](outShape...)
+	postAct = NewTensor[T](outShape...)
 	
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil { weights = layer.WeightStore.Master }

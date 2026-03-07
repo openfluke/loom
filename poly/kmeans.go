@@ -109,9 +109,11 @@ func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 	assignments := Softmax(logits)
 	
 	if layer.KMeansOutputMode == "features" {
-		// Output mode: weighted sum of cluster centers (reconstruction)
-		preAct = NewTensor[T](featureDim)
-		postAct = NewTensor[T](featureDim)
+	// Output mode: weighted sum of cluster centers (reconstruction)
+	outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)
+	outShape = append(outShape, featureDim)
+	preAct = NewTensor[T](outShape...)
+	postAct = NewTensor[T](outShape...)
 		
 		// Fallback for reconstruction logic (using float32 intermediate)
 		wData := CastWeights[float32](weights)
@@ -128,8 +130,10 @@ func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 		}
 	} else {
 		// Output mode: probabilities (K outputs)
-		preAct = NewTensor[T](numClusters)
-		postAct = NewTensor[T](numClusters)
+		outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)
+		outShape = append(outShape, numClusters)
+		preAct = NewTensor[T](outShape...)
+		postAct = NewTensor[T](outShape...)
 		for k := 0; k < numClusters; k++ {
 			preAct.Data[k] = T(assignments[k])
 			postAct.Data[k] = Activate(preAct.Data[k], layer.Activation)

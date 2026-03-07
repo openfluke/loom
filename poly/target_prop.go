@@ -46,6 +46,7 @@ func DefaultTargetPropConfig() *TargetPropConfig {
 // TargetPropState tracks the bidirectional signal flow.
 type TargetPropState[T Numeric] struct {
 	ForwardActs     []*Tensor[T]
+	PreActs         []*Tensor[T] // Internal pre-activation states for weight-bearing layers
 	BackwardTargets []*Tensor[T]
 
 	// Chain Rule storage
@@ -67,6 +68,7 @@ func NewTargetPropState[T Numeric](n *VolumetricNetwork, config *TargetPropConfi
 	total := len(n.Layers)
 	return &TargetPropState[T]{
 		ForwardActs:     make([]*Tensor[T], total+1),
+		PreActs:         make([]*Tensor[T], total+1),
 		BackwardTargets: make([]*Tensor[T], total+1),
 		Gradients:       make([]*Tensor[float32], total+1),
 		LinkBudgets:     make([]float32, total),
@@ -83,7 +85,8 @@ func TargetPropForward[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], i
 	current := input
 	for i := range n.Layers {
 		l := &n.Layers[i]
-		_, post := DispatchLayer(l, current)
+		pre, post := DispatchLayer(l, current)
+		s.PreActs[i+1] = pre
 		s.ForwardActs[i+1] = post
 		current = post
 	}
@@ -119,7 +122,10 @@ func TargetPropBackwardChainRule[T Numeric](n *VolumetricNetwork, s *TargetPropS
 	for i := s.TotalLayers - 1; i >= 0; i-- {
 		l := &n.Layers[i]
 		input := s.ForwardActs[i]
-		preAct := s.ForwardActs[i+1]
+		preAct := s.PreActs[i+1]
+		if preAct == nil {
+			preAct = s.ForwardActs[i+1] // Fallback for pure activation layers
+		}
 		if input == nil {
 			continue
 		}
@@ -131,6 +137,7 @@ func TargetPropBackwardChainRule[T Numeric](n *VolumetricNetwork, s *TargetPropS
 
 		// Target = Actual + Grad * Scale
 		targetT := NewTensor[T](input.Shape...)
+
 		for j := range targetT.Data {
 			val := float32(input.Data[j]) + f32GradIn.Data[j]*s.Config.GradientScale
 			targetT.Data[j] = T(val)
@@ -146,8 +153,8 @@ func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetProp
 
 	for i := s.TotalLayers - 1; i >= 0; i-- {
 		l := &n.Layers[i]
-		
-		// Mesh-Aware: The target for this layer's output might have been 
+
+		// Mesh-Aware: The target for this layer's output might have been
 		// propagated from a layer further down the grid.
 		currentTarget := s.BackwardTargets[i+1]
 		if currentTarget == nil {
@@ -191,13 +198,13 @@ func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetProp
 			}
 		case LayerRNN:
 			// For RNN, calculate input target using wIH
-			inSize := l.InputHeight
+			inSize := l.InputChannels
 			hiddenSize := l.OutputHeight
 			if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
 				weights := l.WeightStore.Master
 				ihSize := hiddenSize * inSize
 				wIH := weights[0:ihSize]
-				
+
 				seqLen := len(input.Data) / inSize
 				for s := 0; s < seqLen; s++ {
 					for in := 0; in < inSize; in++ {
@@ -208,7 +215,11 @@ func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetProp
 							if wIdx < len(wIH) {
 								w := wIH[wIdx]
 								importance += w * float32(currentTarget.Data[s*hiddenSize+h])
-								if w < 0 { totalWeight -= w } else { totalWeight += w }
+								if w < 0 {
+									totalWeight -= w
+								} else {
+									totalWeight += w
+								}
 							}
 						}
 						if totalWeight > 0.01 {
@@ -219,23 +230,25 @@ func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetProp
 			}
 		case LayerLSTM:
 			// For LSTM, calculate target by aggregating signals through all 4 gates
-			inSize := l.InputHeight
+			inSize := l.InputChannels
 			hiddenSize := l.OutputHeight
 			if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
 				weights := l.WeightStore.Master
+				// In LSTMForwardPolymorphic, each gate weight size is ihSize + hhSize + bSize
+				// gateWeightCount = ihSize + hhSize + bSize
 				ihSize := hiddenSize * inSize
 				hhSize := hiddenSize * hiddenSize
 				bSize := hiddenSize
-				gateSize := ihSize + hhSize + bSize
-				
-				// Map the 4 gates
+				gateWeightCount := ihSize + hhSize + bSize
+
+				// Map the 4 gates (using only Input-to-Hidden for back-targeting simplicity)
 				gates := [][]float32{
-					weights[0 : gateSize],            // Input
-					weights[gateSize : 2*gateSize],  // Forget
-					weights[2*gateSize : 3*gateSize], // Cell
-					weights[3*gateSize : 4*gateSize], // Output
+					weights[0:ihSize], // Input (IH part)
+					weights[gateWeightCount : gateWeightCount+ihSize],     // Forget (IH part)
+					weights[2*gateWeightCount : 2*gateWeightCount+ihSize], // Cell (IH part)
+					weights[3*gateWeightCount : 3*gateWeightCount+ihSize], // Output (IH part)
 				}
-				
+
 				seqLen := len(input.Data) / inSize
 				for s := 0; s < seqLen; s++ {
 					for in := 0; in < inSize; in++ {
@@ -248,7 +261,11 @@ func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetProp
 								if wIdx < len(wIH) {
 									w := wIH[wIdx]
 									importance += w * float32(currentTarget.Data[s*hiddenSize+h])
-									if w < 0 { totalWeight -= w } else { totalWeight += w }
+									if w < 0 {
+										totalWeight -= w
+									} else {
+										totalWeight += w
+									}
 								}
 							}
 						}
@@ -297,7 +314,7 @@ func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetProp
 				// In SwiGLU, Down weights start after Gate and Up weights
 				// Gate (in * int), Up (in * int), Down (int * in)
 				downWStart := 2 * inSize * intermediateSize
-				
+
 				seqLen := len(input.Data) / inSize
 				for s := 0; s < seqLen; s++ {
 					for in := 0; in < intermediateSize; in++ { // Propagate back to preAct
@@ -317,11 +334,11 @@ func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetProp
 						}
 						// Simplification: Not full SwiGLU inverse, just mapping down_proj inverse
 						if totalWeight > 0.01 {
-							// For actual SwiGLU in TargetProp, we'd need a more complex mapping 
+							// For actual SwiGLU in TargetProp, we'd need a more complex mapping
 							// matching the intermediate size. For now, pass activation.
 						}
 					}
-					// For SwiGLU layer input itself, it's easier to pass input as target 
+					// For SwiGLU layer input itself, it's easier to pass input as target
 					// and rely on Gap Updates directly.
 				}
 			}
@@ -456,13 +473,15 @@ func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPro
 			ihSize := outSize * inSize
 			hhSize := outSize * outSize
 			wIH, wHH, bH := weights[0:ihSize], weights[ihSize:ihSize+hhSize], weights[ihSize+hhSize:]
-			
+
 			seqLen := len(input.Data) / inSize
 			for s := 0; s < seqLen; s++ {
 				for out := 0; out < outSize; out++ {
 					g := gap[s*outSize+out]
 					// Update Bias
-					if out < len(bH) { bH[out] += layerRate * g }
+					if out < len(bH) {
+						bH[out] += layerRate * g
+					}
 					// Update IH weights
 					for in := 0; in < inSize; in++ {
 						wIdx := out*inSize + in
@@ -487,7 +506,7 @@ func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPro
 			hhSize := outSize * outSize
 			bSize := outSize
 			gateSize := ihSize + hhSize + bSize
-			
+
 			seqLen := len(input.Data) / inSize
 			for s := 0; s < seqLen; s++ {
 				for g := 0; g < 4; g++ {
@@ -495,11 +514,13 @@ func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPro
 					wIH := weights[gateOffset : gateOffset+ihSize]
 					wHH := weights[gateOffset+ihSize : gateOffset+ihSize+hhSize]
 					bH := weights[gateOffset+ihSize+hhSize : gateOffset+gateSize]
-					
+
 					for out := 0; out < outSize; out++ {
 						localGap := gap[s*outSize+out]
 						// Update Bias
-						if out < len(bH) { bH[out] += layerRate * localGap * 0.25 }
+						if out < len(bH) {
+							bH[out] += layerRate * localGap * 0.25
+						}
 						// Update IH
 						for in := 0; in < inSize; in++ {
 							wIdx := out*inSize + in
@@ -547,7 +568,7 @@ func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPro
 					for in := 0; in < intermediateSize; in++ { // Propagated from preAct
 						wIdx := downWStart + in*inSize + out
 						if wIdx < len(weights) {
-							// For true localized learning, we'd need preAct 
+							// For true localized learning, we'd need preAct
 							// Simplification: just direct weight gap adjustment based on in/out parity
 							weights[wIdx] += layerRate * g * 0.1
 						}
@@ -560,7 +581,7 @@ func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPro
 				gamma := l.WeightStore.Master[:outSize]
 				for out := 0; out < outSize && out < len(gap); out++ {
 					// Gamma controls scaling. If gap is positive, we need more output, increase gamma.
-					gamma[out] += layerRate * gap[out] * 0.01 
+					gamma[out] += layerRate * gap[out] * 0.01
 				}
 			}
 		}
