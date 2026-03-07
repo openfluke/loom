@@ -258,7 +258,8 @@ type VolumetricLayer struct {
 	NumKVHeads int
 	HeadDim    int
 	DModel     int
-	SeqLength  int
+	SeqLength    int
+	RoPEFreqBase float64
 }
 
 // NewVolumetricNetwork initializes a 3D grid of layers.
