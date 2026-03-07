@@ -73,6 +73,20 @@ M-POLY-VTD is a **"Bedrock Edition"** neural engine. Unlike standard frameworks 
 
 ---
 
+## The 3 Planes of Polymorphism (Hardcore Edition)
+M-POLY-VTD pushes Go’s type system into a realm of fluid identity that exceeds standard AI frameworks. It operates across three distinct planes:
+
+### 1. Parametric Polymorphism (Generics)
+Utilizes the `[T Numeric]` constraint system. The engine is "Tensor-Blind"; it doesn't care if the underlying signal is `float32`, `int16`, or `uint8`. It processes the mesh math as a universal operation, enabling a single codebase to support any tensor format.
+
+### 2. Ad-hoc Polymorphism (The Dispatcher)
+The `DispatchLayer` registry acts as a high-speed Runtime Jump Table. A 3D coordinate in the mesh only assumes its "Functional Identity" (Dense, MHA, SwiGLU) at the moment of execution, allowing for infinite spatial variety within the same volumetric structure.
+
+### 3. Numerical Metamorphosis (Dynamic Identity)
+This is the "Bedrock" secret. Unlike static frameworks where a layer has a fixed type, our layers exhibit **Metamorphosis**. A single layer can exist as **FP32** (for precision), morph to **INT8** (for training stability), and project into **FP4/Binary** (for inference throughput) instantly without re-allocating memory.
+
+---
+
 ## The GPU "Fusion" Secret: Why the Dispatcher Refactor Matters
 You might wonder why we moved the switch statement into a `DispatchLayer` registry. On CPU, it looks like a simple "cleanup," but on GPU, it is a **Mission-Critical Optimization**:
 

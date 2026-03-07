@@ -113,7 +113,7 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 		}
 	}
 
-	wData := castWeights[T](weights)
+	wData := CastWeights[T](weights)
 
 	for b := 0; b < batchSize; b++ {
 		for o := 0; o < outputSize; o++ {
@@ -179,7 +179,7 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 	if weights == nil {
 		weights = layer.WeightStore.Master
 	}
-	wData := castWeights[T](weights)
+	wData := CastWeights[T](weights)
 
 	// Local grad for pre-activation
 	gradPre := make([]float32, batchSize*outputSize)
@@ -286,79 +286,3 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 	return gradInput, gradWeights
 }
 
-// castWeights is a helper to treat any weight store data as the target type.
-// This supports the "architecture that can handle every numerical type" goal.
-func castWeights[T Numeric](weights any) []T {
-	switch w := weights.(type) {
-	case []float32:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []float64:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []int64:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []int32:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []int16:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []int8:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []uint64:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []uint32:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []uint16:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []uint8:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []int:
-		res := make([]T, len(w))
-		for i, v := range w {
-			res[i] = T(v)
-		}
-		return res
-	case []T:
-		return w
-	default:
-		return nil
-	}
-}

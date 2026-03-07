@@ -2,7 +2,6 @@ package poly
 
 import (
 	"fmt"
-	"time"
 )
 
 // LayerType defines the type of neural network layer
@@ -178,57 +177,6 @@ func ConvertTensor[In Numeric, Out Numeric](in *Tensor[In]) *Tensor[Out] {
 	}
 }
 
-// WeightStore manages multiple numerical versions of the same weights.
-// This is the core of "Polymorphic Layer-Morphing".
-type WeightStore struct {
-	Master   []float32     // Master FP32 weights (Source of Truth)
-	Versions map[DType]any // Active versions (e.g., map[DTypeFP4][]byte)
-	Scale    float32       // Quantization scale factor
-}
-
-// NewWeightStore creates a new storage for weights.
-func NewWeightStore(size int) *WeightStore {
-	return &WeightStore{
-		Master:   make([]float32, size),
-		Versions: make(map[DType]any),
-		Scale:    1.0,
-	}
-}
-
-// GetActive returns the data for the given DType if it exists.
-func (ws *WeightStore) GetActive(dtype DType) any {
-	return ws.Versions[dtype]
-}
-
-// SetVersion stores a converted version of weights.
-func (ws *WeightStore) SetVersion(dtype DType, data any) {
-	ws.Versions[dtype] = data
-}
-
-// SizeInBytes calculates the memory footprint of the currently active version.
-func (ws *WeightStore) SizeInBytes(dtype DType) int {
-	count := len(ws.Master)
-	switch dtype {
-	case DTypeFloat64, DTypeInt64, DTypeUint64:
-		return count * 8
-	case DTypeFloat32, DTypeInt32, DTypeUint32:
-		return count * 4
-	case DTypeFloat16, DTypeBFloat16, DTypeInt16, DTypeUint16:
-		return count * 2
-	case DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2:
-		return count * 1
-	case DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary:
-		// Grouping sub-byte types for estimation
-		if dtype == DTypeInt2 || dtype == DTypeUint2 || dtype == DTypeTernary {
-			return (count + 3) / 4 // 4 weights per byte
-		}
-		return (count + 1) / 2 // 2 weights per byte
-	case DTypeBinary:
-		return (count + 7) / 8 // 8 weights per byte
-	default:
-		return count * 4
-	}
-}
 
 // VolumetricNetwork represents a 3D grid neural network.
 type VolumetricNetwork struct {
@@ -335,46 +283,3 @@ func MorphLayer(layer *VolumetricLayer, target DType) error {
 	return nil
 }
 
-// DispatchLayer acts as the universal routing hub for all layer types.
-// This is the "Jump Table" that handles numerical metamorphosis across 50+ layer types.
-func DispatchLayer[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
-	switch layer.Type {
-	case LayerDense:
-		return DenseForwardPolymorphic(layer, input)
-	case LayerMultiHeadAttention:
-		// Stubs for future stage 2/3 kernels
-		return nil, input
-	case LayerSwiGLU:
-		return nil, input
-	case LayerRMSNorm:
-		return nil, input
-	default:
-		return nil, input
-	}
-}
-
-// ForwardPolymorphic executes the network using a unified generic dispatcher.
-// It iterates through the 3D grid and handles DType transitions between layers.
-func ForwardPolymorphic[T Numeric](n *VolumetricNetwork, input *Tensor[T]) (*Tensor[T], time.Duration) {
-	start := time.Now()
-	currentTensor := input
-
-	for z := 0; z < n.Depth; z++ {
-		for y := 0; y < n.Rows; y++ {
-			for x := 0; x < n.Cols; x++ {
-				for l := 0; l < n.LayersPerCell; l++ {
-					layer := n.GetLayer(z, y, x, l)
-					if layer == nil || layer.IsDisabled {
-						continue
-					}
-
-					// UNIFIED REGISTRY DISPATCH
-					_, post := DispatchLayer(layer, currentTensor)
-					currentTensor = post
-				}
-			}
-		}
-	}
-
-	return currentTensor, time.Since(start)
-}
