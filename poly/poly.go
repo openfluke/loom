@@ -19,6 +19,9 @@ const (
 	LayerRNN                LayerType = 7
 	LayerLSTM               LayerType = 8
 	LayerLayerNorm          LayerType = 9
+	LayerConvTransposed1D   LayerType = 10
+	LayerConvTransposed2D   LayerType = 11
+	LayerConvTransposed3D   LayerType = 12
 )
 
 // ActivationType defines the activation function
@@ -253,6 +256,7 @@ type VolumetricLayer struct {
 	KernelSize    int
 	Stride        int
 	Padding       int
+	OutputPadding int
 
 	NumHeads   int
 	NumKVHeads int

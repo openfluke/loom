@@ -28,6 +28,12 @@ func DispatchLayerBackward[T Numeric](layer *VolumetricLayer, gradOutput, input,
 		return RMSNormBackwardPolymorphic(layer, gradOutput, input, preAct)
 	case LayerLayerNorm:
 		return LayerNormBackwardPolymorphic(layer, gradOutput, input, preAct)
+	case LayerConvTransposed1D:
+		return ConvTransposed1DBackwardPolymorphic(layer, gradOutput, input, preAct)
+	case LayerConvTransposed2D:
+		return ConvTransposed2DBackwardPolymorphic(layer, gradOutput, input, preAct)
+	case LayerConvTransposed3D:
+		return ConvTransposed3DBackwardPolymorphic(layer, gradOutput, input, preAct)
 	default:
 		return DenseBackwardPolymorphic(layer, gradOutput, input, preAct)
 	}

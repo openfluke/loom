@@ -28,6 +28,12 @@ func DispatchLayer[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct,
 		return RMSNormForwardPolymorphic(layer, input)
 	case LayerLayerNorm:
 		return LayerNormForwardPolymorphic(layer, input)
+	case LayerConvTransposed1D:
+		return ConvTransposed1DForwardPolymorphic(layer, input)
+	case LayerConvTransposed2D:
+		return ConvTransposed2DForwardPolymorphic(layer, input)
+	case LayerConvTransposed3D:
+		return ConvTransposed3DForwardPolymorphic(layer, input)
 	default:
 		return DenseForwardPolymorphic(layer, input)
 	}
