@@ -10,6 +10,12 @@ func DispatchLayer[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct,
 	switch layer.Type {
 	case LayerDense:
 		return DenseForwardPolymorphic(layer, input)
+	case LayerCNN1:
+		return CNN1ForwardPolymorphic(layer, input)
+	case LayerCNN2:
+		return CNN2ForwardPolymorphic(layer, input)
+	case LayerCNN3:
+		return CNN3ForwardPolymorphic(layer, input)
 	case LayerMultiHeadAttention:
 		// Stubs for future stage 2/3 kernels
 		return nil, input

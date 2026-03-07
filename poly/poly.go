@@ -12,6 +12,9 @@ const (
 	LayerMultiHeadAttention LayerType = 1
 	LayerSwiGLU             LayerType = 2
 	LayerRMSNorm            LayerType = 3
+	LayerCNN1               LayerType = 4
+	LayerCNN2               LayerType = 5
+	LayerCNN3               LayerType = 6
 )
 
 // ActivationType defines the activation function
@@ -203,13 +206,23 @@ type VolumetricLayer struct {
 	L int // Layer index within cell
 
 	// Config (Expanding from LayerConfig)
-	InputHeight  int
-	OutputHeight int
-	NumHeads     int
-	NumKVHeads   int
-	HeadDim      int
-	DModel       int
-	SeqLength    int
+	InputHeight   int
+	InputWidth    int
+	InputDepth    int
+	OutputHeight  int
+	OutputWidth   int
+	OutputDepth   int
+	InputChannels int
+	Filters       int
+	KernelSize    int
+	Stride        int
+	Padding       int
+
+	NumHeads   int
+	NumKVHeads int
+	HeadDim    int
+	DModel     int
+	SeqLength  int
 }
 
 // NewVolumetricNetwork initializes a 3D grid of layers.

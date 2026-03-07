@@ -10,6 +10,12 @@ func DispatchLayerBackward[T Numeric](layer *VolumetricLayer, gradOutput, input,
 	switch layer.Type {
 	case LayerDense:
 		return DenseBackwardPolymorphic(layer, gradOutput, input, preAct)
+	case LayerCNN1:
+		return CNN1BackwardPolymorphic(layer, gradOutput, input, preAct)
+	case LayerCNN2:
+		return CNN2BackwardPolymorphic(layer, gradOutput, input, preAct)
+	case LayerCNN3:
+		return CNN3BackwardPolymorphic(layer, gradOutput, input, preAct)
 	case LayerMultiHeadAttention:
 		// Stubs for future stage 2/3 kernels
 		return gradOutput, nil
