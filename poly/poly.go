@@ -18,6 +18,7 @@ const (
 	LayerCNN3               LayerType = 6
 	LayerRNN                LayerType = 7
 	LayerLSTM               LayerType = 8
+	LayerLayerNorm          LayerType = 9
 )
 
 // ActivationType defines the activation function

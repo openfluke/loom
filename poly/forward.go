@@ -26,7 +26,9 @@ func DispatchLayer[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct,
 	case LayerSwiGLU:
 		return nil, input
 	case LayerRMSNorm:
-		return nil, input
+		return RMSNormForwardPolymorphic(layer, input)
+	case LayerLayerNorm:
+		return LayerNormForwardPolymorphic(layer, input)
 	default:
 		return DenseForwardPolymorphic(layer, input)
 	}
