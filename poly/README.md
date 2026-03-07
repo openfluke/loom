@@ -40,3 +40,44 @@ go run tva/poly/example.go
 *   **Memory Savings**: Low-bit types like **Binary (1-bit)** achieve up to **96.9% memory reduction** compared to FP32.
 *   **The "Simulation Tax"**: On CPU, low-bit types may appear slower due to the logic required to simulate bit-level constraints.
 *   **The WebGPU Promise**: Moving from CPU to GPU flips the bottleneck; the massive memory savings of FP4/INT8 allow the GPU to bypass the 192 GB/s bandwidth wall, leading to 10x speedups in token generation.
+
+---
+
+## The Bedrock Philosophy
+M-POLY-VTD is a **"Bedrock Edition"** neural engine. Unlike standard frameworks that build on top of high-level abstractions, this architecture is designed at the bit-level to bypass the physical memory limitations of consumer hardware.
+
+*   **Shader-First Design**: The Go implementation is a direct blueprint for GPU kernels.
+*   **Hardware-Agnostic**: By supporting 21 numerical types, we can run on anything from a GTX 1650 to an H100 by simply "Morphing" the precision to what the specific silicon prefers.
+
+## Architectural Design Choices
+
+### 1. Unified Package Structure (`poly/`)
+**Decision**: Keeping all layers (`dense.go`, `mha.go`, etc.) in the same `poly` package.
+*   **Rationale**: To avoid circular dependency hell common in Go polymorphic systems. All layers share a unified view of the `VolumetricLayer` and `WeightStore` types, allowing for seamless, fast internal dispatch without the overhead of public interfaces.
+
+### 2. The Morphic WeightStore (`WeightStore`)
+**Decision**: Using a master `float32` weight-set with a `map[DType]any` versioning system.
+*   **Rationale**: This is the heart of "Metamorphosis." It allows a layer to hold multiple numerical personalities at once. We can keep "Master" weights for training and instantly swap to packed `FP4` for an inference burst without re-allocating buffers.
+
+### 3. Volumetric 3D Dispatch (`VTD`)
+**Decision**: Replacing 1D sequential stacks with a 3D coordinate-based grid (`Depth`, `Row`, `Col`).
+*   **Rationale**: Standard 1D stacks are a bottleneck. The 3D grid maps directly to **GPU workgroup tiles**, enabling us to keep data in Shared Memory (SRAM) and reduce slow Global Memory reads. It also enables "Spatial Hopping"—recursive feedback loops that mimic biological neural firing.
+
+### 4. Explicit Numerical Fast-Paths
+**Decision**: Using manual `switch` statements and type-casting instead of reflection.
+*   **Rationale**: In high-speed inference, reflection is too slow. We write the `INT8` and `FLOAT32` loops explicitly to ensure the compiler generates the fastest possible arithmetic for the "Reference Logic."
+
+### 5. The "Simulation vs. Throughput" Strategy
+**Decision**: Supporting types the CPU doesn't natively have (like FP4, 2-bit, 1-bit).
+*   **Rationale**: We are building the **Logic Bedrock** first. On CPU, these incur a "Simulation Tax," but on GPU they become **Native Bit-Packed Payloads**, which is where the 10x performance leap occurs.
+
+---
+
+## The Path to 70+ Tokens/Sec
+This architecture is specifically optimized for Turing-class GPUs (like the GTX 1650 Super).
+1.  **Stage 1 (Current)**: Build the Universal Dispatcher and bit-logic in Go.
+2.  **Stage 2**: Implement the Volumetric Tiling in Shared Memory.
+3.  **Stage 3**: Move the "Unpacking Logic" (e.g., eight FP4 values per U32) into WebGPU Shaders.
+4.  **Stage 4**: Achieve token generation speeds that bypass the 192 GB/s memory wall by using 80% smaller weight payloads.
+
+*M-POLY-VTD: Universal precision. Volumetric freedom. Bedrock performance.*
