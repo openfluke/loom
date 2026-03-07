@@ -17,6 +17,7 @@ const (
 	LayerCNN2               LayerType = 5
 	LayerCNN3               LayerType = 6
 	LayerRNN                LayerType = 7
+	LayerLSTM               LayerType = 8
 )
 
 // ActivationType defines the activation function
@@ -27,6 +28,7 @@ const (
 	ActivationSilu   ActivationType = 1
 	ActivationGELU   ActivationType = 2
 	ActivationTanh   ActivationType = 3
+	ActivationSigmoid ActivationType = 4
 	ActivationLinear ActivationType = -1
 )
 
@@ -40,6 +42,8 @@ func Activate[T Numeric](v T, act ActivationType) T {
 		return v
 	case ActivationTanh:
 		return T(math.Tanh(float64(v)))
+	case ActivationSigmoid:
+		return T(1.0 / (1.0 + math.Exp(-float64(v))))
 	case ActivationLinear:
 		return v
 	default:
@@ -58,6 +62,9 @@ func ActivateDerivative[T Numeric](v T, act ActivationType) T {
 	case ActivationTanh:
 		v64 := float64(v)
 		return T(1.0 - v64*v64)
+	case ActivationSigmoid:
+		s := 1.0 / (1.0 + math.Exp(-float64(v)))
+		return T(s * (1.0 - s))
 	case ActivationLinear:
 		return 1
 	default:

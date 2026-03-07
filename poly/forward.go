@@ -18,6 +18,8 @@ func DispatchLayer[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct,
 		return CNN3ForwardPolymorphic(layer, input)
 	case LayerRNN:
 		return RNNForwardPolymorphic(layer, input)
+	case LayerLSTM:
+		return LSTMForwardPolymorphic(layer, input)
 	case LayerMultiHeadAttention:
 		// Stubs for future stage 2/3 kernels
 		return nil, input
