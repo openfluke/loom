@@ -1,6 +1,6 @@
 package poly
 
-import "math"
+
 
 // =============================================================================
 // CNN1 (1D Convolution) Polymorphic
@@ -190,33 +190,7 @@ func CNN1ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 							val := float32(input.Data[inIdx])
 							wVal := float32(wData[kWIdx])
 
-							// Precision Simulation
-							switch layer.DType {
-							case DTypeBFloat16:
-								u32 := math.Float32bits(wVal)
-								u32 &= 0xFFFF0000
-								wVal = math.Float32frombits(u32)
-							case DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt8, DTypeUint8, DTypeInt16, DTypeUint16:
-								wVal = float32(int8(wVal/scale)) * scale
-							case DTypeInt4, DTypeUint4, DTypeFP4:
-								wVal = float32(int(wVal/scale)) * scale
-							case DTypeInt2, DTypeUint2:
-								wVal = float32(int(wVal*2/scale)) * scale / 2
-							case DTypeTernary:
-								if wVal > 0.5*scale {
-									wVal = scale
-								} else if wVal < -0.5*scale {
-									wVal = -scale
-								} else {
-									wVal = 0
-								}
-							case DTypeBinary:
-								if wVal > 0 {
-									wVal = scale
-								} else {
-									wVal = -scale
-								}
-							}
+							wVal = SimulatePrecision(wVal, layer.DType, scale)
 							sum += val * wVal
 						}
 					}

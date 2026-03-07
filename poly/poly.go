@@ -2,6 +2,7 @@ package poly
 
 import (
 	"fmt"
+	"math"
 )
 
 // LayerType defines the type of neural network layer
@@ -15,6 +16,7 @@ const (
 	LayerCNN1               LayerType = 4
 	LayerCNN2               LayerType = 5
 	LayerCNN3               LayerType = 6
+	LayerRNN                LayerType = 7
 )
 
 // ActivationType defines the activation function
@@ -24,6 +26,7 @@ const (
 	ActivationReLU   ActivationType = 0
 	ActivationSilu   ActivationType = 1
 	ActivationGELU   ActivationType = 2
+	ActivationTanh   ActivationType = 3
 	ActivationLinear ActivationType = -1
 )
 
@@ -35,6 +38,8 @@ func Activate[T Numeric](v T, act ActivationType) T {
 			return 0
 		}
 		return v
+	case ActivationTanh:
+		return T(math.Tanh(float64(v)))
 	case ActivationLinear:
 		return v
 	default:
@@ -50,6 +55,9 @@ func ActivateDerivative[T Numeric](v T, act ActivationType) T {
 			return 0
 		}
 		return 1
+	case ActivationTanh:
+		v64 := float64(v)
+		return T(1.0 - v64*v64)
 	case ActivationLinear:
 		return 1
 	default:
@@ -296,3 +304,43 @@ func MorphLayer(layer *VolumetricLayer, target DType) error {
 	return nil
 }
 
+// SimulatePrecision handles the numerical simulation of low-bit and non-standard types.
+// It is the universal "Metamorphosis" engine used across Dense, CNN, and RNN layers.
+func SimulatePrecision(wVal float32, dtype DType, scale float32) float32 {
+	switch dtype {
+	case DTypeFloat64, DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32:
+		return wVal
+	case DTypeBFloat16:
+		u32 := math.Float32bits(wVal)
+		u32 &= 0xFFFF0000
+		return math.Float32frombits(u32)
+	case DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt8, DTypeUint8, DTypeInt16, DTypeUint16:
+		return float32(int8(wVal/scale)) * scale
+	case DTypeInt4, DTypeUint4, DTypeFP4:
+		return float32(int(wVal/scale)) * scale
+	case DTypeInt2, DTypeUint2:
+		// 2-bit simulation (4 levels)
+		return float32(int(wVal*2/scale)) * scale / 2
+	case DTypeTernary:
+		// Ternary (-1, 0, 1)
+		if wVal > 0.5*scale {
+			return scale
+		} else if wVal < -0.5*scale {
+			return -scale
+		} else {
+			return 0
+		}
+	case DTypeBinary:
+		if wVal > 0 {
+			return scale
+		} else {
+			return -scale
+		}
+	case DTypeFloat16:
+		// Simulated truncation (float32 to float16)
+		// For now, identity simulation
+		return wVal
+	default:
+		return wVal
+	}
+}
