@@ -17,7 +17,8 @@ The engine provides a "Universal Dispatcher" supporting native forward and backw
 *   **CNN/ConvTransposed Support**: Native support for **LayerCNN1-3** and **LayerConvTransposed1-3** (1D, 2D, and 3D) across all numerical types.
 *   **Transformer Support**: Native **LayerMultiHeadAttention** (with RoPE, GQA/MQA, and Causal Masking), **LayerSwiGLU**, **LayerRMSNorm**, and **LayerLayerNorm**.
 *   **RNN Support**: Native support for **LayerRNN** and **LayerLSTM** with full polymorphism.
-*   **Embedding Support**: Efficient **LayerEmbedding** lookups for large vocabularies.
+*   **Universal Softmax Engine**: Exhaustive **LayerSoftmax** support including Standard, Grid, Hierarchical, Gumbel, Masked, Sparsemax, and Entmax (1.5) across all 21 types.
+*   **Embedding/KMeans Support**: Efficient **LayerEmbedding** lookups and differentiable **LayerKMeans** clustering with native fast-paths.
 *   **Bandwidth Optimization**: Targets a 75-80% reduction in weight size, specifically designed to break the memory bandwidth bottleneck on consumer hardware (e.g., Turing/GTX 1650 Super).
 
 ### II. Polymorphic Layer-Morphing (POLY)

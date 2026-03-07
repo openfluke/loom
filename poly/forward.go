@@ -36,6 +36,10 @@ func DispatchLayer[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct,
 		return ConvTransposed3DForwardPolymorphic(layer, input)
 	case LayerEmbedding:
 		return EmbeddingForwardPolymorphic(layer, input)
+	case LayerKMeans:
+		return KMeansForwardPolymorphic(layer, input)
+	case LayerSoftmax:
+		return SoftmaxForwardPolymorphic(layer, input)
 	default:
 		return DenseForwardPolymorphic(layer, input)
 	}

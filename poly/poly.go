@@ -23,6 +23,8 @@ const (
 	LayerConvTransposed2D   LayerType = 11
 	LayerConvTransposed3D   LayerType = 12
 	LayerEmbedding          LayerType = 13
+	LayerKMeans             LayerType = 14
+	LayerSoftmax            LayerType = 15
 )
 
 // ActivationType defines the activation function
@@ -35,6 +37,22 @@ const (
 	ActivationTanh   ActivationType = 3
 	ActivationSigmoid ActivationType = 4
 	ActivationLinear ActivationType = -1
+)
+
+// SoftmaxType defines the variant of softmax to use
+type SoftmaxType int
+
+const (
+	SoftmaxStandard     SoftmaxType = 0
+	SoftmaxGrid         SoftmaxType = 1
+	SoftmaxHierarchical SoftmaxType = 2
+	SoftmaxTemperature  SoftmaxType = 3
+	SoftmaxGumbel       SoftmaxType = 4
+	SoftmaxMasked       SoftmaxType = 5
+	SoftmaxSparse       SoftmaxType = 6
+	SoftmaxAdaptive     SoftmaxType = 7
+	SoftmaxMixture      SoftmaxType = 8
+	SoftmaxEntmax       SoftmaxType = 9
 )
 
 // Activate applies the activation function to a value.
@@ -268,6 +286,19 @@ type VolumetricLayer struct {
 
 	VocabSize    int
 	EmbeddingDim int
+
+	NumClusters       int
+	KMeansTemperature float64
+	KMeansOutputMode  string // "probabilities" or "features"
+
+	SoftmaxType     SoftmaxType
+	Temperature     float64
+	SoftmaxRows     int
+	SoftmaxCols     int
+	HierarchyLevels []int
+	EntmaxAlpha     float64
+	Mask            []bool
+	GumbelNoise     bool
 }
 
 // NewVolumetricNetwork initializes a 3D grid of layers.
