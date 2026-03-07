@@ -70,15 +70,26 @@ M-POLY-VTD is a **"Bedrock Edition"** neural engine. Unlike standard frameworks 
 **Decision**: Replacing 1D sequential stacks with a 3D coordinate-based grid (`Depth`, `Row`, `Col`).
 *   **Rationale**: Standard 1D stacks are a bottleneck. The 3D grid maps directly to **GPU workgroup tiles**. It also enables "Spatial Hopping"—recursive feedback loops that mimic biological neural firing. By treating the network as a mesh, we unlock non-linear data flows (Parallel Expert Gating, Skip-Connections) that are impossible in sequential pipelines.
 
-### 4. Recursive Neural Trees (`Tensor.Nested`)
+### 4. Systolic Grid Propagation (Neural Mesh)
+Unlike the standard sequential flow, the **Systolic Engine** treats the 3D grid as a cycle-accurate discrete-time mesh.
+
+- **Neural Clock**: Every coordinate fires simultaneously in a single "pulse" or clock cycle.
+- **Double Buffering**: Prevents race conditions, ensuring a stable wave of data through space-time.
+- **Spatial Feedback**: Remote links can hop signals backwards in coordinates, creating dynamic recurrence (RNN-like behavior) across the 3D mesh.
+- **BPTT (Backpropagation Through Time)**: Gradients are unrolled through clock cycles and spatial junctions, allowing the grid to learn complex temporal patterns.
+
+> [!TIP]
+> Use `poly.SystolicForward` and `poly.SystolicBackward` when you need a "living network" that evolves over time rather than a static pipeline. o_O
+
+### 5. Recursive Neural Trees (`Tensor.Nested`)
 **Decision**: Implementing a recursive `Nested` field in the `Tensor` struct.
 *   **Rationale**: To support nesting (`Parallel`/`Sequential`) without losing the ability to train. This creates an **Activation Tree** during the forward pass and a **Gradient Tree** during the backward pass, establishing a "Plug-and-Learn" bedrock where any complex sub-architecture is automatically differentiable.
 
-### 4. Explicit Numerical Fast-Paths
+### 6. Explicit Numerical Fast-Paths
 **Decision**: Using manual `switch` statements and type-casting instead of reflection.
 *   **Rationale**: In high-speed inference, reflection is too slow. We write the `INT8` and `FLOAT32` loops explicitly to ensure the compiler generates the fastest possible arithmetic for the "Reference Logic."
 
-### 5. The "Simulation vs. Throughput" Strategy
+### 7. The "Simulation vs. Throughput" Strategy
 **Decision**: Supporting types the CPU doesn't natively have (like FP4, 2-bit, 1-bit).
 *   **Rationale**: We are building the **Logic Bedrock** first. On CPU, these incur a "Simulation Tax," but on GPU they become **Native Bit-Packed Payloads**, which is where the 10x performance leap occurs.
 

@@ -229,6 +229,44 @@ func NewTensorFromSlice[T Numeric](data []T, shape ...int) *Tensor[T] {
 	}
 }
 
+// Clone creates a deep copy of the tensor.
+func (t *Tensor[T]) Clone() *Tensor[T] {
+	if t == nil {
+		return nil
+	}
+	newData := make([]T, len(t.Data))
+	copy(newData, t.Data)
+	var nested []*Tensor[T]
+	if len(t.Nested) > 0 {
+		nested = make([]*Tensor[T], len(t.Nested))
+		for i, n := range t.Nested {
+			nested[i] = n.Clone()
+		}
+	}
+	return &Tensor[T]{
+		Data:   newData,
+		DType:  t.DType,
+		Shape:  t.Shape,
+		Nested: nested,
+	}
+}
+
+// Add adds another tensor's data to this one (in-place).
+func (t *Tensor[T]) Add(other *Tensor[T]) {
+	if t == nil || other == nil || len(t.Data) != len(other.Data) {
+		return
+	}
+	for i := range t.Data {
+		t.Data[i] += other.Data[i]
+	}
+	// Recursively add nested tensors
+	if len(t.Nested) > 0 && len(other.Nested) == len(t.Nested) {
+		for i := range t.Nested {
+			t.Nested[i].Add(other.Nested[i])
+		}
+	}
+}
+
 // ConvertTensor converts a tensor from one numeric type to another.
 func ConvertTensor[In Numeric, Out Numeric](in *Tensor[In]) *Tensor[Out] {
 	if in == nil {
