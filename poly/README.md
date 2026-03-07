@@ -18,7 +18,8 @@ The engine provides a "Universal Dispatcher" supporting native forward and backw
 *   **Transformer Support**: Native **LayerMultiHeadAttention** (with RoPE, GQA/MQA, and Causal Masking), **LayerSwiGLU**, **LayerRMSNorm**, and **LayerLayerNorm**.
 *   **RNN Support**: Native support for **LayerRNN** and **LayerLSTM** with full polymorphism.
 *   **Universal Softmax Engine**: Exhaustive **LayerSoftmax** support including Standard, Grid, Hierarchical, Gumbel, Masked, Sparsemax, and Entmax (1.5) across all 21 types.
-*   **Embedding/KMeans Support**: Efficient **LayerEmbedding** lookups and differentiable **LayerKMeans** clustering with native fast-paths.
+*   **Universal Nesting & Training**: Support for **LayerParallel** (add, avg, concat, filter/MoE) and **LayerSequential** with recursive **Activation/Gradient Trees** for deep, trainable hierarchies.
+*   **Embedding/KMeans Support**: Efficient **LayerEmbedding** lookups and differentiable **LayerKMeans** clustering.
 *   **Bandwidth Optimization**: Targets a 75-80% reduction in weight size, specifically designed to break the memory bandwidth bottleneck on consumer hardware (e.g., Turing/GTX 1650 Super).
 
 ### II. Polymorphic Layer-Morphing (POLY)
@@ -29,7 +30,8 @@ Every layer is a polymorphic unit capable of **metamorphosis**.
 
 ### III. Volumetric Tensor Dispatch (VTD)
 Replaces the traditional 2D sequential execution with a **3D Volumetric Coordinate System** (Depth, Row, Col, Layer).
-*   **Spatial Hopping**: Enables recursive passing and spatial layer-hopping, simulating the feedback loops of biological neural systems.
+*   **Spatial Hopping**: Enables recursive passing and 3D spatial routing via `IsRemoteLink`. Any layer can "hop" across coordinates, simulating biological feedback loops.
+*   **Recursive Backpropagation**: A hierarchical training system that caches intermediates in a "Neural Tree," allowing signals to flow bidirectionally through arbitrary nesting.
 *   **Tiling Strategy**: Built for future GPU integration where each 3D coordinate maps to a Shared Memory workgroup tile, aiming for a **70+ token/s** performance ceiling for models like SmolLM2.
 
 ## Performance Benchmarking
@@ -66,7 +68,11 @@ M-POLY-VTD is a **"Bedrock Edition"** neural engine. Unlike standard frameworks 
 
 ### 3. Volumetric 3D Dispatch (`VTD`)
 **Decision**: Replacing 1D sequential stacks with a 3D coordinate-based grid (`Depth`, `Row`, `Col`).
-*   **Rationale**: Standard 1D stacks are a bottleneck. The 3D grid maps directly to **GPU workgroup tiles**, enabling us to keep data in Shared Memory (SRAM) and reduce slow Global Memory reads. It also enables "Spatial Hopping"—recursive feedback loops that mimic biological neural firing.
+*   **Rationale**: Standard 1D stacks are a bottleneck. The 3D grid maps directly to **GPU workgroup tiles**. It also enables "Spatial Hopping"—recursive feedback loops that mimic biological neural firing. By treating the network as a mesh, we unlock non-linear data flows (Parallel Expert Gating, Skip-Connections) that are impossible in sequential pipelines.
+
+### 4. Recursive Neural Trees (`Tensor.Nested`)
+**Decision**: Implementing a recursive `Nested` field in the `Tensor` struct.
+*   **Rationale**: To support nesting (`Parallel`/`Sequential`) without losing the ability to train. This creates an **Activation Tree** during the forward pass and a **Gradient Tree** during the backward pass, establishing a "Plug-and-Learn" bedrock where any complex sub-architecture is automatically differentiable.
 
 ### 4. Explicit Numerical Fast-Paths
 **Decision**: Using manual `switch` statements and type-casting instead of reflection.
