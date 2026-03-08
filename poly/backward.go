@@ -6,8 +6,10 @@ import (
 
 // DispatchLayerBackward acts as the universal routing hub for gradients.
 // This handles the backward pass metamorphosis for various layer types.
-func DispatchLayerBackward[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+func DispatchLayerBackward[T Numeric](layer *VolumetricLayer, gradOutput, input, skip, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
 	switch layer.Type {
+	case LayerResidual:
+		return ResidualBackwardPolymorphic(layer, gradOutput, input, preAct)
 	case LayerDense:
 		return DenseBackwardPolymorphic(layer, gradOutput, input, preAct)
 	case LayerCNN1:
@@ -73,7 +75,7 @@ func BackwardPolymorphic[T Numeric](n *VolumetricNetwork, gradOutput *Tensor[T],
 
 					// DISPATCH BACKWARD
 					lStart := time.Now()
-					gIn, gW := DispatchLayerBackward(layer, currentGrad, input, preAct)
+					gIn, gW := DispatchLayerBackward(layer, currentGrad, input, nil, preAct)
 					layerTimes[idx] = time.Since(lStart)
 					currentGrad = gIn
 					layerGradients[idx] = [2]*Tensor[T]{gIn, gW}

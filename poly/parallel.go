@@ -21,7 +21,7 @@ func ParallelForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor
 		}
 
 		// Recursive dispatch
-		bPre, bOut := DispatchLayer(target, input)
+		bPre, bOut := DispatchLayer(target, input, nil)
 		branchOutputs[i] = bOut
 		branchPreActs[i] = bPre
 
@@ -62,7 +62,7 @@ func ParallelForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor
 	case "filter":
 		// MoE style gating
 		if layer.FilterGateConfig != nil {
-			_, gateOut := DispatchLayer(layer.FilterGateConfig, input)
+			_, gateOut := DispatchLayer(layer.FilterGateConfig, input, nil)
 			// Apply Softmax to gate coefficients
 			gateLogits := make([]float32, len(layer.ParallelBranches))
 			for i := range gateLogits {
@@ -130,7 +130,7 @@ func ParallelBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, 
 				bPre = preAct.Nested[i]
 			}
 			
-			gIn, gW := DispatchLayerBackward(target, scaledGrad, input, bPre)
+			gIn, gW := DispatchLayerBackward(target, scaledGrad, input, nil, bPre)
 			branchGradWeights[i] = gW
 			
 			if gIn != nil {
@@ -154,7 +154,7 @@ func ParallelBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, 
 
 			// Determine size for slicing
 			size := 0
-			_, out := DispatchLayer(target, input)
+			_, out := DispatchLayer(target, input, nil)
 			size = len(out.Data)
 			
 			branchGrad := NewTensorFromSlice(gradOutput.Data[offset:offset+size], size)
@@ -164,7 +164,7 @@ func ParallelBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, 
 				bPre = preAct.Nested[i]
 			}
 			
-			gIn, gW := DispatchLayerBackward(target, branchGrad, input, bPre)
+			gIn, gW := DispatchLayerBackward(target, branchGrad, input, nil, bPre)
 			branchGradWeights[i] = gW
 			
 			if gIn != nil {

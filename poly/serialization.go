@@ -209,8 +209,12 @@ func ParseLayerType(s string) LayerType {
 	case "KMEANS": return LayerKMeans
 	case "SOFTMAX": return LayerSoftmax
 	case "PARALLEL": return LayerParallel
-	case "SEQUENTIAL": return LayerSequential
-	default: return LayerDense
+	case "RESIDUAL":
+		return LayerResidual
+	case "SEQUENTIAL":
+		return LayerSequential
+	default:
+ return LayerDense
 	}
 }
 

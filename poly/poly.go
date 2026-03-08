@@ -27,6 +27,7 @@ const (
 	LayerSoftmax            LayerType = 15
 	LayerParallel           LayerType = 16
 	LayerSequential         LayerType = 17
+	LayerResidual           LayerType = 18
 )
 
 func (t LayerType) String() string {
@@ -67,6 +68,8 @@ func (t LayerType) String() string {
 		return "Parallel"
 	case LayerSequential:
 		return "Sequential"
+	case LayerResidual:
+		return "Residual"
 	default:
 		return fmt.Sprintf("LayerType(%d)", t)
 	}

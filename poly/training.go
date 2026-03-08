@@ -69,7 +69,8 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 					continue
 				}
 				histIn[idx] = curr
-				pre, post := DispatchLayer(l, curr)
+				// Forward pass one layer
+				pre, post := DispatchLayer(l, curr, nil) // Updated line
 				histPre[idx] = pre
 				curr = post
 			}

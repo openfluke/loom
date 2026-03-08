@@ -85,7 +85,7 @@ func TargetPropForward[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], i
 	current := input
 	for i := range n.Layers {
 		l := &n.Layers[i]
-		pre, post := DispatchLayer(l, current)
+		pre, post := DispatchLayer(l, current, nil)
 		s.PreActs[i+1] = pre
 		s.ForwardActs[i+1] = post
 		current = post
@@ -130,7 +130,7 @@ func TargetPropBackwardChainRule[T Numeric](n *VolumetricNetwork, s *TargetPropS
 			continue
 		}
 
-		gIn, _ := DispatchLayerBackward(l, ConvertTensor[float32, T](currentGrad), input, preAct)
+		gIn, _ := DispatchLayerBackward(l, ConvertTensor[float32, T](currentGrad), input, preAct, nil)
 		f32GradIn := ConvertTensor[T, float32](gIn)
 		s.Gradients[i] = f32GradIn
 		currentGrad = f32GradIn

@@ -6,8 +6,10 @@ import (
 
 // DispatchLayer acts as the universal routing hub for all layer types.
 // This is the "Jump Table" that handles numerical metamorphosis across 50+ layer types.
-func DispatchLayer[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+func DispatchLayer[T Numeric](layer *VolumetricLayer, input, skip *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	switch layer.Type {
+	case LayerResidual:
+		return ResidualForwardPolymorphic(layer, input, skip)
 	case LayerDense:
 		return DenseForwardPolymorphic(layer, input)
 	case LayerCNN1:
@@ -68,7 +70,7 @@ func ForwardPolymorphic[T Numeric](n *VolumetricNetwork, input *Tensor[T]) (*Ten
 
 					// UNIFIED REGISTRY DISPATCH
 					lStart := time.Now()
-					_, post := DispatchLayer(layer, currentTensor)
+					_, post := DispatchLayer(layer, currentTensor, nil)
 					layerTimes[idx] = time.Since(lStart)
 					currentTensor = post
 				}

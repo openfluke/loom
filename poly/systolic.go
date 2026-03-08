@@ -114,7 +114,7 @@ func SystolicForward[T Numeric](n *VolumetricNetwork, s *SystolicState[T], captu
 		}
 
 		// Dispatch and capture
-		pre, post := DispatchLayer(l, input)
+		pre, post := DispatchLayer(l, input, nil)
 		s.NextBuffer[idx] = post
 
 		if captureHistory {
@@ -189,7 +189,7 @@ func SystolicBackward[T Numeric](n *VolumetricNetwork, s *SystolicState[T], grad
 			}
 
 			// DISPATCH BACKWARD
-			gIn, gW := DispatchLayerBackward(l, currentGrad, input, pre)
+			gIn, gW := DispatchLayerBackward(l, currentGrad, input, pre, nil)
 			
 			// Accumulate weight gradients for this layer
 			if layerGradients[idx][1] == nil {
