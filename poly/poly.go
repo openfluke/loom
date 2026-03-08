@@ -31,25 +31,44 @@ const (
 
 func (t LayerType) String() string {
 	switch t {
-	case LayerDense:              return "Dense"
-	case LayerMultiHeadAttention: return "MultiHeadAttention"
-	case LayerSwiGLU:             return "SwiGLU"
-	case LayerRMSNorm:            return "RMSNorm"
-	case LayerCNN1:               return "CNN1"
-	case LayerCNN2:               return "CNN2"
-	case LayerCNN3:               return "CNN3"
-	case LayerRNN:                return "RNN"
-	case LayerLSTM:               return "LSTM"
-	case LayerLayerNorm:          return "LayerNorm"
-	case LayerConvTransposed1D:   return "ConvTransposed1D"
-	case LayerConvTransposed2D:   return "ConvTransposed2D"
-	case LayerConvTransposed3D:   return "ConvTransposed3D"
-	case LayerEmbedding:          return "Embedding"
-	case LayerKMeans:             return "KMeans"
-	case LayerSoftmax:            return "Softmax"
-	case LayerParallel:           return "Parallel"
-	case LayerSequential:         return "Sequential"
-	default:                      return fmt.Sprintf("LayerType(%d)", t)
+	case LayerDense:
+		return "Dense"
+	case LayerMultiHeadAttention:
+		return "MultiHeadAttention"
+	case LayerSwiGLU:
+		return "SwiGLU"
+	case LayerRMSNorm:
+		return "RMSNorm"
+	case LayerCNN1:
+		return "CNN1"
+	case LayerCNN2:
+		return "CNN2"
+	case LayerCNN3:
+		return "CNN3"
+	case LayerRNN:
+		return "RNN"
+	case LayerLSTM:
+		return "LSTM"
+	case LayerLayerNorm:
+		return "LayerNorm"
+	case LayerConvTransposed1D:
+		return "ConvTransposed1D"
+	case LayerConvTransposed2D:
+		return "ConvTransposed2D"
+	case LayerConvTransposed3D:
+		return "ConvTransposed3D"
+	case LayerEmbedding:
+		return "Embedding"
+	case LayerKMeans:
+		return "KMeans"
+	case LayerSoftmax:
+		return "Softmax"
+	case LayerParallel:
+		return "Parallel"
+	case LayerSequential:
+		return "Sequential"
+	default:
+		return fmt.Sprintf("LayerType(%d)", t)
 	}
 }
 
@@ -57,12 +76,12 @@ func (t LayerType) String() string {
 type ActivationType int
 
 const (
-	ActivationReLU   ActivationType = 0
-	ActivationSilu   ActivationType = 1
-	ActivationGELU   ActivationType = 2
-	ActivationTanh   ActivationType = 3
+	ActivationReLU    ActivationType = 0
+	ActivationSilu    ActivationType = 1
+	ActivationGELU    ActivationType = 2
+	ActivationTanh    ActivationType = 3
 	ActivationSigmoid ActivationType = 4
-	ActivationLinear ActivationType = -1
+	ActivationLinear  ActivationType = -1
 )
 
 // SoftmaxType defines the variant of softmax to use
@@ -300,7 +319,7 @@ func ConvertTensor[In Numeric, Out Numeric](in *Tensor[In]) *Tensor[Out] {
 	for i, v := range in.Data {
 		outData[i] = Out(v)
 	}
-	
+
 	var nested []*Tensor[Out]
 	if len(in.Nested) > 0 {
 		nested = make([]*Tensor[Out], len(in.Nested))
@@ -317,7 +336,6 @@ func ConvertTensor[In Numeric, Out Numeric](in *Tensor[In]) *Tensor[Out] {
 	}
 }
 
-
 // VolumetricNetwork represents a 3D grid neural network.
 type VolumetricNetwork struct {
 	Depth         int
@@ -330,8 +348,8 @@ type VolumetricNetwork struct {
 
 // VolumetricLayer represents a processing unit in the 3D volumetric grid.
 type VolumetricLayer struct {
-	Network *VolumetricNetwork
-	Type    LayerType
+	Network     *VolumetricNetwork
+	Type        LayerType
 	Activation  ActivationType
 	DType       DType
 	WeightStore *WeightStore
@@ -357,10 +375,10 @@ type VolumetricLayer struct {
 	Padding       int
 	OutputPadding int
 
-	NumHeads   int
-	NumKVHeads int
-	HeadDim    int
-	DModel     int
+	NumHeads     int
+	NumKVHeads   int
+	HeadDim      int
+	DModel       int
 	SeqLength    int
 	RoPEFreqBase float64
 

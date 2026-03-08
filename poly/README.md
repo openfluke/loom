@@ -34,7 +34,14 @@ Replaces the traditional 2D sequential execution with a **3D Volumetric Coordina
 *   **Recursive Backpropagation**: A hierarchical training system that caches intermediates in a "Neural Tree," allowing signals to flow bidirectionally through arbitrary nesting.
 *   **Tiling Strategy**: Built for future GPU integration where each 3D coordinate maps to a Shared Memory workgroup tile, aiming for a **70+ token/s** performance ceiling for models like SmolLM2.
 
-### IV. Neural Target Propagation (TargetProp)
+### IV. Hierarchical Spatial Correlation Engine (DNA)
+The DNA engine provides a topological reconstruction of neural networks, enabling comparison across disparate numerical families (e.g., FP64 vs. Binary).
+*   **Topological Diffing**: Calculate % overlap between models (Similarity Index).
+*   **Directional Geometry**: Uses Cosine Similarity to compare functional alignment rather than raw weight parity.
+*   **Cross-Depth Alignment**: Automatically tracks "Logic Shifts" where functional behavior has moved to different 3D coordinates.
+*   **Precision Agnostic**: Verified across 378 permutations (18 Layers x 21 DTypes).
+
+### V. Neural Target Propagation (TargetProp)
 A bidirectional learning alternative to traditional backpropagation that bridges the gap beTargetProp actual activations and idealized targets.
 *   **True Target Estimation**: Heuristically estimates what a layer *should* have produced by aggregating importance signals through weights (high-fidelity support for **RNN/LSTM** weight mappings).
 *   **Gap-Based Learning**: Updates weights using a Hebbian-style `delta = learningRate * input * gap` logic, bypassing the chain rule for localized, non-differentiable optimization.
