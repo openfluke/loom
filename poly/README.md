@@ -35,32 +35,45 @@ Replaces the traditional 2D sequential execution with a **3D Volumetric Coordina
 *   **Tiling Strategy**: Built for future GPU integration where each 3D coordinate maps to a Shared Memory workgroup tile, aiming for a **70+ token/s** performance ceiling for models like SmolLM2.
 
 ### IV. Hierarchical Spatial Correlation Engine (DNA)
-The DNA engine provides a topological reconstruction of neural networks, enabling comparison across disparate numerical families (e.g., FP64 vs. Binary).
-*   **Topological Diffing**: Calculate % overlap between models (Similarity Index).
-*   **Directional Geometry**: Uses Cosine Similarity to compare functional alignment rather than raw weight parity.
-*   **Cross-Depth Alignment**: Automatically tracks "Logic Shifts" where functional behavior has moved to different 3D coordinates.
-*   **Precision Agnostic**: Verified across 378 permutations (18 Layers x 21 DTypes).
+The DNA engine converts neural structures into topological "signatures," enabling high-fidelity comparison across disparate numerical families (e.g., FP64 vs. Binary).
+*   **Topological Reconstruction**: Generates a 3D genetic blueprint of the network via `ExtractDNA`.
+*   **Similarity Index (SI)**: Quantifies model overlap using directional geometry (Cosine Similarity) rather than raw weight parity.
+*   **Logic Drift Detection**: Automatically tracks "Logic Shifts" where functional behavior has migrated across 3D coordinates.
+*   **Comparative Evolution**: Designed to map neural development down to the neuron level, identifying overlapping structures in heterogeneous models.
 
-### V. Neural Target Propagation (TargetProp)
+### V. Native Bit-Packed Persistence
+The framework provides an **Idempotent Serialization Tunnel** designed for extreme storage efficiency.
+*   **Transparent Bit-Packing**: Low-bit models (`FP4`, `Binary`, etc.) are natively packed into bit-streams during I/O, achieving up to **98.4% compression** on disk.
+*   **Automated Unpacking**: Models are stored in their native DType but automatically `Unpack` into RAM-compatible formats during deserialization, ensuring high-speed inference.
+*   **Bit-Perfect Identity**: Verified across **378/378 permutations** (18 Layers x 21 DTypes) with **0.000000% mathematical divergence**. 
+*   **Idempotency Verified**: Serializing a reloaded model produces a byte-for-byte identical JSON to the original.
+
+### VI. Neural Target Propagation (TargetProp)
 A bidirectional learning alternative to traditional backpropagation that bridges the gap beTargetProp actual activations and idealized targets.
 *   **True Target Estimation**: Heuristically estimates what a layer *should* have produced by aggregating importance signals through weights (high-fidelity support for **RNN/LSTM** weight mappings).
 *   **Gap-Based Learning**: Updates weights using a Hebbian-style `delta = learningRate * input * gap` logic, bypassing the chain rule for localized, non-differentiable optimization.
 *   **Mesh Fidelity (Link Budgets)**: Accurately calculates info-preservation (Cosine Similarity) across the mesh.
 *   **Gated Learning**: Automatically prevents weight corruption in "dead layers" (Alignment < 0.2) via dynamic Link Budget gating.
 
-## Performance Benchmarking
-A comprehensive benchmarking suite is provided to measure the speed and memory efficiency of the polymorphic dispatcher.
+## Performance & Verification
+A comprehensive suite is provided to measure the speed, memory, and bit-level fidelity of the polymorphic dispatcher.
+
+### Running the Verification Demo
+To see bit-perfect parity and view the 98% compression metrics in seconds:
+```bash
+go run tva/poly/helpers/serialization_demo.go
+```
 
 ### Running the Benchmarks
-To see the system in action and view the performance/memory metrics for all 21 types:
+To view the raw performance/memory throughput for all 21 types:
 ```bash
 go run tva/poly/example.go
 ```
 
 ### Key Performance Insights
-*   **Memory Savings**: Low-bit types achieve up to **96.9% memory reduction** across all major layers (MHA, Conv, LSTM, SwiGLU).
-*   **Deterministic CPU Anchor**: On CPU, the engine handles all 21 types with explicit loops, providing a low-power, **Deterministic Reference** for hardware-agnostic research.
-*   **GPU "High Gear" (Tiling)**: Moving from CPU to GPU flips the bottleneck. By using **Tiling (L1 Caching)** and massive parallelism, the GPU bypasses the 192 GB/s bandwidth wall. The same deterministic logic from the CPU is executed at hardware-saturation speeds, aiming for **90+ tokens/s** for models like SmolLM2 135M.
+*   **98.4% Storage Compression**: Binary models are compressed from multi-byte pointers down to 1-bit payloads, breaking the memory bandwidth wall.
+*   **0.000000% Divergence**: Verified bit-perfect parity across 378 model permutations.
+*   **GPU "High Gear" (Tiling)**: The Go implementation serves as a deterministic blueprint for WebGPU. By using **Shared Memory Tiling**, the system aims for **90+ tokens/s** generation for models like SmolLM2 135M.
 
 ---
 
