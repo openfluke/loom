@@ -139,26 +139,52 @@ func initializeWeights(l *VolumetricLayer) {
 	switch l.Type {
 	case LayerDense:
 		wCount = l.InputHeight * l.OutputHeight
+	case LayerRMSNorm:
+		wCount = l.InputHeight
+	case LayerLayerNorm:
+		wCount = 2 * l.InputHeight
+	case LayerMultiHeadAttention:
+		if l.NumHeads > 0 && l.HeadDim == 0 {
+			l.HeadDim = l.DModel / l.NumHeads
+		}
+		if l.NumKVHeads == 0 {
+			l.NumKVHeads = l.NumHeads
+		}
+		kv := l.NumKVHeads * l.HeadDim
+		wCount = 2*l.DModel*l.DModel + 2*l.DModel*kv + 2*l.DModel + 2*kv
+	case LayerRNN:
+		wCount = l.InputHeight*l.InputHeight + l.InputHeight*l.InputHeight + l.InputHeight
+	case LayerLSTM:
+		gate := l.InputHeight*l.InputHeight + l.InputHeight*l.InputHeight + l.InputHeight
+		wCount = 4 * gate
+	case LayerSwiGLU:
+		// gateW + upW + downW + gateB + upB + downB
+		wCount = 3*l.InputHeight*l.OutputHeight + 2*l.OutputHeight + l.InputHeight
 	case LayerCNN1, LayerCNN2, LayerCNN3:
 		k := l.KernelSize
 		if k == 0 { k = 1 }
-		wCount = l.Filters * l.InputChannels * k * k
-		if l.Type == LayerCNN3 { wCount *= k }
-	case LayerMultiHeadAttention:
-		wCount = l.DModel * l.DModel * 4 // Simplified
-	case LayerRNN, LayerLSTM:
-		wCount = l.InputHeight * l.InputHeight * 4
-	case LayerSwiGLU:
-		wCount = l.InputHeight * l.OutputHeight * 3
+		wCount = l.Filters * l.InputChannels * k
+		if l.Type == LayerCNN2 { wCount *= k }
+		if l.Type == LayerCNN3 { wCount *= k * k }
+	case LayerConvTransposed1D, LayerConvTransposed2D, LayerConvTransposed3D:
+		k := l.KernelSize
+		if k == 0 { k = 1 }
+		wCount = l.InputChannels * l.Filters * k
+		if l.Type == LayerConvTransposed2D { wCount *= k }
+		if l.Type == LayerConvTransposed3D { wCount *= k * k }
 	case LayerEmbedding:
 		wCount = l.VocabSize * l.EmbeddingDim
 	case LayerKMeans:
 		wCount = l.NumClusters * l.InputHeight
 	}
 
+	if l.SeqLength <= 0 {
+		l.SeqLength = 1
+	}
+
 	if wCount > 0 {
 		l.WeightStore = NewWeightStore(wCount)
-		l.WeightStore.Randomize(int64(wCount)) // Use deterministic-ish seed for simple test
+		l.WeightStore.Scale = 1.0
 	}
 }
 
@@ -167,7 +193,7 @@ func ParseLayerType(s string) LayerType {
 	s = strings.ToUpper(s)
 	switch s {
 	case "DENSE": return LayerDense
-	case "MHA", "ATTENTION": return LayerMultiHeadAttention
+	case "MHA", "ATTENTION", "MULTIHEADATTENTION": return LayerMultiHeadAttention
 	case "SWIGLU": return LayerSwiGLU
 	case "RMSNORM": return LayerRMSNorm
 	case "RNN": return LayerRNN

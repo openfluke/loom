@@ -12,6 +12,60 @@ type WeightStore struct {
 	Scale    float32       // Quantization scale factor
 }
 
+// Morph converts master weights into the target DType and caches the result.
+func (ws *WeightStore) Morph(dtype DType) {
+	if dtype == DTypeFloat32 {
+		return
+	}
+	
+	// Check if already morphed
+	if _, ok := ws.Versions[dtype]; ok {
+		return
+	}
+
+	size := len(ws.Master)
+	
+	switch dtype {
+	case DTypeFloat64:
+		w := make([]float64, size)
+		for i, v := range ws.Master { w[i] = float64(v) }
+		ws.Versions[dtype] = w
+	case DTypeFloat16, DTypeBFloat16:
+		// Simulated 16-bit storage (using float32 but masked)
+		w := make([]float32, size)
+		for i, v := range ws.Master { w[i] = SimulatePrecision(v, dtype, ws.Scale) }
+		ws.Versions[dtype] = w
+	case DTypeInt64, DTypeUint64:
+		w := make([]int64, size)
+		for i, v := range ws.Master { w[i] = int64(v/ws.Scale) }
+		ws.Versions[dtype] = w
+	case DTypeInt32, DTypeUint32:
+		w := make([]int32, size)
+		for i, v := range ws.Master { w[i] = int32(v/ws.Scale) }
+		ws.Versions[dtype] = w
+	case DTypeInt16, DTypeUint16:
+		w := make([]int16, size)
+		for i, v := range ws.Master { w[i] = int16(v/ws.Scale) }
+		ws.Versions[dtype] = w
+	case DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2:
+		w := make([]int8, size)
+		for i, v := range ws.Master { w[i] = int8(v/ws.Scale) }
+		ws.Versions[dtype] = w
+	case DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary:
+		// Store as unpacked []int8 in RAM for layer compatibility
+		w := make([]int8, size)
+		for i, v := range ws.Master { w[i] = int8(v/ws.Scale) }
+		ws.Versions[dtype] = w
+	case DTypeBinary:
+		// Store as unpacked []int8 (-1 or 1) in RAM
+		w := make([]int8, size)
+		for i, v := range ws.Master {
+			if v > 0 { w[i] = 1 } else { w[i] = -1 }
+		}
+		ws.Versions[dtype] = w
+	}
+}
+
 // NewWeightStore creates a new storage for weights.
 func NewWeightStore(size int) *WeightStore {
 	return &WeightStore{
@@ -96,10 +150,7 @@ func CastWeights[T Numeric](weights any) []T {
 		return ConvertSlice[uint8, T](w)
 	default:
 		// Attempt to handle byte-packed versions (FP4, Binary, etc.)
-		// These are currently stored as []byte in the map
 		if b, ok := weights.([]byte); ok {
-			// In a full implementation, this is where the unpacker lives.
-			// For now, we cast the raw bits as T (pseudo-simulation).
 			res := make([]T, len(b))
 			for i, v := range b {
 				res[i] = T(v)
@@ -107,6 +158,27 @@ func CastWeights[T Numeric](weights any) []T {
 			return res
 		}
 		return nil
+	}
+}
+
+// Unpack reconstructs master weights from a bit-packed native version.
+func (ws *WeightStore) Unpack(dtype DType) {
+	data := ws.Versions[dtype]
+	if data == nil { return }
+	
+	switch dtype {
+	case DTypeFloat64:
+		if w, ok := data.([]float64); ok {
+			for i, v := range w { ws.Master[i] = float32(v) }
+		}
+	case DTypeFloat32, DTypeFloat16, DTypeBFloat16:
+		if w, ok := data.([]float32); ok {
+			copy(ws.Master, w)
+		}
+	case DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32, DTypeInt16, DTypeUint16, DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary, DTypeBinary:
+		// These are already unpacked slices (int8/int16/etc) in Versions during I/O
+		ws.Master = CastWeights[float32](data)
+		for i := range ws.Master { ws.Master[i] *= ws.Scale }
 	}
 }
 

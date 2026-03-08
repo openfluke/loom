@@ -100,6 +100,34 @@ const (
 	SoftmaxEntmax       SoftmaxType = 9
 )
 
+func (a ActivationType) String() string {
+	switch a {
+	case ActivationReLU: return "ReLU"
+	case ActivationSilu: return "Silu"
+	case ActivationGELU: return "GELU"
+	case ActivationTanh: return "Tanh"
+	case ActivationSigmoid: return "Sigmoid"
+	case ActivationLinear: return "Linear"
+	default: return "Linear"
+	}
+}
+
+func (s SoftmaxType) String() string {
+	switch s {
+	case SoftmaxStandard: return "Standard"
+	case SoftmaxGrid: return "Grid"
+	case SoftmaxHierarchical: return "Hierarchical"
+	case SoftmaxTemperature: return "Temperature"
+	case SoftmaxGumbel: return "Gumbel"
+	case SoftmaxMasked: return "Masked"
+	case SoftmaxSparse: return "Sparse"
+	case SoftmaxAdaptive: return "Adaptive"
+	case SoftmaxMixture: return "Mixture"
+	case SoftmaxEntmax: return "Entmax"
+	default: return "Standard"
+	}
+}
+
 // Activate applies the activation function to a value.
 func Activate[T Numeric](v T, act ActivationType) T {
 	switch act {
@@ -236,6 +264,33 @@ const (
 	DTypeTernary  DType = 19 // 2-bit (Ternary: -1, 0, 1)
 	DTypeBinary   DType = 20 // 1-bit (XNOR-Net)
 )
+
+func (d DType) String() string {
+	switch d {
+	case DTypeFloat64: return "float64"
+	case DTypeFloat32: return "float32"
+	case DTypeFloat16: return "float16"
+	case DTypeBFloat16: return "bfloat16"
+	case DTypeFP8E4M3: return "fp8e4m3"
+	case DTypeFP8E5M2: return "fp8e5m2"
+	case DTypeInt64: return "int64"
+	case DTypeInt32: return "int32"
+	case DTypeInt16: return "int16"
+	case DTypeInt8: return "int8"
+	case DTypeUint64: return "uint64"
+	case DTypeUint32: return "uint32"
+	case DTypeUint16: return "uint16"
+	case DTypeUint8: return "uint8"
+	case DTypeInt4: return "int4"
+	case DTypeUint4: return "uint4"
+	case DTypeFP4: return "fp4"
+	case DTypeInt2: return "int2"
+	case DTypeUint2: return "uint2"
+	case DTypeTernary: return "ternary"
+	case DTypeBinary: return "binary"
+	default: return fmt.Sprintf("DType(%d)", d)
+	}
+}
 
 // Numeric is a type constraint for all numeric types that Tensors can hold.
 type Numeric interface {
