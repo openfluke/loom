@@ -25,7 +25,7 @@ func NewWeightStore(size int) *WeightStore {
 func (ws *WeightStore) Randomize(seed int64) {
 	r := rand.New(rand.NewSource(seed))
 	for i := range ws.Master {
-		ws.Master[i] = (r.Float32()*2 - 1) * 0.1 // Random values between -0.1 and 0.1
+		ws.Master[i] = (r.Float32()*2 - 1) // Random values between -1.0 and 1.0
 	}
 	// Clear stale versions
 	ws.Versions = make(map[DType]any)
