@@ -57,10 +57,13 @@ func (ws *WeightStore) Morph(dtype DType) {
 		for i, v := range ws.Master { w[i] = int8(v/ws.Scale) }
 		ws.Versions[dtype] = w
 	case DTypeBinary:
-		// Store as unpacked []int8 (-1 or 1) in RAM
-		w := make([]int8, size)
+		// Store as bit-packed []uint64 (1 bit per weight)
+		packedSize := (size + 63) / 64
+		w := make([]uint64, packedSize)
 		for i, v := range ws.Master {
-			if v > 0 { w[i] = 1 } else { w[i] = -1 }
+			if v > 0 {
+				w[i/64] |= (1 << (uint(i) % 64))
+			}
 		}
 		ws.Versions[dtype] = w
 	}
@@ -114,7 +117,7 @@ func (ws *WeightStore) SizeInBytes(dtype DType) int {
 		}
 		return (count + 1) / 2 // 2 weights per byte
 	case DTypeBinary:
-		return (count + 7) / 8 // 8 weights per byte
+		return (count + 7) / 8 // 8 weights per byte (standard estimation)
 	default:
 		return count * 4
 	}
