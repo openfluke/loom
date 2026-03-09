@@ -162,16 +162,28 @@ func initializeWeights(l *VolumetricLayer) {
 		wCount = 3*l.InputHeight*l.OutputHeight + 2*l.OutputHeight + l.InputHeight
 	case LayerCNN1, LayerCNN2, LayerCNN3:
 		k := l.KernelSize
-		if k == 0 { k = 1 }
+		if k == 0 {
+			k = 1
+		}
 		wCount = l.Filters * l.InputChannels * k
-		if l.Type == LayerCNN2 { wCount *= k }
-		if l.Type == LayerCNN3 { wCount *= k * k }
+		if l.Type == LayerCNN2 {
+			wCount *= k
+		}
+		if l.Type == LayerCNN3 {
+			wCount *= k * k
+		}
 	case LayerConvTransposed1D, LayerConvTransposed2D, LayerConvTransposed3D:
 		k := l.KernelSize
-		if k == 0 { k = 1 }
+		if k == 0 {
+			k = 1
+		}
 		wCount = l.InputChannels * l.Filters * k
-		if l.Type == LayerConvTransposed2D { wCount *= k }
-		if l.Type == LayerConvTransposed3D { wCount *= k * k }
+		if l.Type == LayerConvTransposed2D {
+			wCount *= k
+		}
+		if l.Type == LayerConvTransposed3D {
+			wCount *= k * k
+		}
 	case LayerEmbedding:
 		wCount = l.VocabSize * l.EmbeddingDim
 	case LayerKMeans:
@@ -192,29 +204,46 @@ func initializeWeights(l *VolumetricLayer) {
 func ParseLayerType(s string) LayerType {
 	s = strings.ToUpper(s)
 	switch s {
-	case "DENSE": return LayerDense
-	case "MHA", "ATTENTION", "MULTIHEADATTENTION": return LayerMultiHeadAttention
-	case "SWIGLU": return LayerSwiGLU
-	case "RMSNORM": return LayerRMSNorm
-	case "RNN": return LayerRNN
-	case "LSTM": return LayerLSTM
-	case "LAYERNORM": return LayerLayerNorm
-	case "CNN1": return LayerCNN1
-	case "CNN2": return LayerCNN2
-	case "CNN3": return LayerCNN3
-	case "CONVTRANSPOSED1D": return LayerConvTransposed1D
-	case "CONVTRANSPOSED2D": return LayerConvTransposed2D
-	case "CONVTRANSPOSED3D": return LayerConvTransposed3D
-	case "EMBEDDING": return LayerEmbedding
-	case "KMEANS": return LayerKMeans
-	case "SOFTMAX": return LayerSoftmax
-	case "PARALLEL": return LayerParallel
+	case "DENSE":
+		return LayerDense
+	case "MHA", "ATTENTION", "MULTIHEADATTENTION":
+		return LayerMultiHeadAttention
+	case "SWIGLU":
+		return LayerSwiGLU
+	case "RMSNORM":
+		return LayerRMSNorm
+	case "RNN":
+		return LayerRNN
+	case "LSTM":
+		return LayerLSTM
+	case "LAYERNORM":
+		return LayerLayerNorm
+	case "CNN1":
+		return LayerCNN1
+	case "CNN2":
+		return LayerCNN2
+	case "CNN3":
+		return LayerCNN3
+	case "CONVTRANSPOSED1D":
+		return LayerConvTransposed1D
+	case "CONVTRANSPOSED2D":
+		return LayerConvTransposed2D
+	case "CONVTRANSPOSED3D":
+		return LayerConvTransposed3D
+	case "EMBEDDING":
+		return LayerEmbedding
+	case "KMEANS":
+		return LayerKMeans
+	case "SOFTMAX":
+		return LayerSoftmax
+	case "PARALLEL":
+		return LayerParallel
 	case "RESIDUAL":
 		return LayerResidual
 	case "SEQUENTIAL":
 		return LayerSequential
 	default:
- return LayerDense
+		return LayerDense
 	}
 }
 
@@ -222,13 +251,20 @@ func ParseLayerType(s string) LayerType {
 func ParseActivationType(s string) ActivationType {
 	s = strings.ToUpper(s)
 	switch s {
-	case "RELU": return ActivationReLU
-	case "SILU": return ActivationSilu
-	case "GELU": return ActivationGELU
-	case "TANH": return ActivationTanh
-	case "SIGMOID": return ActivationSigmoid
-	case "LINEAR": return ActivationLinear
-	default: return ActivationLinear
+	case "RELU":
+		return ActivationReLU
+	case "SILU":
+		return ActivationSilu
+	case "GELU":
+		return ActivationGELU
+	case "TANH":
+		return ActivationTanh
+	case "SIGMOID":
+		return ActivationSigmoid
+	case "LINEAR":
+		return ActivationLinear
+	default:
+		return ActivationLinear
 	}
 }
 
@@ -236,27 +272,49 @@ func ParseActivationType(s string) ActivationType {
 func ParseDType(s string) DType {
 	s = strings.ToUpper(s)
 	switch s {
-	case "FLOAT64", "FP64": return DTypeFloat64
-	case "FLOAT32", "FP32": return DTypeFloat32
-	case "FLOAT16", "FP16": return DTypeFloat16
-	case "BFLOAT16": return DTypeBFloat16
-	case "FP8E4M3", "FP8": return DTypeFP8E4M3
-	case "FP8E5M2": return DTypeFP8E5M2
-	case "INT64": return DTypeInt64
-	case "INT32": return DTypeInt32
-	case "INT16": return DTypeInt16
-	case "INT8": return DTypeInt8
-	case "UINT64": return DTypeUint64
-	case "UINT32": return DTypeUint32
-	case "UINT16": return DTypeUint16
-	case "UINT8": return DTypeUint8
-	case "INT4": return DTypeInt4
-	case "UINT4": return DTypeUint4
-	case "FP4": return DTypeFP4
-	case "INT2": return DTypeInt2
-	case "UINT2": return DTypeUint2
-	case "TERNARY": return DTypeTernary
-	case "BINARY": return DTypeBinary
-	default: return DTypeFloat32
+	case "FLOAT64", "FP64", "F64":
+		return DTypeFloat64
+	case "FLOAT32", "FP32", "F32":
+		return DTypeFloat32
+	case "FLOAT16", "FP16", "F16":
+		return DTypeFloat16
+	case "BFLOAT16", "BF16":
+		return DTypeBFloat16
+	case "FP8E4M3", "FP8":
+		return DTypeFP8E4M3
+	case "FP8E5M2":
+		return DTypeFP8E5M2
+	case "INT64", "I64":
+		return DTypeInt64
+	case "INT32", "I32":
+		return DTypeInt32
+	case "INT16", "I16":
+		return DTypeInt16
+	case "INT8", "I8":
+		return DTypeInt8
+	case "UINT64", "U64":
+		return DTypeUint64
+	case "UINT32", "U32":
+		return DTypeUint32
+	case "UINT16", "U16":
+		return DTypeUint16
+	case "UINT8", "U8":
+		return DTypeUint8
+	case "INT4":
+		return DTypeInt4
+	case "UINT4":
+		return DTypeUint4
+	case "FP4", "F4":
+		return DTypeFP4
+	case "INT2":
+		return DTypeInt2
+	case "UINT2":
+		return DTypeUint2
+	case "TERNARY":
+		return DTypeTernary
+	case "BINARY":
+		return DTypeBinary
+	default:
+		return DTypeFloat32
 	}
 }
