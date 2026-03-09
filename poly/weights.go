@@ -174,17 +174,7 @@ func (ws *WeightStore) Unpack(dtype DType) {
 		if w, ok := data.([]float32); ok {
 			copy(ws.Master, w)
 		}
-	case DTypeBinary:
-		if w, ok := data.([]uint64); ok {
-			for i := range ws.Master {
-				if (w[i/64] & (1 << (uint(i) % 64))) != 0 {
-					ws.Master[i] = ws.Scale
-				} else {
-					ws.Master[i] = -ws.Scale
-				}
-			}
-		}
-	case DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32, DTypeInt16, DTypeUint16, DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary:
+	case DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32, DTypeInt16, DTypeUint16, DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary, DTypeBinary:
 		// These are already unpacked slices (int8/int16/etc) in Versions during I/O
 		packed := CastWeights[float32](data)
 		for i := 0; i < len(ws.Master) && i < len(packed); i++ {
