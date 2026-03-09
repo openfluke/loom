@@ -189,7 +189,7 @@ func SystolicBackward[T Numeric](n *VolumetricNetwork, s *SystolicState[T], grad
 			}
 
 			// DISPATCH BACKWARD
-			gIn, gW := DispatchLayerBackward(l, currentGrad, input, pre, nil)
+			gIn, gW := DispatchLayerBackward(l, currentGrad, input, nil, pre)
 			
 			// Accumulate weight gradients for this layer
 			if layerGradients[idx][1] == nil {
