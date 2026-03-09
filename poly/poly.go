@@ -479,6 +479,12 @@ type VolumetricLayer struct {
 	TileSize  int
 
 	Observer PolyObserver
+
+	// KV Cache (for MHA)
+	KVCacheK *Tensor[float32]
+	KVCacheV *Tensor[float32]
+	KVOffset int
+	MaxSeqLen int
 }
 
 // AlignedFloat32 allocates a slice of float32 aligned to 64-byte boundaries.

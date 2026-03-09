@@ -32,7 +32,7 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 				for o := 0; o < outputSize; o++ {
 					var sum float64
 					for i := 0; i < inputSize; i++ {
-						sum += float64(input.Data[b*inputSize+i]) * rawW[i*outputSize+o]
+						sum += float64(input.Data[b*inputSize+i]) * rawW[o*inputSize+i]
 					}
 					preAct.Data[b*outputSize+o] = T(sum)
 					postAct.Data[b*outputSize+o] = Activate(T(sum), layer.Activation)
@@ -46,7 +46,7 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 				for o := 0; o < outputSize; o++ {
 					var sum float32
 					for i := 0; i < inputSize; i++ {
-						sum += float32(input.Data[b*inputSize+i]) * rawW[i*outputSize+o]
+						sum += float32(input.Data[b*inputSize+i]) * rawW[o*inputSize+i]
 					}
 					preAct.Data[b*outputSize+o] = T(sum)
 					postAct.Data[b*outputSize+o] = Activate(T(sum), layer.Activation)
@@ -60,7 +60,7 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 				for o := 0; o < outputSize; o++ {
 					var sum int64
 					for i := 0; i < inputSize; i++ {
-						sum += int64(input.Data[b*inputSize+i]) * rawW[i*outputSize+o]
+						sum += int64(input.Data[b*inputSize+i]) * rawW[o*inputSize+i]
 					}
 					preAct.Data[b*outputSize+o] = T(sum)
 					postAct.Data[b*outputSize+o] = Activate(T(sum), layer.Activation)
@@ -119,7 +119,7 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 			var sum float32
 			for i := 0; i < inputSize; i++ {
 				val := float32(input.Data[b*inputSize+i])
-				wVal := float32(wData[i*outputSize+o])
+				wVal := float32(wData[o*inputSize+i])
 				
 				wVal = SimulatePrecision(wVal, layer.DType, scale)
 				
@@ -162,8 +162,8 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 				for o := 0; o < outputSize; o++ {
 					g := float64(gradPre[b*outputSize+o])
 					for i := 0; i < inputSize; i++ {
-						gradWeights.Data[i*outputSize+o] += T(float64(input.Data[b*inputSize+i]) * g)
-						gradInput.Data[b*inputSize+i] += T(rawW[i*outputSize+o] * g)
+						gradWeights.Data[o*inputSize+i] += T(float64(input.Data[b*inputSize+i]) * g)
+						gradInput.Data[b*inputSize+i] += T(rawW[o*inputSize+i] * g)
 					}
 				}
 			}

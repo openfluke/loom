@@ -40,8 +40,8 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					var sumGate, sumUp float64
 					for j := 0; j < inputSize; j++ {
 						inVal := float64(input.Data[s*inputSize+j])
-						sumGate += inVal * float64(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float64(upW[j*intermediateSize+i])
+						sumGate += inVal * float64(gateW[i*inputSize+j])
+						sumUp   += inVal * float64(upW[i*inputSize+j])
 					}
 					sumGate += float64(gateB[i])
 					sumUp   += float64(upB[i])
@@ -56,7 +56,7 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 				for i := 0; i < inputSize; i++ {
 					var sum float64
 					for j := 0; j < intermediateSize; j++ {
-						sum += float64(preAct.Data[s*intermediateSize+j]) * float64(downW[j*inputSize+i])
+						sum += float64(preAct.Data[s*intermediateSize+j]) * float64(downW[i*intermediateSize+j])
 					}
 					sum += float64(downB[i])
 					postAct.Data[s*inputSize+i] = T(sum)
@@ -79,8 +79,8 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					var sumGate, sumUp float32
 					for j := 0; j < inputSize; j++ {
 						inVal := float32(input.Data[s*inputSize+j])
-						sumGate += inVal * float32(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float32(upW[j*intermediateSize+i])
+						sumGate += inVal * float32(gateW[i*inputSize+j])
+						sumUp   += inVal * float32(upW[i*inputSize+j])
 					}
 					sumGate += float32(gateB[i])
 					sumUp   += float32(upB[i])
@@ -95,7 +95,7 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 				for i := 0; i < inputSize; i++ {
 					var sum float32
 					for j := 0; j < intermediateSize; j++ {
-						sum += float32(preAct.Data[s*intermediateSize+j]) * float32(downW[j*inputSize+i])
+						sum += float32(preAct.Data[s*intermediateSize+j]) * float32(downW[i*intermediateSize+j])
 					}
 					sum += float32(downB[i])
 					postAct.Data[s*inputSize+i] = T(sum)
@@ -118,8 +118,8 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					var sumGate, sumUp float64
 					for j := 0; j < inputSize; j++ {
 						inVal := float64(input.Data[s*inputSize+j])
-						sumGate += inVal * float64(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float64(upW[j*intermediateSize+i])
+						sumGate += inVal * float64(gateW[i*inputSize+j])
+						sumUp   += inVal * float64(upW[i*inputSize+j])
 					}
 					sumGate += float64(gateB[i])
 					sumUp   += float64(upB[i])
@@ -134,7 +134,7 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 				for i := 0; i < inputSize; i++ {
 					var sum float64
 					for j := 0; j < intermediateSize; j++ {
-						sum += float64(preAct.Data[s*intermediateSize+j]) * float64(downW[j*inputSize+i])
+						sum += float64(preAct.Data[s*intermediateSize+j]) * float64(downW[i*intermediateSize+j])
 					}
 					sum += float64(downB[i])
 					postAct.Data[s*inputSize+i] = T(sum)
@@ -157,8 +157,8 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					var sumGate, sumUp float64
 					for j := 0; j < inputSize; j++ {
 						inVal := float64(input.Data[s*inputSize+j])
-						sumGate += inVal * float64(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float64(upW[j*intermediateSize+i])
+						sumGate += inVal * float64(gateW[i*inputSize+j])
+						sumUp   += inVal * float64(upW[i*inputSize+j])
 					}
 					sumGate += float64(gateB[i])
 					sumUp   += float64(upB[i])
@@ -173,7 +173,7 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 				for i := 0; i < inputSize; i++ {
 					var sum float64
 					for j := 0; j < intermediateSize; j++ {
-						sum += float64(preAct.Data[s*intermediateSize+j]) * float64(downW[j*inputSize+i])
+						sum += float64(preAct.Data[s*intermediateSize+j]) * float64(downW[i*intermediateSize+j])
 					}
 					sum += float64(downB[i])
 					postAct.Data[s*inputSize+i] = T(sum)
@@ -196,8 +196,8 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					var sumGate, sumUp float64
 					for j := 0; j < inputSize; j++ {
 						inVal := float64(input.Data[s*inputSize+j])
-						sumGate += inVal * float64(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float64(upW[j*intermediateSize+i])
+						sumGate += inVal * float64(gateW[i*inputSize+j])
+						sumUp   += inVal * float64(upW[i*inputSize+j])
 					}
 					sumGate += float64(gateB[i])
 					sumUp   += float64(upB[i])
@@ -212,7 +212,7 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 				for i := 0; i < inputSize; i++ {
 					var sum float64
 					for j := 0; j < intermediateSize; j++ {
-						sum += float64(preAct.Data[s*intermediateSize+j]) * float64(downW[j*inputSize+i])
+						sum += float64(preAct.Data[s*intermediateSize+j]) * float64(downW[i*intermediateSize+j])
 					}
 					sum += float64(downB[i])
 					postAct.Data[s*inputSize+i] = T(sum)
@@ -235,8 +235,8 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					var sumGate, sumUp float64
 					for j := 0; j < inputSize; j++ {
 						inVal := float64(input.Data[s*inputSize+j])
-						sumGate += inVal * float64(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float64(upW[j*intermediateSize+i])
+						sumGate += inVal * float64(gateW[i*inputSize+j])
+						sumUp   += inVal * float64(upW[i*inputSize+j])
 					}
 					sumGate += float64(gateB[i])
 					sumUp   += float64(upB[i])
@@ -251,7 +251,7 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 				for i := 0; i < inputSize; i++ {
 					var sum float64
 					for j := 0; j < intermediateSize; j++ {
-						sum += float64(preAct.Data[s*intermediateSize+j]) * float64(downW[j*inputSize+i])
+						sum += float64(preAct.Data[s*intermediateSize+j]) * float64(downW[i*intermediateSize+j])
 					}
 					sum += float64(downB[i])
 					postAct.Data[s*inputSize+i] = T(sum)
@@ -349,8 +349,8 @@ func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 					var sumGate, sumUp float64
 					for j := 0; j < inputSize; j++ {
 						inVal := float64(input.Data[s*inputSize+j])
-						sumGate += inVal * float64(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float64(upW[j*intermediateSize+i])
+						sumGate += inVal * float64(gateW[i*inputSize+j])
+						sumUp   += inVal * float64(upW[i*inputSize+j])
 					}
 					sumGate += float64(gateB[i])
 					sumUp   += float64(upB[i])
@@ -403,8 +403,8 @@ func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 					var sumGate, sumUp float32
 					for j := 0; j < inputSize; j++ {
 						inVal := float32(input.Data[s*inputSize+j])
-						sumGate += inVal * float32(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float32(upW[j*intermediateSize+i])
+						sumGate += inVal * float32(gateW[i*inputSize+j])
+						sumUp   += inVal * float32(upW[i*inputSize+j])
 					}
 					sumGate += float32(gateB[i])
 					sumUp   += float32(upB[i])
@@ -457,8 +457,8 @@ func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 					var sumGate, sumUp float64
 					for j := 0; j < inputSize; j++ {
 						inVal := float64(input.Data[s*inputSize+j])
-						sumGate += inVal * float64(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float64(upW[j*intermediateSize+i])
+						sumGate += inVal * float64(gateW[i*inputSize+j])
+						sumUp   += inVal * float64(upW[i*inputSize+j])
 					}
 					sumGate += float64(gateB[i])
 					sumUp   += float64(upB[i])
@@ -511,8 +511,8 @@ func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 					var sumGate, sumUp float64
 					for j := 0; j < inputSize; j++ {
 						inVal := float64(input.Data[s*inputSize+j])
-						sumGate += inVal * float64(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float64(upW[j*intermediateSize+i])
+						sumGate += inVal * float64(gateW[i*inputSize+j])
+						sumUp   += inVal * float64(upW[i*inputSize+j])
 					}
 					sumGate += float64(gateB[i])
 					sumUp   += float64(upB[i])
@@ -565,8 +565,8 @@ func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 					var sumGate, sumUp float64
 					for j := 0; j < inputSize; j++ {
 						inVal := float64(input.Data[s*inputSize+j])
-						sumGate += inVal * float64(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float64(upW[j*intermediateSize+i])
+						sumGate += inVal * float64(gateW[i*inputSize+j])
+						sumUp   += inVal * float64(upW[i*inputSize+j])
 					}
 					sumGate += float64(gateB[i])
 					sumUp   += float64(upB[i])
@@ -619,8 +619,8 @@ func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 					var sumGate, sumUp float64
 					for j := 0; j < inputSize; j++ {
 						inVal := float64(input.Data[s*inputSize+j])
-						sumGate += inVal * float64(gateW[j*intermediateSize+i])
-						sumUp   += inVal * float64(upW[j*intermediateSize+i])
+						sumGate += inVal * float64(gateW[i*inputSize+j])
+						sumUp   += inVal * float64(upW[i*inputSize+j])
 					}
 					sumGate += float64(gateB[i])
 					sumUp   += float64(upB[i])

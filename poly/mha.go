@@ -164,60 +164,69 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 			vB := rawW[vbStart : vbStart + kvDim]
 			oB := rawW[obStart : obStart + dModel]
 
+			// Initialize KV Cache if needed
+			if layer.KVCacheK == nil {
+				layer.KVCacheK = NewTensor[float32](layer.MaxSeqLen, kvDim)
+				layer.KVCacheV = NewTensor[float32](layer.MaxSeqLen, kvDim)
+				layer.KVOffset = 0
+			}
+
 			Q := make([]float32, seqLen * dModel)
-			K := make([]float32, seqLen * kvDim)
-			V := make([]float32, seqLen * kvDim)
 			
 			for s := 0; s < seqLen; s++ {
+				// Current position in the global sequence
+				pos := layer.KVOffset + s
+				
+				// 1. Projections
 				for i := 0; i < dModel; i++ {
 					sum := float32(qB[i])
 					for j := 0; j < dModel; j++ {
-						sum += float32(input.Data[s*dModel+j]) * float32(qW[j*dModel+i])
+						sum += float32(input.Data[s*dModel+j]) * qW[i*dModel+j]
 					}
 					Q[s*dModel+i] = sum
 				}
+				
+				kRow := layer.KVCacheK.Data[pos*kvDim : (pos+1)*kvDim]
+				vRow := layer.KVCacheV.Data[pos*kvDim : (pos+1)*kvDim]
+				
 				for i := 0; i < kvDim; i++ {
 					sumK := float32(kB[i])
 					sumV := float32(vB[i])
 					for j := 0; j < dModel; j++ {
 						inVal := float32(input.Data[s*dModel+j])
-						sumK += inVal * float32(kW[j*kvDim+i])
-						sumV += inVal * float32(vW[j*kvDim+i])
+						sumK += inVal * kW[i*dModel+j]
+						sumV += inVal * vW[i*dModel+j]
 					}
-					K[s*kvDim+i] = sumK
-					V[s*kvDim+i] = sumV
+					kRow[i] = sumK
+					vRow[i] = sumV
 				}
-			}
 
-			if layer.RoPEFreqBase > 0 {
-				half := headDim / 2
-				theta := float64(layer.RoPEFreqBase)
-				for s := 0; s < seqLen; s++ {
-					pos := s
+				// 2. RoPE
+				if layer.RoPEFreqBase > 0 {
+					half := headDim / 2
+					theta := float64(layer.RoPEFreqBase)
+					// Apply to Q
 					for h := 0; h < numHeads; h++ {
 						for d := 0; d < half; d++ {
 							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
 							angle := freq * float64(pos)
-							c := float32(math.Cos(angle))
-							sVal := float32(math.Sin(angle))
-							
+							c, sVal := float32(math.Cos(angle)), float32(math.Sin(angle))
 							qOff := s*dModel + h*headDim + d
 							v0, v1 := Q[qOff], Q[qOff+half]
 							Q[qOff] = v0*c - v1*sVal
 							Q[qOff+half] = v0*sVal + v1*c
 						}
 					}
+					// Apply to K (current row in cache)
 					for h := 0; h < numKVHeads; h++ {
 						for d := 0; d < half; d++ {
 							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
 							angle := freq * float64(pos)
-							c := float32(math.Cos(angle))
-							sVal := float32(math.Sin(angle))
-							
-							kOff := s*kvDim + h*headDim + d
-							v0, v1 := K[kOff], K[kOff+half]
-							K[kOff] = v0*c - v1*sVal
-							K[kOff+half] = v0*sVal + v1*c
+							c, sVal := float32(math.Cos(angle)), float32(math.Sin(angle))
+							kOff := h*headDim + d
+							v0, v1 := kRow[kOff], kRow[kOff+half]
+							kRow[kOff] = v0*c - v1*sVal
+							kRow[kOff+half] = v0*sVal + v1*c
 						}
 					}
 				}
@@ -227,16 +236,21 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 			scale := float32(1.0 / math.Sqrt(float64(headDim)))
 			attnOut := make([]float32, seqLen * dModel)
 			
-			for h := 0; h < numHeads; h++ {
-				kvHead := h / headsPerKV
-				for qPos := 0; qPos < seqLen; qPos++ {
-					scores := make([]float32, qPos+1)
+			for s := 0; s < seqLen; s++ {
+				currentTotalPos := layer.KVOffset + s
+				for h := 0; h < numHeads; h++ {
+					kvHead := h / headsPerKV
+					
+					// Attention against all cached tokens
+					scores := make([]float32, currentTotalPos+1)
 					maxScore := float32(-1e9)
 					
-					for kPos := 0; kPos <= qPos; kPos++ {
+					for kPos := 0; kPos <= currentTotalPos; kPos++ {
 						var dot float32
+						qBase := s*dModel + h*headDim
+						kBase := kPos*kvDim + kvHead*headDim
 						for d := 0; d < headDim; d++ {
-							dot += Q[qPos*dModel+h*headDim+d] * K[kPos*kvDim+kvHead*headDim+d]
+							dot += Q[qBase+d] * layer.KVCacheK.Data[kBase+d]
 						}
 						score := dot * scale
 						scores[kPos] = score
@@ -244,31 +258,35 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					}
 					
 					var expSum float32
-					for kPos := 0; kPos <= qPos; kPos++ {
+					for kPos := 0; kPos <= currentTotalPos; kPos++ {
 						scores[kPos] = float32(math.Exp(float64(scores[kPos] - maxScore)))
 						expSum += scores[kPos]
 					}
 					
 					for d := 0; d < headDim; d++ {
 						var sum float32
-						for kPos := 0; kPos <= qPos; kPos++ {
-							sum += scores[kPos] * V[kPos*kvDim+kvHead*headDim+d]
+						for kPos := 0; kPos <= currentTotalPos; kPos++ {
+							vBase := kPos*kvDim + kvHead*headDim
+							sum += scores[kPos] * layer.KVCacheV.Data[vBase+d]
 						}
-						attnOut[qPos*dModel + h*headDim + d] = sum / expSum
+						attnOut[s*dModel + h*headDim + d] = sum / expSum
 					}
 				}
 			}
 
+			// 3. Final Projection
 			for s := 0; s < seqLen; s++ {
 				for i := 0; i < dModel; i++ {
 					preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
 					sum := float32(oB[i])
 					for j := 0; j < dModel; j++ {
-						sum += attnOut[s*dModel+j] * float32(oW[j*dModel+i])
+						sum += attnOut[s*dModel+j] * oW[i*dModel+j]
 					}
 					postAct.Data[s*dModel+i] = T(sum)
 				}
 			}
+
+			layer.KVOffset += seqLen
 			return preAct, postAct
 		}
 	case DTypeInt64, DTypeUint64:
