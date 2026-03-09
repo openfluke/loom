@@ -3,6 +3,8 @@ package poly
 import (
 	"fmt"
 	"math"
+	"reflect"
+	"unsafe"
 )
 
 // LayerType defines the type of neural network layer
@@ -402,6 +404,9 @@ type VolumetricNetwork struct {
 	LayersPerCell int
 
 	Layers []VolumetricLayer
+
+	// Global Tiling Switch
+	UseTiling bool
 }
 
 // VolumetricLayer represents a processing unit in the 3D volumetric grid.
@@ -469,7 +474,28 @@ type VolumetricLayer struct {
 
 	SequentialLayers []VolumetricLayer
 
+	// Tiling Config
+	UseTiling bool
+	TileSize  int
+
 	Observer PolyObserver
+}
+
+// AlignedFloat32 allocates a slice of float32 aligned to 64-byte boundaries.
+func AlignedFloat32(n int) []float32 {
+	const align = 64
+	b := make([]byte, n*4+align)
+	ptr := uintptr(unsafe.Pointer(&b[0]))
+	offset := uintptr(0)
+	if ptr%uintptr(align) != 0 {
+		offset = uintptr(align) - (ptr % uintptr(align))
+	}
+	var res []float32
+	header := (*reflect.SliceHeader)(unsafe.Pointer(&res))
+	header.Data = ptr + offset
+	header.Len = n
+	header.Cap = n
+	return res
 }
 
 // NewVolumetricNetwork initializes a 3D grid of layers.

@@ -58,21 +58,57 @@ func ForwardPolymorphic[T Numeric](n *VolumetricNetwork, input *Tensor[T]) (*Ten
 	currentTensor := input
 	layerTimes := make([]time.Duration, len(n.Layers))
 
-	for z := 0; z < n.Depth; z++ {
-		for y := 0; y < n.Rows; y++ {
-			for x := 0; x < n.Cols; x++ {
-				for l := 0; l < n.LayersPerCell; l++ {
-					idx := n.GetIndex(z, y, x, l)
-					layer := &n.Layers[idx]
-					if layer.IsDisabled {
-						continue
-					}
+	if n.UseTiling {
+		tileSize := 4
+		// Spatial Blocking: Iterate grid in 4x4x4 tiles
+		for zTile := 0; zTile < n.Depth; zTile += tileSize {
+			zEnd := zTile + tileSize
+			if zEnd > n.Depth { zEnd = n.Depth }
 
-					// UNIFIED REGISTRY DISPATCH
-					lStart := time.Now()
-					_, post := DispatchLayer(layer, currentTensor, nil)
-					layerTimes[idx] = time.Since(lStart)
-					currentTensor = post
+			for yTile := 0; yTile < n.Rows; yTile += tileSize {
+				yEnd := yTile + tileSize
+				if yEnd > n.Rows { yEnd = n.Rows }
+
+				for xTile := 0; xTile < n.Cols; xTile += tileSize {
+					xEnd := xTile + tileSize
+					if xEnd > n.Cols { xEnd = n.Cols }
+
+					for z := zTile; z < zEnd; z++ {
+						for y := yTile; y < yEnd; y++ {
+							for x := xTile; x < xEnd; x++ {
+								for lIdx := 0; lIdx < n.LayersPerCell; lIdx++ {
+									idx := n.GetIndex(z, y, x, lIdx)
+									layer := &n.Layers[idx]
+									if layer.IsDisabled { continue }
+
+									lStart := time.Now()
+									_, post := DispatchLayer(layer, currentTensor, nil)
+									layerTimes[idx] = time.Since(lStart)
+									currentTensor = post
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	} else {
+		// Classic Sequential
+		for z := 0; z < n.Depth; z++ {
+			for y := 0; y < n.Rows; y++ {
+				for x := 0; x < n.Cols; x++ {
+					for l := 0; l < n.LayersPerCell; l++ {
+						idx := n.GetIndex(z, y, x, l)
+						layer := &n.Layers[idx]
+						if layer.IsDisabled {
+							continue
+						}
+
+						lStart := time.Now()
+						_, post := DispatchLayer(layer, currentTensor, nil)
+						layerTimes[idx] = time.Since(lStart)
+						currentTensor = post
+					}
 				}
 			}
 		}

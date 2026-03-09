@@ -69,7 +69,7 @@ func (ws *WeightStore) Morph(dtype DType) {
 // NewWeightStore creates a new storage for weights.
 func NewWeightStore(size int) *WeightStore {
 	return &WeightStore{
-		Master:   make([]float32, size),
+		Master:   AlignedFloat32(size),
 		Versions: make(map[DType]any),
 		Scale:    1.0,
 	}

@@ -73,67 +73,104 @@ func SystolicForward[T Numeric](n *VolumetricNetwork, s *SystolicState[T], captu
 	defer s.mu.Unlock()
 
 	numLayers := len(n.Layers)
-	
-	// Prepare history capture if requested
 	var currentIn, currentPre []*Tensor[T]
 	if captureHistory {
 		currentIn = make([]*Tensor[T], numLayers)
 		currentPre = make([]*Tensor[T], numLayers)
 	}
 
-	// 1. Process all layers simultaneously
-	for idx := range n.Layers {
-		l := &n.Layers[idx]
-		if l.IsDisabled {
-			// Identity pass
-			if idx > 0 {
-				s.NextBuffer[idx] = s.LayerData[idx-1]
-			} else {
-				// Layer 0 stays what it was (Input source)
-				s.NextBuffer[idx] = s.LayerData[idx]
+	if n.UseTiling {
+		// Parallel Tile-Based Dispatch
+		tileSize := 4
+		var wg sync.WaitGroup
+		for zTile := 0; zTile < n.Depth; zTile += tileSize {
+			zEnd := zTile + tileSize
+			if zEnd > n.Depth { zEnd = n.Depth }
+			for yTile := 0; yTile < n.Rows; yTile += tileSize {
+				yEnd := yTile + tileSize
+				if yEnd > n.Rows { yEnd = n.Rows }
+				for xTile := 0; xTile < n.Cols; xTile += tileSize {
+					xEnd := xTile + tileSize
+					if xEnd > n.Cols { xEnd = n.Cols }
+
+					wg.Add(1)
+					go func(zT, zE, yT, yE, xT, xE int) {
+						defer wg.Done()
+						for z := zT; z < zE; z++ {
+							for y := yT; y < yE; y++ {
+								for x := xT; x < xE; x++ {
+									for lIdx := 0; lIdx < n.LayersPerCell; lIdx++ {
+										idx := n.GetIndex(z, y, x, lIdx)
+										l := &n.Layers[idx]
+										if l.IsDisabled {
+											if idx > 0 { s.NextBuffer[idx] = s.LayerData[idx-1]
+											} else { s.NextBuffer[idx] = s.LayerData[idx] }
+											continue
+										}
+										var input *Tensor[T]
+										if l.IsRemoteLink {
+											tIdx := n.GetIndex(l.TargetZ, l.TargetY, l.TargetX, l.TargetL)
+											input = s.LayerData[tIdx]
+										} else if idx > 0 {
+											input = s.LayerData[idx-1]
+										} else {
+											input = s.LayerData[0]
+										}
+										if input != nil {
+											pre, post := DispatchLayer(l, input, nil)
+											s.NextBuffer[idx] = post
+											if captureHistory {
+												s.mu.Lock()
+												currentIn[idx] = input
+												currentPre[idx] = pre
+												s.mu.Unlock()
+											}
+										}
+									}
+								}
+							}
+						}
+					}(zTile, zEnd, yTile, yEnd, xTile, xEnd)
+				}
 			}
-			continue
 		}
-
-		// Determine input source
-		// In a systolic grid, input usually comes from the PREVIOUS index 
-		// or a REMOTE spatial hop.
-		var input *Tensor[T]
-		if l.IsRemoteLink {
-			targetIdx := n.GetIndex(l.TargetZ, l.TargetY, l.TargetX, l.TargetL)
-			input = s.LayerData[targetIdx]
-		} else if idx > 0 {
-			input = s.LayerData[idx-1]
-		} else {
-			// Layer 0 uses its own persistent data (Injected via SetInput)
-			input = s.LayerData[0]
-		}
-
-		if input == nil {
-			continue
-		}
-
-		// Dispatch and capture
-		pre, post := DispatchLayer(l, input, nil)
-		s.NextBuffer[idx] = post
-
-		if captureHistory {
-			currentIn[idx] = input
-			currentPre[idx] = pre
+		wg.Wait()
+	} else {
+		// Classic Sequential Dispatch
+		for idx := range n.Layers {
+			l := &n.Layers[idx]
+			if l.IsDisabled {
+				if idx > 0 { s.NextBuffer[idx] = s.LayerData[idx-1]
+				} else { s.NextBuffer[idx] = s.LayerData[idx] }
+				continue
+			}
+			var input *Tensor[T]
+			if l.IsRemoteLink {
+				tIdx := n.GetIndex(l.TargetZ, l.TargetY, l.TargetX, l.TargetL)
+				input = s.LayerData[tIdx]
+			} else if idx > 0 {
+				input = s.LayerData[idx-1]
+			} else {
+				input = s.LayerData[0]
+			}
+			if input != nil {
+				pre, post := DispatchLayer(l, input, nil)
+				s.NextBuffer[idx] = post
+				if captureHistory {
+					currentIn[idx] = input
+					currentPre[idx] = pre
+				}
+			}
 		}
 	}
 
-	// 2. Commit the buffer (Atomic Swap)
 	for i := range s.LayerData {
 		s.LayerData[i] = s.NextBuffer[i]
 	}
-
-	// 3. Update History
 	if captureHistory {
 		s.HistoryIn = append(s.HistoryIn, currentIn)
 		s.HistoryPre = append(s.HistoryPre, currentPre)
 	}
-
 	s.StepCount++
 	return time.Since(start)
 }
