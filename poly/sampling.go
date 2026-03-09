@@ -22,7 +22,7 @@ type GenOptions struct {
 
 // SampleTopK performs top-K sampling with temperature and optional determinism
 func SampleTopK(logits []float32, topK int, temperature float32, deterministic bool) int {
-	if topK == 1 || temperature <= 0 {
+	if topK == 1 || temperature <= 0 || deterministic {
 		maxIdx := 0
 		maxVal := logits[0]
 		for i, v := range logits {

@@ -74,7 +74,7 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 				for o := 0; o < outputSize; o++ {
 					var sum int32
 					for i := 0; i < inputSize; i++ {
-						sum += int32(input.Data[b*inputSize+i]) * rawW[i*outputSize+o]
+						sum += int32(input.Data[b*inputSize+i]) * rawW[o*inputSize+i]
 					}
 					preAct.Data[b*outputSize+o] = T(sum)
 					postAct.Data[b*outputSize+o] = Activate(T(sum), layer.Activation)
@@ -88,7 +88,7 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 				for o := 0; o < outputSize; o++ {
 					var sum int32
 					for i := 0; i < inputSize; i++ {
-						sum += int32(input.Data[b*inputSize+i]) * int32(rawW[i*outputSize+o])
+						sum += int32(input.Data[b*inputSize+i]) * int32(rawW[o*inputSize+i])
 					}
 					preAct.Data[b*outputSize+o] = T(sum)
 					postAct.Data[b*outputSize+o] = Activate(T(sum), layer.Activation)
@@ -102,7 +102,7 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 				for o := 0; o < outputSize; o++ {
 					var sum int32
 					for i := 0; i < inputSize; i++ {
-						sum += int32(input.Data[b*inputSize+i]) * int32(rawW[i*outputSize+o])
+						sum += int32(input.Data[b*inputSize+i]) * int32(rawW[o*inputSize+i])
 					}
 					preAct.Data[b*outputSize+o] = T(sum)
 					postAct.Data[b*outputSize+o] = Activate(T(sum), layer.Activation)
@@ -175,8 +175,8 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 				for o := 0; o < outputSize; o++ {
 					g := gradPre[b*outputSize+o]
 					for i := 0; i < inputSize; i++ {
-						gradWeights.Data[i*outputSize+o] += T(float32(input.Data[b*inputSize+i]) * g)
-						gradInput.Data[b*inputSize+i] += T(rawW[i*outputSize+o] * g)
+						gradWeights.Data[o*inputSize+i] += T(float32(input.Data[b*inputSize+i]) * g)
+						gradInput.Data[b*inputSize+i] += T(rawW[o*inputSize+i] * g)
 					}
 				}
 			}
@@ -188,8 +188,8 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 				for o := 0; o < outputSize; o++ {
 					g := int64(gradPre[b*outputSize+o])
 					for i := 0; i < inputSize; i++ {
-						gradWeights.Data[i*outputSize+o] += T(int64(input.Data[b*inputSize+i]) * g)
-						gradInput.Data[b*inputSize+i] += T(rawW[i*outputSize+o] * g)
+						gradWeights.Data[o*inputSize+i] += T(int64(input.Data[b*inputSize+i]) * g)
+						gradInput.Data[b*inputSize+i] += T(rawW[o*inputSize+i] * g)
 					}
 				}
 			}
@@ -201,8 +201,8 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 				for o := 0; o < outputSize; o++ {
 					g := int32(gradPre[b*outputSize+o])
 					for i := 0; i < inputSize; i++ {
-						gradWeights.Data[i*outputSize+o] += T(int32(input.Data[b*inputSize+i]) * g)
-						gradInput.Data[b*inputSize+i] += T(rawW[i*outputSize+o] * g)
+						gradWeights.Data[o*inputSize+i] += T(int32(input.Data[b*inputSize+i]) * g)
+						gradInput.Data[b*inputSize+i] += T(rawW[o*inputSize+i] * g)
 					}
 				}
 			}
@@ -214,8 +214,8 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 				for o := 0; o < outputSize; o++ {
 					g := int32(gradPre[b*outputSize+o])
 					for i := 0; i < inputSize; i++ {
-						gradWeights.Data[i*outputSize+o] += T(int32(input.Data[b*inputSize+i]) * g)
-						gradInput.Data[b*inputSize+i] += T(int32(rawW[i*outputSize+o]) * g)
+						gradWeights.Data[o*inputSize+i] += T(int32(input.Data[b*inputSize+i]) * g)
+						gradInput.Data[b*inputSize+i] += T(int32(rawW[o*inputSize+i]) * g)
 					}
 				}
 			}
@@ -227,8 +227,8 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 				for o := 0; o < outputSize; o++ {
 					g := int32(gradPre[b*outputSize+o])
 					for i := 0; i < inputSize; i++ {
-						gradWeights.Data[i*outputSize+o] += T(int32(input.Data[b*inputSize+i]) * g)
-						gradInput.Data[b*inputSize+i] += T(int32(rawW[i*outputSize+o]) * g)
+						gradWeights.Data[o*inputSize+i] += T(int32(input.Data[b*inputSize+i]) * g)
+						gradInput.Data[b*inputSize+i] += T(int32(rawW[o*inputSize+i]) * g)
 					}
 				}
 			}
@@ -241,10 +241,10 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 			g := gradPre[b*outputSize+o]
 			for i := 0; i < inputSize; i++ {
 				inVal := float32(input.Data[b*inputSize+i])
-				wVal := float32(wData[i*outputSize+o])
+				wVal := float32(wData[o*inputSize+i])
 				
 				// STE Gradient
-				gradWeights.Data[i*outputSize+o] += T(inVal * g)
+				gradWeights.Data[o*inputSize+i] += T(inVal * g)
 				gradInput.Data[b*inputSize+i] += T(wVal * g)
 			}
 		}

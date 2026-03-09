@@ -222,7 +222,7 @@ func CNN2ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 								iw := ow*stride + kw - padding
 								if ih >= 0 && ih < inH && iw >= 0 && iw < inW {
 									inIdx := b*inC*inH*inW + ic*inH*inW + ih*inW + iw
-									kWIdx := f*inC*kSize*inH*inW + ic*kSize*kSize + kh*kSize + kw
+									kWIdx := f*inC*kSize*kSize + ic*kSize*kSize + kh*kSize + kw
 
 									val := float32(input.Data[inIdx])
 									wVal := float32(wData[kWIdx])

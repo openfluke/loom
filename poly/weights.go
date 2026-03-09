@@ -51,18 +51,14 @@ func (ws *WeightStore) Morph(dtype DType) {
 		w := make([]int8, size)
 		for i, v := range ws.Master { w[i] = int8(v/ws.Scale) }
 		ws.Versions[dtype] = w
-	case DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary:
+	case DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary, DTypeBinary:
 		// Store as unpacked []int8 in RAM for layer compatibility
 		w := make([]int8, size)
-		for i, v := range ws.Master { w[i] = int8(v/ws.Scale) }
-		ws.Versions[dtype] = w
-	case DTypeBinary:
-		// Store as bit-packed []uint64 (1 bit per weight)
-		packedSize := (size + 63) / 64
-		w := make([]uint64, packedSize)
 		for i, v := range ws.Master {
-			if v > 0 {
-				w[i/64] |= (1 << (uint(i) % 64))
+			if dtype == DTypeBinary {
+				if v > 0 { w[i] = 1 } else { w[i] = -1 }
+			} else {
+				w[i] = int8(v/ws.Scale)
 			}
 		}
 		ws.Versions[dtype] = w
@@ -178,10 +174,22 @@ func (ws *WeightStore) Unpack(dtype DType) {
 		if w, ok := data.([]float32); ok {
 			copy(ws.Master, w)
 		}
-	case DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32, DTypeInt16, DTypeUint16, DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary, DTypeBinary:
+	case DTypeBinary:
+		if w, ok := data.([]uint64); ok {
+			for i := range ws.Master {
+				if (w[i/64] & (1 << (uint(i) % 64))) != 0 {
+					ws.Master[i] = ws.Scale
+				} else {
+					ws.Master[i] = -ws.Scale
+				}
+			}
+		}
+	case DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32, DTypeInt16, DTypeUint16, DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary:
 		// These are already unpacked slices (int8/int16/etc) in Versions during I/O
-		ws.Master = CastWeights[float32](data)
-		for i := range ws.Master { ws.Master[i] *= ws.Scale }
+		packed := CastWeights[float32](data)
+		for i := 0; i < len(ws.Master) && i < len(packed); i++ {
+			ws.Master[i] = packed[i] * ws.Scale
+		}
 	}
 }
 

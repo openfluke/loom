@@ -12,6 +12,8 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 	if numKVHeads == 0 { numKVHeads = numHeads }
 	headDim := layer.HeadDim
 	seqLen := len(input.Data) / dModel
+	msl := layer.MaxSeqLen
+	if msl == 0 { msl = 512 }
 	kvDim := numKVHeads * headDim
 	
 	outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)
@@ -53,7 +55,7 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 				for i := 0; i < dModel; i++ {
 					sum := float64(qB[i])
 					for j := 0; j < dModel; j++ {
-						sum += float64(input.Data[s*dModel+j]) * float64(qW[j*dModel+i])
+						sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j])
 					}
 					Q[s*dModel+i] = sum
 				}
@@ -62,8 +64,8 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					sumV := float64(vB[i])
 					for j := 0; j < dModel; j++ {
 						inVal := float64(input.Data[s*dModel+j])
-						sumK += inVal * float64(kW[j*kvDim+i])
-						sumV += inVal * float64(vW[j*kvDim+i])
+						sumK += inVal * float64(kW[i*kvDim+j])
+						sumV += inVal * float64(vW[i*kvDim+j])
 					}
 					K[s*kvDim+i] = sumK
 					V[s*kvDim+i] = sumV
@@ -145,7 +147,7 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
 					sum := float64(oB[i])
 					for j := 0; j < dModel; j++ {
-						sum += attnOut[s*dModel+j] * float64(oW[j*dModel+i])
+						sum += attnOut[s*dModel+j] * float64(oW[i*dModel+j])
 					}
 					postAct.Data[s*dModel+i] = T(sum)
 				}
@@ -166,8 +168,8 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 
 			// Initialize KV Cache if needed
 			if layer.KVCacheK == nil {
-				layer.KVCacheK = NewTensor[float32](layer.MaxSeqLen, kvDim)
-				layer.KVCacheV = NewTensor[float32](layer.MaxSeqLen, kvDim)
+				layer.KVCacheK = NewTensor[float32](msl, kvDim)
+				layer.KVCacheV = NewTensor[float32](msl, kvDim)
 				layer.KVOffset = 0
 			}
 
@@ -186,8 +188,8 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					Q[s*dModel+i] = sum
 				}
 				
-				kRow := layer.KVCacheK.Data[pos*kvDim : (pos+1)*kvDim]
-				vRow := layer.KVCacheV.Data[pos*kvDim : (pos+1)*kvDim]
+				kRow := layer.KVCacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+				vRow := layer.KVCacheV.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
 				
 				for i := 0; i < kvDim; i++ {
 					sumK := float32(kB[i])
@@ -246,9 +248,10 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					maxScore := float32(-1e9)
 					
 					for kPos := 0; kPos <= currentTotalPos; kPos++ {
+						kIdx := kPos % msl
 						var dot float32
 						qBase := s*dModel + h*headDim
-						kBase := kPos*kvDim + kvHead*headDim
+						kBase := kIdx*kvDim + kvHead*headDim
 						for d := 0; d < headDim; d++ {
 							dot += Q[qBase+d] * layer.KVCacheK.Data[kBase+d]
 						}
@@ -266,7 +269,8 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					for d := 0; d < headDim; d++ {
 						var sum float32
 						for kPos := 0; kPos <= currentTotalPos; kPos++ {
-							vBase := kPos*kvDim + kvHead*headDim
+							vIdx := kPos % msl
+							vBase := vIdx*kvDim + kvHead*headDim
 							sum += scores[kPos] * layer.KVCacheV.Data[vBase+d]
 						}
 						attnOut[s*dModel + h*headDim + d] = sum / expSum
@@ -309,7 +313,7 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 				for i := 0; i < dModel; i++ {
 					sum := float64(qB[i])
 					for j := 0; j < dModel; j++ {
-						sum += float64(input.Data[s*dModel+j]) * float64(qW[j*dModel+i])
+						sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j])
 					}
 					Q[s*dModel+i] = sum
 				}
@@ -318,8 +322,8 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					sumV := float64(vB[i])
 					for j := 0; j < dModel; j++ {
 						inVal := float64(input.Data[s*dModel+j])
-						sumK += inVal * float64(kW[j*kvDim+i])
-						sumV += inVal * float64(vW[j*kvDim+i])
+						sumK += inVal * float64(kW[i*kvDim+j])
+						sumV += inVal * float64(vW[i*kvDim+j])
 					}
 					K[s*kvDim+i] = sumK
 					V[s*kvDim+i] = sumV
@@ -401,7 +405,7 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
 					sum := float64(oB[i])
 					for j := 0; j < dModel; j++ {
-						sum += attnOut[s*dModel+j] * float64(oW[j*dModel+i])
+						sum += attnOut[s*dModel+j] * float64(oW[i*dModel+j])
 					}
 					postAct.Data[s*dModel+i] = T(sum)
 				}
@@ -428,7 +432,7 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 				for i := 0; i < dModel; i++ {
 					sum := float64(qB[i])
 					for j := 0; j < dModel; j++ {
-						sum += float64(input.Data[s*dModel+j]) * float64(qW[j*dModel+i])
+						sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j])
 					}
 					Q[s*dModel+i] = sum
 				}
@@ -437,8 +441,8 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					sumV := float64(vB[i])
 					for j := 0; j < dModel; j++ {
 						inVal := float64(input.Data[s*dModel+j])
-						sumK += inVal * float64(kW[j*kvDim+i])
-						sumV += inVal * float64(vW[j*kvDim+i])
+						sumK += inVal * float64(kW[i*kvDim+j])
+						sumV += inVal * float64(vW[i*kvDim+j])
 					}
 					K[s*kvDim+i] = sumK
 					V[s*kvDim+i] = sumV
@@ -520,7 +524,7 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
 					sum := float64(oB[i])
 					for j := 0; j < dModel; j++ {
-						sum += attnOut[s*dModel+j] * float64(oW[j*dModel+i])
+						sum += attnOut[s*dModel+j] * float64(oW[i*dModel+j])
 					}
 					postAct.Data[s*dModel+i] = T(sum)
 				}
@@ -547,7 +551,7 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 				for i := 0; i < dModel; i++ {
 					sum := float64(qB[i])
 					for j := 0; j < dModel; j++ {
-						sum += float64(input.Data[s*dModel+j]) * float64(qW[j*dModel+i])
+						sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j])
 					}
 					Q[s*dModel+i] = sum
 				}
@@ -556,8 +560,8 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					sumV := float64(vB[i])
 					for j := 0; j < dModel; j++ {
 						inVal := float64(input.Data[s*dModel+j])
-						sumK += inVal * float64(kW[j*kvDim+i])
-						sumV += inVal * float64(vW[j*kvDim+i])
+						sumK += inVal * float64(kW[i*kvDim+j])
+						sumV += inVal * float64(vW[i*kvDim+j])
 					}
 					K[s*kvDim+i] = sumK
 					V[s*kvDim+i] = sumV
