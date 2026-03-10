@@ -47,9 +47,9 @@ func (t *Transformer[T]) ForwardWGPU(input *Tensor[T]) (*Tensor[T], error) {
 		wkBuf := lMHA.WeightStore.GPUWeights[DType(201)].(*wgpu.Buffer)
 		wvBuf := lMHA.WeightStore.GPUWeights[DType(202)].(*wgpu.Buffer)
 		
-		// GPU shaders currently hardcode shared memory arrays to 32 elements.
-		// Forcing tileSize to 32 avoids out-of-bounds access and gibberish output.
-		tileSize := 32
+		// Use the adapter-derived tile size for optimal GPU shared memory usage.
+		tileSize := ctx.GPUTileSize
+		if tileSize <= 0 { tileSize = 32 } // defensive fallback
 
 		ctx.DispatchDense(numTokens, lMHA.DModel, lMHA.DModel, norm1Out, wqBuf, qBuf, tileSize)
 		ctx.DispatchDense(numTokens, lMHA.DModel, kvDim, norm1Out, wkBuf, kBuf, tileSize)
@@ -98,7 +98,8 @@ func (t *Transformer[T]) ForwardWGPU(input *Tensor[T]) (*Tensor[T], error) {
 		upW := lMLP.WeightStore.GPUWeights[DType(101)].(*wgpu.Buffer)
 		downW := lMLP.WeightStore.GPUWeights[DType(102)].(*wgpu.Buffer)
 		
-		mlpTile := 32
+		mlpTile := ctx.GPUTileSize
+		if mlpTile <= 0 { mlpTile = 32 } // defensive fallback
 
 		// silu(gate) * up
 		ctx.DispatchSwiGLU(numTokens, lMLP.InputHeight, lMLP.OutputHeight, norm2Out, gateW, upW, interOut, mlpTile)

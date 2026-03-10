@@ -14,6 +14,9 @@ type WGPUContext struct {
 	Queue          *wgpu.Queue
 	PipelineCache  map[string]*wgpu.ComputePipeline
 	ActivationPool map[string]*wgpu.Buffer
+	// GPUTileSize is the auto-detected optimal tile size for this GPU.
+	// Can be overridden by the caller after init.
+	GPUTileSize    int
 }
 
 // InitWGPU initializes the WebGPU context for the network.
@@ -50,6 +53,14 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		PipelineCache:  make(map[string]*wgpu.ComputePipeline),
 		ActivationPool: make(map[string]*wgpu.Buffer),
 	}
+
+	// Auto-detect optimal GPU tile size from this adapter's limits
+	limits := adapter.GetLimits()
+	n.GPUContext.GPUTileSize = CalculateOptimalGPUTileSizeFromLimits(
+		limits.Limits.MaxComputeWorkgroupStorageSize,
+		limits.Limits.MaxComputeInvocationsPerWorkgroup,
+		64, // default headDim; caller can override via GPUTileSize after init
+	)
 
 	n.UseGPU = true
 	return nil

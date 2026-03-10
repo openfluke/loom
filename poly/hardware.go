@@ -112,26 +112,64 @@ func GetHardwareInfo() HardwareInfo {
 // For MHA: Working set = TileSize * headDim * 2 * 4 (K and V tiles in float32)
 func CalculateOptimalTileSize(headDim int) int {
 	info := GetHardwareInfo()
-	
-	// We want the KV tile to fit comfortably in L1 Data Cache.
-	// 32KB L1 is standard.
-	// TileSize = L1Size / (headDim * 2 * 4)
-	
+
 	tileSize := info.L1DataCacheSize / (headDim * 2 * 4)
-	
+
 	// Clamp to reasonable ranges
-	if tileSize < 8 { tileSize = 8 }
-	if tileSize > 256 { tileSize = 256 }
-	
+	if tileSize < 8 {
+		tileSize = 8
+	}
+	if tileSize > 256 {
+		tileSize = 256
+	}
+
 	// Align to 8 or 16 for SIMD friendliness
 	if tileSize >= 16 {
 		tileSize = (tileSize / 16) * 16
 	} else {
 		tileSize = (tileSize / 8) * 8
 	}
-	
+
 	return tileSize
 }
+
+// CalculateOptimalGPUTileSizeFromLimits derives the best GPU tiling size from raw WebGPU Limits.
+//   sharedMemBytes = adapter.GetLimits().Limits.MaxComputeWorkgroupStorageSize
+//   maxInvocations = adapter.GetLimits().Limits.MaxComputeInvocationsPerWorkgroup
+//   headDim        = model head dimension (e.g. 64, 128)
+//
+// Logic: each tile row costs headDim*2*4 bytes (K+V, float32).
+// We use at most half of shared mem so the driver has spill room.
+// Result is clamped to [8, 64] and aligned to 8 to match the WGSL shader workgroup size.
+func CalculateOptimalGPUTileSizeFromLimits(sharedMemBytes, maxInvocations uint32, headDim int) int {
+	const float32Bytes = 4
+
+	if headDim <= 0 {
+		headDim = 64
+	}
+
+	bytesPerTileRow := headDim * 2 * float32Bytes
+	tileSize := 32 // safe fallback
+
+	if sharedMemBytes > 0 {
+		usable := int(sharedMemBytes) / 2
+		tileSize = usable / bytesPerTileRow
+	}
+
+	// Cap to workgroup invocation limit
+	if maxInvocations > 0 && tileSize > int(maxInvocations) {
+		tileSize = int(maxInvocations)
+	}
+
+	// Clamp and align
+	if tileSize < 8  { tileSize = 8 }
+	if tileSize > 64 { tileSize = 64 }
+	tileSize = (tileSize / 8) * 8
+	if tileSize < 8  { tileSize = 8 }
+
+	return tileSize
+}
+
 
 // GetDeviceDescription returns a human-readable string of the running OS, CPU, RAM, and GPU.
 func GetDeviceDescription(net *VolumetricNetwork) string {

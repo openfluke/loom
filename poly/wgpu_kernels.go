@@ -57,7 +57,8 @@ func (c *WGPUContext) DispatchDense(
 	inputBuf, weightBuf, outputBuf *wgpu.Buffer,
 	tileSize int,
 ) error {
-	pipeline, err := c.CreateComputePipeline(ShaderTiledDense)
+	shaderSrc := ShaderTiledDenseN(tileSize)
+	pipeline, err := c.CreateComputePipeline(shaderSrc)
 	if err != nil {
 		return err
 	}
@@ -89,7 +90,8 @@ func (c *WGPUContext) DispatchDense(
 	pass := encoder.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+31)/32, uint32(batchSize), 1)
+	// Workgroup X covers outputSize in tiles of tileSize threads
+	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
 	pass.End()
 
 	cmd, _ := encoder.Finish(nil)
@@ -102,7 +104,8 @@ func (c *WGPUContext) DispatchMHA(
 	qBuf, kBuf, vBuf, oBuf *wgpu.Buffer,
 	tileSize int,
 ) error {
-	pipeline, err := c.CreateComputePipeline(ShaderTiledMHA)
+	shaderSrc := ShaderTiledMHAN(tileSize, headDim)
+	pipeline, err := c.CreateComputePipeline(shaderSrc)
 	if err != nil {
 		return err
 	}
@@ -153,7 +156,8 @@ func (c *WGPUContext) DispatchSwiGLU(
 	inputBuf, gateBuf, upBuf, outputBuf *wgpu.Buffer,
 	tileSize int,
 ) error {
-	pipeline, err := c.CreateComputePipeline(ShaderTiledSwiGLU)
+	shaderSrc := ShaderTiledSwiGLUN(tileSize)
+	pipeline, err := c.CreateComputePipeline(shaderSrc)
 	if err != nil {
 		return err
 	}
@@ -186,7 +190,7 @@ func (c *WGPUContext) DispatchSwiGLU(
 	pass := encoder.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+31)/32, uint32(batchSize), 1)
+	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
 	pass.End()
 
 	cmd, _ := encoder.Finish(nil)

@@ -101,8 +101,11 @@ func (t *Transformer[T]) EnableTiling(tileSize int) {
 	}
 	if t.finalNormLayer != nil {
 		t.finalNormLayer.UseTiling = true
-		t.finalNormLayer.TileSize = tileSize
-		if tileSize <= 0 { t.finalNormLayer.TileSize = 32 }
+		if tileSize <= 0 {
+			t.finalNormLayer.TileSize = CalculateOptimalTileSize(64) // auto-detect, 64 = default headDim
+		} else {
+			t.finalNormLayer.TileSize = tileSize
+		}
 	}
 }
 
