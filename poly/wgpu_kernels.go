@@ -429,3 +429,51 @@ func (c *WGPUContext) DispatchRoPE(
 	ctxSubmit(c, enc, owned)
 	return nil
 }
+
+type WGPUEmbeddingParams struct {
+	VocabSize  uint32
+	HiddenSize uint32
+	NumTokens  uint32
+	Padding    uint32
+}
+
+func (c *WGPUContext) DispatchEmbedding(
+	vocabSize, hiddenSize, numTokens int,
+	indicesBuf, weightsBuf, outputBuf *wgpu.Buffer,
+) error {
+	pipeline, err := c.CreateComputePipeline(ShaderEmbedding)
+	if err != nil {
+		return err
+	}
+
+	p := WGPUEmbeddingParams{
+		VocabSize:  uint32(vocabSize),
+		HiddenSize: uint32(hiddenSize),
+		NumTokens:  uint32(numTokens),
+	}
+	pBuf, _ := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
+		Contents: wgpu.ToBytes([]WGPUEmbeddingParams{p}),
+		Usage:    wgpu.BufferUsageUniform,
+	})
+	defer c.deferOrDestroy(pBuf)
+
+	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Layout: pipeline.GetBindGroupLayout(0),
+		Entries: []wgpu.BindGroupEntry{
+			{Binding: 0, Buffer: pBuf, Size: pBuf.GetSize()},
+			{Binding: 1, Buffer: indicesBuf, Size: indicesBuf.GetSize()},
+			{Binding: 2, Buffer: weightsBuf, Size: weightsBuf.GetSize()},
+			{Binding: 3, Buffer: outputBuf, Size: outputBuf.GetSize()},
+		},
+	})
+	defer bindGroup.Release()
+
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(numTokens*hiddenSize)+63)/64, 1, 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}

@@ -366,3 +366,31 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     data[idx1] = v0 * sin_val + v1 * cos_val;
 }
 `
+
+const ShaderEmbedding = `
+struct Params {
+    vocabSize: u32,
+    hiddenSize: u32,
+    numTokens: u32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> indices: array<u32>;
+@group(0) @binding(2) var<storage, read> weights: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let tid = global_id.x;
+    if (tid >= params.numTokens * params.hiddenSize) { return; }
+    
+    let tokenIdx = tid / params.hiddenSize;
+    let dimIdx = tid % params.hiddenSize;
+    let vocabIdx = indices[tokenIdx];
+    
+    if (vocabIdx >= params.vocabSize) {
+        output[tid] = 0.0;
+    } else {
+        output[tid] = weights[vocabIdx * params.hiddenSize + dimIdx];
+    }
+}
+`

@@ -416,6 +416,9 @@ type VolumetricNetwork struct {
 	// Persistent GPU buffers to avoid allocations
 	GPUHiddenState []any // map[DType]wgpu.Buffer or similar, use any for now
 	GPULogits      any   // wgpu.Buffer
+
+	GPUEmbeddings any // *wgpu.Buffer
+	GPULMHead     any // *wgpu.Buffer
 }
 
 // VolumetricLayer represents a processing unit in the 3D volumetric grid.

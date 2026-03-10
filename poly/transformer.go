@@ -56,6 +56,7 @@ func NewTransformer[T Numeric](network *VolumetricNetwork, embeddings, lmHead, f
 
 	if finalNorm != nil {
 		tr.finalNormLayer = &VolumetricLayer{
+			Network:     network,
 			Type:        LayerRMSNorm,
 			InputHeight: hiddenSize,
 			OutputHeight: hiddenSize,
@@ -101,12 +102,48 @@ func (t *Transformer[T]) EnableTiling(tileSize int) {
 	}
 	if t.finalNormLayer != nil {
 		t.finalNormLayer.UseTiling = true
-		if tileSize <= 0 {
-			t.finalNormLayer.TileSize = CalculateOptimalTileSize(64) // auto-detect, 64 = default headDim
-		} else {
-			t.finalNormLayer.TileSize = tileSize
+		finalSize := tileSize
+		if finalSize <= 0 {
+			finalSize = CalculateOptimalTileSize(64)
+		}
+		t.finalNormLayer.TileSize = finalSize
+
+		if t.Network.UseGPU {
+			t.finalNormLayer.SyncToGPU()
 		}
 	}
+}
+
+func (t *Transformer[T]) SyncToGPU() error {
+	if !t.Network.UseGPU || t.Network.GPUContext == nil {
+		return fmt.Errorf("GPU not enabled")
+	}
+	ctx := t.Network.GPUContext
+
+	// Sync Embeddings
+	if t.Embeddings != nil && t.Network.GPUEmbeddings == nil {
+		buf, err := ctx.CreatePersistentBuffer(t.Embeddings, "Embeddings")
+		if err != nil {
+			return err
+		}
+		t.Network.GPUEmbeddings = buf
+	}
+
+	// Sync LMHead
+	if t.LMHead != nil && t.Network.GPULMHead == nil {
+		buf, err := ctx.CreatePersistentBuffer(t.LMHead, "LMHead")
+		if err != nil {
+			return err
+		}
+		t.Network.GPULMHead = buf
+	}
+
+	// Sync Final Norm
+	if t.finalNormLayer != nil {
+		t.finalNormLayer.SyncToGPU()
+	}
+
+	return nil
 }
 
 // Generate implements the stateless generation logic
@@ -128,11 +165,18 @@ func (t *Transformer[T]) Generate(
 	prefillStart := time.Now()
 	var hidden *Tensor[T]
 	if len(tokens) > 0 {
-		allEmbeds := NewTensor[T](len(tokens), t.HiddenSize)
-		for i, tok := range tokens {
-			copy(allEmbeds.Data[i*t.HiddenSize:], t.getEmbedding(int(tok)))
+		if t.Network.UseGPU && t.Network.GPUEmbeddings != nil {
+			var err error
+			hidden, err = t.ForwardTokenIDsWGPU(tokens, nil)
+			if err != nil {
+				fmt.Printf("⚠️  GPU Prefill Failed: %v (Falling back to CPU)\n", err)
+				allEmbeds := t.tokensToTensor(tokens)
+				hidden = t.forwardFull(allEmbeds)
+			}
+		} else {
+			allEmbeds := t.tokensToTensor(tokens)
+			hidden = t.forwardFull(allEmbeds)
 		}
-		hidden = t.forwardFull(allEmbeds)
 	}
 	prefillElapsed := time.Since(prefillStart)
 
@@ -157,10 +201,22 @@ func (t *Transformer[T]) Generate(
 		}
 
 		// Forward next token (Incremental)
-		nextEmbed := t.getEmbedding(nextToken)
-		input := NewTensor[T](1, t.HiddenSize)
-		copy(input.Data, nextEmbed)
-		hidden = t.forwardOne(input)
+		if t.Network.UseGPU && t.Network.GPUEmbeddings != nil {
+			var err error
+			hidden, err = t.ForwardTokenIDsWGPU([]uint32{uint32(nextToken)}, nil)
+			if err != nil {
+				fmt.Printf("⚠️  GPU Incremental Failed: %v (Falling back to CPU)\n", err)
+				nextEmbed := t.getEmbedding(nextToken)
+				input := NewTensor[T](1, t.HiddenSize)
+				copy(input.Data, nextEmbed)
+				hidden = t.forwardOne(input)
+			}
+		} else {
+			nextEmbed := t.getEmbedding(nextToken)
+			input := NewTensor[T](1, t.HiddenSize)
+			copy(input.Data, nextEmbed)
+			hidden = t.forwardOne(input)
+		}
 	}
 
 	decodeElapsed := time.Since(decodeStart)
