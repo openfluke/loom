@@ -57,6 +57,9 @@ type LayerSpec struct {
 	ParallelBranches []LayerSpec `json:"parallel_branches,omitempty"`
 	CombineMode      string      `json:"combine_mode,omitempty"`
 	SequentialLayers []LayerSpec `json:"sequential_layers,omitempty"`
+
+	UseTiling bool `json:"use_tiling,omitempty"`
+	TileSize  int  `json:"tile_size,omitempty"`
 }
 
 // BuildNetworkFromJSON creates a VolumetricNetwork from a JSON string.
@@ -127,6 +130,9 @@ func applyLayerSpec(l *VolumetricLayer, ls LayerSpec) error {
 			}
 		}
 	}
+
+	l.UseTiling = ls.UseTiling
+	l.TileSize = ls.TileSize
 
 	// Dynamic weight initialization if possible
 	initializeWeights(l)

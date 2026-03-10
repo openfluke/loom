@@ -13,6 +13,10 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 	preAct = NewTensor[T](batchSize, outputSize)
 	postAct = NewTensor[T](batchSize, outputSize)
 
+	if layer.UseTiling && layer.TileSize > 0 {
+		return DenseForwardTiled(layer, input)
+	}
+
 	// Simulation of QAT/Precision scaling
 	scale := layer.WeightStore.Scale
 	if scale == 0 {
@@ -253,3 +257,219 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 	return gradInput, gradWeights
 }
 
+
+// DenseForwardTiled performs a tiled forward pass for the dense layer.
+func DenseForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	batchSize := input.Shape[0]
+	inputSize := layer.InputHeight
+	outputSize := layer.OutputHeight
+	tileSize := layer.TileSize
+	if tileSize <= 0 { tileSize = 32 }
+
+	preAct = NewTensor[T](batchSize, outputSize)
+	postAct = NewTensor[T](batchSize, outputSize)
+
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+
+	// Specialized fast-paths for tiling
+	switch layer.DType {
+	case DTypeFloat32, DTypeFloat16, DTypeBFloat16:
+		if rawW, ok := weights.([]float32); ok {
+			denseForwardTiledFloat32(layer, input, preAct, rawW, tileSize)
+			for i := range postAct.Data {
+				postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
+			}
+			return preAct, postAct
+		}
+	case DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt4, DTypeUint4, DTypeFP4:
+		if rawW, ok := weights.([]int8); ok {
+			denseForwardTiledInt8(layer, input, preAct, rawW, tileSize)
+			for i := range postAct.Data {
+				postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
+			}
+			return preAct, postAct
+		}
+	case DTypeBinary:
+		// Attempt to use packed binary weights if available, otherwise fallback to unpacked float32 path
+		// For now, we use the unpacked int8 representation we established
+		if rawW, ok := weights.([]int8); ok {
+			denseForwardTiledBinary(layer, input, preAct, rawW, tileSize)
+			for i := range postAct.Data {
+				postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
+			}
+			return preAct, postAct
+		}
+	}
+
+	// Generic tiling fallback
+	wData := CastWeights[T](weights)
+	scale := layer.WeightStore.Scale
+	if scale == 0 { scale = 1.0 }
+
+	for oTile := 0; oTile < outputSize; oTile += tileSize {
+		oEnd := oTile + tileSize
+		if oEnd > outputSize { oEnd = outputSize }
+		for iTile := 0; iTile < inputSize; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > inputSize { iEnd = inputSize }
+
+			for o := oTile; o < oEnd; o++ {
+				for b := 0; b < batchSize; b++ {
+					sum := float32(preAct.Data[b*outputSize+o])
+					for i := iTile; i < iEnd; i++ {
+						inVal := float32(input.Data[b*inputSize+i])
+						wVal := float32(wData[o*inputSize+i])
+						wVal = SimulatePrecision(wVal, layer.DType, scale)
+						sum += inVal * wVal
+					}
+					preAct.Data[b*outputSize+o] = T(sum)
+				}
+			}
+		}
+	}
+
+	for i := range postAct.Data {
+		postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
+	}
+	return preAct, postAct
+}
+
+func denseForwardTiledFloat32[T Numeric](layer *VolumetricLayer, input *Tensor[T], preAct *Tensor[T], weights []float32, tileSize int) {
+	batchSize := input.Shape[0]
+	inputSize := layer.InputHeight
+	outputSize := layer.OutputHeight
+
+	// Local buffer for input tile to avoid redundant reads
+	inTileBuf := make([]float32, tileSize)
+
+	for iTile := 0; iTile < inputSize; iTile += tileSize {
+		iEnd := iTile + tileSize
+		if iEnd > inputSize { iEnd = inputSize }
+		currentITileSize := iEnd - iTile
+
+		for b := 0; b < batchSize; b++ {
+			// Load input tile once
+			for i := 0; i < currentITileSize; i++ {
+				inTileBuf[i] = float32(input.Data[b*inputSize+iTile+i])
+			}
+
+			for oTile := 0; oTile < outputSize; oTile += tileSize {
+				oEnd := oTile + tileSize
+				if oEnd > outputSize { oEnd = outputSize }
+
+				for o := oTile; o < oEnd; o++ {
+					var sum float32
+					if iTile > 0 {
+						sum = float32(preAct.Data[b*outputSize+o])
+					}
+					
+					rowOff := o * inputSize + iTile
+					// Unrolled dot product using buffered input
+					i := 0
+					for ; i <= currentITileSize-4; i += 4 {
+						sum += inTileBuf[i] * weights[rowOff+i]
+						sum += inTileBuf[i+1] * weights[rowOff+i+1]
+						sum += inTileBuf[i+2] * weights[rowOff+i+2]
+						sum += inTileBuf[i+3] * weights[rowOff+i+3]
+					}
+					for ; i < currentITileSize; i++ {
+						sum += inTileBuf[i] * weights[rowOff+i]
+					}
+					preAct.Data[b*outputSize+o] = T(sum)
+				}
+			}
+		}
+	}
+}
+
+func denseForwardTiledInt8[T Numeric](layer *VolumetricLayer, input *Tensor[T], preAct *Tensor[T], weights []int8, tileSize int) {
+	batchSize := input.Shape[0]
+	inputSize := layer.InputHeight
+	outputSize := layer.OutputHeight
+	scale := layer.WeightStore.Scale
+	if scale == 0 { scale = 1.0 }
+
+	// Local buffer for input tile
+	inTileBuf := make([]float32, tileSize)
+
+	for iTile := 0; iTile < inputSize; iTile += tileSize {
+		iEnd := iTile + tileSize
+		if iEnd > inputSize { iEnd = inputSize }
+		currentITileSize := iEnd - iTile
+
+		for b := 0; b < batchSize; b++ {
+			// Load input tile once
+			for i := 0; i < currentITileSize; i++ {
+				inTileBuf[i] = float32(input.Data[b*inputSize+iTile+i])
+			}
+
+			for oTile := 0; oTile < outputSize; oTile += tileSize {
+				oEnd := oTile + tileSize
+				if oEnd > outputSize { oEnd = outputSize }
+
+				for o := oTile; o < oEnd; o++ {
+					var sum float32
+					if iTile > 0 {
+						sum = float32(preAct.Data[b*outputSize+o])
+					}
+					
+					rowOff := o * inputSize + iTile
+					// Unrolled dot product using buffered input
+					i := 0
+					for ; i <= currentITileSize-4; i += 4 {
+						sum += inTileBuf[i] * (float32(weights[rowOff+i]) * scale)
+						sum += inTileBuf[i+1] * (float32(weights[rowOff+i+1]) * scale)
+						sum += inTileBuf[i+2] * (float32(weights[rowOff+i+2]) * scale)
+						sum += inTileBuf[i+3] * (float32(weights[rowOff+i+3]) * scale)
+					}
+					for ; i < currentITileSize; i++ {
+						sum += inTileBuf[i] * (float32(weights[rowOff+i]) * scale)
+					}
+					preAct.Data[b*outputSize+o] = T(sum)
+				}
+			}
+		}
+	}
+}
+
+func denseForwardTiledBinary[T Numeric](layer *VolumetricLayer, input *Tensor[T], preAct *Tensor[T], weights []int8, tileSize int) {
+	batchSize := input.Shape[0]
+	inputSize := layer.InputHeight
+	outputSize := layer.OutputHeight
+	scale := layer.WeightStore.Scale
+	if scale == 0 { scale = 1.0 }
+
+	for oTile := 0; oTile < outputSize; oTile += tileSize {
+		oEnd := oTile + tileSize
+		if oEnd > outputSize { oEnd = outputSize }
+		for iTile := 0; iTile < inputSize; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > inputSize { iEnd = inputSize }
+
+			for o := oTile; o < oEnd; o++ {
+				for b := 0; b < batchSize; b++ {
+					var sum float32
+					if iTile > 0 {
+						sum = float32(preAct.Data[b*outputSize+o])
+					}
+					for i := iTile; i < iEnd; i++ {
+						if weights[o*inputSize+i] > 0 {
+							sum += float32(input.Data[b*inputSize+i])
+						} else {
+							sum -= float32(input.Data[b*inputSize+i])
+						}
+					}
+					// Only multiply by scale at the very end of the input dimension
+					if iEnd == inputSize {
+						preAct.Data[b*outputSize+o] = T(sum * scale)
+					} else {
+						preAct.Data[b*outputSize+o] = T(sum)
+					}
+				}
+			}
+		}
+	}
+}

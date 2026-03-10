@@ -83,6 +83,18 @@ func (t *Transformer[T]) Reset() {
 	}
 }
 
+// EnableTiling enables cache-tiling optimization for all layers in the transformer.
+func (t *Transformer[T]) EnableTiling(tileSize int) {
+	for i := range t.Network.Layers {
+		t.Network.Layers[i].UseTiling = true
+		t.Network.Layers[i].TileSize = tileSize
+	}
+	if t.finalNormLayer != nil {
+		t.finalNormLayer.UseTiling = true
+		t.finalNormLayer.TileSize = tileSize
+	}
+}
+
 // Generate implements the stateless generation logic
 func (t *Transformer[T]) Generate(
 	encode func(text string) []uint32,
@@ -99,6 +111,7 @@ func (t *Transformer[T]) Generate(
 	t.Reset()
 
 	// 1. Prefill
+	prefillStart := time.Now()
 	var hidden *Tensor[T]
 	if len(tokens) > 0 {
 		allEmbeds := NewTensor[T](len(tokens), t.HiddenSize)
@@ -107,9 +120,10 @@ func (t *Transformer[T]) Generate(
 		}
 		hidden = t.forwardFull(allEmbeds)
 	}
+	prefillElapsed := time.Since(prefillStart)
 
 	// 2. Generate
-	start := time.Now()
+	decodeStart := time.Now()
 	generatedCount := 0
 
 	for i := 0; i < opts.MaxTokens; i++ {
@@ -135,9 +149,24 @@ func (t *Transformer[T]) Generate(
 		hidden = t.forwardOne(input)
 	}
 
-	elapsed := time.Since(start)
+	decodeElapsed := time.Since(decodeStart)
 	if generatedCount > 0 {
-		fmt.Printf("\n\n(%.2f tokens/s, %d tokens total)\n", float64(generatedCount)/elapsed.Seconds(), generatedCount)
+		decodeTPS := float64(generatedCount) / decodeElapsed.Seconds()
+		totalTokens := len(inputIDs) + generatedCount
+		totalElapsed := prefillElapsed + decodeElapsed
+		totalTPS := float64(totalTokens) / totalElapsed.Seconds()
+		prefillTPS := 0.0
+		if len(inputIDs) > 0 && prefillElapsed > 0 {
+			prefillTPS = float64(len(inputIDs)) / prefillElapsed.Seconds()
+		}
+		fmt.Printf(
+			"\n\n(prefill: %.2f tok/s, %d prompt tokens | decode: %.2f tok/s, %d generated | total: %.2f tok/s)\n",
+			prefillTPS,
+			len(inputIDs),
+			decodeTPS,
+			generatedCount,
+			totalTPS,
+		)
 	}
 
 	return stream.String()

@@ -13,6 +13,10 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 	preAct = NewTensor[T](seqLen, intermediateSize)
 	postAct = NewTensor[T](seqLen, inputSize)
 	
+	if layer.UseTiling && layer.TileSize > 0 {
+		return SwiGLUForwardTiled(layer, input)
+	}
+	
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil { weights = layer.WeightStore.Master }
 	
@@ -707,4 +711,231 @@ func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 	}
 
 	return gradInput, gradWeights
+}
+
+// SwiGLUForwardTiled performs an optimized, tiled forward pass for SwiGLU.
+func SwiGLUForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
+	seqLen := len(input.Data) / inputSize
+	tileSize := layer.TileSize
+	if tileSize <= 0 { tileSize = 32 }
+
+	preAct = NewTensor[T](seqLen, intermediateSize)
+	postAct = NewTensor[T](seqLen, inputSize)
+
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil { weights = layer.WeightStore.Master }
+	
+	gateWStart := 0
+	upWStart := inputSize * intermediateSize
+	downWStart := 2 * inputSize * intermediateSize
+	gateBStart := 2 * inputSize * intermediateSize + intermediateSize * inputSize
+	upBStart := gateBStart + intermediateSize
+	downBStart := upBStart + intermediateSize
+
+	scaleW := layer.WeightStore.Scale
+	if scaleW == 0 { scaleW = 1.0 }
+
+	// Tiled Gate & Up Projections
+	swigluTiledProjectGateUp(input.Data, weights, gateWStart, upWStart, gateBStart, upBStart, preAct.Data, inputSize, intermediateSize, seqLen, layer.DType, scaleW, tileSize)
+
+	// Tiled Down Projection
+	swigluTiledProjectDown(preAct.Data, weights, downWStart, downBStart, postAct.Data, intermediateSize, inputSize, seqLen, layer.DType, scaleW, tileSize)
+
+	return preAct, postAct
+}
+
+func swigluTiledProjectGateUp[TIn Numeric, TOut Numeric](input []TIn, weights any, gWStart, uWStart, gBStart, uBStart int, output []TOut, inDim, outDim, seqLen int, dtype DType, scale float32, tileSize int) {
+	// Specialized fast-paths
+	switch dtype {
+	case DTypeFloat32, DTypeFloat16, DTypeBFloat16:
+		if wData, ok := weights.([]float32); ok {
+			swigluTiledProjectGateUpFloat32(input, wData, gWStart, uWStart, gBStart, uBStart, output, inDim, outDim, seqLen, tileSize)
+			return
+		}
+	case DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt4, DTypeUint4, DTypeFP4:
+		if wData, ok := weights.([]int8); ok {
+			swigluTiledProjectGateUpInt8(input, wData, gWStart, uWStart, gBStart, uBStart, output, inDim, outDim, seqLen, scale, tileSize)
+			return
+		}
+	}
+
+	wData := CastWeights[float32](weights)
+	if wData == nil { return }
+	gW := wData[gWStart:]
+	uW := wData[uWStart:]
+	gB := wData[gBStart:]
+	uB := wData[uBStart:]
+
+	// Temporary buffers for partial sums to maintain tiling efficiency
+	// Using a buffer that can handle many steps if needed
+	sumG := make([]float32, outDim)
+	sumU := make([]float32, outDim)
+
+	for s := 0; s < seqLen; s++ {
+		// Initialize sums with raw bias (NOT simulated)
+		for o := 0; o < outDim; o++ {
+			sumG[o] = gB[o]
+			sumU[o] = uB[o]
+		}
+
+		for iTile := 0; iTile < inDim; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > inDim { iEnd = inDim }
+
+			for oTile := 0; oTile < outDim; oTile += tileSize {
+				oEnd := oTile + tileSize
+				if oEnd > outDim { oEnd = outDim }
+
+				for o := oTile; o < oEnd; o++ {
+					sG := sumG[o]
+					sU := sumU[o]
+					for i := iTile; i < iEnd; i++ {
+						inVal := float32(input[s*inDim+i])
+						sG += inVal * SimulatePrecision(gW[o*inDim+i], dtype, scale)
+						sU += inVal * SimulatePrecision(uW[o*inDim+i], dtype, scale)
+					}
+					sumG[o] = sG
+					sumU[o] = sU
+				}
+			}
+		}
+
+		// Apply SiLU and gating
+		for o := 0; o < outDim; o++ {
+			sig := 1.0 / (1.0 + math.Exp(-float64(sumG[o])))
+			silu := float32(float64(sumG[o]) * sig)
+			output[s*outDim+o] = TOut(silu * sumU[o])
+		}
+	}
+}
+
+func swigluTiledProjectDown[TIn Numeric, TOut Numeric](input []TIn, weights any, dWStart, dBStart int, output []TOut, inDim, outDim, seqLen int, dtype DType, scale float32, tileSize int) {
+	// Reusing mhaTiledProject logic (Dense-like)
+	mhaTiledProject(input, weights, dWStart, dBStart, output, inDim, outDim, seqLen, dtype, scale, tileSize)
+}
+
+func swigluTiledProjectGateUpFloat32[TIn Numeric, TOut Numeric](input []TIn, wData []float32, gWStart, uWStart, gBStart, uBStart int, output []TOut, inDim, outDim, seqLen int, tileSize int) {
+	gW := wData[gWStart:]
+	uW := wData[uWStart:]
+	gB := wData[gBStart:]
+	uB := wData[uBStart:]
+
+	sumG := make([]float32, outDim)
+	sumU := make([]float32, outDim)
+
+	// Local buffer for input tile
+	inTileBuf := make([]float32, tileSize)
+
+	for s := 0; s < seqLen; s++ {
+		for o := 0; o < outDim; o++ {
+			sumG[o] = gB[o]
+			sumU[o] = uB[o]
+		}
+		for iTile := 0; iTile < inDim; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > inDim { iEnd = inDim }
+			currentITileSize := iEnd - iTile
+
+			// Load input tile once
+			for i := 0; i < currentITileSize; i++ {
+				inTileBuf[i] = float32(input[s*inDim+iTile+i])
+			}
+
+			for oTile := 0; oTile < outDim; oTile += tileSize {
+				oEnd := oTile + tileSize
+				if oEnd > outDim { oEnd = outDim }
+
+				for o := oTile; o < oEnd; o++ {
+					sG, sU := sumG[o], sumU[o]
+					rowOff := o * inDim + iTile
+					// Unrolled dot product for both Gate and Up
+					i := 0
+					for ; i <= currentITileSize-4; i += 4 {
+						iv0, iv1, iv2, iv3 := inTileBuf[i], inTileBuf[i+1], inTileBuf[i+2], inTileBuf[i+3]
+						sG += iv0 * gW[rowOff+i]
+						sG += iv1 * gW[rowOff+i+1]
+						sG += iv2 * gW[rowOff+i+2]
+						sG += iv3 * gW[rowOff+i+3]
+						
+						sU += iv0 * uW[rowOff+i]
+						sU += iv1 * uW[rowOff+i+1]
+						sU += iv2 * uW[rowOff+i+2]
+						sU += iv3 * uW[rowOff+i+3]
+					}
+					for ; i < currentITileSize; i++ {
+						iv := inTileBuf[i]
+						sG += iv * gW[rowOff+i]
+						sU += iv * uW[rowOff+i]
+					}
+					sumG[o], sumU[o] = sG, sU
+				}
+			}
+		}
+		for o := 0; o < outDim; o++ {
+			sig := 1.0 / (1.0 + math.Exp(-float64(sumG[o])))
+			output[s*outDim+o] = TOut(float32(float64(sumG[o]) * sig) * sumU[o])
+		}
+	}
+}
+
+func swigluTiledProjectGateUpInt8[TIn Numeric, TOut Numeric](input []TIn, wData []int8, gWStart, uWStart, gBStart, uBStart int, output []TOut, inDim, outDim, seqLen int, scale float32, tileSize int) {
+	gW := wData[gWStart:]
+	uW := wData[uWStart:]
+	
+	sumG := make([]float32, outDim)
+	sumU := make([]float32, outDim)
+
+	// Local buffer for input tile
+	inTileBuf := make([]float32, tileSize)
+
+	for s := 0; s < seqLen; s++ {
+		for o := 0; o < outDim; o++ {
+			sumG[o] = 0
+			sumU[o] = 0
+		}
+		for iTile := 0; iTile < inDim; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > inDim { iEnd = inDim }
+			currentITileSize := iEnd - iTile
+
+			// Load input tile once
+			for i := 0; i < currentITileSize; i++ {
+				inTileBuf[i] = float32(input[s*inDim+iTile+i])
+			}
+
+			for oTile := 0; oTile < outDim; oTile += tileSize {
+				oEnd := oTile + tileSize
+				if oEnd > outDim { oEnd = outDim }
+				for o := oTile; o < oEnd; o++ {
+					sG, sU := sumG[o], sumU[o]
+					rowOff := o * inDim + iTile
+					// Unrolled dot product for both Gate and Up
+					i := 0
+					for ; i <= currentITileSize-4; i += 4 {
+						iv0, iv1, iv2, iv3 := inTileBuf[i], inTileBuf[i+1], inTileBuf[i+2], inTileBuf[i+3]
+						sG += iv0 * (float32(gW[rowOff+i]) * scale)
+						sG += iv1 * (float32(gW[rowOff+i+1]) * scale)
+						sG += iv2 * (float32(gW[rowOff+i+2]) * scale)
+						sG += iv3 * (float32(gW[rowOff+i+3]) * scale)
+						
+						sU += iv0 * (float32(uW[rowOff+i]) * scale)
+						sU += iv1 * (float32(uW[rowOff+i+1]) * scale)
+						sU += iv2 * (float32(uW[rowOff+i+2]) * scale)
+						sU += iv3 * (float32(uW[rowOff+i+3]) * scale)
+					}
+					for ; i < currentITileSize; i++ {
+						iv := inTileBuf[i]
+						sG += iv * (float32(gW[rowOff+i]) * scale)
+						sU += iv * (float32(uW[rowOff+i]) * scale)
+					}
+					sumG[o], sumU[o] = sG, sU
+				}
+			}
+		}
+		for o := 0; o < outDim; o++ {
+			sig := 1.0 / (1.0 + math.Exp(-float64(sumG[o])))
+			output[s*outDim+o] = TOut(float32(float64(sumG[o]) * sig) * sumU[o])
+		}
+	}
 }

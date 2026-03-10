@@ -72,6 +72,9 @@ type PersistenceLayerSpec struct {
 	ParallelBranches []PersistenceLayerSpec `json:"parallel_branches,omitempty"`
 	CombineMode      string                 `json:"combine_mode,omitempty"`
 	SequentialLayers []PersistenceLayerSpec `json:"sequential_layers,omitempty"`
+
+	UseTiling bool `json:"use_tiling,omitempty"`
+	TileSize  int  `json:"tile_size,omitempty"`
 }
 
 // SerializeNetwork converts a VolumetricNetwork into a JSON byte slice.
@@ -134,6 +137,8 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 		GumbelNoise: l.GumbelNoise,
 
 		CombineMode: l.CombineMode,
+		UseTiling:   l.UseTiling,
+		TileSize:    l.TileSize,
 	}
 
 	if l.WeightStore != nil {
@@ -231,6 +236,8 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	l.GumbelNoise = ls.GumbelNoise
 
 	l.CombineMode = ls.CombineMode
+	l.UseTiling = ls.UseTiling
+	l.TileSize = ls.TileSize
 
 	// Initialize weights based on populated fields
 	initializeWeights(l)
