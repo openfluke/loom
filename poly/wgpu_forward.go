@@ -8,14 +8,9 @@ import (
 // ForwardWGPU handles both prefill (multi-token) and decode (single-token) GPU forward passes.
 // All layer dispatches are recorded into a single CommandEncoder (BeginFrame/FlushFrame),
 // reducing GPU submission overhead from ~150+ submits/token to just 1 submit + 1 download.
-// ForwardWGPU handles both prefill (multi-token) and decode (single-token) GPU forward passes.
-func (t *Transformer[T]) ForwardWGPU(input *Tensor[T]) (*Tensor[T], error) {
-	return t.ForwardTokenIDsWGPU(nil, input)
-}
-
 // ForwardTokenIDsWGPU is the "true" GPU residency path. If tokens are provided, 
 // embedding lookup happens on GPU. If final norm/LM head are synced, they run on GPU too.
-func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T]) (*Tensor[T], error) {
+func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], computeLogits bool, onlyLast bool) (*Tensor[T], error) {
 	if t.Network.GPUContext == nil {
 		return nil, fmt.Errorf("GPU context not initialized")
 	}
@@ -24,29 +19,30 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T]) 
 	numTokens := 1
 	if tokens != nil {
 		numTokens = len(tokens)
-	} else if len(input.Shape) >= 2 {
+	} else if input != nil && len(input.Shape) >= 2 {
 		numTokens = input.Shape[len(input.Shape)-2]
+	} else if input != nil && len(input.Data) > 0 {
+		numTokens = 1
 	}
 
 	var currentBuf *wgpu.Buffer
 
 	// 1. Embedding / Initial Hidden State
 	if tokens != nil && t.Network.GPUEmbeddings != nil {
-		tBuf, _ := ctx.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
-			Label:    "Token IDs",
-			Contents: wgpu.ToBytes(tokens),
-			Usage:    wgpu.BufferUsageStorage,
-		})
-		defer tBuf.Destroy()
+		// Optimization: Use WriteBuffer instead of CreateBufferInit to avoid sync allocation
+		tBuf := ctx.GetActivationBuffer("token_ids", uint64(numTokens*4), wgpu.BufferUsageStorage)
+		ctx.Queue.WriteBuffer(tBuf, 0, wgpu.ToBytes(tokens))
 
 		currentBuf = ctx.GetActivationBuffer("hidden_A", uint64(numTokens*t.HiddenSize*4), wgpu.BufferUsageStorage)
 		eWeights := t.Network.GPUEmbeddings.(*wgpu.Buffer)
 		ctx.DispatchEmbedding(t.VocabSize, t.HiddenSize, numTokens, tBuf, eWeights, currentBuf)
-	} else {
+	} else if input != nil {
 		// Fallback: upload from CPU
 		inData := ConvertTensor[T, float32](input).Data
 		currentBuf = ctx.GetActivationBuffer("hidden_A", uint64(numTokens*t.HiddenSize*4), wgpu.BufferUsageStorage)
 		ctx.Queue.WriteBuffer(currentBuf, 0, wgpu.ToBytes(inData))
+	} else {
+		return nil, fmt.Errorf("no input tokens or data provided")
 	}
 
 	numBlocks := len(t.Network.Layers) / 4
@@ -137,14 +133,54 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T]) 
 		currentBuf = fNormOut
 	}
 
+	// 4. LM Head on GPU if requested and available
+	isReturningLogits := false
+	downloadTokens := numTokens
+	readOffset := uint64(0)
+
+	if computeLogits && t.Network.GPULMHead != nil {
+		effectiveInput := currentBuf
+		dispatchTokens := numTokens
+
+		if onlyLast && numTokens > 1 {
+			// Optimization: Copy ONLY the last token's hidden state to a scratch buffer
+			// This avoids running the heavy LM Head matrix mult on the entire prompt.
+			scratchSize := uint64(t.HiddenSize * 4)
+			scratchBuf := ctx.GetActivationBuffer("hidden_scratch", scratchSize, wgpu.BufferUsageStorage|wgpu.BufferUsageCopyDst|wgpu.BufferUsageCopySrc)
+			offset := uint64((numTokens - 1) * t.HiddenSize * 4)
+			
+			// Use the existing command encoder to perform a sync-less copy
+			ctx.ActiveEncoder.CopyBufferToBuffer(currentBuf, offset, scratchBuf, 0, scratchSize)
+			
+			effectiveInput = scratchBuf
+			dispatchTokens = 1
+		}
+
+		lmOut := ctx.GetActivationBuffer("logits", uint64(dispatchTokens*t.VocabSize*4), wgpu.BufferUsageStorage)
+		lmW := t.Network.GPULMHead.(*wgpu.Buffer)
+		ctx.DispatchDense(dispatchTokens, t.HiddenSize, t.VocabSize, effectiveInput, lmW, lmOut, ctx.GPUTileSize)
+		
+		currentBuf = lmOut
+		isReturningLogits = true
+		downloadTokens = dispatchTokens
+		readOffset = 0 // We already Isolated the token or processed all
+	} else if onlyLast && numTokens > 1 {
+		downloadTokens = 1
+		readOffset = uint64((numTokens - 1) * t.HiddenSize * 4)
+	}
+
 	ctx.FlushFrame()
 
-	// 4. Download
-	resSize := uint64(numTokens * t.HiddenSize * 4)
+	// 5. Download
+	dim := t.HiddenSize
+	if isReturningLogits {
+		dim = t.VocabSize
+	}
+	resSize := uint64(downloadTokens * dim * 4)
 	stagingBuf := ctx.GetActivationBuffer("staging", resSize, wgpu.BufferUsageMapRead)
 
 	encoder, _ := ctx.Device.CreateCommandEncoder(nil)
-	encoder.CopyBufferToBuffer(currentBuf, 0, stagingBuf, 0, resSize)
+	encoder.CopyBufferToBuffer(currentBuf, readOffset, stagingBuf, 0, resSize)
 	cmd, _ := encoder.Finish(nil)
 	ctx.Queue.Submit(cmd)
 
@@ -164,7 +200,10 @@ Finished:
 	outData := wgpu.FromBytes[float32](outBytes)
 	stagingBuf.Unmap()
 
-	shape := []int{numTokens, t.HiddenSize}
-	if input != nil { shape = input.Shape }
+	shape := []int{downloadTokens, dim}
 	return NewTensorFromSlice[T](CastWeights[T](outData), shape...), nil
+}
+
+func (t *Transformer[T]) ForwardWGPU(input *Tensor[T]) (*Tensor[T], error) {
+	return t.ForwardTokenIDsWGPU(nil, input, false, false)
 }

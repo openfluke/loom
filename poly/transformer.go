@@ -131,11 +131,21 @@ func (t *Transformer[T]) SyncToGPU() error {
 
 	// Sync LMHead
 	if t.LMHead != nil && t.Network.GPULMHead == nil {
-		buf, err := ctx.CreatePersistentBuffer(t.LMHead, "LMHead")
-		if err != nil {
-			return err
+		// Check for tied weights (same memory address)
+		isTied := false
+		if t.Embeddings != nil && len(t.LMHead) == len(t.Embeddings) && &t.LMHead[0] == &t.Embeddings[0] {
+			isTied = true
 		}
-		t.Network.GPULMHead = buf
+
+		if isTied && t.Network.GPUEmbeddings != nil {
+			t.Network.GPULMHead = t.Network.GPUEmbeddings
+		} else {
+			buf, err := ctx.CreatePersistentBuffer(t.LMHead, "LMHead")
+			if err != nil {
+				return err
+			}
+			t.Network.GPULMHead = buf
+		}
 	}
 
 	// Sync Final Norm
@@ -163,19 +173,29 @@ func (t *Transformer[T]) Generate(
 
 	// 1. Prefill
 	prefillStart := time.Now()
-	var hidden *Tensor[T]
+	var logits []float32
 	if len(tokens) > 0 {
 		if t.Network.UseGPU && t.Network.GPUEmbeddings != nil {
-			var err error
-			hidden, err = t.ForwardTokenIDsWGPU(tokens, nil)
-			if err != nil {
+			// Optimization: compute and download ONLY the last token's logits
+			logitTensor, err := t.ForwardTokenIDsWGPU(tokens, nil, true, true)
+			if err == nil {
+				rawLogits := logitTensor.Data
+				logits = make([]float32, len(rawLogits))
+				for i, v := range rawLogits {
+					logits[i] = float32(v)
+				}
+			} else {
 				fmt.Printf("⚠️  GPU Prefill Failed: %v (Falling back to CPU)\n", err)
 				allEmbeds := t.tokensToTensor(tokens)
-				hidden = t.forwardFull(allEmbeds)
+				hidden := t.forwardFull(allEmbeds)
+				lastHalf := hidden.Data[len(hidden.Data)-t.HiddenSize:]
+				logits = t.applyLMHead(lastHalf)
 			}
 		} else {
 			allEmbeds := t.tokensToTensor(tokens)
-			hidden = t.forwardFull(allEmbeds)
+			hidden := t.forwardFull(allEmbeds)
+			lastHalf := hidden.Data[len(hidden.Data)-t.HiddenSize:]
+			logits = t.applyLMHead(lastHalf)
 		}
 	}
 	prefillElapsed := time.Since(prefillStart)
@@ -185,37 +205,43 @@ func (t *Transformer[T]) Generate(
 	generatedCount := 0
 
 	for i := 0; i < opts.MaxTokens; i++ {
-		// Get logits from last hidden state (last row of hidden tensor)
-		lastHalf := hidden.Data[len(hidden.Data)-t.HiddenSize:]
-		logits := t.applyLMHead(lastHalf)
 		t.applyRepetitionPenalty(logits, tokens, opts)
 
 		nextToken := SampleTopK(logits, opts.TopK, opts.Temperature, opts.Deterministic)
+		
 		tokens = append(tokens, uint32(nextToken))
+		stream.Push(tokens)
 		generatedCount++
 
-		stream.Push(tokens)
-
-		if t.isEOS(nextToken, opts.EOSTokens) || stream.HasNewUserTurn(tokens) {
+		if t.isEOS(nextToken, opts.EOSTokens) || (opts.UseKVCache && stream.HasNewUserTurn(tokens)) {
 			break
 		}
 
 		// Forward next token (Incremental)
 		if t.Network.UseGPU && t.Network.GPUEmbeddings != nil {
-			var err error
-			hidden, err = t.ForwardTokenIDsWGPU([]uint32{uint32(nextToken)}, nil)
-			if err != nil {
+			logitTensor, err := t.ForwardTokenIDsWGPU([]uint32{uint32(nextToken)}, nil, true, true)
+			if err == nil {
+				rawLogits := logitTensor.Data
+				logits = make([]float32, len(rawLogits))
+				for j, v := range rawLogits {
+					logits[j] = float32(v)
+				}
+			} else {
 				fmt.Printf("⚠️  GPU Incremental Failed: %v (Falling back to CPU)\n", err)
 				nextEmbed := t.getEmbedding(nextToken)
 				input := NewTensor[T](1, t.HiddenSize)
 				copy(input.Data, nextEmbed)
-				hidden = t.forwardOne(input)
+				hidden := t.forwardOne(input)
+				lastHalf := hidden.Data[len(hidden.Data)-t.HiddenSize:]
+				logits = t.applyLMHead(lastHalf)
 			}
 		} else {
 			nextEmbed := t.getEmbedding(nextToken)
 			input := NewTensor[T](1, t.HiddenSize)
 			copy(input.Data, nextEmbed)
-			hidden = t.forwardOne(input)
+			hidden := t.forwardOne(input)
+			lastHalf := hidden.Data[len(hidden.Data)-t.HiddenSize:]
+			logits = t.applyLMHead(lastHalf)
 		}
 	}
 
