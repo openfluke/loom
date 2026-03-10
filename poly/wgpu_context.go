@@ -17,6 +17,14 @@ type WGPUContext struct {
 	// GPUTileSize is the auto-detected optimal tile size for this GPU.
 	// Can be overridden by the caller after init.
 	GPUTileSize    int
+	// ActiveEncoder, when non-nil, is used by all Dispatch* calls instead of
+	// creating their own encoder. This lets the entire forward pass be recorded
+	// into a single command buffer and submitted once, reducing GPU overhead.
+	ActiveEncoder   *wgpu.CommandEncoder
+	// PendingDestroys holds temporary uniform buffers that must not be destroyed
+	// until after FlushFrame() submits the active encoder. When not batching,
+	// buffers are destroyed immediately instead of queued here.
+	PendingDestroys []*wgpu.Buffer
 }
 
 // InitWGPU initializes the WebGPU context for the network.
@@ -76,6 +84,44 @@ func (c *WGPUContext) Release() {
 	}
 	if c.Instance != nil {
 		c.Instance.Release()
+	}
+}
+
+// BeginFrame creates a shared CommandEncoder that all subsequent Dispatch* calls
+// will record into until FlushFrame is called.
+func (c *WGPUContext) BeginFrame() error {
+	enc, err := c.Device.CreateCommandEncoder(nil)
+	if err != nil {
+		return err
+	}
+	c.ActiveEncoder = enc
+	c.PendingDestroys = c.PendingDestroys[:0] // reset slice, keep backing array
+	return nil
+}
+
+// FlushFrame finishes and submits the shared CommandEncoder, then destroys any
+// temporary uniform buffers that were kept alive for the duration of recording.
+func (c *WGPUContext) FlushFrame() {
+	if c.ActiveEncoder == nil {
+		return
+	}
+	cmd, _ := c.ActiveEncoder.Finish(nil)
+	c.Queue.Submit(cmd)
+	c.ActiveEncoder = nil
+	// Now safe to destroy temp uniform buffers — GPU has consumed the commands.
+	for _, buf := range c.PendingDestroys {
+		buf.Destroy()
+	}
+	c.PendingDestroys = c.PendingDestroys[:0]
+}
+
+// deferOrDestroy either queues buf for destruction after FlushFrame (when
+// batching) or destroys it immediately (standalone dispatch).
+func (c *WGPUContext) deferOrDestroy(buf *wgpu.Buffer) {
+	if c.ActiveEncoder != nil {
+		c.PendingDestroys = append(c.PendingDestroys, buf)
+	} else {
+		buf.Destroy()
 	}
 }
 

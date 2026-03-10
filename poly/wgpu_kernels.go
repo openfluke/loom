@@ -51,7 +51,27 @@ func (c *WGPUContext) CreateComputePipeline(shaderSource string) (*wgpu.ComputeP
 	return pipeline, err
 }
 
-// DispatchDense dispatches with persistent buffers.
+// ctxEncoder returns the active shared encoder if one is open (BeginFrame was called),
+// otherwise creates a new one-shot encoder.
+// owned=true means the caller is responsible for Finish()+Submit().
+func ctxEncoder(c *WGPUContext) (*wgpu.CommandEncoder, bool, error) {
+	if c.ActiveEncoder != nil {
+		return c.ActiveEncoder, false, nil
+	}
+	enc, err := c.Device.CreateCommandEncoder(nil)
+	return enc, true, err
+}
+
+// ctxSubmit finishes and submits enc only when it is owned (not the shared frame encoder).
+func ctxSubmit(c *WGPUContext, enc *wgpu.CommandEncoder, owned bool) {
+	if !owned {
+		return
+	}
+	cmd, _ := enc.Finish(nil)
+	c.Queue.Submit(cmd)
+}
+
+// DispatchDense dispatches a tiled dense matrix-multiply kernel.
 func (c *WGPUContext) DispatchDense(
 	batchSize, inputSize, outputSize int,
 	inputBuf, weightBuf, outputBuf *wgpu.Buffer,
@@ -73,7 +93,8 @@ func (c *WGPUContext) DispatchDense(
 		Contents: wgpu.ToBytes([]WGPUDenseParams{params}),
 		Usage:    wgpu.BufferUsageUniform,
 	})
-	defer paramBuf.Destroy()
+	// Queue for post-flush destruction when batching, or destroy now if standalone.
+	defer c.deferOrDestroy(paramBuf)
 
 	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Layout: pipeline.GetBindGroupLayout(0),
@@ -86,19 +107,17 @@ func (c *WGPUContext) DispatchDense(
 	})
 	defer bindGroup.Release()
 
-	encoder, _ := c.Device.CreateCommandEncoder(nil)
-	pass := encoder.BeginComputePass(nil)
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
-	// Workgroup X covers outputSize in tiles of tileSize threads
 	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
 	pass.End()
-
-	cmd, _ := encoder.Finish(nil)
-	c.Queue.Submit(cmd)
+	ctxSubmit(c, enc, owned)
 	return nil
 }
 
+// DispatchMHA dispatches the tiled multi-head attention kernel.
 func (c *WGPUContext) DispatchMHA(
 	numHeads, numKVHeads, headDim, seqLen, kvOffset, maxSeqLen int,
 	qBuf, kBuf, vBuf, oBuf *wgpu.Buffer,
@@ -119,12 +138,11 @@ func (c *WGPUContext) DispatchMHA(
 		MaxSeqLen:  uint32(maxSeqLen),
 		TileSize:   uint32(tileSize),
 	}
-
 	pBuf, _ := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
 		Contents: wgpu.ToBytes([]WGPUMHAParams{params}),
 		Usage:    wgpu.BufferUsageUniform,
 	})
-	defer pBuf.Destroy()
+	defer c.deferOrDestroy(pBuf)
 
 	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Layout: pipeline.GetBindGroupLayout(0),
@@ -138,19 +156,17 @@ func (c *WGPUContext) DispatchMHA(
 	})
 	defer bindGroup.Release()
 
-	encoder, _ := c.Device.CreateCommandEncoder(nil)
-	pass := encoder.BeginComputePass(nil)
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups(uint32(numHeads), uint32(seqLen), 1)
 	pass.End()
-
-	cmd, _ := encoder.Finish(nil)
-	c.Queue.Submit(cmd)
+	ctxSubmit(c, enc, owned)
 	return nil
 }
 
-// DispatchSwiGLU dispatches with persistent buffers.
+// DispatchSwiGLU dispatches the tiled SwiGLU MLP kernel.
 func (c *WGPUContext) DispatchSwiGLU(
 	batchSize, inputSize, outputSize int,
 	inputBuf, gateBuf, upBuf, outputBuf *wgpu.Buffer,
@@ -172,7 +188,7 @@ func (c *WGPUContext) DispatchSwiGLU(
 		Contents: wgpu.ToBytes([]WGPUDenseParams{params}),
 		Usage:    wgpu.BufferUsageUniform,
 	})
-	defer pBuf.Destroy()
+	defer c.deferOrDestroy(pBuf)
 
 	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Layout: pipeline.GetBindGroupLayout(0),
@@ -186,15 +202,13 @@ func (c *WGPUContext) DispatchSwiGLU(
 	})
 	defer bindGroup.Release()
 
-	encoder, _ := c.Device.CreateCommandEncoder(nil)
-	pass := encoder.BeginComputePass(nil)
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
 	pass.End()
-
-	cmd, _ := encoder.Finish(nil)
-	c.Queue.Submit(cmd)
+	ctxSubmit(c, enc, owned)
 	return nil
 }
 
@@ -219,7 +233,7 @@ func (c *WGPUContext) DispatchRMSNorm(
 		Contents: wgpu.ToBytes([]WGPURMSNormParams{params}),
 		Usage:    wgpu.BufferUsageUniform,
 	})
-	defer pBuf.Destroy()
+	defer c.deferOrDestroy(pBuf)
 
 	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Layout: pipeline.GetBindGroupLayout(0),
@@ -232,21 +246,18 @@ func (c *WGPUContext) DispatchRMSNorm(
 	})
 	defer bindGroup.Release()
 
-	encoder, _ := ctxEncoder(c)
-	pass := encoder.BeginComputePass(nil)
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups(uint32(batchSize), 1, 1)
 	pass.End()
-
-	cmd, _ := encoder.Finish(nil)
-	c.Queue.Submit(cmd)
+	ctxSubmit(c, enc, owned)
 	return nil
 }
 
 // GetActivationBuffer retrieves or creates a persistent activation buffer.
 func (c *WGPUContext) GetActivationBuffer(name string, size uint64, usage wgpu.BufferUsage) *wgpu.Buffer {
-	// Align size to 4 bytes for WebGPU
 	if size%4 != 0 {
 		size = (size + 3) &^ 3
 	}
@@ -295,7 +306,6 @@ func (c *WGPUContext) DispatchKVUpdate(
 	if err != nil {
 		return err
 	}
-	// shader caching means we don't release pipeline here, it's owned by cache
 
 	p := WGPUKVParams{
 		Offset:     uint32(offset),
@@ -308,7 +318,7 @@ func (c *WGPUContext) DispatchKVUpdate(
 		Contents: wgpu.ToBytes([]WGPUKVParams{p}),
 		Usage:    wgpu.BufferUsageUniform,
 	})
-	defer pBuf.Destroy()
+	defer c.deferOrDestroy(pBuf)
 
 	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Layout: pipeline.GetBindGroupLayout(0),
@@ -322,15 +332,13 @@ func (c *WGPUContext) DispatchKVUpdate(
 	})
 	defer bindGroup.Release()
 
-	encoder, _ := ctxEncoder(c)
-	pass := encoder.BeginComputePass(nil)
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups((uint32(numKVHeads)*uint32(headDim)*uint32(numTokens)+63)/64, 1, 1)
 	pass.End()
-
-	cmd, _ := encoder.Finish(nil)
-	c.Queue.Submit(cmd)
+	ctxSubmit(c, enc, owned)
 	return nil
 }
 
@@ -348,7 +356,7 @@ func (c *WGPUContext) DispatchResidual(
 		Contents: wgpu.ToBytes([]uint32{uint32(size)}),
 		Usage:    wgpu.BufferUsageUniform,
 	})
-	defer pBuf.Destroy()
+	defer c.deferOrDestroy(pBuf)
 
 	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Layout: pipeline.GetBindGroupLayout(0),
@@ -360,15 +368,13 @@ func (c *WGPUContext) DispatchResidual(
 	})
 	defer bindGroup.Release()
 
-	encoder, _ := ctxEncoder(c)
-	pass := encoder.BeginComputePass(nil)
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
 	pass.End()
-
-	cmd, _ := encoder.Finish(nil)
-	c.Queue.Submit(cmd)
+	ctxSubmit(c, enc, owned)
 	return nil
 }
 
@@ -400,7 +406,7 @@ func (c *WGPUContext) DispatchRoPE(
 		Contents: wgpu.ToBytes([]WGPURoPEParams{p}),
 		Usage:    wgpu.BufferUsageUniform,
 	})
-	defer pBuf.Destroy()
+	defer c.deferOrDestroy(pBuf)
 
 	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
 		Layout: pipeline.GetBindGroupLayout(0),
@@ -411,8 +417,8 @@ func (c *WGPUContext) DispatchRoPE(
 	})
 	defer bindGroup.Release()
 
-	encoder, _ := ctxEncoder(c)
-	pass := encoder.BeginComputePass(nil)
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 
@@ -420,12 +426,6 @@ func (c *WGPUContext) DispatchRoPE(
 	totalPairs := seqLen * numHeads * halfDim
 	pass.DispatchWorkgroups((uint32(totalPairs)+63)/64, 1, 1)
 	pass.End()
-
-	cmd, _ := encoder.Finish(nil)
-	c.Queue.Submit(cmd)
+	ctxSubmit(c, enc, owned)
 	return nil
-}
-
-func ctxEncoder(c *WGPUContext) (*wgpu.CommandEncoder, error) {
-	return c.Device.CreateCommandEncoder(nil)
 }
