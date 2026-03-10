@@ -84,14 +84,25 @@ func (t *Transformer[T]) Reset() {
 }
 
 // EnableTiling enables cache-tiling optimization for all layers in the transformer.
+// If tileSize is <= 0, it dynamically auto-detects the best size for the hardware.
 func (t *Transformer[T]) EnableTiling(tileSize int) {
 	for i := range t.Network.Layers {
-		t.Network.Layers[i].UseTiling = true
-		t.Network.Layers[i].TileSize = tileSize
+		l := &t.Network.Layers[i]
+		l.UseTiling = true
+		
+		finalSize := tileSize
+		if finalSize <= 0 {
+			// Auto-detect based on headDim
+			dim := l.HeadDim
+			if dim == 0 { dim = 64 } // Sane default
+			finalSize = CalculateOptimalTileSize(dim)
+		}
+		l.TileSize = finalSize
 	}
 	if t.finalNormLayer != nil {
 		t.finalNormLayer.UseTiling = true
 		t.finalNormLayer.TileSize = tileSize
+		if tileSize <= 0 { t.finalNormLayer.TileSize = 32 }
 	}
 }
 
