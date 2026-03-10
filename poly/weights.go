@@ -7,9 +7,10 @@ import (
 // WeightStore manages multiple numerical versions of the same weights.
 // This is the core of "Polymorphic Layer-Morphing".
 type WeightStore struct {
-	Master   []float32     // Master FP32 weights (Source of Truth)
-	Versions map[DType]any // Active versions (e.g., map[DTypeFP4][]byte)
-	Scale    float32       // Quantization scale factor
+	Master     []float32     // Master FP32 weights (Source of Truth)
+	Versions   map[DType]any // Active versions (e.g., map[DTypeFP4][]byte)
+	GPUWeights map[DType]any // VRAM-resident versions (wgpu.Buffer)
+	Scale      float32       // Quantization scale factor
 }
 
 // Morph converts master weights into the target DType and caches the result.
@@ -68,9 +69,10 @@ func (ws *WeightStore) Morph(dtype DType) {
 // NewWeightStore creates a new storage for weights.
 func NewWeightStore(size int) *WeightStore {
 	return &WeightStore{
-		Master:   AlignedFloat32(size),
-		Versions: make(map[DType]any),
-		Scale:    1.0,
+		Master:     AlignedFloat32(size),
+		Versions:   make(map[DType]any),
+		GPUWeights: make(map[DType]any),
+		Scale:      1.0,
 	}
 }
 
@@ -82,6 +84,7 @@ func (ws *WeightStore) Randomize(seed int64) {
 	}
 	// Clear stale versions
 	ws.Versions = make(map[DType]any)
+	ws.GPUWeights = make(map[DType]any)
 }
 
 // GetActive returns the data for the given DType if it exists.
@@ -204,4 +207,5 @@ func (ws *WeightStore) ApplyGradients(gradWeights *Tensor[float32], lr float32) 
 	// After applying gradients, previously cached low-bit versions are now STALE.
 	// We clear them so the next Forward pass forces a "Metamorphosis" re-quantization.
 	ws.Versions = make(map[DType]any)
+	ws.GPUWeights = make(map[DType]any)
 }

@@ -204,10 +204,31 @@ func (t *Transformer[T]) tokensToTensor(tokens []uint32) *Tensor[T] {
 }
 
 func (t *Transformer[T]) forwardOne(input *Tensor[T]) *Tensor[T] {
-	return t.forwardFull(input) // MHAForwardPolymorphic now handles incrementality internally
+	if t.Network.UseGPU && t.Network.GPUContext != nil {
+		res, err := t.ForwardWGPU(input)
+		if err == nil {
+			if t.finalNormLayer != nil {
+				_, res = RMSNormForwardPolymorphic(t.finalNormLayer, res)
+			}
+			return res
+		}
+		fmt.Printf("⚠️  GPU Forward Failed: %v (Falling back to CPU)\n", err)
+	}
+	return t.forwardFull(input)
 }
 
 func (t *Transformer[T]) forwardFull(input *Tensor[T]) *Tensor[T] {
+	if t.Network.UseGPU && t.Network.GPUContext != nil {
+		res, err := t.ForwardWGPU(input)
+		if err == nil {
+			if t.finalNormLayer != nil {
+				_, res = RMSNormForwardPolymorphic(t.finalNormLayer, res)
+			}
+			return res
+		}
+		fmt.Printf("⚠️  GPU Full Forward Failed: %v (Falling back to CPU)\n", err)
+	}
+	
 	current := input
 	numBlocks := len(t.Network.Layers) / 4
 	

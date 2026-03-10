@@ -5,6 +5,7 @@ import (
 	"math"
 	"reflect"
 	"unsafe"
+	"github.com/openfluke/webgpu/wgpu"
 )
 
 // LayerType defines the type of neural network layer
@@ -405,8 +406,16 @@ type VolumetricNetwork struct {
 
 	Layers []VolumetricLayer
 
-	// Global Tiling Switch
+	// Global Tiling & GPU Switches
 	UseTiling bool
+	UseGPU    bool
+
+	// GPU Acceleration context
+	GPUContext *WGPUContext
+
+	// Persistent GPU buffers to avoid allocations
+	GPUHiddenState []any // map[DType]wgpu.Buffer or similar, use any for now
+	GPULogits      any   // wgpu.Buffer
 }
 
 // VolumetricLayer represents a processing unit in the 3D volumetric grid.
@@ -474,17 +483,25 @@ type VolumetricLayer struct {
 
 	SequentialLayers []VolumetricLayer
 
-	// Tiling Config
+	// Tiling & GPU Config
 	UseTiling bool
 	TileSize  int
+	UseGPU    bool
+
+	IsGPUResident        bool
+	IsKVCacheGPUResident bool
 
 	Observer PolyObserver
 
 	// KV Cache (for MHA)
-	KVCacheK *Tensor[float32]
-	KVCacheV *Tensor[float32]
-	KVOffset int
+	KVCacheK  *Tensor[float32]
+	KVCacheV  *Tensor[float32]
+	KVOffset  int
 	MaxSeqLen int
+
+	// Persistent GPU KV buffers
+	GPUKVCacheK any // *wgpu.Buffer
+	GPUKVCacheV any // *wgpu.Buffer
 }
 
 // AlignedFloat32 allocates a slice of float32 aligned to 64-byte boundaries.
@@ -615,4 +632,144 @@ func SimulatePrecision(wVal float32, dtype DType, scale float32) float32 {
 	default:
 		return wVal
 	}
+}
+
+// SyncAllToGPU mirrors the entire network state to VRAM.
+func (n *VolumetricNetwork) SyncAllToGPU() error {
+	if n.GPUContext == nil {
+		return fmt.Errorf("GPU context not initialized")
+	}
+
+	for i := range n.Layers {
+		l := &n.Layers[i]
+		if err := l.SyncToGPU(); err != nil {
+			return err
+		}
+
+		// Initialize GPU KV cache buffers for MHA layers
+		if l.Type == LayerMultiHeadAttention && l.GPUKVCacheK == nil {
+			// Create empty KV cache buffers in VRAM
+			kvSize := l.MaxSeqLen * l.NumKVHeads * l.HeadDim
+			kBuf, _ := n.GPUContext.CreatePersistentBuffer(make([]float32, kvSize), "GPU K Cache")
+			vBuf, _ := n.GPUContext.CreatePersistentBuffer(make([]float32, kvSize), "GPU V Cache")
+			l.GPUKVCacheK = kBuf
+			l.GPUKVCacheV = vBuf
+			l.IsKVCacheGPUResident = true
+		}
+	}
+	// Pre-allocate common activation buffers for zero-latency inference
+	hSize := 0
+	if len(n.Layers) > 0 {
+		hSize = n.Layers[0].DModel
+		if hSize == 0 { hSize = n.Layers[0].InputHeight }
+	}
+	if hSize > 0 {
+		// Allocate for single-token decode immediately
+		n.GPUContext.GetActivationBuffer("hidden_A", uint64(hSize*4), wgpu.BufferUsageStorage)
+		n.GPUContext.GetActivationBuffer("hidden_B", uint64(hSize*4), wgpu.BufferUsageStorage)
+		n.GPUContext.GetActivationBuffer("norm_out", uint64(hSize*4), wgpu.BufferUsageStorage)
+		n.GPUContext.GetActivationBuffer("q_proj", uint64(hSize*4), wgpu.BufferUsageStorage)
+		n.GPUContext.GetActivationBuffer("attn_out", uint64(hSize*4), wgpu.BufferUsageStorage)
+		n.GPUContext.GetActivationBuffer("staging", uint64(hSize*4), wgpu.BufferUsageMapRead)
+		
+		// Pre-allocate for MHA projections (K/V might be smaller but hSize is safe upper bound)
+		n.GPUContext.GetActivationBuffer("k_proj", uint64(hSize*4), wgpu.BufferUsageStorage)
+		n.GPUContext.GetActivationBuffer("v_proj", uint64(hSize*4), wgpu.BufferUsageStorage)
+		
+		// MLP inter is usually larger (e.g. 4x hidden)
+		// We'll peek at a SwiGLU layer if possible
+		interSize := hSize * 4
+		for _, l := range n.Layers {
+			if l.Type == LayerSwiGLU && l.OutputHeight > hSize {
+				interSize = l.OutputHeight
+				break
+			}
+		}
+		n.GPUContext.GetActivationBuffer("mlp_inter", uint64(interSize*4), wgpu.BufferUsageStorage)
+	}
+
+	n.UseGPU = true
+	return nil
+}
+
+// SyncToGPU mirrors active weights and KV caches to the GPU.
+func (l *VolumetricLayer) SyncToGPU() error {
+	if l.Network.GPUContext == nil {
+		return fmt.Errorf("GPU context not initialized")
+	}
+	ctx := l.Network.GPUContext
+
+	// 1. Sync WeightStore
+	if l.WeightStore != nil {
+		if l.Type == LayerSwiGLU {
+			// Split Gate, Up, and Down weights for SwiGLU
+			h, inter := l.InputHeight, l.OutputHeight
+			gateSlice := l.WeightStore.Master[0 : h*inter]
+			upSlice := l.WeightStore.Master[h*inter : 2*h*inter]
+			downSlice := l.WeightStore.Master[2*h*inter : 2*h*inter+inter*h]
+
+			gBuf, _ := ctx.CreatePersistentBuffer(gateSlice, "Gate Weights")
+			uBuf, _ := ctx.CreatePersistentBuffer(upSlice, "Up Weights")
+			dBuf, _ := ctx.CreatePersistentBuffer(downSlice, "Down Weights")
+			l.WeightStore.GPUWeights[DType(100)] = gBuf
+			l.WeightStore.GPUWeights[DType(101)] = uBuf
+			l.WeightStore.GPUWeights[DType(102)] = dBuf
+		} else if l.Type == LayerMultiHeadAttention {
+			// Split Q, K, V, O weights
+			d := l.DModel
+			kv := l.NumKVHeads * l.HeadDim
+			qwSize := d * d
+			kwSize := d * kv
+			vwSize := d * kv
+			owSize := d * d
+
+			w := l.WeightStore.Master
+			qSlice := w[0 : qwSize]
+			kSlice := w[qwSize : qwSize+kwSize]
+			vSlice := w[qwSize+kwSize : qwSize+kwSize+vwSize]
+			oSlice := w[qwSize+kwSize+vwSize : qwSize+kwSize+vwSize+owSize]
+
+			qBuf, _ := ctx.CreatePersistentBuffer(qSlice, "Q Weights")
+			kBuf, _ := ctx.CreatePersistentBuffer(kSlice, "K Weights")
+			vBuf, _ := ctx.CreatePersistentBuffer(vSlice, "V Weights")
+			oBuf, _ := ctx.CreatePersistentBuffer(oSlice, "O Weights")
+
+			l.WeightStore.GPUWeights[DType(200)] = qBuf
+			l.WeightStore.GPUWeights[DType(201)] = kBuf
+			l.WeightStore.GPUWeights[DType(202)] = vBuf
+			l.WeightStore.GPUWeights[DType(203)] = oBuf
+		} else {
+			// Mirror Master (FP32) to GPU if no specific version is requested
+			if _, ok := l.WeightStore.GPUWeights[DTypeFloat32]; !ok {
+				buf, err := ctx.CreatePersistentBuffer(l.WeightStore.Master, "Layer Weights")
+				if err != nil {
+					return err
+				}
+				l.WeightStore.GPUWeights[DTypeFloat32] = buf
+			}
+		}
+	}
+
+	// 2. Sync KV Cache if present
+	if l.Type == LayerMultiHeadAttention {
+		l.IsKVCacheGPUResident = true
+	}
+
+	l.IsGPUResident = true
+	return nil
+}
+
+// SyncToCPU releases GPU resources.
+func (l *VolumetricLayer) SyncToCPU() {
+	if l.WeightStore != nil {
+		for dtype, buf := range l.WeightStore.GPUWeights {
+			// In a real implementation we'd call Destroy() here
+			// For now, we'll clear the map and let the pool/GC handle it if applicable
+			_ = dtype
+			_ = buf
+		}
+		l.WeightStore.GPUWeights = make(map[DType]any)
+	}
+	l.IsGPUResident = false
+	l.IsKVCacheGPUResident = false
 }
