@@ -10,6 +10,76 @@ import "fmt"
 
 // ShaderTiledDenseN generates a tiled dense (matmul) shader for the given tile size.
 // The tile size is baked into the WGSL workgroup array and @workgroup_size.
+// ShaderTiledDenseQ4 generates a tiled dense shader that dequantizes 4-bit weights on the fly.
+// Block size is 32: 1 f32 scale + 16 bytes (32 nibbles).
+func ShaderTiledDenseQ4(tileSize int) string {
+	return fmt.Sprintf(`
+struct Params {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    tileSize: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+@group(0) @binding(3) var<storage, read> weights: array<u32>;
+@group(0) @binding(4) var<storage, read_write> output: array<f32>;
+
+var<workgroup> tile_input: array<f32, %d>;
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>
+) {
+    let o = global_id.x;
+    let b = global_id.y;
+
+    if (o >= params.outputSize || b >= params.batchSize) { return; }
+
+    var sum: f32 = 0.0;
+    let tileSize = params.tileSize;
+
+    for (var iTile: u32 = 0u; iTile < params.inputSize; iTile += tileSize) {
+        let i = iTile + local_id.x;
+        if (i < params.inputSize) {
+            tile_input[local_id.x] = input[b * params.inputSize + i];
+        } else {
+            tile_input[local_id.x] = 0.0;
+        }
+
+        workgroupBarrier();
+
+        let rowOff = o * params.inputSize + iTile;
+        for (var k: u32 = 0u; k < tileSize; k++) {
+            let globalIdx = rowOff + k;
+            if (iTile + k < params.inputSize) {
+                let blockIdx = globalIdx / 32u;
+                let scale = scales[blockIdx];
+                
+                // Unpack 4-bit weight from u32 array
+                let wordIdx = globalIdx / 8u;
+                let nibbleIdx = globalIdx %% 8u;
+                let packed = weights[wordIdx];
+                
+                // Extract 4 bits
+                var q = i32((packed >> (nibbleIdx * 4u)) & 0xFu);
+                if (q > 7) { q -= 16; } // Sign extend
+                
+                sum += tile_input[k] * (f32(q) * scale);
+            }
+        }
+
+        workgroupBarrier();
+    }
+
+    output[b * params.outputSize + o] = sum;
+}
+`, tileSize, tileSize)
+}
+
 func ShaderTiledDenseN(tileSize int) string {
 	return fmt.Sprintf(`
 struct Params {
@@ -61,6 +131,87 @@ fn main(
     }
 
     output[b * params.outputSize + o] = sum;
+}
+`, tileSize, tileSize)
+}
+
+// ShaderTiledSwiGLUQ4 generates a tiled SwiGLU shader with Q4_0 weights.
+func ShaderTiledSwiGLUQ4(tileSize int) string {
+	return fmt.Sprintf(`
+struct Params {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    tileSize: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> gateScales: array<f32>;
+@group(0) @binding(3) var<storage, read> gateWeights: array<u32>;
+@group(0) @binding(4) var<storage, read> upScales: array<f32>;
+@group(0) @binding(5) var<storage, read> upWeights: array<u32>;
+@group(0) @binding(6) var<storage, read_write> output: array<f32>;
+
+var<workgroup> tile_input: array<f32, %d>;
+
+fn silu(x: f32) -> f32 {
+    return x * (1.0 / (1.0 + exp(-x)));
+}
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>
+) {
+    let o = global_id.x;
+    let b = global_id.y;
+
+    if (o >= params.outputSize || b >= params.batchSize) { return; }
+
+    var gateSum: f32 = 0.0;
+    var upSum: f32 = 0.0;
+    let tileSize = params.tileSize;
+
+    for (var iTile: u32 = 0u; iTile < params.inputSize; iTile += tileSize) {
+        let i = iTile + local_id.x;
+        if (i < params.inputSize) {
+            tile_input[local_id.x] = input[b * params.inputSize + i];
+        } else {
+            tile_input[local_id.x] = 0.0;
+        }
+
+        workgroupBarrier();
+
+        let rowOff = o * params.inputSize + iTile;
+        for (var k: u32 = 0u; k < tileSize; k++) {
+            let globalIdx = rowOff + k;
+            if (iTile + k < params.inputSize) {
+                let blockIdx = globalIdx / 32u;
+                let wordIdx = globalIdx / 8u;
+                let nibbleIdx = globalIdx %% 8u;
+                let val = tile_input[k];
+
+                // Gate Q4
+                let gScale = gateScales[blockIdx];
+                let gPacked = gateWeights[wordIdx];
+                var gQ = i32((gPacked >> (nibbleIdx * 4u)) & 0xFu);
+                if (gQ > 7) { gQ -= 16; }
+                gateSum += val * (f32(gQ) * gScale);
+
+                // Up Q4
+                let uScale = upScales[blockIdx];
+                let uPacked = upWeights[wordIdx];
+                var uQ = i32((uPacked >> (nibbleIdx * 4u)) & 0xFu);
+                if (uQ > 7) { uQ -= 16; }
+                upSum += val * (f32(uQ) * uScale);
+            }
+        }
+
+        workgroupBarrier();
+    }
+
+    output[b * params.outputSize + o] = silu(gateSum) * upSum;
 }
 `, tileSize, tileSize)
 }

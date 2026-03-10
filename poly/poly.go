@@ -5,6 +5,7 @@ import (
 	"math"
 	"reflect"
 	"unsafe"
+
 	"github.com/openfluke/webgpu/wgpu"
 )
 
@@ -108,29 +109,47 @@ const (
 
 func (a ActivationType) String() string {
 	switch a {
-	case ActivationReLU: return "ReLU"
-	case ActivationSilu: return "Silu"
-	case ActivationGELU: return "GELU"
-	case ActivationTanh: return "Tanh"
-	case ActivationSigmoid: return "Sigmoid"
-	case ActivationLinear: return "Linear"
-	default: return "Linear"
+	case ActivationReLU:
+		return "ReLU"
+	case ActivationSilu:
+		return "Silu"
+	case ActivationGELU:
+		return "GELU"
+	case ActivationTanh:
+		return "Tanh"
+	case ActivationSigmoid:
+		return "Sigmoid"
+	case ActivationLinear:
+		return "Linear"
+	default:
+		return "Linear"
 	}
 }
 
 func (s SoftmaxType) String() string {
 	switch s {
-	case SoftmaxStandard: return "Standard"
-	case SoftmaxGrid: return "Grid"
-	case SoftmaxHierarchical: return "Hierarchical"
-	case SoftmaxTemperature: return "Temperature"
-	case SoftmaxGumbel: return "Gumbel"
-	case SoftmaxMasked: return "Masked"
-	case SoftmaxSparse: return "Sparse"
-	case SoftmaxAdaptive: return "Adaptive"
-	case SoftmaxMixture: return "Mixture"
-	case SoftmaxEntmax: return "Entmax"
-	default: return "Standard"
+	case SoftmaxStandard:
+		return "Standard"
+	case SoftmaxGrid:
+		return "Grid"
+	case SoftmaxHierarchical:
+		return "Hierarchical"
+	case SoftmaxTemperature:
+		return "Temperature"
+	case SoftmaxGumbel:
+		return "Gumbel"
+	case SoftmaxMasked:
+		return "Masked"
+	case SoftmaxSparse:
+		return "Sparse"
+	case SoftmaxAdaptive:
+		return "Adaptive"
+	case SoftmaxMixture:
+		return "Mixture"
+	case SoftmaxEntmax:
+		return "Entmax"
+	default:
+		return "Standard"
 	}
 }
 
@@ -273,28 +292,50 @@ const (
 
 func (d DType) String() string {
 	switch d {
-	case DTypeFloat64: return "float64"
-	case DTypeFloat32: return "float32"
-	case DTypeFloat16: return "float16"
-	case DTypeBFloat16: return "bfloat16"
-	case DTypeFP8E4M3: return "fp8e4m3"
-	case DTypeFP8E5M2: return "fp8e5m2"
-	case DTypeInt64: return "int64"
-	case DTypeInt32: return "int32"
-	case DTypeInt16: return "int16"
-	case DTypeInt8: return "int8"
-	case DTypeUint64: return "uint64"
-	case DTypeUint32: return "uint32"
-	case DTypeUint16: return "uint16"
-	case DTypeUint8: return "uint8"
-	case DTypeInt4: return "int4"
-	case DTypeUint4: return "uint4"
-	case DTypeFP4: return "fp4"
-	case DTypeInt2: return "int2"
-	case DTypeUint2: return "uint2"
-	case DTypeTernary: return "ternary"
-	case DTypeBinary: return "binary"
-	default: return fmt.Sprintf("DType(%d)", d)
+	case DTypeFloat64:
+		return "float64"
+	case DTypeFloat32:
+		return "float32"
+	case DTypeFloat16:
+		return "float16"
+	case DTypeBFloat16:
+		return "bfloat16"
+	case DTypeFP8E4M3:
+		return "fp8e4m3"
+	case DTypeFP8E5M2:
+		return "fp8e5m2"
+	case DTypeInt64:
+		return "int64"
+	case DTypeInt32:
+		return "int32"
+	case DTypeInt16:
+		return "int16"
+	case DTypeInt8:
+		return "int8"
+	case DTypeUint64:
+		return "uint64"
+	case DTypeUint32:
+		return "uint32"
+	case DTypeUint16:
+		return "uint16"
+	case DTypeUint8:
+		return "uint8"
+	case DTypeInt4:
+		return "int4"
+	case DTypeUint4:
+		return "uint4"
+	case DTypeFP4:
+		return "fp4"
+	case DTypeInt2:
+		return "int2"
+	case DTypeUint2:
+		return "uint2"
+	case DTypeTernary:
+		return "ternary"
+	case DTypeBinary:
+		return "binary"
+	default:
+		return fmt.Sprintf("DType(%d)", d)
 	}
 }
 
@@ -664,7 +705,9 @@ func (n *VolumetricNetwork) SyncAllToGPU() error {
 	hSize := 0
 	if len(n.Layers) > 0 {
 		hSize = n.Layers[0].DModel
-		if hSize == 0 { hSize = n.Layers[0].InputHeight }
+		if hSize == 0 {
+			hSize = n.Layers[0].InputHeight
+		}
 	}
 	if hSize > 0 {
 		// Allocate for single-token decode immediately
@@ -674,11 +717,11 @@ func (n *VolumetricNetwork) SyncAllToGPU() error {
 		n.GPUContext.GetActivationBuffer("q_proj", uint64(hSize*4), wgpu.BufferUsageStorage)
 		n.GPUContext.GetActivationBuffer("attn_out", uint64(hSize*4), wgpu.BufferUsageStorage)
 		n.GPUContext.GetActivationBuffer("staging", uint64(hSize*4), wgpu.BufferUsageMapRead)
-		
+
 		// Pre-allocate for MHA projections (K/V might be smaller but hSize is safe upper bound)
 		n.GPUContext.GetActivationBuffer("k_proj", uint64(hSize*4), wgpu.BufferUsageStorage)
 		n.GPUContext.GetActivationBuffer("v_proj", uint64(hSize*4), wgpu.BufferUsageStorage)
-		
+
 		// MLP inter is usually larger (e.g. 4x hidden)
 		// We'll peek at a SwiGLU layer if possible
 		interSize := hSize * 4
@@ -704,7 +747,17 @@ func (l *VolumetricLayer) SyncToGPU() error {
 
 	// 1. Sync WeightStore
 	if l.WeightStore != nil {
-		if l.Type == LayerSwiGLU {
+		if l.Type == LayerRMSNorm {
+			// RMSNorm MUST stay in FP32 for numerical stability.
+			// 4-bit quantization would destroy the normalization precision.
+			if _, ok := l.WeightStore.GPUWeights[DTypeFloat32]; !ok {
+				buf, err := ctx.CreatePersistentBuffer(l.WeightStore.Master, "Norm Weights")
+				if err != nil {
+					return err
+				}
+				l.WeightStore.GPUWeights[DTypeFloat32] = buf
+			}
+		} else if l.Type == LayerSwiGLU && l.DType != DTypeInt4 {
 			// Split Gate, Up, and Down weights for SwiGLU
 			h, inter := l.InputHeight, l.OutputHeight
 			gateSlice := l.WeightStore.Master[0 : h*inter]
@@ -717,30 +770,16 @@ func (l *VolumetricLayer) SyncToGPU() error {
 			l.WeightStore.GPUWeights[DType(100)] = gBuf
 			l.WeightStore.GPUWeights[DType(101)] = uBuf
 			l.WeightStore.GPUWeights[DType(102)] = dBuf
-		} else if l.Type == LayerMultiHeadAttention {
-			// Split Q, K, V, O weights
-			d := l.DModel
-			kv := l.NumKVHeads * l.HeadDim
-			qwSize := d * d
-			kwSize := d * kv
-			vwSize := d * kv
-			owSize := d * d
-
-			w := l.WeightStore.Master
-			qSlice := w[0 : qwSize]
-			kSlice := w[qwSize : qwSize+kwSize]
-			vSlice := w[qwSize+kwSize : qwSize+kwSize+vwSize]
-			oSlice := w[qwSize+kwSize+vwSize : qwSize+kwSize+vwSize+owSize]
-
-			qBuf, _ := ctx.CreatePersistentBuffer(qSlice, "Q Weights")
-			kBuf, _ := ctx.CreatePersistentBuffer(kSlice, "K Weights")
-			vBuf, _ := ctx.CreatePersistentBuffer(vSlice, "V Weights")
-			oBuf, _ := ctx.CreatePersistentBuffer(oSlice, "O Weights")
-
-			l.WeightStore.GPUWeights[DType(200)] = qBuf
-			l.WeightStore.GPUWeights[DType(201)] = kBuf
-			l.WeightStore.GPUWeights[DType(202)] = vBuf
-			l.WeightStore.GPUWeights[DType(203)] = oBuf
+		} else if l.DType == DTypeInt4 {
+			// --- Q4_0 Quantized Sync ---
+			if l.Type == LayerSwiGLU {
+				h, inter := l.InputHeight, l.OutputHeight
+				l.syncQuantizedSwiGLU(ctx, h, inter)
+			} else if l.Type == LayerMultiHeadAttention {
+				l.syncQuantizedMHA(ctx)
+			} else {
+				l.syncQuantizedDense(ctx, "Layer Weights")
+			}
 		} else {
 			// Mirror Master (FP32) to GPU if no specific version is requested
 			if _, ok := l.WeightStore.GPUWeights[DTypeFloat32]; !ok {
@@ -755,11 +794,124 @@ func (l *VolumetricLayer) SyncToGPU() error {
 
 	// 2. Sync KV Cache if present
 	if l.Type == LayerMultiHeadAttention {
+		if l.GPUKVCacheK == nil {
+			size := uint64(l.MaxSeqLen * l.NumKVHeads * l.HeadDim * 4)
+			bufK, _ := ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+				Label: "KV Cache K",
+				Size:  size,
+				Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc | wgpu.BufferUsageCopyDst,
+			})
+			bufV, _ := ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+				Label: "KV Cache V",
+				Size:  size,
+				Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc | wgpu.BufferUsageCopyDst,
+			})
+			l.GPUKVCacheK = bufK
+			l.GPUKVCacheV = bufV
+		}
 		l.IsKVCacheGPUResident = true
 	}
 
 	l.IsGPUResident = true
 	return nil
+}
+
+// syncQuantizedDense handles the quantization and upload of a single weight buffer.
+func (l *VolumetricLayer) syncQuantizedDense(ctx *WGPUContext, label string) {
+	blocks := QuantizeQ4_0(l.WeightStore.Master)
+
+	scales := make([]float32, len(blocks))
+	packed := make([]uint32, len(blocks)*4) // 4 u32s per block (16 bytes)
+
+	for i, b := range blocks {
+		scales[i] = b.Scale
+		for j := 0; j < 4; j++ {
+			// Pack 4 bytes into one u32 (lower nibbles first)
+			packed[i*4+j] = uint32(b.Weights[j*4]) |
+				(uint32(b.Weights[j*4+1]) << 8) |
+				(uint32(b.Weights[j*4+2]) << 16) |
+				(uint32(b.Weights[j*4+3]) << 24)
+		}
+	}
+
+	sBuf, _ := ctx.CreatePersistentBuffer(scales, label+" Scales")
+
+	pBuf, _ := ctx.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
+		Label:    label + " Packed",
+		Contents: wgpu.ToBytes(packed),
+		Usage:    wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc,
+	})
+
+	l.WeightStore.GPUScales[DTypeInt4] = sBuf
+	l.WeightStore.GPUWeights[DTypeInt4] = pBuf
+}
+
+func (l *VolumetricLayer) syncQuantizedSwiGLU(ctx *WGPUContext, h, inter int) {
+	w := l.WeightStore.Master
+	gateSlice := w[0 : h*inter]
+	upSlice := w[h*inter : 2*h*inter]
+	downSlice := w[2*h*inter : 2*h*inter+inter*h]
+
+	// We'll use special internal DTypes for the SwiGLU components to avoid collisions
+	// 1100 = Gate scales, 1101 = Gate weights, etc.
+	l.syncQuantizedComponent(ctx, gateSlice, "Gate", DType(1100), DType(100))
+	l.syncQuantizedComponent(ctx, upSlice, "Up", DType(1101), DType(101))
+	l.syncQuantizedComponent(ctx, downSlice, "Down", DType(1102), DType(102))
+}
+
+func (l *VolumetricLayer) syncQuantizedComponent(ctx *WGPUContext, data []float32, label string, scaleDType, weightDType DType) {
+	blocks := QuantizeQ4_0(data)
+	scales := make([]float32, len(blocks))
+	packed := make([]uint32, len(blocks)*4)
+	for i, b := range blocks {
+		scales[i] = b.Scale
+		for j := 0; j < 4; j++ {
+			packed[i*4+j] = uint32(b.Weights[j*4]) | (uint32(b.Weights[j*4+1]) << 8) | (uint32(b.Weights[j*4+2]) << 16) | (uint32(b.Weights[j*4+3]) << 24)
+		}
+	}
+	sBuf, _ := ctx.CreatePersistentBuffer(scales, label+" Scales")
+	pBuf, _ := ctx.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
+		Label:    label + " Packed",
+		Contents: wgpu.ToBytes(packed),
+		Usage:    wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc,
+	})
+	l.WeightStore.GPUScales[weightDType] = sBuf
+	l.WeightStore.GPUWeights[weightDType] = pBuf
+}
+
+func (l *VolumetricLayer) syncFP32MHA(ctx *WGPUContext) {
+	d := l.DModel
+	kv := l.NumKVHeads * l.HeadDim
+	qwSize := d * d
+	kwSize := d * kv
+	vwSize := d * kv
+	owSize := d * d
+
+	w := l.WeightStore.Master
+	qBuf, _ := ctx.CreatePersistentBuffer(w[0:qwSize], "Q Weights")
+	kBuf, _ := ctx.CreatePersistentBuffer(w[qwSize:qwSize+kwSize], "K Weights")
+	vBuf, _ := ctx.CreatePersistentBuffer(w[qwSize+kwSize:qwSize+kwSize+vwSize], "V Weights")
+	oBuf, _ := ctx.CreatePersistentBuffer(w[qwSize+kwSize+vwSize:qwSize+kwSize+vwSize+owSize], "O Weights")
+
+	l.WeightStore.GPUWeights[DType(200)] = qBuf
+	l.WeightStore.GPUWeights[DType(201)] = kBuf
+	l.WeightStore.GPUWeights[DType(202)] = vBuf
+	l.WeightStore.GPUWeights[DType(203)] = oBuf
+}
+
+func (l *VolumetricLayer) syncQuantizedMHA(ctx *WGPUContext) {
+	d := l.DModel
+	kv := l.NumKVHeads * l.HeadDim
+	qwSize := d * d
+	kwSize := d * kv
+	vwSize := d * kv
+	owSize := d * d
+
+	w := l.WeightStore.Master
+	l.syncQuantizedComponent(ctx, w[0:qwSize], "Q", DType(200), DType(200))
+	l.syncQuantizedComponent(ctx, w[qwSize:qwSize+kwSize], "K", DType(201), DType(201))
+	l.syncQuantizedComponent(ctx, w[qwSize+kwSize:qwSize+kwSize+vwSize], "V", DType(202), DType(202))
+	l.syncQuantizedComponent(ctx, w[qwSize+kwSize+vwSize:qwSize+kwSize+vwSize+owSize], "O", DType(203), DType(203))
 }
 
 // SyncToCPU releases GPU resources.

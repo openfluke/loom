@@ -2,6 +2,7 @@ package poly
 
 import (
 	"math/rand"
+	"github.com/openfluke/webgpu/wgpu"
 )
 
 // WeightStore manages multiple numerical versions of the same weights.
@@ -10,6 +11,7 @@ type WeightStore struct {
 	Master     []float32     // Master FP32 weights (Source of Truth)
 	Versions   map[DType]any // Active versions (e.g., map[DTypeFP4][]byte)
 	GPUWeights map[DType]any // VRAM-resident versions (wgpu.Buffer)
+	GPUScales  map[DType]*wgpu.Buffer // VRAM-resident scales for quantized types
 	Scale      float32       // Quantization scale factor
 }
 
@@ -72,6 +74,7 @@ func NewWeightStore(size int) *WeightStore {
 		Master:     AlignedFloat32(size),
 		Versions:   make(map[DType]any),
 		GPUWeights: make(map[DType]any),
+		GPUScales:  make(map[DType]*wgpu.Buffer),
 		Scale:      1.0,
 	}
 }

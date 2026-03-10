@@ -2,6 +2,7 @@ package poly
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/openfluke/webgpu/wgpu"
 )
@@ -16,15 +17,32 @@ type WGPUContext struct {
 	ActivationPool map[string]*wgpu.Buffer
 	// GPUTileSize is the auto-detected optimal tile size for this GPU.
 	// Can be overridden by the caller after init.
-	GPUTileSize    int
+	GPUTileSize int
 	// ActiveEncoder, when non-nil, is used by all Dispatch* calls instead of
 	// creating their own encoder. This lets the entire forward pass be recorded
 	// into a single command buffer and submitted once, reducing GPU overhead.
-	ActiveEncoder   *wgpu.CommandEncoder
+	ActiveEncoder *wgpu.CommandEncoder
 	// PendingDestroys holds temporary uniform buffers that must not be destroyed
 	// until after FlushFrame() submits the active encoder. When not batching,
 	// buffers are destroyed immediately instead of queued here.
 	PendingDestroys []*wgpu.Buffer
+
+	// --- Performance Optimization Caches ---
+	LayoutCache    map[string]*wgpu.BindGroupLayout
+	BindGroupCache map[uint64]*wgpu.BindGroup
+
+	// Uniform Pool
+	UniformPool []*wgpu.Buffer
+	UniformIdx  int
+
+	// Negotiated limits
+	Limits wgpu.Limits
+}
+
+// BindGroupKey is used for the BindGroupCache
+type BindGroupKey struct {
+	Pipeline *wgpu.ComputePipeline
+	Buffers  []*wgpu.Buffer
 }
 
 // InitWGPU initializes the WebGPU context for the network.
@@ -46,27 +64,60 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		return fmt.Errorf("failed to request adapter: %v", err)
 	}
 
-	device, err := adapter.RequestDevice(nil)
+	// Tiered Limit Request:
+	// 1. Try requesting with "Sane High" limits (enough for most LLMs)
+	adapterLimits := adapter.GetLimits()
+
+	targetStorage := adapterLimits.Limits.MaxStorageBufferBindingSize
+	if targetStorage > 512*1024*1024 {
+		targetStorage = 512 * 1024 * 1024 // Cap at 512MB for stability
+	}
+
+	device, err := adapter.RequestDevice(&wgpu.DeviceDescriptor{
+		RequiredLimits: &wgpu.RequiredLimits{
+			Limits: wgpu.Limits{
+				MaxStorageBufferBindingSize:       targetStorage,
+				MaxBufferSize:                     adapterLimits.Limits.MaxBufferSize,
+				MaxComputeWorkgroupStorageSize:    adapterLimits.Limits.MaxComputeWorkgroupStorageSize,
+				MaxComputeInvocationsPerWorkgroup: adapterLimits.Limits.MaxComputeInvocationsPerWorkgroup,
+				MaxComputeWorkgroupsPerDimension:  adapterLimits.Limits.MaxComputeWorkgroupsPerDimension,
+			},
+		},
+	})
+
+	if err != nil {
+		// 2. Absolute fallback (default limits, 128MB storage limit)
+		device, err = adapter.RequestDevice(nil)
+		if err == nil {
+			fmt.Printf("⚠️  WebGPU: falling back to default limits (large models may fail)\n")
+		}
+	}
+
 	if err != nil {
 		adapter.Release()
 		instance.Release()
 		return fmt.Errorf("failed to request device: %v", err)
 	}
 
+	finalLimits := device.GetLimits()
+
 	n.GPUContext = &WGPUContext{
 		Instance:       instance,
 		Adapter:        adapter,
 		Device:         device,
 		Queue:          device.GetQueue(),
+		Limits:         finalLimits.Limits,
 		PipelineCache:  make(map[string]*wgpu.ComputePipeline),
 		ActivationPool: make(map[string]*wgpu.Buffer),
+		LayoutCache:    make(map[string]*wgpu.BindGroupLayout),
+		BindGroupCache: make(map[uint64]*wgpu.BindGroup),
+		UniformPool:    make([]*wgpu.Buffer, 0, 1024),
 	}
 
-	// Auto-detect optimal GPU tile size from this adapter's limits
-	limits := adapter.GetLimits()
+	// Auto-detect optimal GPU tile size from these actual device limits
 	n.GPUContext.GPUTileSize = CalculateOptimalGPUTileSizeFromLimits(
-		limits.Limits.MaxComputeWorkgroupStorageSize,
-		limits.Limits.MaxComputeInvocationsPerWorkgroup,
+		finalLimits.Limits.MaxComputeWorkgroupStorageSize,
+		finalLimits.Limits.MaxComputeInvocationsPerWorkgroup,
 		64, // default headDim; caller can override via GPUTileSize after init
 	)
 
@@ -113,6 +164,18 @@ func (c *WGPUContext) FlushFrame() {
 		buf.Destroy()
 	}
 	c.PendingDestroys = c.PendingDestroys[:0]
+	c.UniformIdx = 0
+}
+
+// ResetCache clears all BindGroups and Pipelines.
+// Should be called when model architecture or precision changes.
+func (c *WGPUContext) ResetCache() {
+	for k, bg := range c.BindGroupCache {
+		bg.Release()
+		delete(c.BindGroupCache, k)
+	}
+	// We keep the Pipelines and Layouts as they are often reusable
+	// based on the shader source hash, but we could clear them too if needed.
 }
 
 // deferOrDestroy either queues buf for destruction after FlushFrame (when
@@ -123,6 +186,74 @@ func (c *WGPUContext) deferOrDestroy(buf *wgpu.Buffer) {
 	} else {
 		buf.Destroy()
 	}
+}
+
+// GetUniformBuffer provides a pre-allocated uniform buffer from the pool,
+// resetting the index on every FlushFrame.
+func (c *WGPUContext) GetUniformBuffer(size uint64) *wgpu.Buffer {
+	// Simple pool: find the first available buffer of sufficient size
+	// For production, we'd use a more sophisticated allocator.
+	for i := c.UniformIdx; i < len(c.UniformPool); i++ {
+		if c.UniformPool[i].GetSize() >= size {
+			c.UniformIdx = i + 1
+			return c.UniformPool[i]
+		}
+	}
+
+	// Not found, create a new one
+	buf, _ := c.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Size:  size,
+		Usage: wgpu.BufferUsageUniform | wgpu.BufferUsageCopyDst,
+	})
+	c.UniformPool = append(c.UniformPool, buf)
+	c.UniformIdx = len(c.UniformPool)
+	return buf
+}
+
+// BindGroupKeyHash generates a stable hash for a set of buffers and a pipeline.
+func BindGroupKeyHash(pipeline *wgpu.ComputePipeline, buffers ...*wgpu.Buffer) uint64 {
+	h := uint64(uintptr(unsafe.Pointer(pipeline)))
+	for _, b := range buffers {
+		h ^= uint64(uintptr(unsafe.Pointer(b))) + 0x9e3779b9 + (h << 6) + (h >> 2)
+	}
+	return h
+}
+
+// GetBindGroup retrieves or creates a BindGroup for the given pipeline and buffers.
+func (c *WGPUContext) GetBindGroup(pipeline *wgpu.ComputePipeline, buffers ...*wgpu.Buffer) (*wgpu.BindGroup, error) {
+	key := BindGroupKeyHash(pipeline, buffers...)
+	if bg, ok := c.BindGroupCache[key]; ok {
+		return bg, nil
+	}
+
+	entries := make([]wgpu.BindGroupEntry, len(buffers))
+	for i, b := range buffers {
+		if b == nil {
+			return nil, fmt.Errorf("binding %d is nil", i)
+		}
+
+		size := b.GetSize()
+		// Proactive Validation: Catch limit exceedance BEFORE it panics in Submit
+		if size > c.Limits.MaxStorageBufferBindingSize {
+			return nil, fmt.Errorf("binding %d size (%d) exceeds device limit %d", i, size, c.Limits.MaxStorageBufferBindingSize)
+		}
+
+		entries[i] = wgpu.BindGroupEntry{
+			Binding: uint32(i),
+			Buffer:  b,
+			Size:    size,
+		}
+	}
+
+	bg, err := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
+		Layout:  pipeline.GetBindGroupLayout(0),
+		Entries: entries,
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.BindGroupCache[key] = bg
+	return bg, nil
 }
 
 // CreatePersistentBuffer creates a storage buffer that stays in VRAM.

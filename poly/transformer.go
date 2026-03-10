@@ -119,6 +119,7 @@ func (t *Transformer[T]) SyncToGPU() error {
 		return fmt.Errorf("GPU not enabled")
 	}
 	ctx := t.Network.GPUContext
+	ctx.ResetCache()
 
 	// Sync Embeddings
 	if t.Embeddings != nil && t.Network.GPUEmbeddings == nil {

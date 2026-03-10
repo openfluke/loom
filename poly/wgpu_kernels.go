@@ -2,6 +2,7 @@ package poly
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/openfluke/webgpu/wgpu"
 )
@@ -71,6 +72,42 @@ func ctxSubmit(c *WGPUContext, enc *wgpu.CommandEncoder, owned bool) {
 	c.Queue.Submit(cmd)
 }
 
+// DispatchDenseQ4 dispatches a tiled dense kernel that dequantizes Q4_0 weights.
+func (c *WGPUContext) DispatchDenseQ4(
+	batchSize, inputSize, outputSize int,
+	inputBuf, scaleBuf, weightBuf, outputBuf *wgpu.Buffer,
+	tileSize int,
+) error {
+	shaderSrc := ShaderTiledDenseQ4(tileSize)
+	pipeline, err := c.CreateComputePipeline(shaderSrc)
+	if err != nil {
+		return err
+	}
+
+	params := WGPUDenseParams{
+		BatchSize:  uint32(batchSize),
+		InputSize:  uint32(inputSize),
+		OutputSize: uint32(outputSize),
+		TileSize:   uint32(tileSize),
+	}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
+
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, scaleBuf, weightBuf, outputBuf)
+	if err != nil {
+		return err
+	}
+
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
 // DispatchDense dispatches a tiled dense matrix-multiply kernel.
 func (c *WGPUContext) DispatchDense(
 	batchSize, inputSize, outputSize int,
@@ -89,23 +126,13 @@ func (c *WGPUContext) DispatchDense(
 		OutputSize: uint32(outputSize),
 		TileSize:   uint32(tileSize),
 	}
-	paramBuf, _ := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
-		Contents: wgpu.ToBytes([]WGPUDenseParams{params}),
-		Usage:    wgpu.BufferUsageUniform,
-	})
-	// Queue for post-flush destruction when batching, or destroy now if standalone.
-	defer c.deferOrDestroy(paramBuf)
+	paramBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(paramBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
 
-	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Layout: pipeline.GetBindGroupLayout(0),
-		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: paramBuf, Size: paramBuf.GetSize()},
-			{Binding: 1, Buffer: inputBuf, Size: inputBuf.GetSize()},
-			{Binding: 2, Buffer: weightBuf, Size: weightBuf.GetSize()},
-			{Binding: 3, Buffer: outputBuf, Size: outputBuf.GetSize()},
-		},
-	})
-	defer bindGroup.Release()
+	bindGroup, err := c.GetBindGroup(pipeline, paramBuf, inputBuf, weightBuf, outputBuf)
+	if err != nil {
+		return err
+	}
 
 	enc, owned, _ := ctxEncoder(c)
 	pass := enc.BeginComputePass(nil)
@@ -138,29 +165,55 @@ func (c *WGPUContext) DispatchMHA(
 		MaxSeqLen:  uint32(maxSeqLen),
 		TileSize:   uint32(tileSize),
 	}
-	pBuf, _ := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
-		Contents: wgpu.ToBytes([]WGPUMHAParams{params}),
-		Usage:    wgpu.BufferUsageUniform,
-	})
-	defer c.deferOrDestroy(pBuf)
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUMHAParams{params}))
 
-	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Layout: pipeline.GetBindGroupLayout(0),
-		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: pBuf, Size: pBuf.GetSize()},
-			{Binding: 1, Buffer: qBuf, Size: qBuf.GetSize()},
-			{Binding: 2, Buffer: kBuf, Size: kBuf.GetSize()},
-			{Binding: 3, Buffer: vBuf, Size: vBuf.GetSize()},
-			{Binding: 4, Buffer: oBuf, Size: oBuf.GetSize()},
-		},
-	})
-	defer bindGroup.Release()
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, qBuf, kBuf, vBuf, oBuf)
+	if err != nil {
+		return err
+	}
 
 	enc, owned, _ := ctxEncoder(c)
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups(uint32(numHeads), uint32(seqLen), 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+// DispatchSwiGLUQ4 dispatches a tiled SwiGLU kernel with Q4_0 weights.
+func (c *WGPUContext) DispatchSwiGLUQ4(
+	batchSize, inputSize, outputSize int,
+	inputBuf, gateScaleBuf, gateWeightBuf, upScaleBuf, upWeightBuf, outputBuf *wgpu.Buffer,
+	tileSize int,
+) error {
+	shaderSrc := ShaderTiledSwiGLUQ4(tileSize)
+	pipeline, err := c.CreateComputePipeline(shaderSrc)
+	if err != nil {
+		return err
+	}
+
+	params := WGPUDenseParams{
+		BatchSize:  uint32(batchSize),
+		InputSize:  uint32(inputSize),
+		OutputSize: uint32(outputSize),
+		TileSize:   uint32(tileSize),
+	}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
+
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateScaleBuf, gateWeightBuf, upScaleBuf, upWeightBuf, outputBuf)
+	if err != nil {
+		return err
+	}
+
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
 	pass.End()
 	ctxSubmit(c, enc, owned)
 	return nil
@@ -184,23 +237,13 @@ func (c *WGPUContext) DispatchSwiGLU(
 		OutputSize: uint32(outputSize),
 		TileSize:   uint32(tileSize),
 	}
-	pBuf, _ := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
-		Contents: wgpu.ToBytes([]WGPUDenseParams{params}),
-		Usage:    wgpu.BufferUsageUniform,
-	})
-	defer c.deferOrDestroy(pBuf)
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
 
-	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Layout: pipeline.GetBindGroupLayout(0),
-		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: pBuf, Size: pBuf.GetSize()},
-			{Binding: 1, Buffer: inputBuf, Size: inputBuf.GetSize()},
-			{Binding: 2, Buffer: gateBuf, Size: gateBuf.GetSize()},
-			{Binding: 3, Buffer: upBuf, Size: upBuf.GetSize()},
-			{Binding: 4, Buffer: outputBuf, Size: outputBuf.GetSize()},
-		},
-	})
-	defer bindGroup.Release()
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateBuf, upBuf, outputBuf)
+	if err != nil {
+		return err
+	}
 
 	enc, owned, _ := ctxEncoder(c)
 	pass := enc.BeginComputePass(nil)
@@ -229,22 +272,13 @@ func (c *WGPUContext) DispatchRMSNorm(
 	}
 
 	params := WGPURMSNormParams{Size: uint32(size), Epsilon: epsilon}
-	pBuf, _ := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
-		Contents: wgpu.ToBytes([]WGPURMSNormParams{params}),
-		Usage:    wgpu.BufferUsageUniform,
-	})
-	defer c.deferOrDestroy(pBuf)
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURMSNormParams{params}))
 
-	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Layout: pipeline.GetBindGroupLayout(0),
-		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: pBuf, Size: pBuf.GetSize()},
-			{Binding: 1, Buffer: inputBuf, Size: inputBuf.GetSize()},
-			{Binding: 2, Buffer: weightBuf, Size: weightBuf.GetSize()},
-			{Binding: 3, Buffer: outputBuf, Size: outputBuf.GetSize()},
-		},
-	})
-	defer bindGroup.Release()
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, weightBuf, outputBuf)
+	if err != nil {
+		return err
+	}
 
 	enc, owned, _ := ctxEncoder(c)
 	pass := enc.BeginComputePass(nil)
@@ -314,23 +348,13 @@ func (c *WGPUContext) DispatchKVUpdate(
 		NumKVHeads: uint32(numKVHeads),
 		NumTokens:  uint32(numTokens),
 	}
-	pBuf, _ := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
-		Contents: wgpu.ToBytes([]WGPUKVParams{p}),
-		Usage:    wgpu.BufferUsageUniform,
-	})
-	defer c.deferOrDestroy(pBuf)
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUKVParams{p}))
 
-	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Layout: pipeline.GetBindGroupLayout(0),
-		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: kCache, Size: kCache.GetSize()},
-			{Binding: 1, Buffer: vCache, Size: vCache.GetSize()},
-			{Binding: 2, Buffer: newK, Size: newK.GetSize()},
-			{Binding: 3, Buffer: newV, Size: newV.GetSize()},
-			{Binding: 4, Buffer: pBuf, Size: pBuf.GetSize()},
-		},
-	})
-	defer bindGroup.Release()
+	bindGroup, err := c.GetBindGroup(pipeline, kCache, vCache, newK, newV, pBuf)
+	if err != nil {
+		return err
+	}
 
 	enc, owned, _ := ctxEncoder(c)
 	pass := enc.BeginComputePass(nil)
@@ -352,21 +376,13 @@ func (c *WGPUContext) DispatchResidual(
 		return err
 	}
 
-	pBuf, _ := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
-		Contents: wgpu.ToBytes([]uint32{uint32(size)}),
-		Usage:    wgpu.BufferUsageUniform,
-	})
-	defer c.deferOrDestroy(pBuf)
+	pBuf := c.GetUniformBuffer(4)
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]uint32{uint32(size)}))
 
-	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Layout: pipeline.GetBindGroupLayout(0),
-		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: pBuf, Size: pBuf.GetSize()},
-			{Binding: 1, Buffer: inputBuf, Size: inputBuf.GetSize()},
-			{Binding: 2, Buffer: residualBuf, Size: residualBuf.GetSize()},
-		},
-	})
-	defer bindGroup.Release()
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, residualBuf)
+	if err != nil {
+		return err
+	}
 
 	enc, owned, _ := ctxEncoder(c)
 	pass := enc.BeginComputePass(nil)
@@ -395,27 +411,20 @@ func (c *WGPUContext) DispatchRoPE(
 		return err
 	}
 
-	p := WGPURoPEParams{
+	pROPE := WGPURoPEParams{
 		SeqLen:   uint32(seqLen),
 		HeadDim:  uint32(headDim),
 		NumHeads: uint32(numHeads),
 		Offset:   uint32(offset),
 		Theta:    theta,
 	}
-	pBuf, _ := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
-		Contents: wgpu.ToBytes([]WGPURoPEParams{p}),
-		Usage:    wgpu.BufferUsageUniform,
-	})
-	defer c.deferOrDestroy(pBuf)
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(pROPE)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURoPEParams{pROPE}))
 
-	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Layout: pipeline.GetBindGroupLayout(0),
-		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: pBuf, Size: pBuf.GetSize()},
-			{Binding: 1, Buffer: targetBuf, Size: targetBuf.GetSize()},
-		},
-	})
-	defer bindGroup.Release()
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, targetBuf)
+	if err != nil {
+		return err
+	}
 
 	enc, owned, _ := ctxEncoder(c)
 	pass := enc.BeginComputePass(nil)
@@ -446,27 +455,18 @@ func (c *WGPUContext) DispatchEmbedding(
 		return err
 	}
 
-	p := WGPUEmbeddingParams{
+	pEmbed := WGPUEmbeddingParams{
 		VocabSize:  uint32(vocabSize),
 		HiddenSize: uint32(hiddenSize),
 		NumTokens:  uint32(numTokens),
 	}
-	pBuf, _ := c.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
-		Contents: wgpu.ToBytes([]WGPUEmbeddingParams{p}),
-		Usage:    wgpu.BufferUsageUniform,
-	})
-	defer c.deferOrDestroy(pBuf)
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(pEmbed)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUEmbeddingParams{pEmbed}))
 
-	bindGroup, _ := c.Device.CreateBindGroup(&wgpu.BindGroupDescriptor{
-		Layout: pipeline.GetBindGroupLayout(0),
-		Entries: []wgpu.BindGroupEntry{
-			{Binding: 0, Buffer: pBuf, Size: pBuf.GetSize()},
-			{Binding: 1, Buffer: indicesBuf, Size: indicesBuf.GetSize()},
-			{Binding: 2, Buffer: weightsBuf, Size: weightsBuf.GetSize()},
-			{Binding: 3, Buffer: outputBuf, Size: outputBuf.GetSize()},
-		},
-	})
-	defer bindGroup.Release()
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, indicesBuf, weightsBuf, outputBuf)
+	if err != nil {
+		return err
+	}
 
 	enc, owned, _ := ctxEncoder(c)
 	pass := enc.BeginComputePass(nil)
