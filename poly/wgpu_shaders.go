@@ -644,3 +644,271 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 }
 `
+
+const ShaderRNNStep = `
+struct RNNParams {
+    batchSize: u32,
+    inputSize: u32,
+    hiddenSize: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: RNNParams;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> hPrev: array<f32>;
+@group(0) @binding(3) var<storage, read> wIH: array<f32>;
+@group(0) @binding(4) var<storage, read> wHH: array<f32>;
+@group(0) @binding(5) var<storage, read> bias: array<f32>;
+@group(0) @binding(6) var<storage, read_write> hCurr: array<f32>;
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let h = global_id.x;
+    let b = global_id.y;
+    if (h >= params.hiddenSize || b >= params.batchSize) { return; }
+
+    var sum: f32 = bias[h];
+    
+    // Input to Hidden
+    let base_in = b * params.inputSize;
+    let base_w_ih = h * params.inputSize;
+    for (var i: u32 = 0u; i < params.inputSize; i++) {
+        sum += input[base_in + i] * wIH[base_w_ih + i];
+    }
+    
+    // Hidden to Hidden
+    let base_h_prev = b * params.hiddenSize;
+    let base_w_hh = h * params.hiddenSize;
+    for (var i: u32 = 0u; i < params.hiddenSize; i++) {
+        sum += hPrev[base_h_prev + i] * wHH[base_w_hh + i];
+    }
+    
+    hCurr[b * params.hiddenSize + h] = tanh(sum);
+}
+`
+
+const ShaderLSTMStep = `
+struct LSTMParams {
+    batchSize: u32,
+    inputSize: u32,
+    hiddenSize: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: LSTMParams;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> hPrev: array<f32>;
+@group(0) @binding(3) var<storage, read> cPrev: array<f32>;
+@group(0) @binding(4) var<storage, read> weights: array<f32>; // [wI, wF, wG, wO] concatenated
+@group(0) @binding(5) var<storage, read_write> hCurr: array<f32>;
+@group(0) @binding(6) var<storage, read_write> cCurr: array<f32>;
+
+fn sigmoid(x: f32) -> f32 {
+    return 1.0 / (1.0 + exp(-x));
+}
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let h = global_id.x;
+    let b = global_id.y;
+    if (h >= params.hiddenSize || b >= params.batchSize) { return; }
+
+    let ihSize = params.hiddenSize * params.inputSize;
+    let hhSize = params.hiddenSize * params.hiddenSize;
+    let gateSize = ihSize + hhSize + params.hiddenSize;
+    
+    // Weight offsets for gates
+    let wF_off = gateSize;
+    let wG_off = 2u * gateSize;
+    let wO_off = 3u * gateSize;
+
+    var iSum: f32 = weights[ihSize + hhSize + h];
+    var fSum: f32 = weights[wF_off + ihSize + hhSize + h];
+    var gSum: f32 = weights[wG_off + ihSize + hhSize + h];
+    var oSum: f32 = weights[wO_off + ihSize + hhSize + h];
+
+    let base_in = b * params.inputSize;
+    let base_h_prev = b * params.hiddenSize;
+
+    for (var i: u32 = 0u; i < params.inputSize; i++) {
+        let x = input[base_in + i];
+        let w_idx = h * params.inputSize + i;
+        iSum += x * weights[w_idx];
+        fSum += x * weights[wF_off + w_idx];
+        gSum += x * weights[wG_off + w_idx];
+        oSum += x * weights[wO_off + w_idx];
+    }
+
+    for (var hp: u32 = 0u; hp < params.hiddenSize; hp++) {
+        let hv = hPrev[base_h_prev + hp];
+        let w_idx = ihSize + h * params.hiddenSize + hp;
+        iSum += hv * weights[w_idx];
+        fSum += hv * weights[wF_off + w_idx];
+        gSum += hv * weights[wG_off + w_idx];
+        oSum += hv * weights[wO_off + w_idx];
+    }
+
+    let iG = sigmoid(iSum);
+    let fG = sigmoid(fSum);
+    let gG = tanh(gSum);
+    let oG = sigmoid(oSum);
+
+    let cell = fG * cPrev[base_h_prev + h] + iG * gG;
+    cCurr[base_h_prev + h] = cell;
+    hCurr[base_h_prev + h] = oG * tanh(cell);
+}
+`
+
+const ShaderCNN1 = `
+struct CNN1Params {
+    batchSize: u32,
+    inC: u32,
+    inL: u32,
+    outC: u32,
+    outL: u32,
+    kSize: u32,
+    stride: u32,
+    padding: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: CNN1Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> weights: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let o = global_id.x; // outL
+    let f = global_id.y; // outC (filters)
+    let b = global_id.z; // batch
+    
+    if (o >= params.outL || f >= params.outC || b >= params.batchSize) { return; }
+
+    var sum: f32 = 0.0;
+    for (var ic: u32 = 0u; ic < params.inC; ic++) {
+        for (var k: u32 = 0u; k < params.kSize; k++) {
+            let inPos = i32(o * params.stride + k) - i32(params.padding);
+            if (inPos >= 0 && u32(inPos) < params.inL) {
+                let inIdx = b * params.inC * params.inL + ic * params.inL + u32(inPos);
+                let wIdx = f * params.inC * params.kSize + ic * params.kSize + k;
+                sum += input[inIdx] * weights[wIdx];
+            }
+        }
+    }
+    
+    output[b * params.outC * params.outL + f * params.outL + o] = sum;
+}
+`
+
+const ShaderCNN2 = `
+struct CNN2Params {
+    batchSize: u32,
+    inC: u32, inH: u32, inW: u32,
+    outC: u32, outH: u32, outW: u32,
+    kH: u32, kW: u32,
+    strideH: u32, strideW: u32,
+    padH: u32, padW: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: CNN2Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> weights: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let w = global_id.x; // outW
+    let h = global_id.y; // outH
+    let f_batch = global_id.z; // filter + batch? No, lets use z for batch, and loop filter or vice versa
+    
+    // Better: x=outW*outH, y=outC, z=batch
+    let oArea = params.outW * params.outH;
+    let outIdx_flat = global_id.x;
+    let filterIdx = global_id.y;
+    let batchIdx = global_id.z;
+    
+    if (outIdx_flat >= oArea || filterIdx >= params.outC || batchIdx >= params.batchSize) { return; }
+    
+    let outX = outIdx_flat % params.outW;
+    let outY = outIdx_flat / params.outW;
+
+    var sum: f32 = 0.0;
+    for (var ic: u32 = 0u; ic < params.inC; ic++) {
+        for (var kh: u32 = 0u; kh < params.kH; kh++) {
+            for (var kw: u32 = 0u; kw < params.kW; kw++) {
+                let inY = i32(outY * params.strideH + kh) - i32(params.padH);
+                let inX = i32(outX * params.strideW + kw) - i32(params.padW);
+                
+                if (inY >= 0 && u32(inY) < params.inH && inX >= 0 && u32(inX) < params.inW) {
+                    let inIdx = batchIdx * params.inC * params.inH * params.inW +
+                               ic * params.inH * params.inW +
+                               u32(inY) * params.inW + u32(inX);
+                    let wIdx = filterIdx * params.inC * params.kH * params.kW +
+                               ic * params.kH * params.kW +
+                               kh * params.kW + kw;
+                    sum += input[inIdx] * weights[wIdx];
+                }
+            }
+        }
+    }
+    output[batchIdx * params.outC * oArea + filterIdx * oArea + outIdx_flat] = sum;
+}
+`
+
+const ShaderCNN3 = `
+struct CNN3Params {
+    batchSize: u32,
+    inC: u32, inD: u32, inH: u32, inW: u32,
+    outC: u32, outD: u32, outH: u32, outW: u32,
+    kD: u32, kH: u32, kW: u32,
+    sD: u32, sH: u32, sW: u32,
+    pD: u32, pH: u32, pW: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: CNN3Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> weights: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let outIdx_flat = global_id.x;
+    let filterIdx = global_id.y;
+    let batchIdx = global_id.z;
+    
+    let oArea = params.outD * params.outH * params.outW;
+    if (outIdx_flat >= oArea || filterIdx >= params.outC || batchIdx >= params.batchSize) { return; }
+    
+    let outW = outIdx_flat % params.outW;
+    let remainder = outIdx_flat / params.outW;
+    let outH = remainder % params.outH;
+    let outD = remainder / params.outH;
+
+    var sum: f32 = 0.0;
+    for (var ic: u32 = 0u; ic < params.inC; ic++) {
+        for (var kd: u32 = 0u; kd < params.kD; kd++) {
+            for (var kh: u32 = 0u; kh < params.kH; kh++) {
+                for (var kw: u32 = 0u; kw < params.kW; kw++) {
+                    let inD = i32(outD * params.sD + kd) - i32(params.pD);
+                    let inH = i32(outH * params.sH + kh) - i32(params.pH);
+                    let inX = i32(outW * params.sW + kw) - i32(params.pW);
+                    
+                    if (inD >= 0 && u32(inD) < params.inD &&
+                        inH >= 0 && u32(inH) < params.inH &&
+                        inX >= 0 && u32(inX) < params.inW) {
+                        
+                        let inIdx = batchIdx * params.inC * params.inD * params.inH * params.inW +
+                                   ic * params.inD * params.inH * params.inW +
+                                   u32(inD) * params.inH * params.inW +
+                                   u32(inH) * params.inW + u32(inX);
+                        let wIdx = filterIdx * params.inC * params.kD * params.kH * params.kW +
+                                   ic * params.kD * params.kH * params.kW +
+                                   kd * params.kH * params.kW +
+                                   kh * params.kW + kw;
+                        sum += input[inIdx] * weights[wIdx];
+                    }
+                }
+            }
+        }
+    }
+    output[batchIdx * params.outC * oArea + filterIdx * oArea + outIdx_flat] = sum;
+}
+`

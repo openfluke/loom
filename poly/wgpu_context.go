@@ -271,3 +271,45 @@ func (c *WGPUContext) CreatePersistentBuffer(data []float32, label string) (*wgp
 	})
 	return buf, err
 }
+
+// ReadBuffer reads data from a GPU buffer back to a float32 slice.
+func (c *WGPUContext) ReadBuffer(buf *wgpu.Buffer) ([]float32, error) {
+	size := buf.GetSize()
+	stagingBuf, err := c.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: "Read Staging",
+		Size:  size,
+		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
+	})
+	if err != nil { return nil, err }
+	defer stagingBuf.Destroy()
+
+	enc, err := c.Device.CreateCommandEncoder(nil)
+	if err != nil { return nil, err }
+	enc.CopyBufferToBuffer(buf, 0, stagingBuf, 0, size)
+	cmd, _ := enc.Finish(nil)
+	c.Queue.Submit(cmd)
+
+	done := make(chan struct{})
+	err = stagingBuf.MapAsync(wgpu.MapModeRead, 0, size, func(status wgpu.BufferMapAsyncStatus) {
+		close(done)
+	})
+	if err != nil { return nil, err }
+
+	for {
+		c.Device.Poll(false, nil)
+		select {
+		case <-done:
+			goto Finished
+		default:
+			// yield?
+		}
+	}
+
+Finished:
+	data := stagingBuf.GetMappedRange(0, uint(size))
+	defer stagingBuf.Unmap()
+
+	res := make([]float32, size/4)
+	copy(wgpu.ToBytes(res), data)
+	return res, nil
+}
