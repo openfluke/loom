@@ -64,36 +64,46 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		return fmt.Errorf("failed to request adapter: %v", err)
 	}
 
-	// Tiered Limit Request:
-	// 1. Try requesting with "Sane High" limits (enough for most LLMs)
-	adapterLimits := adapter.GetLimits()
+	// 1. Request a temporary default device to get a safe baseline for all limits
+	defaultDevice, err := adapter.RequestDevice(nil)
+	if err != nil {
+		adapter.Release()
+		instance.Release()
+		return fmt.Errorf("failed to request default device for limits: %v", err)
+	}
+	limits := defaultDevice.GetLimits().Limits
+	defaultDevice.Release()
 
-	targetStorage := adapterLimits.Limits.MaxStorageBufferBindingSize
-	if targetStorage > 512*1024*1024 {
-		targetStorage = 512 * 1024 * 1024 // Cap at 512MB for stability
+	// 2. Boost the storage and buffer size limits to allow for large embeddings and weights (1GB storage, 2GB total)
+	if limits.MaxStorageBufferBindingSize < 1024*1024*1024 {
+		limits.MaxStorageBufferBindingSize = 1024 * 1024 * 1024
+	}
+	if limits.MaxBufferSize < 2*1024*1024*1024 {
+		limits.MaxBufferSize = 2 * 1024 * 1024 * 1024
 	}
 
-	device, err := adapter.RequestDevice(&wgpu.DeviceDescriptor{
+	deviceDesc := &wgpu.DeviceDescriptor{
 		RequiredLimits: &wgpu.RequiredLimits{
-			Limits: wgpu.Limits{
-				MaxStorageBufferBindingSize:       targetStorage,
-				MaxBufferSize:                     adapterLimits.Limits.MaxBufferSize,
-				MaxComputeWorkgroupStorageSize:    adapterLimits.Limits.MaxComputeWorkgroupStorageSize,
-				MaxComputeInvocationsPerWorkgroup: adapterLimits.Limits.MaxComputeInvocationsPerWorkgroup,
-				MaxComputeWorkgroupsPerDimension:  adapterLimits.Limits.MaxComputeWorkgroupsPerDimension,
-			},
+			Limits: limits,
 		},
-	})
+	}
+
+	// Request the device with explicitly supported baseline limits + necessary boosts
+	fmt.Printf("⚠️  DEBUG: Requesting Device %s (backend %v) with MaxStorage=%d MB, MaxBuffer=%d MB, WorkgroupStorage=%d\n",
+		adapter.GetInfo().Name, adapter.GetInfo().BackendType,
+		limits.MaxStorageBufferBindingSize/(1024*1024),
+		limits.MaxBufferSize/(1024*1024),
+		limits.MaxComputeWorkgroupStorageSize)
+
+	device, err := adapter.RequestDevice(deviceDesc)
 
 	if err != nil {
-		// 2. Absolute fallback (default limits, 128MB storage limit)
+		fmt.Printf("⚠️  High GPU limits request failed: %v. Falling back to default limits (large models will likely crash)\n", err)
 		device, err = adapter.RequestDevice(nil)
-		if err == nil {
-			fmt.Printf("⚠️  WebGPU: falling back to default limits (large models may fail)\n")
-		}
 	}
 
 	if err != nil {
+		fmt.Printf("⚠️  WebGPU device request failed completely: %v\n", err)
 		adapter.Release()
 		instance.Release()
 		return fmt.Errorf("failed to request device: %v", err)
@@ -233,10 +243,6 @@ func (c *WGPUContext) GetBindGroup(pipeline *wgpu.ComputePipeline, buffers ...*w
 		}
 
 		size := b.GetSize()
-		// Proactive Validation: Catch limit exceedance BEFORE it panics in Submit
-		if size > c.Limits.MaxStorageBufferBindingSize {
-			return nil, fmt.Errorf("binding %d size (%d) exceeds device limit %d", i, size, c.Limits.MaxStorageBufferBindingSize)
-		}
 
 		entries[i] = wgpu.BindGroupEntry{
 			Binding: uint32(i),

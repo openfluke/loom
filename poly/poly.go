@@ -781,13 +781,17 @@ func (l *VolumetricLayer) SyncToGPU() error {
 				l.syncQuantizedDense(ctx, "Layer Weights")
 			}
 		} else {
-			// Mirror Master (FP32) to GPU if no specific version is requested
-			if _, ok := l.WeightStore.GPUWeights[DTypeFloat32]; !ok {
-				buf, err := ctx.CreatePersistentBuffer(l.WeightStore.Master, "Layer Weights")
-				if err != nil {
-					return err
+			if l.Type == LayerMultiHeadAttention {
+				l.syncFP32MHA(ctx)
+			} else {
+				// Mirror Master (FP32) to GPU if no specific version is requested
+				if _, ok := l.WeightStore.GPUWeights[DTypeFloat32]; !ok {
+					buf, err := ctx.CreatePersistentBuffer(l.WeightStore.Master, "Layer Weights")
+					if err != nil {
+						return err
+					}
+					l.WeightStore.GPUWeights[DTypeFloat32] = buf
 				}
-				l.WeightStore.GPUWeights[DTypeFloat32] = buf
 			}
 		}
 	}
@@ -888,10 +892,14 @@ func (l *VolumetricLayer) syncFP32MHA(ctx *WGPUContext) {
 	owSize := d * d
 
 	w := l.WeightStore.Master
-	qBuf, _ := ctx.CreatePersistentBuffer(w[0:qwSize], "Q Weights")
-	kBuf, _ := ctx.CreatePersistentBuffer(w[qwSize:qwSize+kwSize], "K Weights")
-	vBuf, _ := ctx.CreatePersistentBuffer(w[qwSize+kwSize:qwSize+kwSize+vwSize], "V Weights")
-	oBuf, _ := ctx.CreatePersistentBuffer(w[qwSize+kwSize+vwSize:qwSize+kwSize+vwSize+owSize], "O Weights")
+	qBuf, err := ctx.CreatePersistentBuffer(w[0:qwSize], "Q Weights")
+	if err != nil { fmt.Printf("Q err: %v\n", err) }
+	kBuf, err := ctx.CreatePersistentBuffer(w[qwSize:qwSize+kwSize], "K Weights")
+	if err != nil { fmt.Printf("K err: %v\n", err) }
+	vBuf, err := ctx.CreatePersistentBuffer(w[qwSize+kwSize:qwSize+kwSize+vwSize], "V Weights")
+	if err != nil { fmt.Printf("V err: %v\n", err) }
+	oBuf, err := ctx.CreatePersistentBuffer(w[qwSize+kwSize+vwSize:qwSize+kwSize+vwSize+owSize], "O Weights")
+	if err != nil { fmt.Printf("O err: %v\n", err) }
 
 	l.WeightStore.GPUWeights[DType(200)] = qBuf
 	l.WeightStore.GPUWeights[DType(201)] = kBuf

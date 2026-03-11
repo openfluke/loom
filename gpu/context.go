@@ -182,19 +182,22 @@ func GetContext() (*Context, error) {
 		// Blindly cloning all limits can fail if the driver is pickier than it reports.
 		// Instead, we specifically target the limits we know we need.
 
-		adapterLimits := ctx.Adapter.GetLimits().Limits
-		Log("Adapter Max Storage Buffer Binding: %d MB", adapterLimits.MaxStorageBufferBindingSize/(1024*1024))
+		// 1. Request a temporary default device to get a safe baseline for all limits
+		defaultDevice, errForLimits := ctx.Adapter.RequestDevice(nil)
+		if errForLimits != nil {
+			initErr = fmt.Errorf("failed to request default device for limits: %v", errForLimits)
+			return
+		}
+		limits := defaultDevice.GetLimits().Limits
+		defaultDevice.Release()
+		Log("Default Max Storage Buffer Binding: %d MB", limits.MaxStorageBufferBindingSize/(1024*1024))
 
-		// 1. Build a baseline from adapter limits
-		limits := adapterLimits
-
-		// 2. Cap buffer limits at 1GB unless adapter is smaller (safety measure)
-		// Many NVIDIA drivers report 4GB+, but sometimes requesting the absolute max fails.
-		if limits.MaxStorageBufferBindingSize > 1024*1024*1024 {
+		// 2. Boost the storage and buffer size limits to allow for large embeddings and weights (1GB storage, 2GB total)
+		if limits.MaxStorageBufferBindingSize < 1024*1024*1024 {
 			limits.MaxStorageBufferBindingSize = 1024 * 1024 * 1024
 		}
-		if limits.MaxBufferSize > 1024*1024*1024 {
-			limits.MaxBufferSize = 1024 * 1024 * 1024
+		if limits.MaxBufferSize < 2*1024*1024*1024 {
+			limits.MaxBufferSize = 2 * 1024 * 1024 * 1024
 		}
 
 		deviceDesc := &wgpu.DeviceDescriptor{
