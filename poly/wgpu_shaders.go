@@ -81,6 +81,9 @@ fn main(
 }
 
 func ShaderTiledDenseN(tileSize int) string {
+	// A pure global-memory based, register-unrolled kernel.
+	// We avoid shared memory entirely to eliminate barrier overhead,
+	// because some WebGPU backends emulate workgroup memory poorly.
 	return fmt.Sprintf(`
 struct Params {
     batchSize: u32,
@@ -94,8 +97,7 @@ struct Params {
 @group(0) @binding(2) var<storage, read> weights: array<f32>;
 @group(0) @binding(3) var<storage, read_write> output: array<f32>;
 
-var<workgroup> tile_input: array<f32, %d>;
-
+// tileSize is typically 32 or 64. Workgroup processes 'tileSize' outputs.
 @compute @workgroup_size(%d, 1, 1)
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
@@ -103,36 +105,42 @@ fn main(
     @builtin(workgroup_id) wg_id: vec3<u32>
 ) {
     let o = global_id.x;
-    let b = global_id.y;
+    let b = wg_id.y;
 
     if (o >= params.outputSize || b >= params.batchSize) { return; }
 
     var sum: f32 = 0.0;
-    let tileSize = params.tileSize;
+    
+    // We unroll the loop by 4 (a typical SIMD width)
+    let limit = params.inputSize / 4u;
+    let rem = params.inputSize %% 4u;
+    
+    let base_in = b * params.inputSize;
+    let base_w = o * params.inputSize;
 
-    for (var iTile: u32 = 0u; iTile < params.inputSize; iTile += tileSize) {
-        let i = iTile + local_id.x;
-        if (i < params.inputSize) {
-            tile_input[local_id.x] = input[b * params.inputSize + i];
-        } else {
-            tile_input[local_id.x] = 0.0;
-        }
+    var i: u32 = 0u;
+    for (var k: u32 = 0u; k < limit; k++) {
+        let in0 = input[base_in + i];
+        let in1 = input[base_in + i + 1u];
+        let in2 = input[base_in + i + 2u];
+        let in3 = input[base_in + i + 3u];
 
-        workgroupBarrier();
+        let w0 = weights[base_w + i];
+        let w1 = weights[base_w + i + 1u];
+        let w2 = weights[base_w + i + 2u];
+        let w3 = weights[base_w + i + 3u];
 
-        let rowOff = o * params.inputSize + iTile;
-        for (var k: u32 = 0u; k < tileSize; k++) {
-            if (iTile + k < params.inputSize) {
-                sum += tile_input[k] * weights[rowOff + k];
-            }
-        }
+        sum += in0 * w0 + in1 * w1 + in2 * w2 + in3 * w3;
+        i += 4u;
+    }
 
-        workgroupBarrier();
+    for (var k: u32 = 0u; k < rem; k++) {
+        sum += input[base_in + i + k] * weights[base_w + i + k];
     }
 
     output[b * params.outputSize + o] = sum;
 }
-`, tileSize, tileSize)
+`, tileSize)
 }
 
 // ShaderTiledSwiGLUQ4 generates a tiled SwiGLU shader with Q4_0 weights.
@@ -232,50 +240,56 @@ struct Params {
 @group(0) @binding(3) var<storage, read> upWeights: array<f32>;
 @group(0) @binding(4) var<storage, read_write> output: array<f32>;
 
-var<workgroup> tile_input: array<f32, %d>;
-
 fn silu(x: f32) -> f32 {
     return x * (1.0 / (1.0 + exp(-x)));
 }
 
+// tileSize is typically 32 or 64
 @compute @workgroup_size(%d, 1, 1)
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
-    @builtin(local_invocation_id) local_id: vec3<u32>
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>
 ) {
     let o = global_id.x;
-    let b = global_id.y;
+    let b = wg_id.y;
 
     if (o >= params.outputSize || b >= params.batchSize) { return; }
 
     var gateSum: f32 = 0.0;
     var upSum: f32 = 0.0;
-    let tileSize = params.tileSize;
+    
+    let limit = params.inputSize / 4u;
+    let rem = params.inputSize %% 4u;
+    
+    let base_in = b * params.inputSize;
+    let base_w = o * params.inputSize;
 
-    for (var iTile: u32 = 0u; iTile < params.inputSize; iTile += tileSize) {
-        let i = iTile + local_id.x;
-        if (i < params.inputSize) {
-            tile_input[local_id.x] = input[b * params.inputSize + i];
-        } else {
-            tile_input[local_id.x] = 0.0;
-        }
+    var i: u32 = 0u;
+    for (var k: u32 = 0u; k < limit; k++) {
+        let in0 = input[base_in + i];
+        let in1 = input[base_in + i + 1u];
+        let in2 = input[base_in + i + 2u];
+        let in3 = input[base_in + i + 3u];
 
-        workgroupBarrier();
+        gateSum += in0 * gateWeights[base_w + i]     + in1 * gateWeights[base_w + i + 1u] +
+                   in2 * gateWeights[base_w + i + 2u] + in3 * gateWeights[base_w + i + 3u];
 
-        let rowOff = o * params.inputSize + iTile;
-        for (var k: u32 = 0u; k < tileSize; k++) {
-            if (iTile + k < params.inputSize) {
-                gateSum += tile_input[k] * gateWeights[rowOff + k];
-                upSum   += tile_input[k] * upWeights[rowOff + k];
-            }
-        }
+        upSum   += in0 * upWeights[base_w + i]       + in1 * upWeights[base_w + i + 1u] +
+                   in2 * upWeights[base_w + i + 2u]   + in3 * upWeights[base_w + i + 3u];
+        
+        i += 4u;
+    }
 
-        workgroupBarrier();
+    for (var k: u32 = 0u; k < rem; k++) {
+        let in_val = input[base_in + i + k];
+        gateSum += in_val * gateWeights[base_w + i + k];
+        upSum   += in_val * upWeights[base_w + i + k];
     }
 
     output[b * params.outputSize + o] = silu(gateSum) * upSum;
 }
-`, tileSize, tileSize)
+`, tileSize)
 }
 
 // ShaderTiledMHAN generates a tiled MHA shader for the given tile size and headDim.
