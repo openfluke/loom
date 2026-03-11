@@ -316,6 +316,10 @@ func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 	gradInput = NewTensor[T](input.Shape...)
 	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
 	
+	if layer.UseTiling && layer.TileSize > 0 {
+		return SwiGLUBackwardTiled(layer, gradOutput, input, preAct)
+	}
+
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil { weights = layer.WeightStore.Master }
 	
@@ -936,6 +940,104 @@ func swigluTiledProjectGateUpInt8[TIn Numeric, TOut Numeric](input []TIn, wData 
 		for o := 0; o < outDim; o++ {
 			sig := 1.0 / (1.0 + math.Exp(-float64(sumG[o])))
 			output[s*outDim+o] = TOut(float32(float64(sumG[o]) * sig) * sumU[o])
+		}
+	}
+}
+
+// SwiGLUBackwardTiled calculates gradients for SwiGLU using a tiled approach.
+func SwiGLUBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
+	seqLen := len(input.Data) / inputSize
+	tileSize := layer.TileSize
+	if tileSize <= 0 { tileSize = 32 }
+
+	gradInput = NewTensor[T](input.Shape...)
+	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
+
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil { weights = layer.WeightStore.Master }
+
+	gateWStart := 0
+	upWStart := inputSize * intermediateSize
+	downWStart := 2 * inputSize * intermediateSize
+	gateBStart := 2 * inputSize * intermediateSize + intermediateSize * inputSize
+	upBStart := gateBStart + intermediateSize
+	downBStart := upBStart + intermediateSize
+
+	scaleW := layer.WeightStore.Scale
+	if scaleW == 0 { scaleW = 1.0 }
+
+	// Temporary buffer for intermediate gradients dL/d(siluGate * up)
+	gradInter := NewTensor[T](seqLen, intermediateSize)
+
+	// 1. Tiled Down Projection Backward: dL/d(preAct) and dL/d(downW/B)
+	mhaTiledProjectBackward[T, T](layer, gradOutput, preAct, nil, nil, gradInter, gradWeights, intermediateSize, inputSize, seqLen, downWStart, downBStart, tileSize)
+
+	// 2. Tiled Gate & Up Projection Backward: dL/dx and dL/d(gateW/B, upW/B)
+	swigluTiledProjectGateUpBackward(gradInter.Data, input.Data, weights, gateWStart, upWStart, gateBStart, upBStart, gradInput.Data, gradWeights.Data, inputSize, intermediateSize, seqLen, layer.DType, scaleW, tileSize)
+
+	return gradInput, gradWeights
+}
+
+func swigluTiledProjectGateUpBackward[TIn Numeric, TGrad Numeric](gradInter []TGrad, input []TIn, weights any, gateWStart, upWStart, gateBStart, upBStart int, gradInput []TGrad, gradWeights []TGrad, inDim, outDim, seqLen int, dtype DType, scale float32, tileSize int) {
+	wData := CastWeights[float32](weights)
+	if wData == nil { return }
+	gW := wData[gateWStart:]
+	uW := wData[upWStart:]
+	gB := wData[gateBStart:]
+	uB := wData[upBStart:]
+
+	// Buffers for partial sums
+	sumSigG := make([]float32, outDim)
+	sumUp := make([]float32, outDim)
+
+	for s := 0; s < seqLen; s++ {
+		// First pass: compute intermediate activations for this row
+		for o := 0; o < outDim; o++ {
+			sumSigG[o] = gB[o]
+			sumUp[o] = uB[o]
+		}
+		for i := 0; i < inDim; i++ {
+			inVal := float32(input[s*inDim+i])
+			for o := 0; o < outDim; o++ {
+				sumSigG[o] += inVal * SimulatePrecision(gW[o*inDim+i], dtype, scale)
+				sumUp[o] += inVal * SimulatePrecision(uW[o*inDim+i], dtype, scale)
+			}
+		}
+
+		// Second pass: compute dUp and dGate and backprop to weights and input
+		for oTile := 0; oTile < outDim; oTile += tileSize {
+			oEnd := oTile + tileSize
+			if oEnd > outDim { oEnd = outDim }
+
+			for o := oTile; o < oEnd; o++ {
+				gi := float64(gradInter[s*outDim+o])
+				
+				x := float64(sumSigG[o])
+				sig := 1.0 / (1.0 + math.Exp(-x))
+				silu := x * sig
+				dSilu := sig * (1.0 + x*(1.0-sig))
+				
+				dUp := gi * silu
+				dGate := gi * float64(sumUp[o]) * dSilu
+				
+				gradWeights[upBStart+o] += TGrad(dUp)
+				gradWeights[gateBStart+o] += TGrad(dGate)
+
+				for iTile := 0; iTile < inDim; iTile += tileSize {
+					iEnd := iTile + tileSize
+					if iEnd > inDim { iEnd = inDim }
+					
+					for i := iTile; i < iEnd; i++ {
+						inVal := float64(input[s*inDim+i])
+						gradWeights[upWStart + o*inDim+i] += TGrad(inVal * dUp)
+						gradWeights[gateWStart + o*inDim+i] += TGrad(inVal * dGate)
+						
+						gradInput[s*inDim+i] += TGrad(dUp * float64(SimulatePrecision(uW[o*inDim+i], dtype, scale)) + 
+														dGate * float64(SimulatePrecision(gW[o*inDim+i], dtype, scale)))
+					}
+				}
+			}
 		}
 	}
 }

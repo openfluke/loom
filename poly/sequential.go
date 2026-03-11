@@ -14,9 +14,17 @@ func SequentialForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tens
 		sub := &layer.SequentialLayers[i]
 		
 		target := sub
+		if layer.UseTiling {
+			target.UseTiling = true
+			target.TileSize = layer.TileSize
+		}
 		if sub.IsRemoteLink && layer.Network != nil {
 			if remote := layer.Network.GetLayer(sub.TargetZ, sub.TargetY, sub.TargetX, sub.TargetL); remote != nil {
 				target = remote
+				if layer.UseTiling {
+					target.UseTiling = true
+					target.TileSize = layer.TileSize
+				}
 			}
 		}
 
@@ -62,9 +70,17 @@ func SequentialBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput
 		sub := &layer.SequentialLayers[i]
 		
 		target := sub
+		if layer.UseTiling {
+			target.UseTiling = true
+			target.TileSize = layer.TileSize
+		}
 		if sub.IsRemoteLink && layer.Network != nil {
 			if remote := layer.Network.GetLayer(sub.TargetZ, sub.TargetY, sub.TargetX, sub.TargetL); remote != nil {
 				target = remote
+				if layer.UseTiling {
+					target.UseTiling = true
+					target.TileSize = layer.TileSize
+				}
 			}
 		}
 

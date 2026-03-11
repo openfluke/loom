@@ -1334,3 +1334,77 @@ func mhaTiledAttention(Q, KRows, VRows, attnOut []float32, seqLen, numHeads, num
 		}
 	}
 }
+
+// mhaTiledProjectBackward calculates gradients for a projection layer (Dense-like).
+func mhaTiledProjectBackward[TIn Numeric, TGrad Numeric](layer *VolumetricLayer, gradOutput, input *Tensor[TGrad], _ any, _ any, gradInput, gradWeights *Tensor[TGrad], inDim, outDim, seqLen int, wStart, bStart int, tileSize int) {
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil { weights = layer.WeightStore.Master }
+	wData := CastWeights[float32](weights)
+	if wData == nil { return }
+	wBlock := wData[wStart:]
+
+	scale := layer.WeightStore.Scale
+	if scale == 0 { scale = 1.0 }
+
+	// 1. dL/din = gradOutput * W^T
+	// gradInput (seqLen x inDim) = gradOutput (seqLen x outDim) * W^T (outDim x inDim)
+	for sTile := 0; sTile < seqLen; sTile += tileSize {
+		sEnd := sTile + tileSize
+		if sEnd > seqLen { sEnd = seqLen }
+		for iTile := 0; iTile < inDim; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > inDim { iEnd = inDim }
+			for oTile := 0; oTile < outDim; oTile += tileSize {
+				oEnd := oTile + tileSize
+				if oEnd > outDim { oEnd = outDim }
+
+				for s := sTile; s < sEnd; s++ {
+					for i := iTile; i < iEnd; i++ {
+						var sum float32
+						for o := oTile; o < oEnd; o++ {
+							sum += float32(gradOutput.Data[s*outDim+o]) * SimulatePrecision(wBlock[o*inDim+i], layer.DType, scale)
+						}
+						gradInput.Data[s*inDim+i] += TGrad(sum)
+					}
+				}
+			}
+		}
+	}
+
+	// 2. dL/dW = input^T * gradOutput
+	// gradWeights (outDim x inDim) = input^T (inDim x seqLen) * gradOutput (seqLen x outDim)
+	// Bias: gradWeights.Bias (outDim) = sum_s (gradOutput[s])
+	for oTile := 0; oTile < outDim; oTile += tileSize {
+		oEnd := oTile + tileSize
+		if oEnd > outDim { oEnd = outDim }
+		
+		// Bias gradient
+		for o := oTile; o < oEnd; o++ {
+			var sum float32
+			for s := 0; s < seqLen; s++ {
+				sum += float32(gradOutput.Data[s*outDim+o])
+			}
+			gradWeights.Data[bStart+o] += TGrad(sum)
+		}
+
+		for iTile := 0; iTile < inDim; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > inDim { iEnd = inDim }
+			for sTile := 0; sTile < seqLen; sTile += tileSize {
+				sEnd := sTile + tileSize
+				if sEnd > seqLen { sEnd = seqLen }
+
+				for o := oTile; o < oEnd; o++ {
+					for i := iTile; i < iEnd; i++ {
+						var sum float32
+						for s := sTile; s < sEnd; s++ {
+							sum += float32(input.Data[s*inDim+i]) * float32(gradOutput.Data[s*outDim+o])
+						}
+						gradWeights.Data[wStart + o*inDim+i] += TGrad(sum)
+					}
+				}
+			}
+		}
+	}
+}
+
