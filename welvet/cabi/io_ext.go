@@ -169,6 +169,13 @@ func LoomGetMethodsJSON() *C.char {
 	_ = poly.SequentialBackwardPolymorphic[float32]
 	_ = poly.SoftmaxForwardPolymorphic[float32]
 	_ = poly.ParallelForwardPolymorphic[float32]
+	_ = poly.ParseLayerType
+	_ = poly.GroupRelatedTensors
+	_ = poly.ReconstructSwiGLULayer
+	_ = poly.ReconstructRMSNormLayer
+	_ = poly.ReconstructMHALayer
+	_ = poly.ReconstructCNNLayer
+	_ = poly.ReconstructLayerNormLayer
 	
 	data, _ := json.Marshal(methods)
 	return C.CString(string(data))
@@ -212,4 +219,54 @@ func LoomGetLayerTelemetry(networkHandle C.longlong, layerIdx C.int) *C.char {
 	tel := poly.ExtractLayerTelemetry(n.Layers[int(layerIdx)])
 	data, _ := json.Marshal(tel)
 	return C.CString(string(data))
+}
+
+//export LoomLoadUniversalDetailed
+func LoomLoadUniversalDetailed(path *C.char) *C.char {
+	p := C.GoString(path)
+	n, err := poly.LoadUniversal(p)
+	if err != nil {
+		return errJSON(err.Error())
+	}
+
+	networkMu.Lock()
+	id := networkNextID
+	networkNextID++
+	networks[id] = n
+	networkMu.Unlock()
+
+	res := map[string]interface{}{
+		"handle": id,
+		"layers": len(n.Layers),
+		"grid":   fmt.Sprintf("%dx%dx%d", n.Depth, n.Rows, n.Cols),
+	}
+	data, _ := json.Marshal(res)
+	return C.CString(string(data))
+}
+
+//export LoomCreateTransformer
+func LoomCreateTransformer(networkHandle C.longlong, embeddingsJSON *C.char, lmHeadJSON *C.char, finalNormJSON *C.char) C.longlong {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok { return -1 }
+
+	var embeds, lm, fn []float32
+	if embeddingsJSON != nil {
+		json.Unmarshal([]byte(C.GoString(embeddingsJSON)), &embeds)
+	}
+	if lmHeadJSON != nil {
+		json.Unmarshal([]byte(C.GoString(lmHeadJSON)), &lm)
+	}
+	if finalNormJSON != nil {
+		json.Unmarshal([]byte(C.GoString(finalNormJSON)), &fn)
+	}
+
+	tr := poly.NewTransformer[float32](n, embeds, lm, fn, poly.Template{})
+
+	networkMu.Lock()
+	id := transfomrerNextID
+	transfomrerNextID++
+	transformers[id] = tr
+	networkMu.Unlock()
+
+	return C.longlong(id)
 }

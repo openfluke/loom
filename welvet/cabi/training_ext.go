@@ -1297,3 +1297,100 @@ func LoomConvTransposed3DBackward(networkHandle C.longlong, layerIdx C.int, grad
 	data, _ := json.Marshal(res)
 	return C.CString(string(data))
 }
+
+//export LoomTargetPropBackwardChainRule
+func LoomTargetPropBackwardChainRule(networkHandle C.longlong, tpHandle C.longlong, targetHandle C.longlong) {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok { return }
+	tp, ok := getTargetPropContainer(int64(tpHandle))
+	if !ok { return }
+	target, ok := getSystolicContainer(int64(targetHandle))
+	if !ok { return }
+
+	switch tp.DType {
+	case poly.DTypeFloat64:
+		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[float64]), target.State.(*poly.Tensor[float64]))
+	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
+		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[float32]), target.State.(*poly.Tensor[float32]))
+	case poly.DTypeInt64:
+		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[int64]), target.State.(*poly.Tensor[int64]))
+	case poly.DTypeInt32:
+		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[int32]), target.State.(*poly.Tensor[int32]))
+	case poly.DTypeInt16:
+		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[int16]), target.State.(*poly.Tensor[int16]))
+	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
+		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[int8]), target.State.(*poly.Tensor[int8]))
+	case poly.DTypeUint64:
+		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[uint64]), target.State.(*poly.Tensor[uint64]))
+	case poly.DTypeUint32:
+		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[uint32]), target.State.(*poly.Tensor[uint32]))
+	case poly.DTypeUint16:
+		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[uint16]), target.State.(*poly.Tensor[uint16]))
+	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
+		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[uint8]), target.State.(*poly.Tensor[uint8]))
+	}
+}
+
+//export LoomTargetPropBackwardTargetProp
+func LoomTargetPropBackwardTargetProp(networkHandle C.longlong, tpHandle C.longlong, targetHandle C.longlong) {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok { return }
+	tp, ok := getTargetPropContainer(int64(tpHandle))
+	if !ok { return }
+	target, ok := getSystolicContainer(int64(targetHandle))
+	if !ok { return }
+
+	switch tp.DType {
+	case poly.DTypeFloat64:
+		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[float64]), target.State.(*poly.Tensor[float64]))
+	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
+		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[float32]), target.State.(*poly.Tensor[float32]))
+	case poly.DTypeInt64:
+		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[int64]), target.State.(*poly.Tensor[int64]))
+	case poly.DTypeInt32:
+		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[int32]), target.State.(*poly.Tensor[int32]))
+	case poly.DTypeInt16:
+		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[int16]), target.State.(*poly.Tensor[int16]))
+	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
+		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[int8]), target.State.(*poly.Tensor[int8]))
+	case poly.DTypeUint64:
+		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[uint64]), target.State.(*poly.Tensor[uint64]))
+	case poly.DTypeUint32:
+		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[uint32]), target.State.(*poly.Tensor[uint32]))
+	case poly.DTypeUint16:
+		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[uint16]), target.State.(*poly.Tensor[uint16]))
+	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
+		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[uint8]), target.State.(*poly.Tensor[uint8]))
+	}
+}
+
+//export LoomApplyRecursiveGradients
+func LoomApplyRecursiveGradients(networkHandle C.longlong, layerIdx C.int, gradWeightsJSON *C.char, learningRate C.float) {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok { return }
+	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return }
+	l := &n.Layers[int(layerIdx)]
+
+	var grad poly.Tensor[float32]
+	if err := json.Unmarshal([]byte(C.GoString(gradWeightsJSON)), &grad); err != nil {
+		return
+	}
+	poly.ApplyRecursiveGradients(l, &grad, float32(learningRate))
+}
+
+// Dummy use for scanner
+func dummyObservers() {
+	var co poly.ConsoleObserver
+	co.OnForward(poly.PolyLayerEvent{})
+	co.OnBackward(poly.PolyLayerEvent{})
+
+	var ho poly.HTTPObserver
+	ho.OnForward(poly.PolyLayerEvent{})
+	ho.OnBackward(poly.PolyLayerEvent{})
+
+	var ao poly.AggregatingObserver
+	ao.OnForward(poly.PolyLayerEvent{})
+	ao.OnBackward(poly.PolyLayerEvent{})
+
+	var _ poly.PolyGradientObserver
+}

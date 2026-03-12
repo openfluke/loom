@@ -59,3 +59,23 @@ func getSystolicContainer(handle int64) (*systolicContainer, bool) {
 	s, ok := systolicStates[handle]
 	return s, ok
 }
+
+var (
+	transformers        = make(map[int64]interface{}) // Using interface{} to handle multiple numeric types
+	transfomrerNextID   int64 = 1
+)
+
+func getTransformer(handle int64) (interface{}, bool) {
+	networkMu.RLock()
+	defer networkMu.RUnlock()
+	tr, ok := transformers[handle]
+	return tr, ok
+}
+
+// Helper: Convert Handle to TargetPropState Container
+func getTargetPropContainer(handle int64) (*targetPropContainer, bool) {
+	networkMu.RLock()
+	defer networkMu.RUnlock()
+	s, ok := targetPropStates[handle]
+	return s, ok
+}
