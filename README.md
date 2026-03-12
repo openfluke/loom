@@ -4,6 +4,18 @@
 
 Loom is a **Deterministic Neural Virtual Machine (DNVM)** engineered for absolute numerical consistency and extreme efficiency. It guarantees **bitwise-identical results** across all platforms, backends, and language bindings, bypassing memory bandwidth bottlenecks through polymorphic dispatch and volumetric 3D modeling.
 
+![Loom Overview](./loom_overview.jpg)
+
+## 🌐 The Polyglot Solution
+Loom is designed as a universal runtime that prioritizes portability and sovereignty:
+
+- **True "Copy-Paste" Portability**: Models are language-agnostic. Move weights and logic between Go, Python, C#, and WASM without translation layers.
+- **Write Once, Run Everywhere**: A standardized format that performs identically on Browser (WASM/WebGPU), Mobile (iOS/Android), and Desktop (Linux/Windows/macOS).
+- **Universal Import**: Direct ingestion from major frameworks—zero vendor lock-in.
+- **Active Edge Training**: Full backpropagation enabled on-device. No "frozen brains"; Loom learns from user interaction at the edge.
+- **Sovereign & Private**: Zero cloud dependencies. User data and model execution remain 100% local.
+
+
 ## 💎 The Bedrock Philosophy
 Loom is a **"Bedrock Edition"** neural engine. Unlike standard frameworks that build on top of high-level abstractions, Loom is designed at the bit-level to bypass the physical memory limitations of consumer hardware. 
 
