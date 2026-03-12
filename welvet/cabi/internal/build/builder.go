@@ -76,7 +76,7 @@ func buildPlatform(p Platform, outBase string, clean bool) {
 	cmd := exec.Command("go", "build", 
 		"-buildmode=c-shared", 
 		"-o", outputFile, 
-		"../../main.go",
+		"../../",
 	)
 
 	// Set Environment Variables for Cross-Compilation

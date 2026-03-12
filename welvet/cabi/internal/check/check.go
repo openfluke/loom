@@ -20,7 +20,7 @@ func main() {
 	fmt.Println("====================================================")
 
 	polyPath := "../../../../poly"
-	cabiFile := "../../main.go"
+	cabiPath := "../../"
 
 	// 1. Extract Core API from poly/
 	fmt.Printf("\n[1] Scanning poly/ core...\n")
@@ -28,8 +28,8 @@ func main() {
 	fmt.Printf("    Found %d public API items in poly/\n", len(coreAPI))
 
 	// 2. Extract C-ABI Exports from main.go
-	fmt.Printf("\n[2] Scanning welvet/cabi/main.go exports...\n")
-	cabiExports := scanCABI(cabiFile)
+	fmt.Printf("\n[2] Scanning welvet/cabi/ exports...\n")
+	cabiExports := scanCABI(cabiPath)
 	fmt.Printf("    Found %d //export directives in C-ABI\n", len(cabiExports))
 
 	// 3. Compare and Categorize
@@ -130,34 +130,38 @@ func scanPackage(path string) []APIItem {
 	return items
 }
 
-func scanCABI(filename string) []string {
+func scanCABI(path string) []string {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filename, nil, parser.ParseComments)
+	pkgs, err := parser.ParseDir(fset, path, nil, parser.ParseComments)
 	if err != nil {
-		fmt.Printf("Error parsing C-ABI file: %v\n", err)
+		fmt.Printf("Error parsing C-ABI dir: %v\n", err)
 		return nil
 	}
 
 	var exports []string
-	// 1. Scan for //export comments
-	for _, cg := range file.Comments {
-		for _, c := range cg.List {
-			if strings.HasPrefix(c.Text, "//export ") {
-				parts := strings.Fields(c.Text)
-				if len(parts) >= 2 {
-					exports = append(exports, parts[1])
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			// 1. Scan for //export comments
+			for _, cg := range file.Comments {
+				for _, c := range cg.List {
+					if strings.HasPrefix(c.Text, "//export ") {
+						parts := strings.Fields(c.Text)
+						if len(parts) >= 2 {
+							exports = append(exports, parts[1])
+						}
+					}
 				}
 			}
+
+			// 2. Scan function bodies for all identifiers (Deep Inspection)
+			ast.Inspect(file, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok {
+					exports = append(exports, id.Name)
+				}
+				return true
+			})
 		}
 	}
-
-	// 2. Scan function bodies for all identifiers (Deep Inspection)
-	ast.Inspect(file, func(n ast.Node) bool {
-		if id, ok := n.(*ast.Ident); ok {
-			exports = append(exports, id.Name)
-		}
-		return true
-	})
 
 	return exports
 }
