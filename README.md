@@ -40,10 +40,10 @@ For technical deep-dives into M-POLY-VTD, refer to the documentation and benchma
 
 Loom provides bit-exact reproducibility across:
 - **Go** (Native)
-- **Python** (welvet)
-- **TypeScript/Node.js** (@openfluke/welvet)
-- **C#/.NET** (Welvet)
-- **Browser** (WASM + WebGPU)
+- **Python** (welvet) - *(In Development)*
+- **TypeScript/Node.js** (@openfluke/welvet) - *(In Development)*
+- **C#/.NET** (Welvet) - *(In Development)*
+- **Browser** (WASM + WebGPU) - *(In Development)*
 
 ## 📊 Versioning & Roadmap
 Loom uses a mathematical versioning system derived from a strictly verified checklist of 130 industry-scale features.
@@ -51,6 +51,11 @@ Loom uses a mathematical versioning system derived from a strictly verified chec
 ### **Current Version: 0.72.3 (Alpha)**
 - **Completion Ratio**: 72.3% (94 / 130 features verified)
 - **Status**: Core structures are stable. FP4 acceleration is native on both CPU and GPU.
+    - > [!WARNING]
+    - > **GPU Backward Training**: GPU acceleration is currently optimized for **Inference Only**. Backpropagation and training are fully supported on CPU but are still in development for GPU backends.
+- **Roadmap Target**:
+    - **v0.72.3 "Bedrock Preview"**: Launching now. Focuses on the Go library and the C-ABI. (Go implementation is stable; C-ABI bindings for Python/TS/WASM are still in active development).
+    - **v0.8.0 "Major Launch"**: Broader release once high-level Python and TypeScript wrappers are finished.
 - **Next Steps**: Transitioning to specialized **Edge-First** orchestration (Thermal-Awareness, UMA, Command Buffer Graphing).
 
 For a detailed breakdown of the roadmap and version calculation, see [poly/README.md](./poly/README.md#📊-true-version-calculation).
