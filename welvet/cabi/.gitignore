@@ -9,6 +9,7 @@ dist/
 
 # C Header Files (Generated)
 *.h
+!test/*.h
 
 # Common Go build artifacts (extra safety)
 *.exe
