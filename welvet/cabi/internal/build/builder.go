@@ -25,6 +25,7 @@ func main() {
 	targetArch := flag.String("arch", runtime.GOARCH, "Target Architecture (amd64, arm64, 386)")
 	outDir := flag.String("out", "dist", "Output directory")
 	clean := flag.Bool("clean", false, "Clean output directory before building")
+	test := flag.Bool("test", false, "Run verification tests after building")
 	flag.Parse()
 
 	// 1. Setup paths
@@ -42,6 +43,9 @@ func main() {
 
 	for _, p := range platforms {
 		buildPlatform(p, *outDir, *clean)
+		if *test {
+			verifyPlatform(p, *outDir)
+		}
 	}
 }
 
@@ -76,7 +80,7 @@ func buildPlatform(p Platform, outBase string, clean bool) {
 	cmd := exec.Command("go", "build", 
 		"-buildmode=c-shared", 
 		"-o", outputFile, 
-		"../../",
+		"../../", // Point to cabi/main.go
 	)
 
 	// Set Environment Variables for Cross-Compilation
@@ -86,9 +90,6 @@ func buildPlatform(p Platform, outBase string, clean bool) {
 		"CGO_ENABLED=1",
 	)
 
-	// Note: Cross-compiling CGO requires a cross-compiler (CC)
-	// We'll rely on the host having the appropriate CC in PATH if doing true cross-builds.
-	
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Printf("Build FAILED:\n%s\n", string(output))
@@ -96,8 +97,62 @@ func buildPlatform(p Platform, outBase string, clean bool) {
 	}
 
 	fmt.Printf("Build SUCCESS: %s\n", outputFile)
-	
-	// Copy header to a flat includes or keep with binary?
-	// Legacy kept it with binary, which is easier for relative includes in C projects.
 	fmt.Printf("Header generated: %s\n", strings.Replace(outputFile, ext, ".h", 1))
+}
+
+func verifyPlatform(p Platform, outBase string) {
+	if p.OS != runtime.GOOS || p.Arch != runtime.GOARCH {
+		fmt.Printf("\n--- Skipping Verification for %s (Cross-compiled) ---\n", p)
+		return
+	}
+
+	fmt.Printf("\n--- Verifying for %s ---\n", p)
+
+	ext := ".so"
+	if p.OS == "windows" {
+		ext = ".dll"
+	} else if p.OS == "darwin" {
+		ext = ".dylib"
+	}
+
+	binPath := filepath.Join(outBase, p.String(), "welvet"+ext)
+	absBinPath, _ := filepath.Abs(binPath)
+
+	testDir := "../../test"
+	verifySrc := filepath.Join(testDir, "cabi_verify.c")
+	verifyExe := filepath.Join(outBase, p.String(), "cabi_verify")
+	if p.OS == "windows" {
+		verifyExe += ".exe"
+	}
+
+	// Compile C Runner
+	fmt.Printf("Compiling C-ABI Verification Runner...\n")
+	var cmd *exec.Cmd
+	if p.OS == "windows" {
+		// Try gcc first (MinGW), then cl (MSVC)
+		if _, err := exec.LookPath("gcc"); err == nil {
+			cmd = exec.Command("gcc", "-I"+testDir, verifySrc, "-o", verifyExe)
+		} else {
+			cmd = exec.Command("cl", "/I"+testDir, "/Fe:"+verifyExe, verifySrc)
+		}
+	} else {
+		cmd = exec.Command("gcc", "-I"+testDir, verifySrc, "-o", verifyExe, "-ldl")
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("Compilation FAILED:\n%s\n", string(output))
+		return
+	}
+
+	// Run Verification
+	fmt.Printf("Running Verification...\n")
+	runCmd := exec.Command(verifyExe, absBinPath)
+	output, err = runCmd.CombinedOutput()
+	fmt.Printf("%s\n", string(output))
+	if err != nil {
+		fmt.Printf("Verification FAILED!\n")
+	} else {
+		fmt.Printf("Verification PASSED!\n")
+	}
 }

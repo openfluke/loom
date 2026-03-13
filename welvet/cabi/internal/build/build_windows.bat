@@ -2,8 +2,8 @@
 setlocal
 cd /d "%~dp0"
 
-echo Building Welvet C-ABI for Windows...
-go run builder.go -os windows -arch amd64 -clean
+echo Building and Verifying Welvet C-ABI for Windows...
+go run builder.go -os windows -arch amd64 -clean -test
 
 if errorlevel 1 (
     echo Build failed!
