@@ -48,7 +48,7 @@ func (n *VolumetricNetwork) InitCNNCell(z, y, x, l int, ltype LayerType, inChann
 	wCount := filters * inChannels * kSize * kSize
 	if ltype == LayerCNN3 { wCount *= kSize }
 	layer.WeightStore = NewWeightStore(wCount)
-	layer.WeightStore.Randomize(time.Now().UnixNano())
+	layer.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 	scaleWeights(layer.WeightStore.Master, scale)
 }
 
@@ -63,7 +63,7 @@ func (n *VolumetricNetwork) InitConvTransposedCell(z, y, x, l int, ltype LayerTy
 	wCount := inChannels * filters * kSize * kSize
 	if ltype == LayerConvTransposed3D { wCount *= kSize }
 	layer.WeightStore = NewWeightStore(wCount)
-	layer.WeightStore.Randomize(time.Now().UnixNano())
+	layer.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 	scaleWeights(layer.WeightStore.Master, scale)
 }
 
@@ -84,7 +84,7 @@ func (n *VolumetricNetwork) InitEmbeddingCell(z, y, x, l int, vocabSize, dModel 
 	layer.OutputHeight = dModel
 	layer.DType = dtype
 	layer.WeightStore = NewWeightStore(vocabSize * dModel)
-	layer.WeightStore.Randomize(time.Now().UnixNano())
+	layer.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 }
 
 func (n *VolumetricNetwork) InitKMeansCell(z, y, x, l int, numClusters, dModel int, dtype DType) {
@@ -94,7 +94,7 @@ func (n *VolumetricNetwork) InitKMeansCell(z, y, x, l int, numClusters, dModel i
 	layer.OutputHeight = numClusters
 	layer.DType = dtype
 	layer.WeightStore = NewWeightStore(numClusters * dModel)
-	layer.WeightStore.Randomize(time.Now().UnixNano())
+	layer.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 }
 
 // =============================================================================
@@ -128,7 +128,7 @@ func (n *VolumetricNetwork) InitDenseCell(z, y, x, l int, dModel int, act Activa
 	
 	wCount := dModel * dModel
 	layer.WeightStore = NewWeightStore(wCount)
-	layer.WeightStore.Randomize(time.Now().UnixNano())
+	layer.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 	scaleWeights(layer.WeightStore.Master, scale)
 }
 
@@ -146,7 +146,7 @@ func (n *VolumetricNetwork) InitMHACell(z, y, x, l int, dModel, numHeads int, sc
 	kv := layer.NumKVHeads * layer.HeadDim
 	wCount := 2*dModel*dModel + 2*dModel*kv + 2*dModel + 2*kv
 	layer.WeightStore = NewWeightStore(wCount)
-	layer.WeightStore.Randomize(time.Now().UnixNano())
+	layer.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 	scaleWeights(layer.WeightStore.Master, scale)
 }
 
@@ -160,7 +160,7 @@ func (n *VolumetricNetwork) InitRNNCell(z, y, x, l int, dModel int, scale float3
 	
 	wCount := dModel*dModel + dModel*dModel + dModel
 	layer.WeightStore = NewWeightStore(wCount)
-	layer.WeightStore.Randomize(time.Now().UnixNano())
+	layer.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 	scaleWeights(layer.WeightStore.Master, scale)
 }
 
@@ -174,7 +174,7 @@ func (n *VolumetricNetwork) InitLSTMCell(z, y, x, l int, dModel int, scale float
 	
 	gate := dModel*dModel + dModel*dModel + dModel
 	layer.WeightStore = NewWeightStore(4 * gate)
-	layer.WeightStore.Randomize(time.Now().UnixNano())
+	layer.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 	scaleWeights(layer.WeightStore.Master, scale)
 }
 
@@ -213,7 +213,7 @@ func BuildTransformerNetwork(numBlocks int, dModel int, numHeads int, dtype DTyp
 		l2.OutputHeight = dModel * 4
 		l2.DType = dtype
 		l2.WeightStore = NewWeightStore(dModel * l2.OutputHeight * 3)
-		l2.WeightStore.Randomize(time.Now().UnixNano())
+		l2.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 		
 		l3 := n.GetLayer(0, 0, 0, base+3)
 		l3.Type = LayerRMSNorm
@@ -235,7 +235,7 @@ func BuildCNN(inputSize, numClasses int, dtype DType) *VolumetricNetwork {
 	l0.KernelSize = 3
 	l0.DType = dtype
 	l0.WeightStore = NewWeightStore(16 * 1 * 3 * 3)
-	l0.WeightStore.Randomize(time.Now().UnixNano())
+	l0.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 	
 	// Conv2
 	l1 := n.GetLayer(0, 0, 0, 1)
@@ -245,7 +245,7 @@ func BuildCNN(inputSize, numClasses int, dtype DType) *VolumetricNetwork {
 	l1.KernelSize = 3
 	l1.DType = dtype
 	l1.WeightStore = NewWeightStore(32 * 16 * 3 * 3)
-	l1.WeightStore.Randomize(time.Now().UnixNano())
+	l1.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 	
 	// Flatten + Dense
 	l2 := n.GetLayer(0, 0, 0, 2)
@@ -254,7 +254,7 @@ func BuildCNN(inputSize, numClasses int, dtype DType) *VolumetricNetwork {
 	l2.OutputHeight = 128
 	l2.DType = dtype
 	l2.WeightStore = NewWeightStore(l2.InputHeight * 128)
-	l2.WeightStore.Randomize(time.Now().UnixNano())
+	l2.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 	
 	// Output
 	l3 := n.GetLayer(0, 0, 0, 3)
@@ -288,7 +288,7 @@ func BuildRandomNetwork(depth, rows, cols, lpc int, dModel int) *VolumetricNetwo
 			l.InputHeight = dModel
 			l.OutputHeight = dModel * 2
 			l.WeightStore = NewWeightStore(dModel * l.OutputHeight * 3)
-			l.WeightStore.Randomize(time.Now().UnixNano())
+			l.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 		case 4: // RMSNorm
 			l.Type = LayerRMSNorm
 			l.InputHeight = dModel

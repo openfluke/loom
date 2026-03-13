@@ -77,8 +77,9 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 
 			// 2. Compute Loss Gradient
 			gradOut := ComputeLossGradient(curr, batch.Target, config.LossType)
-			epochLoss += CalculateLoss(curr, batch.Target, config.LossType)
-
+			lossVal := CalculateLoss(curr, batch.Target, config.LossType)
+			epochLoss += lossVal
+			
 			// 3. Backward Pass
 			_, layerGradients, _ := BackwardPolymorphic(n, gradOut, histIn, histPre)
 

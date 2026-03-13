@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // NetworkSpec represents the top-level JSON structure for a network.
@@ -159,9 +160,9 @@ func initializeWeights(l *VolumetricLayer) {
 		kv := l.NumKVHeads * l.HeadDim
 		wCount = 2*l.DModel*l.DModel + 2*l.DModel*kv + 2*l.DModel + 2*kv
 	case LayerRNN:
-		wCount = l.InputHeight*l.InputHeight + l.InputHeight*l.InputHeight + l.InputHeight
+		wCount = l.InputHeight*l.OutputHeight + l.OutputHeight*l.OutputHeight + l.OutputHeight
 	case LayerLSTM:
-		gate := l.InputHeight*l.InputHeight + l.InputHeight*l.InputHeight + l.InputHeight
+		gate := l.InputHeight*l.OutputHeight + l.OutputHeight*l.OutputHeight + l.OutputHeight
 		wCount = 4 * gate
 	case LayerSwiGLU:
 		// gateW + upW + downW + gateB + upB + downB
@@ -203,6 +204,7 @@ func initializeWeights(l *VolumetricLayer) {
 	if wCount > 0 {
 		l.WeightStore = NewWeightStore(wCount)
 		l.WeightStore.Scale = 1.0
+		l.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 	}
 }
 

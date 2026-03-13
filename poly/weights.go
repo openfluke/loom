@@ -80,10 +80,10 @@ func NewWeightStore(size int) *WeightStore {
 }
 
 // Randomize fills the master weights with small random values to break symmetry.
-func (ws *WeightStore) Randomize(seed int64) {
+func (ws *WeightStore) Randomize(seed int64, scale float32) {
 	r := rand.New(rand.NewSource(seed))
 	for i := range ws.Master {
-		ws.Master[i] = (r.Float32()*2 - 1) // Random values between -1.0 and 1.0
+		ws.Master[i] = (r.Float32()*2 - 1) * scale // Random values between -scale and scale
 	}
 	// Clear stale versions
 	ws.Versions = make(map[DType]any)
