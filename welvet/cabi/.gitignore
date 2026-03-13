@@ -1,0 +1,24 @@
+# Loom C-ABI Build Artifacts
+**/dist/
+dist/
+
+# Shared Libraries
+*.so
+*.dll
+*.dylib
+
+# C Header Files (Generated)
+*.h
+!test/*.h
+
+# Common Go build artifacts (extra safety)
+*.exe
+*.test
+*.prof
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Build Archives
+*.zip

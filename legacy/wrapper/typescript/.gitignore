@@ -1,0 +1,6 @@
+# Node/TypeScript build artifacts
+node_modules/
+dist/
+build/
+*.log
+.npm

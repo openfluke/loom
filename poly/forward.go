@@ -1,0 +1,118 @@
+package poly
+
+import (
+	"time"
+)
+
+// DispatchLayer acts as the universal routing hub for all layer types.
+// This is the "Jump Table" that handles numerical metamorphosis across 50+ layer types.
+func DispatchLayer[T Numeric](layer *VolumetricLayer, input, skip *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	switch layer.Type {
+	case LayerResidual:
+		return ResidualForwardPolymorphic(layer, input, skip)
+	case LayerDense:
+		return DenseForwardPolymorphic(layer, input)
+	case LayerCNN1:
+		return CNN1ForwardPolymorphic(layer, input)
+	case LayerCNN2:
+		return CNN2ForwardPolymorphic(layer, input)
+	case LayerCNN3:
+		return CNN3ForwardPolymorphic(layer, input)
+	case LayerRNN:
+		return RNNForwardPolymorphic(layer, input)
+	case LayerLSTM:
+		return LSTMForwardPolymorphic(layer, input)
+	case LayerMultiHeadAttention:
+		return MHAForwardPolymorphic(layer, input)
+	case LayerSwiGLU:
+		return SwiGLUForwardPolymorphic(layer, input)
+	case LayerRMSNorm:
+		return RMSNormForwardPolymorphic(layer, input)
+	case LayerLayerNorm:
+		return LayerNormForwardPolymorphic(layer, input)
+	case LayerConvTransposed1D:
+		return ConvTransposed1DForwardPolymorphic(layer, input)
+	case LayerConvTransposed2D:
+		return ConvTransposed2DForwardPolymorphic(layer, input)
+	case LayerConvTransposed3D:
+		return ConvTransposed3DForwardPolymorphic(layer, input)
+	case LayerEmbedding:
+		return EmbeddingForwardPolymorphic(layer, input)
+	case LayerKMeans:
+		return KMeansForwardPolymorphic(layer, input)
+	case LayerSoftmax:
+		return SoftmaxForwardPolymorphic(layer, input)
+	case LayerParallel:
+		return ParallelForwardPolymorphic(layer, input)
+	case LayerSequential:
+		return SequentialForwardPolymorphic(layer, input)
+	default:
+		return DenseForwardPolymorphic(layer, input)
+	}
+}
+
+// ForwardPolymorphic executes the network using a unified generic dispatcher.
+// It iterates through the 3D grid and handles DType transitions between layers.
+func ForwardPolymorphic[T Numeric](n *VolumetricNetwork, input *Tensor[T]) (*Tensor[T], time.Duration, []time.Duration) {
+	start := time.Now()
+	currentTensor := input
+	layerTimes := make([]time.Duration, len(n.Layers))
+
+	if n.UseTiling {
+		tileSize := 4
+		// Spatial Blocking: Iterate grid in 4x4x4 tiles
+		for zTile := 0; zTile < n.Depth; zTile += tileSize {
+			zEnd := zTile + tileSize
+			if zEnd > n.Depth { zEnd = n.Depth }
+
+			for yTile := 0; yTile < n.Rows; yTile += tileSize {
+				yEnd := yTile + tileSize
+				if yEnd > n.Rows { yEnd = n.Rows }
+
+				for xTile := 0; xTile < n.Cols; xTile += tileSize {
+					xEnd := xTile + tileSize
+					if xEnd > n.Cols { xEnd = n.Cols }
+
+					for z := zTile; z < zEnd; z++ {
+						for y := yTile; y < yEnd; y++ {
+							for x := xTile; x < xEnd; x++ {
+								for lIdx := 0; lIdx < n.LayersPerCell; lIdx++ {
+									idx := n.GetIndex(z, y, x, lIdx)
+									layer := &n.Layers[idx]
+									if layer.IsDisabled { continue }
+
+									lStart := time.Now()
+									_, post := DispatchLayer(layer, currentTensor, nil)
+									layerTimes[idx] = time.Since(lStart)
+									currentTensor = post
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	} else {
+		// Classic Sequential
+		for z := 0; z < n.Depth; z++ {
+			for y := 0; y < n.Rows; y++ {
+				for x := 0; x < n.Cols; x++ {
+					for l := 0; l < n.LayersPerCell; l++ {
+						idx := n.GetIndex(z, y, x, l)
+						layer := &n.Layers[idx]
+						if layer.IsDisabled {
+							continue
+						}
+
+						lStart := time.Now()
+						_, post := DispatchLayer(layer, currentTensor, nil)
+						layerTimes[idx] = time.Since(lStart)
+						currentTensor = post
+					}
+				}
+			}
+		}
+	}
+
+	return currentTensor, time.Since(start), layerTimes
+}

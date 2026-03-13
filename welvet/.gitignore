@@ -1,0 +1,18 @@
+# Welvet Build Artifacts
+cabi/dist/
+cabi/welvet.dll
+cabi/welvet.so
+cabi/welvet.dylib
+cabi/welvet.h
+cabi/welvet.a
+cabi/welvet.lib
+
+# Compiled binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Local dev/temp
+.DS_Store
+*.tmp
