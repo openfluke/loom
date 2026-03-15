@@ -141,6 +141,11 @@ type WGPUActivationParams struct {
 	_    [2]uint32 // Padding for 16-byte alignment
 }
 
+type WGPULossParams struct {
+	Size uint32
+	_    [3]uint32 // pad to 16 bytes for WebGPU uniform alignment
+}
+
 func (c *WGPUContext) CreateComputePipeline(shaderSource string) (*wgpu.ComputePipeline, error) {
 	if p, ok := c.PipelineCache[shaderSource]; ok {
 		return p, nil
@@ -1153,6 +1158,37 @@ func (c *WGPUContext) DispatchApplyGradients(size int, lr float32, weightBuf, gr
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+// DispatchMSEGradPartialLoss computes MSE gradients on GPU and writes partial loss sums.
+// numWG = ceil(size/256) partial sums are written to partialsBuf. CPU sums them for total loss.
+func (c *WGPUContext) DispatchMSEGradPartialLoss(
+	size int,
+	outputBuf, targetBuf, gradBuf, partialsBuf *wgpu.Buffer,
+) error {
+	pipeline, err := c.CreateComputePipeline(ShaderMSEGradPartialLoss)
+	if err != nil {
+		return err
+	}
+
+	p := WGPULossParams{Size: uint32(size)}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPULossParams{p}))
+
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, outputBuf, targetBuf, gradBuf, partialsBuf)
+	if err != nil {
+		return err
+	}
+
+	numWG := (uint32(size) + 255) / 256
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups(numWG, 1, 1)
 	pass.End()
 	ctxSubmit(c, enc, owned)
 	return nil

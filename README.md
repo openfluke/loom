@@ -48,15 +48,15 @@ Loom provides bit-exact reproducibility across:
 ## 📊 Versioning & Roadmap
 Loom uses a mathematical versioning system derived from a strictly verified checklist of 130 industry-scale features.
 
-### **Current Version: 0.72.3 (Alpha)**
-- **Completion Ratio**: 72.3% (94 / 130 features verified)
+### **Current Version: 0.73.0 (Alpha)**
+- **Completion Ratio**: 73.0% (95 / 130 features verified — GPU backward training complete)
 - **Status**: Core structures are stable. FP4 acceleration is native on both CPU and GPU.
-    - > [!WARNING]
-    - > **GPU Backward Training**: GPU acceleration is currently optimized for **Inference Only**. Backpropagation and training are fully supported on CPU but are still in development for GPU backends.
+    - > [!NOTE]
+    - > **GPU Backward Training**: Full end-to-end GPU training is now live. Dense, RMSNorm, CNN 1D/2D/3D all run forward + backward + weight updates in a **single GPU command buffer submission** via the `BeginFrame`/`FlushFrame` pattern. Measured speedups on real workloads: **17x–65x** vs CPU across all supported layer types.
 - **Roadmap Target**:
-    - **v0.72.3 "Bedrock Preview"**: Launching now. Focuses on the Go library and the C-ABI. (Go implementation is stable; C-ABI bindings for Python/TS/WASM are still in active development).
+    - **v0.73.0 "GPU Training"**: Launching now. GPU training backend complete for Dense/CNN/RMSNorm; SwiGLU/MHA backward wiring pending.
     - **v0.8.0 "Major Launch"**: Broader release once high-level Python and TypeScript wrappers are finished.
-- **Next Steps**: Transitioning to specialized **Edge-First** orchestration (Thermal-Awareness, UMA, Command Buffer Graphing).
+- **Next Steps**: Wiring SwiGLU/MHA/Embedding into `DispatchBackwardLayer`; Transitioning to specialized **Edge-First** orchestration (Thermal-Awareness, UMA, Command Buffer Graphing).
 
 For a detailed breakdown of the roadmap and version calculation, see [poly/README.md](./poly/README.md#📊-true-version-calculation).
 

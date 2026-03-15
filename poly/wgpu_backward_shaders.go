@@ -124,7 +124,7 @@ fn main(
         workgroupBarrier();
 
         for (var k: u32 = 0u; k < params.tileSize; k++) {
-            sum += dyTile[k * params.tileSize + ty] * xTile[k * params.tileSize + tx];
+            sum += dyTile[ty * params.tileSize + k] * xTile[k * params.tileSize + tx];
         }
 
         workgroupBarrier();
@@ -741,6 +741,52 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             dK[k_off] += d_logit * params.scale * Q[q_off];
             dV[v_off] += scores[s_k] * gradOutput[q_off];
         }
+    }
+}
+`
+
+// ShaderMSEGradPartialLoss computes MSE gradients and partial loss sums entirely on GPU.
+// Each workgroup of 256 threads reduces its elements, writing one partial sum to partials[wg_id.x].
+// CPU sums the partials array (ceil(N/256) floats) for the total loss — no full-output readback needed.
+const ShaderMSEGradPartialLoss = `
+struct Params {
+    size: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read>       output:   array<f32>;
+@group(0) @binding(2) var<storage, read>       tgt:      array<f32>;
+@group(0) @binding(3) var<storage, read_write> gradient: array<f32>;
+@group(0) @binding(4) var<storage, read_write> partials: array<f32>;
+
+var<workgroup> shared_sq: array<f32, 256>;
+
+@compute @workgroup_size(256, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id:   vec3<u32>,
+    @builtin(workgroup_id)        wg_id:      vec3<u32>,
+) {
+    let tid = global_id.x;
+    let lid = local_id.x;
+    let N   = params.size;
+
+    var local_sq: f32 = 0.0;
+    if (tid < N) {
+        let diff      = output[tid] - tgt[tid];
+        gradient[tid] = (2.0 / f32(N)) * diff;
+        local_sq      = diff * diff;
+    }
+    shared_sq[lid] = local_sq;
+    workgroupBarrier();
+
+    for (var s: u32 = 128u; s > 0u; s >>= 1u) {
+        if (lid < s) { shared_sq[lid] += shared_sq[lid + s]; }
+        workgroupBarrier();
+    }
+
+    if (lid == 0u) {
+        partials[wg_id.x] = shared_sq[0] / f32(N);
     }
 }
 `
