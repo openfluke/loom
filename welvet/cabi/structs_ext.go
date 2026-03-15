@@ -149,4 +149,11 @@ var (
 	_ poly.PreTokenizer
 	_ poly.TokenizerJSON
 	_ poly.WGPUContext
+	_ poly.WGPUCNN1BackwardParams
+	_ poly.WGPUCNN2BackwardParams
+	_ poly.WGPUCNN3BackwardParams
+	_ poly.WGPUMHABackwardParams
+	_ poly.WGPUApplyGradientsParams
+	_ poly.WGPUActivationParams
+	_ poly.WGPULossParams
 )
