@@ -271,6 +271,17 @@ int main(int argc, char** argv) {
 
     printf("\n=== Loom C-ABI Diagnostic Report ===\n\n");
     printf("[*] Loading library: %s\n", lib_name);
+
+#ifndef _WIN32
+    /* On Linux/macOS dlopen() does not search the current directory unless
+       the path contains a slash. Prepend "./" when no path separator is given. */
+    char lib_path_buf[1024];
+    if (strchr(lib_name, '/') == NULL && strchr(lib_name, '\\') == NULL) {
+        snprintf(lib_path_buf, sizeof(lib_path_buf), "./%s", lib_name);
+        lib_name = lib_path_buf;
+    }
+#endif
+
     lib_handle handle = load_lib(lib_name);
     if (!handle) {
         printf("[!] Failed to load library\n");
