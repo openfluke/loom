@@ -97,6 +97,12 @@ typedef struct {
 } WGPUDenseParams;
 
 typedef struct {
+    uint32_t Size;
+    float    LR;
+    uint32_t _pad[2];
+} WGPUApplyGradientsParams;
+
+typedef struct {
     uint32_t NumHeads;
     uint32_t NumKVHeads;
     uint32_t HeadDim;
@@ -106,6 +112,119 @@ typedef struct {
     uint32_t TileSize;
     uint32_t Padding;
 } WGPUMHAParams;
+
+typedef struct {
+    uint32_t BatchSize;
+    uint32_t NumHeads;
+    uint32_t NumKVHeads;
+    uint32_t HeadDim;
+    uint32_t SeqLen;
+    float    Scale;
+    uint32_t _pad[2];
+} WGPUMHABackwardParams;
+
+typedef struct {
+    uint32_t BatchSize;
+    uint32_t InputSize;
+    uint32_t HiddenSize;
+    uint32_t Padding;
+} WGPURNNParams;
+
+typedef struct {
+    uint32_t BatchSize;
+    uint32_t InputSize;
+    uint32_t HiddenSize;
+    uint32_t Padding;
+} WGPULSTMParams;
+
+typedef struct {
+    uint32_t BatchSize;
+    uint32_t InC;
+    uint32_t InL;
+    uint32_t OutC;
+    uint32_t OutL;
+    uint32_t KSize;
+    uint32_t Stride;
+    uint32_t Padding;
+} WGPUCNN1Params;
+
+typedef struct {
+    uint32_t BatchSize;
+    uint32_t InC;
+    uint32_t InH;
+    uint32_t InW;
+    uint32_t OutC;
+    uint32_t OutH;
+    uint32_t OutW;
+    uint32_t KH;
+    uint32_t KW;
+    uint32_t StrideH;
+    uint32_t StrideW;
+    uint32_t PadH;
+    uint32_t PadW;
+} WGPUCNN2Params;
+
+typedef struct {
+    uint32_t BatchSize;
+    uint32_t InC, InD, InH, InW;
+    uint32_t OutC, OutD, OutH, OutW;
+    uint32_t KD, KH, KW;
+    uint32_t SD, SH, SW;
+    uint32_t PD, PH, PW;
+} WGPUCNN3Params;
+
+typedef struct {
+    uint32_t BatchSize;
+    uint32_t InC;
+    uint32_t InL;
+    uint32_t Filters;
+    uint32_t OutL;
+    uint32_t KSize;
+    uint32_t Stride;
+    uint32_t Padding;
+    uint32_t Activation;
+} WGPUCNN1BackwardParams;
+
+typedef struct {
+    uint32_t BatchSize;
+    uint32_t InC;
+    uint32_t InH;
+    uint32_t InW;
+    uint32_t Filters;
+    uint32_t OutH;
+    uint32_t OutW;
+    uint32_t KSize;
+    uint32_t Stride;
+    uint32_t Padding;
+    uint32_t Activation;
+} WGPUCNN2BackwardParams;
+
+typedef struct {
+    uint32_t BatchSize;
+    uint32_t InC;
+    uint32_t InD;
+    uint32_t InH;
+    uint32_t InW;
+    uint32_t Filters;
+    uint32_t OutD;
+    uint32_t OutH;
+    uint32_t OutW;
+    uint32_t KSize;
+    uint32_t Stride;
+    uint32_t Padding;
+    uint32_t Activation;
+} WGPUCNN3BackwardParams;
+
+typedef struct {
+    uint32_t Size;
+    uint32_t Act;
+    uint32_t _pad[2];
+} WGPUActivationParams;
+
+typedef struct {
+    uint32_t Size;
+    uint32_t _pad[3];
+} WGPULossParams;
 
 typedef struct {
     uint32_t Size;
