@@ -54,10 +54,10 @@ var allPlatforms = []Platform{
 	{GOOS: "android", GOARCH: "amd64", DirName: "android_x86_64", BuildMode: "c-shared"},
 	{GOOS: "android", GOARCH: "386", DirName: "android_x86", BuildMode: "c-shared"},
 	// ── iOS (static archives) ─────────────────────────────────────────────────
+	// DirName encodes device vs simulator so buildIOS picks the right SDK.
 	{GOOS: "ios", GOARCH: "arm64", DirName: "ios_arm64", BuildMode: "c-archive"},
 	{GOOS: "ios", GOARCH: "amd64", DirName: "ios_sim_amd64", BuildMode: "c-archive"},
-	// arm64 simulator uses GOOS=ios GOARCH=arm64 + SDK=iphonesimulator;
-	// handled separately in buildIOS.
+	{GOOS: "ios", GOARCH: "arm64", DirName: "ios_sim_arm64", BuildMode: "c-archive"},
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -139,6 +139,20 @@ func main() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func selectPlatforms(goos, arch string) []Platform {
+	// iOS simulator shorthands
+	if goos == "ios" {
+		switch arch {
+		case "sim_arm64":
+			return []Platform{{GOOS: "ios", GOARCH: "arm64", DirName: "ios_sim_arm64", BuildMode: "c-archive"}}
+		case "sim_amd64", "sim_x86_64":
+			return []Platform{{GOOS: "ios", GOARCH: "amd64", DirName: "ios_sim_amd64", BuildMode: "c-archive"}}
+		case "xcframework", "universal":
+			return nil // handled at call site
+		case "arm64", "":
+			return []Platform{{GOOS: "ios", GOARCH: "arm64", DirName: "ios_arm64", BuildMode: "c-archive"}}
+		}
+	}
+
 	// Normalise arch aliases
 	switch arch {
 	case "x86_64":
@@ -150,8 +164,7 @@ func selectPlatforms(goos, arch string) []Platform {
 	case "x86":
 		arch = "386"
 	case "universal", "xcframework":
-		// handled outside this loop
-		return nil
+		return nil // handled at call site
 	}
 
 	for _, p := range allPlatforms {
@@ -164,16 +177,14 @@ func selectPlatforms(goos, arch string) []Platform {
 		}
 	}
 
-	// Fallback: build native
+	// Fallback
 	p := Platform{
 		GOOS:      goos,
 		GOARCH:    arch,
 		DirName:   goos + "_" + arch,
 		BuildMode: "c-shared",
 	}
-	if goos == "darwin" {
-		p.BuildMode = "c-shared"
-	} else if goos == "ios" {
+	if goos == "ios" {
 		p.BuildMode = "c-archive"
 	}
 	return []Platform{p}
@@ -211,6 +222,8 @@ func buildPlatform(p Platform, outBase string) error {
 		env = append(env, "GOARM="+p.GOARM)
 	}
 	if cc != "" {
+		// CC may contain flags (e.g. "clang -arch x86_64"); pass as-is — the
+		// Go toolchain splits it correctly when it invokes the C compiler.
 		env = append(env, "CC="+cc)
 	}
 
@@ -244,6 +257,7 @@ func compileVerify(p Platform, outPath string, cc string) {
 
 	var args []string
 	var compilerBin string
+	var compilerFlags []string
 
 	switch p.GOOS {
 	case "windows":
@@ -255,9 +269,8 @@ func compileVerify(p Platform, outPath string, cc string) {
 				return
 			}
 		}
-		// mingw: no -ldl needed, link against the DLL
+		compilerBin, compilerFlags = splitCC(cc)
 		libFile := filepath.Join(outPath, "welvet.dll")
-		compilerBin = cc
 		args = []string{"-I" + testDir, "-I" + outPath, verifySrc, "-o", verifyExe, libFile}
 
 	case "android":
@@ -265,24 +278,27 @@ func compileVerify(p Platform, outPath string, cc string) {
 			fmt.Printf("  ⚠  cabi_verify: no NDK CC available, skipping\n")
 			return
 		}
-		// Android: PIE required, link the .so
+		compilerBin, compilerFlags = splitCC(cc)
 		libFile := filepath.Join(outPath, "welvet.so")
 		absLib, _ := filepath.Abs(libFile)
 		absOut, _ := filepath.Abs(outPath)
-		compilerBin = cc
 		args = []string{"-I" + testDir, "-I" + absOut, verifySrc, "-o", verifyExe,
 			"-L" + absOut, absLib, "-lm", "-pie"}
 
-	default: // linux, darwin
+	default: // linux, darwin (including cross-arch darwin builds)
 		if cc == "" {
-			cc = "gcc"
+			cc = "clang"
+			if _, err := exec.LookPath("clang"); err != nil {
+				cc = "gcc"
+			}
 		}
-		compilerBin = cc
+		compilerBin, compilerFlags = splitCC(cc)
 		args = []string{"-I" + testDir, "-I" + outPath, verifySrc, "-o", verifyExe, "-ldl"}
 	}
 
 	fmt.Printf("  compiling cabi_verify...\n")
-	out, err := exec.Command(compilerBin, args...).CombinedOutput()
+	cmdArgs := append(compilerFlags, args...)
+	out, err := exec.Command(compilerBin, cmdArgs...).CombinedOutput()
 	if err != nil {
 		fmt.Printf("  ⚠  cabi_verify compile failed: %s\n", strings.TrimSpace(string(out)))
 		return
@@ -290,24 +306,37 @@ func compileVerify(p Platform, outPath string, cc string) {
 	fmt.Printf("  ✓  %s\n", verifyExe)
 }
 
-// crossCC returns the C compiler needed to cross-compile for p.
-// Returns "" to use the default CC already in the environment.
+// crossCC returns the C compiler (and any required flags) needed to
+// cross-compile for p.  Returns "" to use the default CC in the environment.
+// NOTE: the returned string may contain spaces (e.g. "clang -arch x86_64");
+// callers must split it with splitCC() before passing to exec.Command.
 func crossCC(p Platform) string {
 	host := runtime.GOOS
+	hostArch := runtime.GOARCH
 
 	switch p.GOOS {
 	case "linux":
 		switch p.GOARCH {
 		case "arm64":
-			if host != "linux" || runtime.GOARCH != "arm64" {
+			if host != "linux" || hostArch != "arm64" {
 				return "aarch64-linux-gnu-gcc"
 			}
 		case "arm":
 			return "arm-linux-gnueabihf-gcc"
 		case "386":
-			if host != "linux" || runtime.GOARCH != "386" {
+			if host != "linux" || hostArch != "386" {
 				return "i686-linux-gnu-gcc"
 			}
+		}
+	case "darwin":
+		// On Apple Silicon building for Intel (or vice-versa), Xcode's clang
+		// supports cross-arch via -arch; no separate toolchain needed.
+		if host == "darwin" && p.GOARCH != hostArch {
+			clangArch := p.GOARCH
+			if clangArch == "amd64" {
+				clangArch = "x86_64"
+			}
+			return "clang -arch " + clangArch
 		}
 	case "windows":
 		switch p.GOARCH {
@@ -322,6 +351,15 @@ func crossCC(p Platform) string {
 		return androidCC(p)
 	}
 	return ""
+}
+
+// splitCC breaks a CC string like "clang -arch x86_64" into ("clang", ["-arch","x86_64"]).
+func splitCC(cc string) (string, []string) {
+	parts := strings.Fields(cc)
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return parts[0], parts[1:]
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -436,9 +474,6 @@ func buildIOS(p Platform, outBase string) error {
 		"CGO_ENABLED=1",
 		"CC="+cc,
 	)
-	if isSimARM {
-		cmd.Env = append(cmd.Env, "GOFLAGS=-tags=ios_simulator")
-	}
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -459,6 +494,21 @@ func buildXCFramework(outBase string) error {
 		return fmt.Errorf("XCFramework requires macOS")
 	}
 	fmt.Println("\n--- Building ios_xcframework ---")
+
+	// Auto-build any missing iOS slices
+	iosSlices := []Platform{
+		{GOOS: "ios", GOARCH: "arm64", DirName: "ios_arm64", BuildMode: "c-archive"},
+		{GOOS: "ios", GOARCH: "amd64", DirName: "ios_sim_amd64", BuildMode: "c-archive"},
+		{GOOS: "ios", GOARCH: "arm64", DirName: "ios_sim_arm64", BuildMode: "c-archive"},
+	}
+	for _, p := range iosSlices {
+		lib := filepath.Join(outBase, p.DirName, "welvet.a")
+		if _, err := os.Stat(lib); err != nil {
+			if err2 := buildIOS(p, outBase); err2 != nil {
+				fmt.Printf("  ⚠  could not build %s: %v (continuing)\n", p.DirName, err2)
+			}
+		}
+	}
 
 	deviceLib := filepath.Join(outBase, "ios_arm64", "welvet.a")
 	simAMDLib := filepath.Join(outBase, "ios_sim_amd64", "welvet.a")
@@ -529,9 +579,17 @@ func buildMacUniversal(outBase string) error {
 	amd64Lib := filepath.Join(outBase, "macos_amd64", "welvet.dylib")
 	arm64Lib := filepath.Join(outBase, "macos_arm64", "welvet.dylib")
 
-	for _, f := range []string{amd64Lib, arm64Lib} {
-		if _, err := os.Stat(f); err != nil {
-			return fmt.Errorf("required slice missing: %s", f)
+	// Auto-build any missing slice
+	slices := []Platform{
+		{GOOS: "darwin", GOARCH: "amd64", DirName: "macos_amd64", BuildMode: "c-shared"},
+		{GOOS: "darwin", GOARCH: "arm64", DirName: "macos_arm64", BuildMode: "c-shared"},
+	}
+	for _, p := range slices {
+		lib := filepath.Join(outBase, p.DirName, "welvet.dylib")
+		if _, err := os.Stat(lib); err != nil {
+			if err2 := buildPlatform(p, outBase); err2 != nil {
+				return fmt.Errorf("building %s slice: %w", p.DirName, err2)
+			}
 		}
 	}
 
