@@ -393,7 +393,7 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Adaptive Rate Calculation (VGStepBP)
 - [x] Tweening Momentum & Link-Budgeting
 - [x] Adaptation Performance Tracking (Recovery Metrics)
-- [x] Automated Mixed Precision Training Loop (GPU end-to-end: forward + backward + weight update via WebGPU; FP32 master weights, GPU compute)
+- [x] GPU Accelerated Training Loop (FP32 end-to-end WebGPU: forward + backward + weight update in a single command buffer submission)
 
 ### 4.3 Automated Evolutionary Logic
 - [ ] Population-Based Training (PBT)
