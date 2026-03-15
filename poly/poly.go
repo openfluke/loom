@@ -604,7 +604,17 @@ func NewVolumetricNetwork(depth, rows, cols, layersPerCell int) *VolumetricNetwo
 
 // GetIndex calculates the flattened index for a 3D coordinate.
 func (n *VolumetricNetwork) GetIndex(z, y, x, l int) int {
-	return z*n.Rows*n.Cols*n.LayersPerCell + y*n.Cols*n.LayersPerCell + x*n.LayersPerCell + l
+	return (z * n.Rows * n.Cols * n.LayersPerCell) + (y * n.Cols * n.LayersPerCell) + (x * n.LayersPerCell) + l
+}
+
+// SyncToGPU mirrors all layers to the GPU.
+func (n *VolumetricNetwork) SyncToGPU() error {
+	for i := range n.Layers {
+		if err := n.Layers[i].SyncToGPU(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetLayer returns the layer at specific 3D coordinates.

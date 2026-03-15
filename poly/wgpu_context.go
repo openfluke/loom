@@ -198,11 +198,16 @@ func (c *WGPUContext) deferOrDestroy(buf *wgpu.Buffer) {
 	}
 }
 
-// GetUniformBuffer provides a pre-allocated uniform buffer from the pool,
-// resetting the index on every FlushFrame.
+// GetUniformBuffer provides a pre-allocated uniform buffer from the pool.
 func (c *WGPUContext) GetUniformBuffer(size uint64) *wgpu.Buffer {
-	// Simple pool: find the first available buffer of sufficient size
-	// For production, we'd use a more sophisticated allocator.
+	// WebGPU uniform buffer bindings often require 16-byte alignment.
+	if size < 16 {
+		size = 16
+	}
+	if size%16 != 0 {
+		size = (size + 15) &^ 15
+	}
+
 	for i := c.UniformIdx; i < len(c.UniformPool); i++ {
 		if c.UniformPool[i].GetSize() >= size {
 			c.UniformIdx = i + 1
