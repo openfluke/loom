@@ -3,6 +3,8 @@ package poly
 import (
 	"fmt"
 	"time"
+
+	"github.com/openfluke/webgpu/wgpu"
 )
 
 // TrainingConfig holds configuration for training in the Volumetric Grid.
@@ -12,6 +14,9 @@ type TrainingConfig struct {
 	LossType     string  // "mse" or "cross_entropy"
 	GradientClip float32 // Max gradient norm (0 = no clipping)
 	Verbose      bool
+	UseGPU       bool
+	DeviceID     int
+	TrackPerf    bool
 }
 
 // TrainingBatch represents a single training batch for the Poly engine.
@@ -39,10 +44,21 @@ func DefaultTrainingConfig() *TrainingConfig {
 }
 
 // Train executes the training loop on a VolumetricNetwork.
-// It automatically handles forward history capture, backward dispatch, and weight mutation.
 func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *TrainingConfig) (*TrainingResult, error) {
 	if config == nil {
 		config = DefaultTrainingConfig()
+	}
+
+	if config.UseGPU && n.GPUContext == nil {
+		if err := n.InitWGPU(); err != nil {
+			return nil, fmt.Errorf("failed to initialize GPU: %w", err)
+		}
+	}
+
+	if config.UseGPU {
+		if err := n.SyncToGPU(); err != nil {
+			return nil, fmt.Errorf("failed to sync weights to GPU: %w", err)
+		}
 	}
 
 	result := &TrainingResult{
@@ -58,38 +74,16 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 		epochLoss := 0.0
 		
 		for _, batch := range batches {
-			// 1. Forward Pass with History Capture
-			histIn := make([]*Tensor[T], len(n.Layers))
-			histPre := make([]*Tensor[T], len(n.Layers))
-			curr := batch.Input
-
-			for idx := range n.Layers {
-				l := &n.Layers[idx]
-				if l.IsDisabled {
-					continue
+			if config.UseGPU {
+				loss, err := trainBatchWGPU(n, batch, config)
+				if err != nil {
+					return nil, err
 				}
-				histIn[idx] = curr
-				// Forward pass one layer
-				pre, post := DispatchLayer(l, curr, nil) // Updated line
-				histPre[idx] = pre
-				curr = post
-			}
-
-			// 2. Compute Loss Gradient
-			gradOut := ComputeLossGradient(curr, batch.Target, config.LossType)
-			lossVal := CalculateLoss(curr, batch.Target, config.LossType)
-			epochLoss += lossVal
-			
-			// 3. Backward Pass
-			_, layerGradients, _ := BackwardPolymorphic(n, gradOut, histIn, histPre)
-
-			// 4. Update Weights
-			for idx := range n.Layers {
-				l := &n.Layers[idx]
-				if layerGradients[idx][1] != nil {
-					gW := ConvertTensor[T, float32](layerGradients[idx][1])
-					ApplyRecursiveGradients(l, gW, config.LearningRate)
-				}
+				epochLoss += loss
+			} else {
+				// CPU implementation (existing)
+				loss := trainBatchCPU(n, batch, config)
+				epochLoss += loss
 			}
 		}
 
@@ -105,29 +99,276 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 			remainingEpochs := config.Epochs - (epoch + 1)
 			eta := avgEpochTime * time.Duration(remainingEpochs)
 			
-			// Format duration with better resolution
-			durationStr := epochDuration.String()
-			if epochDuration == 0 {
-				durationStr = "< 1µs"
-			} else if epochDuration < time.Millisecond {
-				durationStr = fmt.Sprintf("%v", epochDuration)
-			}
-
-			// STABLE THROUGHPUT: Total samples processed so far / Total time elapsed
-			totalSamples := int64(epoch+1) * int64(numBatches)
 			samplesPerSec := 0.0
 			if elapsed > 0 {
-				samplesPerSec = float64(totalSamples) / elapsed.Seconds()
+				samplesPerSec = float64(int64(epoch+1) * int64(numBatches)) / elapsed.Seconds()
 			}
 
-			fmt.Printf("Epoch %d/%d - Loss: %.6f | Time: %s | Samples/s: %.2f | ETA: %v\n", 
-				epoch+1, config.Epochs, avgLoss, durationStr, samplesPerSec, eta.Round(time.Second))
+			fmt.Printf("Epoch %d/%d - Loss: %.6f | Time: %v | Samples/s: %.2f | ETA: %v\n", 
+				epoch+1, config.Epochs, avgLoss, epochDuration, samplesPerSec, eta.Round(time.Second))
 		}
 	}
 
 	result.FinalLoss = result.LossHistory[len(result.LossHistory)-1]
 	result.TotalTime = time.Since(totalStart)
 	return result, nil
+}
+
+func trainBatchCPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], config *TrainingConfig) float64 {
+	// 1. Forward Pass
+	histIn := make([]*Tensor[T], len(n.Layers))
+	histPre := make([]*Tensor[T], len(n.Layers))
+	curr := batch.Input
+
+	for idx := range n.Layers {
+		l := &n.Layers[idx]
+		if l.IsDisabled { continue }
+		histIn[idx] = curr
+		pre, post := DispatchLayer(l, curr, nil)
+		histPre[idx] = pre
+		curr = post
+	}
+
+	// 2. Compute Loss Gradient
+	gradOut := ComputeLossGradient(curr, batch.Target, config.LossType)
+	lossVal := CalculateLoss(curr, batch.Target, config.LossType)
+	
+	// 3. Backward Pass
+	_, layerGradients, _ := BackwardPolymorphic(n, gradOut, histIn, histPre)
+
+	// 4. Update Weights
+	for idx := range n.Layers {
+		l := &n.Layers[idx]
+		if layerGradients[idx][1] != nil {
+			gW := ConvertTensor[T, float32](layerGradients[idx][1])
+			ApplyRecursiveGradients(l, gW, config.LearningRate)
+		}
+	}
+	return lossVal
+}
+
+func trainBatchWGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], config *TrainingConfig) (float64, error) {
+	ctx := n.GPUContext
+	if ctx == nil {
+		return 0, fmt.Errorf("GPU context is nil")
+	}
+	batchSize := batch.Input.Shape[0]
+
+	// 1. Upload input and target to GPU (queue-level writes, safe before BeginFrame)
+	inData := ConvertTensor[T, float32](batch.Input).Data
+	inBuf := ctx.GetActivationBuffer("batch_input", uint64(len(inData)*4), wgpu.BufferUsageStorage)
+	if inBuf == nil {
+		return 0, fmt.Errorf("failed to get inBuf")
+	}
+	ctx.Queue.WriteBuffer(inBuf, 0, wgpu.ToBytes(inData))
+
+	targetData := ConvertTensor[T, float32](batch.Target).Data
+	targetBuf := ctx.GetActivationBuffer("batch_target", uint64(len(targetData)*4), wgpu.BufferUsageStorage)
+	if targetBuf == nil {
+		return 0, fmt.Errorf("failed to get targetBuf")
+	}
+	ctx.Queue.WriteBuffer(targetBuf, 0, wgpu.ToBytes(targetData))
+
+	// 2. Begin batched GPU frame: entire forward + grad + backward in ONE submission
+	if err := ctx.BeginFrame(); err != nil {
+		return 0, fmt.Errorf("failed to begin GPU frame: %w", err)
+	}
+
+	// 3. Forward pass (all recorded into shared encoder)
+	histInBuf := make([]*wgpu.Buffer, len(n.Layers))
+	histPreBuf := make([]*wgpu.Buffer, len(n.Layers))
+	curBuf := inBuf
+
+	for i := range n.Layers {
+		l := &n.Layers[i]
+		if l.IsDisabled {
+			continue
+		}
+		histInBuf[i] = curBuf
+
+		outSize := l.OutputHeight
+		if l.Type == LayerCNN2 || l.Type == LayerCNN3 {
+			d := l.OutputDepth
+			if d == 0 {
+				d = 1
+			}
+			h := l.OutputHeight
+			if h == 0 {
+				h = 1
+			}
+			w := l.OutputWidth
+			if w == 0 {
+				w = 1
+			}
+			outSize = d * h * w * l.Filters
+		} else if l.Type == LayerCNN1 {
+			outSize = l.OutputHeight * l.Filters
+		}
+		if outSize == 0 {
+			outSize = l.InputHeight
+		}
+
+		preBuf := ctx.GetActivationBuffer(fmt.Sprintf("pre_%d", i), uint64(outSize*batchSize*4), wgpu.BufferUsageStorage)
+		if preBuf == nil {
+			ctx.FlushFrame()
+			return 0, fmt.Errorf("failed to get preBuf for layer %d", i)
+		}
+
+		if err := ctx.DispatchForwardLayer(l, batchSize, curBuf, preBuf); err != nil {
+			ctx.FlushFrame()
+			return 0, err
+		}
+
+		if l.Activation != ActivationLinear {
+			postBuf := ctx.GetActivationBuffer(fmt.Sprintf("post_%d", i), uint64(outSize*batchSize*4), wgpu.BufferUsageStorage)
+			if postBuf == nil {
+				ctx.FlushFrame()
+				return 0, fmt.Errorf("failed to get postBuf for layer %d", i)
+			}
+			if err := ctx.DispatchActivation(outSize*batchSize, l.Activation, preBuf, postBuf); err != nil {
+				ctx.FlushFrame()
+				return 0, err
+			}
+			curBuf = postBuf
+		} else {
+			curBuf = preBuf
+		}
+		histPreBuf[i] = preBuf
+	}
+
+	// 4. GPU MSE gradient + partial loss (no CPU readback needed to continue)
+	totalOutput := len(targetData)
+	numWG := (totalOutput + 255) / 256
+	gradBuf := ctx.GetActivationBuffer("grad_out", uint64(totalOutput*4), wgpu.BufferUsageStorage)
+	partialsBuf := ctx.GetActivationBuffer("loss_partials", uint64(numWG*4), wgpu.BufferUsageStorage)
+	if gradBuf == nil || partialsBuf == nil {
+		ctx.FlushFrame()
+		return 0, fmt.Errorf("failed to allocate loss buffers")
+	}
+	if err := ctx.DispatchMSEGradPartialLoss(totalOutput, curBuf, targetBuf, gradBuf, partialsBuf); err != nil {
+		ctx.FlushFrame()
+		return 0, err
+	}
+
+	// 5. Backward pass + weight updates (inside same frame)
+	// Queue.WriteBuffer for DW zero-clearing is safe inside BeginFrame:
+	// all writes are guaranteed to complete before the encoder submit.
+	curGradBuf := gradBuf
+	for i := len(n.Layers) - 1; i >= 0; i-- {
+		l := &n.Layers[i]
+		if l.IsDisabled {
+			continue
+		}
+
+		inSize := l.InputHeight
+		if l.Type == LayerCNN2 || l.Type == LayerCNN3 {
+			d := l.InputDepth
+			if d == 0 {
+				d = 1
+			}
+			h := l.InputHeight
+			if h == 0 {
+				h = 1
+			}
+			w := l.InputWidth
+			if w == 0 {
+				w = 1
+			}
+			inSize = d * h * w * l.InputChannels
+		} else if l.Type == LayerCNN1 {
+			inSize = l.InputHeight * l.InputChannels
+		}
+		if inSize == 0 {
+			inSize = l.OutputHeight
+		}
+
+		outSize := l.OutputHeight
+		if l.Type == LayerCNN2 || l.Type == LayerCNN3 {
+			d := l.OutputDepth
+			if d == 0 {
+				d = 1
+			}
+			h := l.OutputHeight
+			if h == 0 {
+				h = 1
+			}
+			w := l.OutputWidth
+			if w == 0 {
+				w = 1
+			}
+			outSize = d * h * w * l.Filters
+		} else if l.Type == LayerCNN1 {
+			outSize = l.OutputHeight * l.Filters
+		}
+		if outSize == 0 {
+			outSize = l.InputHeight
+		}
+
+		dxBuf := ctx.GetActivationBuffer(fmt.Sprintf("dx_%d", i), uint64(inSize*batchSize*4), wgpu.BufferUsageStorage)
+		if dxBuf == nil {
+			ctx.FlushFrame()
+			return 0, fmt.Errorf("failed to get dxBuf for layer %d", i)
+		}
+
+		wSize := len(l.WeightStore.Master)
+		dwBuf := ctx.GetActivationBuffer(fmt.Sprintf("dw_%d", i), uint64(wSize*4), wgpu.BufferUsageStorage)
+		if dwBuf == nil {
+			ctx.FlushFrame()
+			return 0, fmt.Errorf("failed to get dwBuf for layer %d", i)
+		}
+		// Zero DW buffer before accumulation (WriteBuffer is a queue-level op, safe inside BeginFrame)
+		ctx.Queue.WriteBuffer(dwBuf, 0, make([]byte, wSize*4))
+
+		var gradPreBuf *wgpu.Buffer
+		if l.Activation != ActivationLinear {
+			gradPreBuf = ctx.GetActivationBuffer(fmt.Sprintf("grad_pre_%d", i), uint64(outSize*batchSize*4), wgpu.BufferUsageStorage)
+			if gradPreBuf == nil {
+				ctx.FlushFrame()
+				return 0, fmt.Errorf("failed to get gradPreBuf for layer %d", i)
+			}
+			if err := ctx.DispatchActivationBackward(outSize*batchSize, l.Activation, curGradBuf, histPreBuf[i], gradPreBuf); err != nil {
+				ctx.FlushFrame()
+				return 0, err
+			}
+		} else {
+			gradPreBuf = curGradBuf
+		}
+
+		if err := ctx.DispatchBackwardLayer(l, batchSize, gradPreBuf, histInBuf[i], histPreBuf[i], dxBuf, dwBuf); err != nil {
+			ctx.FlushFrame()
+			return 0, err
+		}
+
+		if l.WeightStore != nil {
+			wBuf, ok := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+			if ok && wBuf != nil {
+				if err := ctx.DispatchApplyGradients(wSize, config.LearningRate, wBuf, dwBuf); err != nil {
+					ctx.FlushFrame()
+					return 0, err
+				}
+			}
+		}
+
+		curGradBuf = dxBuf
+	}
+
+	// 6. Submit entire forward + backward in ONE GPU call
+	ctx.FlushFrame()
+
+	// 7. Read back only the tiny partial loss sums (numWG * 4 bytes vs full output readback)
+	partials, err := ctx.ReadBuffer(partialsBuf)
+	if err != nil {
+		return 0, err
+	}
+	lossVal := 0.0
+	nPartials := numWG
+	if nPartials > len(partials) {
+		nPartials = len(partials)
+	}
+	for _, p := range partials[:nPartials] {
+		lossVal += float64(p)
+	}
+	return lossVal, nil
 }
 
 // CalculateLoss computes the loss between output and target.

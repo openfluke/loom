@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "welvet"
+version = "0.7.0"
+description = "M-POLY-VTD AI Engine (Loom v0.73.0) — 21 Numerical Types, WebGPU, Transformer Inference, and 100% Determinism"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "Apache-2.0"}
+authors = [{ name = "OpenFluke / Samuel Watson" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = [
+  "neural-network", "webgpu", "gpu", "deep-learning", "transformer",
+  "swiglu", "moe", "safetensors", "polymorphic", "quantization",
+  "determinism", "fp4", "int4", "binary", "ternary", "multi-precision"
+]
+
+[project.urls]
+Homepage = "https://github.com/openfluke/loom"
+Source = "https://github.com/openfluke/loom"
+Issues = "https://github.com/openfluke/loom/issues"
+Documentation = "https://github.com/openfluke/loom/tree/main/welvet"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+welvet = [
+  "linux_amd64/*.so",
+  "linux_arm64/*.so",
+  "linux_arm/*.so",
+  "linux_386/*.so",
+  "darwin_amd64/*.dylib",
+  "darwin_arm64/*.dylib",
+  "darwin_universal/*.dylib",
+  "windows_amd64/*.dll",
+  "windows_arm64/*.dll",
+  "windows_386/*.dll",
+  "android_arm64/*.so",
+  "android_arm/*.so",
+]
+
+[tool.setuptools.exclude-package-data]
+welvet = [
+  "**/*.h",
+  "**/simple_bench*",
+  "**/.DS_Store",
+  "**/._*",
+]

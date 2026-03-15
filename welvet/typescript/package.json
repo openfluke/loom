@@ -1,0 +1,52 @@
+{
+  "name": "@openfluke/welvet",
+  "version": "0.7.0",
+  "description": "M-POLY-VTD AI Engine (Loom v0.73.0) — 21 Numerical Types, WebGPU, Transformer Inference",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "loom", "welvet", "neural-network", "machine-learning", "deep-learning",
+    "webassembly", "wasm", "webgpu", "gpu", "typescript", "javascript",
+    "transformer", "safetensors", "polymorphic", "quantization",
+    "fp4", "int4", "binary", "ternary", "multi-precision",
+    "systolic", "target-propagation", "gradient-free",
+    "swiglu", "moe", "embedding", "rnn", "lstm", "cnn",
+    "llm", "tokenizer", "bpe", "inference", "training",
+    "browser", "nodejs", "isomorphic"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openfluke/loom.git",
+    "directory": "welvet/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/openfluke/loom/issues"
+  },
+  "homepage": "https://github.com/openfluke/loom/tree/main/welvet/typescript#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsc -p tsconfig.json",
+    "postbuild": "cp -r assets/* dist/",
+    "prepare": "bun run build",
+    "serve": "python3 serve.py",
+    "dev": "bun run build && bun run serve"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "typescript": "^5.6.3"
+  }
+}

@@ -144,7 +144,7 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 	outputSize := layer.OutputHeight
 
 	gradInput = NewTensor[T](batchSize, inputSize)
-	gradWeights = NewTensor[T](inputSize, outputSize)
+	gradWeights = NewTensor[T](outputSize, inputSize)
 
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil {

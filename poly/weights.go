@@ -201,10 +201,16 @@ func ConvertSlice[In Numeric, Out Numeric](in []In) []Out {
 // ApplyGradients performs a simple SGD update (weight = weight - lr * gradient).
 // This is the "Learning" step that mutates the actual weights in the Master store.
 func (ws *WeightStore) ApplyGradients(gradWeights *Tensor[float32], lr float32) {
-	if gradWeights == nil || len(gradWeights.Data) != len(ws.Master) {
+	if gradWeights == nil || len(gradWeights.Data) == 0 {
 		return
 	}
-	for i := range ws.Master {
+	// We iterate up to the minimum of the two lengths to allow partial updates (e.g., weights without bias)
+	limit := len(gradWeights.Data)
+	if len(ws.Master) < limit {
+		limit = len(ws.Master)
+	}
+
+	for i := 0; i < limit; i++ {
 		ws.Master[i] -= lr * gradWeights.Data[i]
 	}
 	// After applying gradients, previously cached low-bit versions are now STALE.
