@@ -593,7 +593,7 @@ func (c *WGPUContext) GetActivationBuffer(name string, size uint64, usage wgpu.B
 	}
 
 	if buf, ok := c.ActivationPool[name]; ok && buf != nil {
-		if buf.GetSize() >= size && (buf.GetUsage()&usage == usage) {
+		if buf.GetSize() >= size && (getBufferUsage(buf)&usage == usage) {
 			return buf
 		}
 		buf.Destroy()
