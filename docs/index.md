@@ -8,7 +8,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 | File | Description |
 |:-----|:------------|
-| [overview.md](overview.md) | Big-picture architecture: the 3D grid, six design pillars, key types, and where to start |
+| [overview.md](overview.md) | Big-picture architecture: the 3D grid, six design pillars, key types |
+| [deployment.md](deployment.md) | **Polyglot Ecosystem**: NPM deployment, TypeScript SDK, WASM bridge, and Browser/Node usage |
 | [numerical_types.md](numerical_types.md) | All 21 DTypes, the `Numeric` generic constraint, `WeightStore` lifecycle, `SimulatePrecision`, Q4_0, and compression ratios |
 | [layers.md](layers.md) | Every layer type (Dense, CNN, RNN, MHA, SwiGLU, RMSNorm, Residual, Softmax, Parallel, Sequential, and more) with ASCII data-flow diagrams |
 | [dispatch.md](dispatch.md) | `DispatchLayer` routing, the 3D grid traversal, tiled parallel execution, `IsRemoteLink` spatial hopping, and the GPU dispatch path |
@@ -29,6 +30,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 ## Where to Start
 
 **New to the codebase?** Read [overview.md](overview.md) first for the architecture picture, then [layers.md](layers.md) to see what layer types are available.
+**Deploying to Web or JS?** Read [deployment.md](deployment.md).
 
 **Want to train a model?** Read [training.md](training.md) and [dispatch.md](dispatch.md).
 

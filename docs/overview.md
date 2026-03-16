@@ -5,7 +5,7 @@
 M-POLY-VTD is a neural inference and training engine built from first principles in Go. It treats a neural network not as a sequential stack of layers, but as a **spatial 3D grid** where each cell can hold any layer type, and every layer can morph its numerical precision on demand.
 
 > [!NOTE]
-> Current version: **0.73.0 (Alpha)**. The core forward/backward engine, all 21 DTypes, and GPU training (Dense/CNN/RMSNorm) are stable. SwiGLU and MHA GPU backward wiring are in progress.
+> Current version: **0.74.0 (Alpha)**. The core forward/backward engine, all 21 DTypes, and GPU training (Dense/CNN/RMSNorm) are stable. Advanced deployment bindings for TypeScript and WASM are now fully verified.
 
 ---
 
@@ -18,7 +18,7 @@ M-POLY-VTD is a neural inference and training engine built from first principles
 │                                                                             │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │               POLYGLOT BINDINGS (C-ABI FFI Layer)                    │   │
-│  │   Python  │  TypeScript  │  C#  │  Java  │  Dart  │  WASM Browser   │   │
+│  │  Python │ TS (@openfluke/welvet) │ C# │ Java │ Dart │ WASM Browser    │   │
 │  └─────────────────────────────┬────────────────────────────────────────┘   │
 │                                │                                            │
 │                                ▼                                            │

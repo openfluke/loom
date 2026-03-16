@@ -4,6 +4,14 @@ Concise, copy-paste-ready patterns for the most common `poly/` tasks. Each snipp
 
 ---
 
+## 📦 TypeScript / Node.js Installation
+
+```bash
+npm install @openfluke/welvet
+```
+
+See [deployment.md](deployment.md) for full isomorphic details.
+
 ## Creating a Network
 
 ```go
