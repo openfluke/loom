@@ -61,8 +61,8 @@ func getSystolicContainer(handle int64) (*systolicContainer, bool) {
 }
 
 var (
-	transformers        = make(map[int64]interface{}) // Using interface{} to handle multiple numeric types
-	transfomrerNextID   int64 = 1
+	transformers      = make(map[int64]interface{}) // Using interface{} to handle multiple numeric types
+	transfomrerNextID int64 = 1
 )
 
 func getTransformer(handle int64) (interface{}, bool) {
@@ -70,6 +70,16 @@ func getTransformer(handle int64) (interface{}, bool) {
 	defer networkMu.RUnlock()
 	tr, ok := transformers[handle]
 	return tr, ok
+}
+
+var neatPopulations = make(map[int64]*poly.NEATPopulation)
+var neatPopNextID int64 = 1
+
+func getNEATPopulation(handle int64) (*poly.NEATPopulation, bool) {
+	networkMu.RLock()
+	defer networkMu.RUnlock()
+	p, ok := neatPopulations[handle]
+	return p, ok
 }
 
 // Helper: Convert Handle to TargetPropState Container
