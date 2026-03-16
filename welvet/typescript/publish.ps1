@@ -31,9 +31,18 @@ Write-Host "  Name:    $($packageJson.name)"
 Write-Host "  Version: $($packageJson.version)"
 Write-Host ""
 
-$confirmation = Read-Host "Publish @openfluke/welvet to NPM? (y/N)"
-if ($confirmation -eq "y") {
-    npm publish --access public
+# Check login status
+$npmWhoAmI = npm whoami 2>$null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "✓ Logged in as: $npmWhoAmI" -ForegroundColor Green
+    Write-Host ""
+    
+    $confirmation = Read-Host "Publish @openfluke/welvet to NPM? (y/N)"
+    if ($confirmation -eq "y") {
+        npm publish --access public
+    } else {
+        Write-Host "Publish cancelled."
+    }
 } else {
-    Write-Host "Publish cancelled."
+    Write-Host "⚠️  Not logged in to NPM. Run 'npm login' first." -ForegroundColor Yellow
 }

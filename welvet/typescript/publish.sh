@@ -29,10 +29,24 @@ echo "Package info:"
 cat package.json | grep -E '"name"|"version"'
 echo ""
 
-read -p "Publish @openfluke/welvet to NPM? (y/N): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    npm publish --access public
+# Check login status
+if npm whoami &> /dev/null; then
+    echo "✓ Logged in as: $(npm whoami)"
+    echo ""
+    
+    read -p "Publish @openfluke/welvet to NPM? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        npm publish --access public
+    else
+        echo "Publish cancelled."
+    fi
 else
-    echo "Publish cancelled."
+    echo "⚠️  Not logged in to NPM"
+    echo ""
+    echo "Login first:"
+    echo "  npm login"
+    echo ""
+    echo "Then publish:"
+    echo "  npm publish --access public"
 fi
