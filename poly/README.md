@@ -265,7 +265,7 @@ Our semantic version number directly reflects our progress against this absolute
 
 ### 1.2 Low-Precision & Bit-Level Types
 - [x] FP8 E4M3 (Activations / Weights)
-- [ ] FP8 E5M2 (Gradients / High Dynamic Range)
+- [ ] INT8 WebGPU Inference Kernels (quantized matmul natively in WGSL shader)
 - [x] FP4 E2M1 (Standard Bitwise Extreme Compression)
 - [x] NVFP4 (NVIDIA-flavor FP4 Compatibility)
 
@@ -276,24 +276,24 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Bit-Packed Nibble Tensors (4-bit representation)
 - [x] Quantization-Aware Scaling (Fixed-point factor logic)
 
-### 1.4 Complex & Hypercomplex Mathematics
-- [ ] Complex64 & Complex128 Tensors
-- [ ] Quaternion Neural Networks (4D Associative Algebras)
-- [ ] Octonion / Cayley-Dickson Algebra Support
+### 1.4 GPU Numerical Acceleration
+- [ ] FP16/BF16 GPU Training (native half-precision WGSL forward + backward kernels)
+- [ ] Mixed Precision Training Loop (FP16 forward, FP32 gradient accumulation)
+- [ ] On-Device Weight Dequant Shader (FP4/INT8 weight unpacking inside WGSL, no CPU roundtrip)
 
 ### 1.5 Quantization & Numerical Deep-Dive
 - [x] Bitwise MAC (Multiply-Accumulate) for E2M1 CPU
 - [x] Bitwise MatMul for E2M1 GPU (WebGPU)
 - [x] On-the-fly Max/Min Statistics Collection (Layer Observers)
 - [x] Dynamic Scale Calibration (Row-wise quantization)
-- [ ] Quantization-Aware Training (QAT) Fake-Quant Layers
+- [ ] Gradient Checkpointing (recompute activations to reduce peak VRAM)
 - [x] Post-Training Quantization (PTQ) weight conversion passes
-- [ ] Automatic Loss Scaling (Preventing numerical underflow)
+- [ ] Truncated BPTT (windowed gradient unroll for systolic long-sequence training)
 
-### 1.6 Automatic Differentiation Calculus
+### 1.6 GPU Backward Pass Completion
 - [x] Real-valued Automatic Differentiation
-- [ ] Complex-valued Differentiation (Wirtinger Calculus)
-- [ ] Hypercomplex Differentiation (Generalized HR Calculus)
+- [ ] SwiGLU GPU Backward Wiring (resolve BROKEN status in benchmark table)
+- [ ] MHA GPU Backward Wiring (resolve PENDING status in benchmark table)
 
 **Numerical Progress: 20 / 32**
 
@@ -317,19 +317,19 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Multi-Head Attention (MHA)
 - [x] Grouped-Query Attention (GQA) & Multi-Query Attention (MQA)
 - [x] RoPE (Rotary Position Embedding)
-- [ ] ALiBi (Attention with Linear Biases)
-- [ ] Flash Attention (Hardware-level O(N) exact attention)
+- [ ] Sliding Window / Sparse Attention (O(n) local attention for long contexts)
+- [ ] GPU Command Graph Buffering (compile full forward pass into a single dispatch call)
 
 ### 2.4 Feed-Forward & Activations
 - [x] Standard Activations (ReLU, GELU, Tanh, Sigmoid, Swish, Mish)
 - [x] Softmax (10 variants: Standard, Grid, Hierarchical, Temperature, Gumbel, Masked, Sparsemax, Entmax, Adaptive, Mixture)
 - [x] SwiGLU / Gated Linear Units
 
-### 2.5 Normalization
+### 2.5 Normalization & Modern Layer Architectures
 - [x] LayerNorm
 - [x] RMSNorm
-- [ ] BatchNorm (1D/2D/3D)
-- [ ] GroupNorm
+- [ ] Depthwise Separable Conv (1D/2D/3D) (edge-optimized mobile convolutions)
+- [ ] Mamba / SSM Layer (state space model, O(n) sequence modeling alternative to transformers)
 
 ### 2.6 Advanced Topological Structures
 - [x] Residual & Skip Connections
@@ -337,9 +337,9 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Mixture of Experts (MoE) Routing Mechanisms
 - [x] Parallel Grid Scattering (Spatial Distribution)
 - [x] Layer Ensembles & Complementary Match Discovery
-- [ ] Graph Neural Networks (GCN, GAT, Message Passing)
-- [ ] Capsule Networks & Routing-by-Agreement
-- [ ] Liquid Neural Networks (LNN) & Continuous-Time ODE Solvers
+- [ ] LoRA Adapter Layer (low-rank fine-tuning primitive wrapping existing Dense layer)
+- [ ] DNA Splice / Genetic Crossover (merge two trained network DNAs into a child architecture)
+- [ ] NEAT-style Topology Evolution (structural NAS: add/remove nodes and edges genetically)
 - [x] K-Means / Differentiable Clustering Layers
 
 ### 2.7 Introspection & Telemetry
@@ -396,10 +396,10 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] GPU Accelerated Training Loop (FP32 end-to-end WebGPU: forward + backward + weight update in a single command buffer submission)
 
 ### 4.3 Automated Evolutionary Logic
-- [ ] Population-Based Training (PBT)
+- [ ] DARTS (gradient-based architecture search via differentiable mixed-op supernet)
 - [x] Neural Architecture Search (NAS)
 - [x] Random Architecture Generation & Mutation
-- [ ] Net2Net Morphism Operators
+- [ ] Speculative Decoding (draft model + verify for faster autoregressive token generation)
 
 **Automation Progress: 13 / 16**
 
@@ -486,3 +486,10 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 
 ## **Version 0.73.0 (Alpha)**
 *(Status: Mathematical tensor representations and local architectural structures are robustly established up to transformer scale. Advanced deployment bindings are stable. Numerical precision support is exceptionally deep, with native FP4 acceleration on both CPU (Dense/SwiGLU) and GPU (MHA/RoPE/CNN). WebGPU offloading is fully verified with 7000x+ spatial speedups on inference and **17x–65x on end-to-end GPU training** (Dense/CNN/RMSNorm). The GPU training backend now batches the entire forward pass + backward pass + weight updates into a single command buffer submission per batch. Local LLM token generation is cross-platform via WebGPU. Loom remains in **Alpha** as we complete SwiGLU/MHA backward wiring and transition to specialized **Edge-First** orchestration (Thermal-Awareness, UMA, Command Buffer Graphing) required for mobile and wearable deployment.)*
+
+
+TODO LIST FOR 0.74.0:
+[ ] NEAT-style Topology Evolution
+[ ] DNA Splice / Genetic Crossover ← extend dna.go
+Python/WASM/TypeScript polish (already [x], just stabilizing)
+Docs pass
