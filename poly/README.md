@@ -514,8 +514,3 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 *(Status: Mathematical tensor representations and local architectural structures are robustly established up to transformer scale. Advanced deployment bindings for TypeScript and WASM are now fully verified and stable. Numerical precision support is exceptionally deep, with native FP4 acceleration on both CPU (Dense/SwiGLU) and GPU (MHA/RoPE/CNN). WebGPU offloading is fully verified with 7000x+ spatial speedups on inference and **17x–65x on end-to-end GPU training** (Dense/CNN/RMSNorm). The GPU training backend now batches the entire forward pass + backward pass + weight updates into a single command buffer submission per batch. Local LLM token generation is cross-platform via WebGPU. Loom remains in **Alpha** as we complete SwiGLU/MHA backward wiring and transition to specialized **Edge-First** orchestration (Thermal-Awareness, UMA, Command Buffer Graphing) required for mobile and wearable deployment.)*
 
 
-TODO LIST FOR 0.75.0:
-- [ ] Python Bindings (`welvet`) - Native stability & performance
-- [ ] Speculative Decoding (draft model + verify)
-- [ ] On-Device Weight Dequant Shader
-Docs pass

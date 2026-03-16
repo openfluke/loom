@@ -1,5 +1,11 @@
 # LOOM: Universal Bit-Perfect Deterministic AI Engine
 
+[![npm version](https://img.shields.io/npm/v/@openfluke/welvet.svg)](https://www.npmjs.com/package/@openfluke/welvet)
+[![npm downloads](https://img.shields.io/npm/dm/@openfluke/welvet.svg)](https://www.npmjs.com/package/@openfluke/welvet)
+[![PyPI version](https://img.shields.io/pypi/v/welvet.svg)](https://pypi.org/project/welvet/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/welvet.svg)](https://pypi.org/project/welvet/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 **"The SQLite of AI" — A Polyglot Neural Engine with Bit-Exact Reproducibility**
 
 Loom is a **Deterministic Neural Virtual Machine (DNVM)** engineered for absolute numerical consistency and extreme efficiency. It guarantees **bitwise-identical results** across all platforms, backends, and language bindings, bypassing memory bandwidth bottlenecks through polymorphic dispatch and volumetric 3D modeling.
@@ -40,22 +46,22 @@ For technical deep-dives into M-POLY-VTD, refer to the documentation and benchma
 
 Loom provides bit-exact reproducibility across:
 - **Go** (Native)
-- **TypeScript/Node.js** (@openfluke/welvet)
+- [**TypeScript/Node.js**](https://www.npmjs.com/package/@openfluke/welvet) (@openfluke/welvet)
 - **Browser** (WASM + WebGPU)
-- **Python** (welvet) - *(In Development)*
+- [**Python**](https://pypi.org/project/welvet/) (welvet)
 - **C#/.NET** (Welvet) - *(In Development)*
 
 ## 📊 Versioning & Roadmap
 Loom uses a mathematical versioning system derived from a strictly verified checklist of 130 industry-scale features.
 
-### **Current Version: 0.73.0 (Alpha)**
-- **Completion Ratio**: 73.0% (95 / 130 features verified — GPU backward training complete)
+### **Current Version: 0.74.0 (Alpha)**
+- **Completion Ratio**: 73.8% (96 / 130 features verified — TypeScript/WASM Stable)
 - **Status**: Core structures are stable. FP4 acceleration is native on both CPU and GPU.
     - > [!NOTE]
     - > **GPU Backward Training**: Full end-to-end GPU training is now live. Dense, RMSNorm, CNN 1D/2D/3D all run forward + backward + weight updates in a **single GPU command buffer submission** via the `BeginFrame`/`FlushFrame` pattern. Measured speedups on real workloads: **17x–65x** vs CPU across all supported layer types.
 - **Roadmap Target**:
-    - **v0.73.0 "GPU Training"**: Launching now. GPU training backend complete for Dense/CNN/RMSNorm; SwiGLU/MHA backward wiring pending.
-    - **v0.8.0 "Major Launch"**: Broader release once the polyglot core ecosystem is fully stabilized.
+    - **v0.74.0 "Polyglot Bridge"**: Launching now. TypeScript/WASM implementation is stable and verified with 0.000000% divergence.
+    - **v0.8.0 "Major Launch"**: Broader release once the Python ecosystem is fully stabilized.
 - **Next Steps**: Wiring SwiGLU/MHA/Embedding into `DispatchBackwardLayer`; Transitioning to specialized **Edge-First** orchestration (Thermal-Awareness, UMA, Command Buffer Graphing).
 
 For a detailed breakdown of the roadmap and version calculation, see [poly/README.md](./poly/README.md#📊-true-version-calculation).
