@@ -1,5 +1,8 @@
 fabric
 
+# Generated documentation artifacts
+*.docx
+
 # Downloaded models (HuggingFace, etc.)
 models/
 wasm/models
