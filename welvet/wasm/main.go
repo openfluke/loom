@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"sync"
 	"syscall/js"
-	"time"
 
 	"github.com/openfluke/loom/poly"
 )
@@ -148,7 +147,7 @@ func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState
 			return "Expected input data"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		s.SetInput(t)
 		return nil
 	}))
@@ -187,7 +186,7 @@ func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState
 			return "Expected gradients"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		gradIn, _, err := poly.SystolicBackward(n, s, t)
 		if err != nil {
 			return errObj(err.Error())
@@ -204,7 +203,7 @@ func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState
 		}
 		data := readFloat32Array(args[0])
 		lr := float32(args[1].Float())
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		poly.SystolicApplyTargetProp(n, s, t, lr)
 		return nil
 	}))
@@ -232,7 +231,7 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 			return "Expected input data"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		out := poly.TargetPropForward(n, s, t)
 		if out == nil {
 			return js.Global().Get("Float32Array").New(0)
@@ -245,7 +244,7 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 			return "Expected target data"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		poly.TargetPropBackward(n, s, t)
 		return nil
 	}))
@@ -255,7 +254,7 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 			return "Expected target data"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		poly.TargetPropBackwardChainRule(n, s, t)
 		return nil
 	}))
@@ -291,7 +290,7 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 			return "Expected input data"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data)) // shape: [batchSize=1, features]
 		out, _, _ := poly.ForwardPolymorphic(n, t)
 		if out == nil {
 			return js.Global().Get("Float32Array").New(0)
@@ -467,73 +466,47 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 			return `{"error": "Expected batchesJSON, epochs, learningRate"}`
 		}
 
-		type batch struct {
-			Input  []float32 `json:"input"`
-			Target []float32 `json:"target"`
+		type tensorData struct {
+			Shape []int     `json:"shape"`
+			Data  []float32 `json:"data"`
 		}
-		var batches []batch
-		if err := json.Unmarshal([]byte(args[0].String()), &batches); err != nil {
+		type batchJSON struct {
+			Input  tensorData `json:"input"`
+			Target tensorData `json:"target"`
+		}
+		var rawBatches []batchJSON
+		if err := json.Unmarshal([]byte(args[0].String()), &rawBatches); err != nil {
 			return fmt.Sprintf(`{"error": "invalid batches JSON: %v"}`, err)
 		}
 
 		epochs := args[1].Int()
 		lr := float32(args[2].Float())
 
-		var finalLoss float64
-		start := time.Now()
-
-		s := poly.NewSystolicState[float32](n)
-
-		for ep := 0; ep < epochs; ep++ {
-			var epochLoss float64
-			for _, b := range batches {
-				in := poly.NewTensorFromSlice(b.Input, len(b.Input))
-				tgt := poly.NewTensorFromSlice(b.Target, len(b.Target))
-
-				s.SetInput(in)
-				poly.SystolicForward(n, s, true)
-
-				// Get output
-				var out *poly.Tensor[float32]
-				for i := len(s.LayerData) - 1; i >= 0; i-- {
-					if s.LayerData[i] != nil {
-						out = s.LayerData[i]
-						break
-					}
-				}
-				if out == nil {
-					continue
-				}
-
-				// MSE loss gradient
-				grad := poly.NewTensor[float32](len(out.Data))
-				var loss float64
-				for i := range out.Data {
-					diff := out.Data[i] - tgt.Data[i]
-					grad.Data[i] = 2.0 * diff / float32(len(out.Data))
-					loss += float64(diff * diff)
-				}
-				epochLoss += loss / float64(len(out.Data))
-
-				_, layerGrads, bErr := poly.SystolicBackward(n, s, grad)
-				if bErr != nil || layerGrads == nil {
-					continue
-				}
-
-				// Apply gradients to all layers
-				for i := range n.Layers {
-					if i < len(layerGrads) && layerGrads[i][1] != nil {
-						poly.ApplyRecursiveGradients(&n.Layers[i], poly.ConvertTensor[float32, float32](layerGrads[i][1]), lr)
-					}
-				}
+		batches := make([]poly.TrainingBatch[float32], len(rawBatches))
+		for i, b := range rawBatches {
+			batches[i] = poly.TrainingBatch[float32]{
+				Input:  poly.NewTensorFromSlice(b.Input.Data, b.Input.Shape...),
+				Target: poly.NewTensorFromSlice(b.Target.Data, b.Target.Shape...),
 			}
-			finalLoss = epochLoss / float64(len(batches))
+		}
+
+		cfg := &poly.TrainingConfig{
+			Epochs:       epochs,
+			LearningRate: lr,
+			LossType:     "mse",
+			Verbose:      false,
+		}
+
+		trainResult, err := poly.Train(n, batches, cfg)
+		if err != nil {
+			return fmt.Sprintf(`{"error": "%v"}`, err)
 		}
 
 		result := map[string]interface{}{
-			"final_loss":       finalLoss,
-			"duration_ms":      float64(time.Since(start).Nanoseconds()) / 1e6,
+			"final_loss":       trainResult.FinalLoss,
+			"duration_ms":      float64(trainResult.TotalTime.Nanoseconds()) / 1e6,
 			"epochs_completed": epochs,
+			"loss_history":     trainResult.LossHistory,
 		}
 		b, _ := json.Marshal(result)
 		return string(b)
