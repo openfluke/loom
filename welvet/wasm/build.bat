@@ -3,7 +3,7 @@ REM Build welvet WASM for use with the TypeScript package.
 REM Output: welvet/typescript/dist/main.wasm + wasm_exec.js
 
 set SCRIPT_DIR=%~dp0
-set DIST_DIR=%SCRIPT_DIR%..\typescript\dist
+set DIST_DIR=%SCRIPT_DIR%..\typescript\assets
 
 if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
 

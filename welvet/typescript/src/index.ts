@@ -24,6 +24,7 @@
 
 import type {
   Network,
+  NEATPopulation,
   SystolicState,
   TargetPropState,
   TrainingBatch,
@@ -148,11 +149,49 @@ export function trainNetwork(
   epochs: number,
   lr: number
 ): TrainingResult {
-  const serialized = batches.map((b) => ({
-    input:  Array.from(b.input instanceof Float32Array ? b.input : new Float32Array(b.input as number[])),
-    target: Array.from(b.target instanceof Float32Array ? b.target : new Float32Array(b.target as number[])),
-  }));
+  const serialized = batches.map((b) => {
+    const inp = b.input instanceof Float32Array ? b.input : new Float32Array(b.input as number[]);
+    const tgt = b.target instanceof Float32Array ? b.target : new Float32Array(b.target as number[]);
+    const inShape  = b.inputShape  ?? [1, inp.length];
+    const tgtShape = b.targetShape ?? [1, tgt.length];
+    return {
+      input:  { shape: inShape,  data: Array.from(inp) },
+      target: { shape: tgtShape, data: Array.from(tgt) },
+    };
+  });
   return JSON.parse(network.train(JSON.stringify(serialized), epochs, lr)) as TrainingResult;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Evolution / DNA
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** Get the default SpliceConfig as a plain object. */
+export function getSpliceConfig(): object {
+  return JSON.parse((globalThis as unknown as Record<string, () => string>)["defaultSpliceConfig"]());
+}
+
+/** Get the default NEATConfig as a plain object. */
+export function getNEATConfig(dModel: number): object {
+  return JSON.parse((globalThis as unknown as Record<string, (n: number) => string>)["defaultNEATConfig"](dModel));
+}
+
+/**
+ * Create a NEAT population from a seed network.
+ * @param network Seed network (its _id is used)
+ * @param size Population size
+ * @param cfg NEATConfig object or JSON string (defaults to getNEATConfig(64))
+ */
+export function createNEATPopulation(
+  network: Network,
+  size: number,
+  cfg?: object | string
+): NEATPopulation {
+  const cfgJSON = cfg
+    ? (typeof cfg === "string" ? cfg : JSON.stringify(cfg))
+    : (globalThis as unknown as Record<string, (n: number) => string>)["defaultNEATConfig"](64);
+  return (globalThis as unknown as Record<string, (...a: unknown[]) => NEATPopulation>)
+    ["createLoomNEATPopulation"](network._id, size, cfgJSON);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -168,6 +207,9 @@ export default {
   compareDNA,
   defaultTargetPropConfig,
   trainNetwork,
+  getSpliceConfig,
+  getNEATConfig,
+  createNEATPopulation,
   // Re-export constants for convenience
   DType: {
     FLOAT64: 0, FLOAT32: 1, FLOAT16: 2, BFLOAT16: 3,
@@ -180,4 +222,4 @@ export default {
 };
 
 // Suppress unused import warnings for re-exported types
-export type { Network, SystolicState, TargetPropState, TrainingBatch, TrainingResult, DNACompareResult };
+export type { Network, NEATPopulation, SystolicState, TargetPropState, TrainingBatch, TrainingResult, DNACompareResult };

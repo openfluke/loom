@@ -5,7 +5,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DIST_DIR="$SCRIPT_DIR/../typescript/dist"
+DIST_DIR="$SCRIPT_DIR/../typescript/assets"
 
 mkdir -p "$DIST_DIR"
 

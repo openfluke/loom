@@ -1,7 +1,7 @@
 {
   "name": "@openfluke/welvet",
-  "version": "0.7.0",
-  "description": "M-POLY-VTD AI Engine (Loom v0.73.0) — 21 Numerical Types, WebGPU, Transformer Inference",
+  "version": "0.74.0",
+  "description": "M-POLY-VTD AI Engine (Loom v0.74.0) — 21 Numerical Types, WebGPU, DNA Evolution, NEAT",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -38,15 +38,21 @@
     "access": "public"
   },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rimraf dist",
     "build": "tsc -p tsconfig.json",
-    "postbuild": "cp -r assets/* dist/",
-    "prepare": "bun run build",
+    "postbuild": "shx cp -r assets/* dist/ && shx mkdir -p dist/tests && shx cp -r tests/* dist/tests/",
+    "prepare": "npm run build",
     "serve": "python3 serve.py",
-    "dev": "bun run build && bun run serve"
+    "dev": "npm run build && npm run serve",
+    "test": "tsx tests/cabi_verify.ts && tsx tests/benchmark.ts",
+    "test:cabi": "tsx tests/cabi_verify.ts",
+    "test:bench": "tsx tests/benchmark.ts"
   },
   "devDependencies": {
     "@types/node": "^22.7.5",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "tsx": "^4.19.1",
+    "rimraf": "^6.0.1",
+    "shx": "^0.3.4"
   }
 }
