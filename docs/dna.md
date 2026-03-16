@@ -1,67 +1,157 @@
-# The DNA Engine: Topological Network Comparison
+# The DNA Engine: Topological Network Fingerprinting
 
-This document covers `ExtractDNA`, `CompareNetworks`, `CosineSimilarity`, and the `LogicShift` detection system that allows high-fidelity comparison between networks of different architectures or precisions.
+This document covers `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection, and the recursive signature extraction for all 19 layer types in `dna.go`.
 
----
-
-## Motivation
-
-When you train two networks starting from different random seeds, or morph a network from FP32 to INT8, or graft one network's layers onto another's, you want answers to questions like:
-
-- How similar are these two networks, fundamentally?
-- Have any functional patterns migrated to different spatial positions?
-- Can I tell that a Binary network is doing the "same job" as its FP64 counterpart?
-
-Standard weight comparison fails here — FP4 and FP64 weights cannot be directly compared. The DNA engine solves this by converting weights to **unit vectors** after precision simulation, then comparing directions rather than magnitudes.
+For the **Evolution Engine** (DNA Splice + NEAT mutations), see [evolution.md](evolution.md).
 
 ---
 
-## LayerSignature
+## Why DNA?
 
-```go
-type LayerSignature struct {
-    Z, Y, X, L int      // 3D coordinates in the grid
-    Type        LayerType
-    DType       DType
-    Weights     []float32  // normalized (unit-vector) simulated weights
-}
+Standard weight comparison breaks across precisions — you can't directly compare an INT8 weight against an FP32 weight. The DNA engine solves this by converting every layer's weights to a **unit direction vector** after simulating precision loss. Comparing direction vectors (cosine similarity) instead of raw values means:
+
+- FP32 and INT8 representations of the same model look nearly identical
+- Two networks trained on the same task converge toward the same DNA
+- Structural changes (different layer order, different grid positions) are detectable as **logic shifts**
+
+```
+Raw FP32 weights  ──►  SimulatePrecision  ──►  Normalize  ──►  unit vector
+       │                  (dtype, scale)        (L2 norm)         "DNA strand"
+       │
+       └── FP4 weights ──►  SimulatePrecision  ──►  Normalize  ──►  same direction ≈ 1.0 similarity
 ```
 
-The `Weights` field is **not** the raw master weights. It is:
+---
 
-1. The master weights, passed through `SimulatePrecision(w, DType, Scale)` — this simulates what the weights actually behave like at their active precision
-2. Then normalized to a unit vector via `Normalize(simulated)`
+## Core Types
 
-This means two layers with the same functional behavior but different scales will have the same (or very similar) `Weights` direction vector.
+```go
+// The "DNA strand" of a single layer
+type LayerSignature struct {
+    Z, Y, X, L int       // 3D grid coordinates
+    Type        LayerType
+    DType       DType
+    Weights     []float32 // L2-normalized, precision-simulated weights
+}
+
+// The complete genetic blueprint of a network
+type NetworkDNA []LayerSignature
+```
 
 ---
 
-## ExtractDNA
+## ExtractDNA — all 19 layer types
 
 ```go
 func ExtractDNA(n *VolumetricNetwork) NetworkDNA
 ```
 
-`NetworkDNA` is `[]LayerSignature`. `ExtractDNA` iterates all `n.Layers` and builds a signature for each:
+Iterates every layer in the network, calls `extractLayerSignature(l)`, and wraps the result with position and type metadata. The signature extraction logic handles all 19 layer types:
 
-```go
-for _, l := range n.Layers {
-    simulated := make([]float32, len(l.WeightStore.Master))
-    for i, w := range l.WeightStore.Master {
-        simulated[i] = SimulatePrecision(w, l.DType, scale)
-    }
-    norm = Normalize(simulated)
-
-    dna = append(dna, LayerSignature{
-        Z: l.Z, Y: l.Y, X: l.X, L: l.L,
-        Type:    l.Type,
-        DType:   l.DType,
-        Weights: norm,
-    })
-}
+```
+                    VolumetricNetwork
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+         LayerDense   LayerParallel  LayerSoftmax
+         LayerRNN     LayerSequential LayerResidual
+         LayerLSTM    (recursive)    (weightless)
+         LayerMHA
+         LayerSwiGLU
+         LayerRMSNorm
+         LayerLayerNorm
+         LayerCNN1/2/3
+         LayerConvT1/2/3D
+         LayerEmbedding
+         LayerKMeans
+              │
+              ▼
+    extractLayerSignature(l)
+              │
+    ┌─────────┼──────────────┐
+    │         │              │
+    ▼         ▼              ▼
+ weighted  recursive     weightless
+ layers    containers    layers
+    │         │              │
+    ▼         ▼              ▼
+ Master   flatten all    []float32{1.0}
+ weights  branches
+    │         │
+    ▼         ▼
+SimulatePrecision  Normalize(concat)
+    │
+    ▼
+ Normalize
+    │
+    ▼
+ []float32 unit vector
 ```
 
-For layers with no weights (e.g., Softmax), the signature gets `Weights = []float32{1.0}` — a neutral presence marker that says "something exists here."
+### Weighted layers (Dense, RNN, LSTM, MHA, CNN*, ConvTransposed*, SwiGLU, RMSNorm, LayerNorm, Embedding, KMeans)
+
+```go
+// All weighted layers follow this path:
+scale := l.WeightStore.Scale
+if scale == 0 { scale = 1.0 }
+simulated := make([]float32, len(l.WeightStore.Master))
+for i, w := range l.WeightStore.Master {
+    simulated[i] = SimulatePrecision(w, l.DType, scale)
+}
+return Normalize(simulated)
+```
+
+`SimulatePrecision` clips and quantizes each weight to what it would actually be at the layer's active DType. This means the DNA of an INT8 Dense layer and an FP32 Dense layer with the same trained weights will be nearly identical.
+
+### Structural containers (Parallel, Sequential) — recursive extraction
+
+Parallel and Sequential layers contain nested layers (`ParallelBranches`, `SequentialLayers`). A naive approach that returned `{1.0}` for both would make any two parallel layers look identical regardless of what's inside them. Instead, the engine recurses:
+
+```
+LayerParallel
+├── Branch 0 (Dense 32×32)   ──► extractLayerSignature ──► unit vec A  ─┐
+├── Branch 1 (RMSNorm 32)    ──► extractLayerSignature ──► unit vec B  ─┤ concat
+└── FilterGateConfig (Dense) ──► extractLayerSignature ──► unit vec C  ─┘
+                                                                         │
+                                                                    Normalize(flat)
+                                                                         │
+                                                                    single unit vec
+                                                                    representing ALL
+                                                                    nested weights
+```
+
+```go
+case LayerParallel:
+    var flat []float32
+    for _, branch := range l.ParallelBranches {
+        if branch.IsRemoteLink { continue }   // remote links have no local weights
+        flat = append(flat, extractLayerSignature(branch)...)
+    }
+    if l.FilterGateConfig != nil {
+        flat = append(flat, extractLayerSignature(*l.FilterGateConfig)...)
+    }
+    if len(flat) == 0 { return []float32{1.0} }
+    return Normalize(flat)
+
+case LayerSequential:
+    var flat []float32
+    for _, sub := range l.SequentialLayers {
+        flat = append(flat, extractLayerSignature(sub)...)
+    }
+    if len(flat) == 0 { return []float32{1.0} }
+    return Normalize(flat)
+```
+
+Remote links (`IsRemoteLink = true`) are spatial hops with no local weights — they are skipped during extraction.
+
+### Weightless layers (Softmax, Residual)
+
+```go
+case LayerSoftmax, LayerResidual:
+    return []float32{1.0}
+```
+
+A `{1.0}` vector is a neutral presence marker. Two Softmax layers at the same position will score `1.0` similarity (identical), which is correct — they are architecturally identical by definition.
 
 ---
 
@@ -71,14 +161,16 @@ For layers with no weights (e.g., Softmax), the signature gets `Weights = []floa
 func Normalize(v []float32) []float32
 ```
 
-Computes the L2 norm of `v`, then divides each element:
+Converts a weight vector to a unit vector:
 
 ```
-mag = sqrt(Σᵢ vᵢ²)
+mag = sqrt(v[0]² + v[1]² + ... + v[n]²)
 output[i] = v[i] / mag
 ```
 
-If `mag == 0` (zero weights), returns a zero vector. Two zero-weight layers will be considered identical (`CosineSimilarity` returns 1.0 for two zero vectors).
+- If `mag == 0` (all-zero weights), returns a zero vector
+- Two zero vectors score `1.0` similarity (both represent an untrained/zeroed layer)
+- One zero + one nonzero scores `0.0` (orthogonal by convention)
 
 ---
 
@@ -88,27 +180,34 @@ If `mag == 0` (zero weights), returns a zero vector. Two zero-weight layers will
 func CosineSimilarity(s1, s2 LayerSignature) float32
 ```
 
-Returns a similarity score in `[-1.0, 1.0]`:
+Returns a score in `[-1.0, 1.0]` comparing two layer signatures:
 
-- `+1.0` — identical direction (same functional behavior, regardless of scale)
-- `0.0` — orthogonal (no correlation)
-- `-1.0` — opposite direction
-
-The function first checks for architectural compatibility:
-
-```go
-if s1.Type != s2.Type || s1.DType != s2.DType {
-    return 0  // architectural mismatch
-}
-if len(s1.Weights) != len(s2.Weights) {
-    return 0  // dimension mismatch
-}
+```
+         s1.Weights · s2.Weights
+sim  =  ─────────────────────────   =  dot product  (since |s1| = |s2| = 1)
+              |s1| × |s2|
 ```
 
-Then computes the dot product of the already-normalized weight vectors (the result is directly the cosine similarity, since `|v| = 1`).
+Guard rails:
 
-> [!NOTE]
-> The DType check in `CosineSimilarity` means networks of different precisions will always score 0 in direct layer comparison. Cross-precision comparison requires normalizing to a common type first. This is intentional — it prevents spurious high scores between, say, an INT8 layer and a Binary layer with the same weights.
+| Condition | Returns |
+|:----------|:--------|
+| `s1.Type != s2.Type` | `0.0` — architectural mismatch |
+| `s1.DType != s2.DType` | `0.0` — precision mismatch |
+| `len(s1.Weights) != len(s2.Weights)` | `0.0` — dimension mismatch |
+| Both zero vectors | `1.0` — identical untrained layers |
+| One zero, one nonzero | `0.0` — no similarity |
+
+Similarity values to interpret:
+
+```
+-1.0  ────────────  0.0  ────────────  +1.0
+  │                  │                   │
+opposite          no match          identical
+direction                           direction
+(learned to      (different         (same functional
+do opposite)      purpose)           role)
+```
 
 ---
 
@@ -116,140 +215,167 @@ Then computes the dot product of the already-normalized weight vectors (the resu
 
 ```go
 func CompareNetworks(dna1, dna2 NetworkDNA) NetworkComparisonResult
-```
 
-Returns:
-
-```go
 type NetworkComparisonResult struct {
-    OverallOverlap  float32
-    LayerOverlaps   map[string]float32  // "z,y,x,l" → cosine score
-    LogicShifts     []LogicShift
+    OverallOverlap float32
+    LayerOverlaps  map[string]float32   // "z,y,x,l" → score
+    LogicShifts    []LogicShift
 }
 ```
 
-### Phase 1: Hierarchical Direct Overlap
+Two-phase comparison:
 
-For each layer in `dna1`, find the layer at the same `(Z, Y, X, L)` position in `dna2` and compute their similarity:
+### Phase 1 — Direct Position Matching
 
-```go
-for _, sig1 := range dna1 {
-    posKey := fmt.Sprintf("%d,%d,%d,%d", sig1.Z, sig1.Y, sig1.X, sig1.L)
-    for _, sig2 := range dna2 {
-        if sig1.Z == sig2.Z && sig1.Y == sig2.Y && sig1.X == sig2.X && sig1.L == sig2.L {
-            overlap := CosineSimilarity(sig1, sig2)
-            res.LayerOverlaps[posKey] = overlap
-            totalOverlap += overlap
-            matchedCount++
-        }
-    }
-}
-OverallOverlap = totalOverlap / matchedCount
+Match each layer in `dna1` with the layer at the same `(Z, Y, X, L)` position in `dna2`:
+
+```
+dna1:   [L0: Dense]  [L1: RNN]  [L2: Dense]
+              │              │          │
+              │ same pos     │          │ same pos
+              ▼              ▼          ▼
+dna2:   [L0: Dense]  [L1: Dense]  [L2: Dense]
+              │              │          │
+          sim=0.94       sim=0.0    sim=0.87   (0.0 because type mismatch)
+              │              │          │
+              └──────────────┴──────────┘
+                              │
+                         avg = 0.60
+                    OverallOverlap = 0.60
 ```
 
-This gives the **Similarity Index (SI)** — how much of the network's functional structure was preserved between the two snapshots.
+### Phase 2 — Logic Drift Detection
 
-### Phase 2: Logic Drift Detection
+For each layer in `dna1`, search **all** positions in `dna2` for the best cosine match — not just the same position:
 
-For each layer in `dna1`, search **all** layers in `dna2` (not just the same position) for the best cosine match:
-
-```go
-for _, sig1 := range dna1 {
-    bestOverlap := float32(-1.0)
-    bestSig2 := LayerSignature{}
-
-    for _, sig2 := range dna2 {
-        overlap := CosineSimilarity(sig1, sig2)
-        if overlap > bestOverlap {
-            bestOverlap = overlap
-            bestSig2 = sig2
-        }
-    }
-
-    if bestOverlap > 0.8 && pos1 != pos2 {
-        res.LogicShifts = append(res.LogicShifts, LogicShift{
-            SourcePos: pos1,
-            TargetPos: pos2,
-            Overlap:   bestOverlap,
-        })
-    }
-}
 ```
+dna1 L0 (Dense, sim vector A)
+    │
+    ├──► compare vs dna2 L0 → sim=0.72
+    ├──► compare vs dna2 L1 → sim=0.31
+    └──► compare vs dna2 L2 → sim=0.91  ← best match!
 
-A `LogicShift` is recorded when the best match for a layer in `dna1` is found at a **different spatial position** in `dna2`. This detects functional migration: the layer learned the same thing, but its position in the grid moved.
+Best match (0.91) is at position L2, not L0.
+Since 0.91 > 0.8 threshold AND positions differ:
+→ LogicShift { SourcePos:"0,0,0,0", TargetPos:"0,0,0,2", Overlap:0.91 }
+```
 
 ```go
 type LogicShift struct {
     SourcePos string   // "z,y,x,l" in dna1
-    TargetPos string   // "z,y,x,l" in dna2 (different position)
-    Overlap   float32  // similarity score > 0.8
+    TargetPos string   // "z,y,x,l" in dna2
+    Overlap   float32  // cosine score > 0.8
 }
 ```
 
-The 0.8 threshold is hardcoded. Below 0.8, the match is considered coincidental.
+Logic shifts appear when:
+- A network was restructured and layers were reordered
+- A NEAT mutation moved a functional pattern to a different grid position
+- Two networks converged to the same function at different coordinates
 
 ---
 
-## Full Comparison Flow
+## Full DNA Pipeline
 
 ```
-Network A (FP32, trained)           Network B (FP32, further trained)
-         │                                    │
-         ▼                                    ▼
-   ExtractDNA(A)                       ExtractDNA(B)
-         │                                    │
-         │  LayerSignature[]                  │  LayerSignature[]
-         │  - simulate precision              │  - simulate precision
-         │  - normalize to unit vec           │  - normalize to unit vec
-         │                                    │
-         └──────────────┬─────────────────────┘
-                        │
-                        ▼
+  Network A (trained)                   Network B (trained)
+       │                                      │
+       ▼                                      ▼
+ ExtractDNA(A)                          ExtractDNA(B)
+       │                                      │
+  for each layer:                        for each layer:
+  ┌──────────────────────────────┐       ┌──────────────────────────────┐
+  │ Parallel/Sequential:         │       │ Parallel/Sequential:         │
+  │   recurse into branches      │       │   recurse into branches      │
+  │   concat + Normalize         │       │   concat + Normalize         │
+  │ Weighted:                    │       │ Weighted:                    │
+  │   SimulatePrecision(w, dtype)│       │   SimulatePrecision(w, dtype)│
+  │   Normalize(simulated)       │       │   Normalize(simulated)       │
+  │ Weightless:                  │       │ Weightless:                  │
+  │   {1.0}                      │       │   {1.0}                      │
+  └──────────────────────────────┘       └──────────────────────────────┘
+       │                                      │
+       │  NetworkDNA ([]LayerSignature)        │  NetworkDNA
+       └─────────────────┬────────────────────┘
+                         │
+                         ▼
                CompareNetworks(dnaA, dnaB)
-                        │
-              ┌─────────┴──────────┐
-              │                    │
-              ▼                    ▼
-   Phase 1: Direct          Phase 2: Cross-position
-   position matching        best-match search
-              │                    │
-              ▼                    ▼
-   LayerOverlaps           LogicShifts
-   OverallOverlap           (migrations)
-              │
-              └──────────────────▶ NetworkComparisonResult
+                         │
+            ┌────────────┴────────────┐
+            │                         │
+            ▼                         ▼
+    Phase 1: Direct            Phase 2: Cross-pos
+    position matching          best-match search
+            │                         │
+    LayerOverlaps              LogicShifts
+    OverallOverlap             (migrations)
+            │
+            └────────────────────────▶ NetworkComparisonResult
 ```
 
 ---
 
-## Practical Applications
+## Use Cases
 
 ### Measuring Quantization Fidelity
 
-Compare a FP32 network against itself after `Morph(DTypeInt8)`:
-
 ```go
-dnaFP32 := poly.ExtractDNA(network)
-// ... morph all layers to INT8 ...
-dnaINT8 := poly.ExtractDNA(network)
+dnaFP32 := poly.ExtractDNA(net)
+// morph all layers to INT8...
+poly.MorphAllLayers(net, poly.DTypeInt8)
+dnaINT8 := poly.ExtractDNA(net)
 result := poly.CompareNetworks(dnaFP32, dnaINT8)
-// result.OverallOverlap close to 1.0 → quantization preserved function
+// result.OverallOverlap near 1.0 → quantization preserved behavior
+// result.OverallOverlap near 0.0 → quantization destroyed the model
 ```
 
 ### Detecting Training Convergence
 
-Track `OverallOverlap` between consecutive epoch checkpoints. When it stops changing significantly, the network has converged.
+Sample DNA every N epochs. When `OverallOverlap` between consecutive snapshots stabilizes above 0.99, the network has converged.
 
-### Finding Structural Overlap Between Different Architectures
+```
+Epoch 0   → Epoch 10  : overlap = 0.12  (learning fast)
+Epoch 10  → Epoch 50  : overlap = 0.61  (settling)
+Epoch 50  → Epoch 100 : overlap = 0.94  (nearly converged)
+Epoch 100 → Epoch 150 : overlap = 0.99  (converged)
+```
 
-Two networks with different layer counts or grid dimensions can be partially compared — `CompareNetworks` will only match positions that exist in both DNAs.
+### Cross-Architecture Similarity
 
-### Logic Drift Monitoring
+Two networks with different layer counts share coordinates for only the positions they have in common. `CompareNetworks` will match only those overlapping positions, and the `OverallOverlap` is averaged over matched layers only.
 
-If a specific layer's function migrates to a new grid coordinate during training (common in plastic/growing networks), `LogicShifts` will catch it with position keys like `"0,0,2,0" → "0,1,0,0"`.
+### Logic Drift After NEAT Mutations
+
+After a NEAT topology mutation moves a Dense layer from position `0,0,0,0` to `0,0,0,2`, the logic shift detector will report:
+
+```
+LogicShift {
+    SourcePos: "0,0,0,0",
+    TargetPos: "0,0,0,2",
+    Overlap:   0.93,
+}
+```
+
+This is how you track functional identity across structural mutations.
 
 ---
 
-## Roadmap Note
+## DNA Signature Sizes by Layer Type
 
-The README's TODO for v0.74.0 includes "DNA Splice / Genetic Crossover — extend dna.go". This would use `CompareNetworks` output to selectively merge two trained networks' weight vectors at the layer level, creating a child network that inherits functional structures from both parents.
+| Layer Type | Signature Length | Notes |
+|:-----------|:-----------------|:------|
+| Dense (32) | 1024 | inputH × outputH |
+| MHA (32, 4 heads) | 4224 | Q+K+V+O projections + biases |
+| SwiGLU (32) | 6144 | gate + up + down × 3 projections |
+| RMSNorm (32) | 32 | scale vector only |
+| LayerNorm (32) | 64 | gamma + beta |
+| CNN1/2 (8f, 1c, k3) | 72 | filters × channels × k² |
+| CNN3 (8f, 1c, k3) | 216 | filters × channels × k³ |
+| RNN (32) | 2080 | Wx + Wh + bias |
+| LSTM (32) | 8320 | 4 gates × (Wx + Wh + bias) |
+| Embedding (256 vocab, 32 dim) | 8192 | vocab × dim |
+| KMeans (8 clusters, 32 dim) | 256 | clusters × dim |
+| Softmax | 1 | neutral marker |
+| Residual | 1 | neutral marker |
+| Parallel (2× Dense 32) | 1056 | concat of branches, renormalized |
+| Sequential (2× Dense 32) | 2048 | concat of sub-layers, renormalized |

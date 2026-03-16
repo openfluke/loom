@@ -15,7 +15,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [training.md](training.md) | CPU and GPU training pipelines, loss functions, gradient flow, `TargetProp` (chain-rule and gap-based modes), link budgets |
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
 | [systolic.md](systolic.md) | The systolic grid engine: `SystolicState`, one-clock-cycle forward, spatial feedback via remote links, BPTT, online learning |
-| [dna.md](dna.md) | Topological network fingerprinting: `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection |
+| [dna.md](dna.md) | Topological network fingerprinting: `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection, recursive extraction for all 19 layer types |
+| [evolution.md](evolution.md) | DNA Splice / Genetic Crossover and NEAT-style Topology Evolution: `SpliceDNA`, `NEATMutate`, `NEATPopulation`, all 3 crossover modes, all 6 mutation types |
 | [softmax.md](softmax.md) | All 10 softmax variants: Standard, Temperature, Gumbel, Masked, Sparse, Entmax, Grid, Hierarchical, Adaptive, Mixture |
 | [serialization.md](serialization.md) | Full save/load (`SerializeNetwork`/`DeserializeNetwork`), bit-packing formats, idempotency guarantee, SafeTensors support |
 | [parallel_sequential.md](parallel_sequential.md) | `LayerParallel` (5 combine modes, activation tree), `LayerSequential` (step containers, skip gradients), nesting patterns |
@@ -36,6 +37,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Loading a HuggingFace model?** Read [transformer.md](transformer.md) and [serialization.md](serialization.md).
 
 **Changing precision / quantizing?** Read [numerical_types.md](numerical_types.md) and [quantization.md](quantization.md).
+
+**Evolving or merging trained networks?** Read [dna.md](dna.md) and [evolution.md](evolution.md).
 
 **Building parallel/sequential sub-networks?** Read [parallel_sequential.md](parallel_sequential.md).
 
@@ -60,7 +63,8 @@ poly/
 ├── sequential.go        SequentialForwardPolymorphic, step containers
 ├── target_prop.go       TargetPropState, TargetPropBackward, ApplyTargetPropGaps
 ├── systolic.go          SystolicState, SystolicForward, SystolicBackward
-├── dna.go               ExtractDNA, CompareNetworks, LogicShift
+├── dna.go               ExtractDNA, CompareNetworks, LogicShift, recursive all-19-type extraction
+├── evolution.go         SpliceDNA, SpliceDNAWithReport, NEATMutate, NEATPopulation
 ├── quantization.go      Q4_0Block, QuantizeQ4_0, DequantizeQ4_0
 ├── serialization.go     BuildNetworkFromJSON, ParseLayerType/DType/Activation
 ├── persistence.go       SerializeNetwork, DeserializeNetwork, bit-packing

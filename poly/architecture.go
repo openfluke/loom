@@ -212,7 +212,8 @@ func BuildTransformerNetwork(numBlocks int, dModel int, numHeads int, dtype DTyp
 		l2.InputHeight = dModel
 		l2.OutputHeight = dModel * 4
 		l2.DType = dtype
-		l2.WeightStore = NewWeightStore(dModel * l2.OutputHeight * 3)
+		inter := l2.OutputHeight
+		l2.WeightStore = NewWeightStore(dModel*inter*3 + inter*2 + dModel)
 		l2.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 		
 		l3 := n.GetLayer(0, 0, 0, base+3)
@@ -286,8 +287,9 @@ func BuildRandomNetwork(depth, rows, cols, lpc int, dModel int) *VolumetricNetwo
 		case 3: // SwiGLU
 			l.Type = LayerSwiGLU
 			l.InputHeight = dModel
-			l.OutputHeight = dModel * 2
-			l.WeightStore = NewWeightStore(dModel * l.OutputHeight * 3)
+			inter := dModel * 2
+			l.OutputHeight = inter
+			l.WeightStore = NewWeightStore(dModel*inter*3 + inter*2 + dModel)
 			l.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 		case 4: // RMSNorm
 			l.Type = LayerRMSNorm
