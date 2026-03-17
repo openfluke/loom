@@ -140,12 +140,17 @@ export interface NetworkConfig {
 export interface TrainingBatch {
   input: number[] | Float32Array;
   target: number[] | Float32Array;
+  /** Optional batch shape for input, e.g. [batchSize, features]. Defaults to [1, length]. */
+  inputShape?: number[];
+  /** Optional batch shape for target, e.g. [batchSize, outputs]. Defaults to [1, length]. */
+  targetShape?: number[];
 }
 
 export interface TrainingResult {
   final_loss: number;
   duration_ms: number;
   epochs_completed: number;
+  loss_history?: number[];
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -231,6 +236,29 @@ export interface TargetPropState {
 // Network
 // ──────────────────────────────────────────────────────────────────────────────
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Evolution / DNA
+// ──────────────────────────────────────────────────────────────────────────────
+
+export interface NEATPopulation {
+  /** Internal handle ID. */
+  _id: number;
+  /** Number of networks in the population. */
+  size: number;
+  /** Get a network wrapper by index. */
+  getNetwork(index: number): Network;
+  /** Run one generation given pre-computed fitnesses (length must equal size). */
+  evolveWithFitnesses(fitnesses: number[]): void;
+  /** Return the best-performing network wrapper. */
+  best(): Network;
+  /** Return the best fitness score. */
+  bestFitness(): number;
+  /** Human-readable generation summary. */
+  summary(generation: number): string;
+  /** Release resources. */
+  free(): void;
+}
+
 export interface Network {
   /**
    * Full sequential forward pass through the network.
@@ -310,6 +338,22 @@ export interface Network {
    */
   createTargetPropState(useChainRule?: boolean): TargetPropState;
 
+  /**
+   * Genetic crossover with another network.
+   * @param otherID The `_id` of the other parent network
+   * @param cfgJSON JSON string from defaultSpliceConfig()
+   */
+  spliceDNA(otherID: number, cfgJSON: string): Network;
+
+  /**
+   * NEAT-style structural mutation.
+   * @param cfgJSON JSON string from defaultNEATConfig()
+   */
+  neatMutate(cfgJSON: string): Network;
+
+  /** Internal handle ID — required for spliceDNA and population operations. */
+  _id: number;
+
   /** Release resources (no-op in WASM, included for API parity). */
   free(): void;
 }
@@ -345,4 +389,13 @@ declare global {
 
   /** Get the default TargetPropConfig. */
   function getDefaultTargetPropConfig(): string;
+
+  /** Get the default SpliceConfig JSON string. */
+  function defaultSpliceConfig(): string;
+
+  /** Get the default NEATConfig JSON string for a given model dimension. */
+  function defaultNEATConfig(dModel: number): string;
+
+  /** Create a NEAT population from a seed network. */
+  function createLoomNEATPopulation(seedID: number, size: number, cfgJSON: string): NEATPopulation;
 }

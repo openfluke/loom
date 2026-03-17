@@ -1,0 +1,15 @@
+# Compiled native libraries (populated by copy_to_python.bat / copy_to_python.sh)
+src/welvet/linux_*/
+src/welvet/macos_*/
+src/welvet/windows_*/
+src/welvet/android_*/
+src/welvet/ios_*/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+.eggs/

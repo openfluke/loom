@@ -44,6 +44,20 @@ const char* symbols[] = {
     "LoomCompareDNA",
     "LoomComputeLayerStats",
     "LoomComputeLossGradient",
+    // DNA splice / evolution
+    "LoomDefaultSpliceConfig",
+    "LoomSpliceDNA",
+    "LoomSpliceDNAWithReport",
+    "LoomDefaultNEATConfig",
+    "LoomNEATMutate",
+    "LoomNewNEATPopulation",
+    "LoomNEATPopulationSize",
+    "LoomNEATPopulationGetNetwork",
+    "LoomNEATPopulationEvolveWithFitnesses",
+    "LoomNEATPopulationBest",
+    "LoomNEATPopulationBestFitness",
+    "LoomNEATPopulationSummary",
+    "LoomFreeNEATPopulation",
     // Transposed convolutions
     "LoomConvTransposed1DBackward",
     "LoomConvTransposed1DForward",
@@ -253,7 +267,7 @@ int verify_symbols(lib_handle handle) {
     if (missing > 0) {
         printf("[!] WARNING: %d symbols are missing from the library.\n\n", missing);
     } else {
-        printf("[+] SUCCESS: All 144 C-ABI symbols are present.\n\n");
+        printf("[+] SUCCESS: All %zu C-ABI symbols are present.\n\n", NUM_SYMBOLS);
     }
     return missing;
 }
@@ -323,6 +337,138 @@ int main(int argc, char** argv) {
             printf("[!] Failed to build network\n");
         }
     }
+
+    // Functional Check: DNA Splice & NEAT Evolution
+    typedef char* (*fn_DefaultSpliceConfig)();
+    typedef long long (*fn_SpliceDNA)(long long, long long, const char*);
+    typedef char* (*fn_SpliceDNAWithReport)(long long, long long, const char*);
+    typedef char* (*fn_DefaultNEATConfig)(int);
+    typedef long long (*fn_NEATMutate)(long long, const char*);
+    typedef long long (*fn_NewNEATPopulation)(long long, int, const char*);
+    typedef int (*fn_NEATPopulationSize)(long long);
+    typedef long long (*fn_NEATPopulationGetNetwork)(long long, int);
+    typedef char* (*fn_NEATPopulationEvolveWithFitnesses)(long long, const char*);
+    typedef long long (*fn_NEATPopulationBest)(long long);
+    typedef double (*fn_NEATPopulationBestFitness)(long long);
+    typedef char* (*fn_NEATPopulationSummary)(long long, int);
+    typedef void (*fn_FreeNEATPopulation)(long long);
+
+    fn_DefaultSpliceConfig default_splice_cfg =
+        (fn_DefaultSpliceConfig)get_sym(handle, "LoomDefaultSpliceConfig");
+    fn_SpliceDNA splice_dna =
+        (fn_SpliceDNA)get_sym(handle, "LoomSpliceDNA");
+    fn_SpliceDNAWithReport splice_dna_report =
+        (fn_SpliceDNAWithReport)get_sym(handle, "LoomSpliceDNAWithReport");
+    fn_DefaultNEATConfig default_neat_cfg =
+        (fn_DefaultNEATConfig)get_sym(handle, "LoomDefaultNEATConfig");
+    fn_NEATMutate neat_mutate =
+        (fn_NEATMutate)get_sym(handle, "LoomNEATMutate");
+    fn_NewNEATPopulation new_pop =
+        (fn_NewNEATPopulation)get_sym(handle, "LoomNewNEATPopulation");
+    fn_NEATPopulationSize pop_size =
+        (fn_NEATPopulationSize)get_sym(handle, "LoomNEATPopulationSize");
+    fn_NEATPopulationGetNetwork pop_get_net =
+        (fn_NEATPopulationGetNetwork)get_sym(handle, "LoomNEATPopulationGetNetwork");
+    fn_NEATPopulationEvolveWithFitnesses pop_evolve =
+        (fn_NEATPopulationEvolveWithFitnesses)get_sym(handle, "LoomNEATPopulationEvolveWithFitnesses");
+    fn_NEATPopulationBest pop_best =
+        (fn_NEATPopulationBest)get_sym(handle, "LoomNEATPopulationBest");
+    fn_NEATPopulationBestFitness pop_best_fitness =
+        (fn_NEATPopulationBestFitness)get_sym(handle, "LoomNEATPopulationBestFitness");
+    fn_NEATPopulationSummary pop_summary =
+        (fn_NEATPopulationSummary)get_sym(handle, "LoomNEATPopulationSummary");
+    fn_FreeNEATPopulation free_pop =
+        (fn_FreeNEATPopulation)get_sym(handle, "LoomFreeNEATPopulation");
+
+    if (build && free_net && free_str &&
+        default_splice_cfg && splice_dna && splice_dna_report &&
+        default_neat_cfg && neat_mutate && new_pop && pop_size &&
+        pop_get_net && pop_evolve && pop_best && pop_best_fitness &&
+        pop_summary && free_pop) {
+
+        printf("[*] Running DNA / Evolution smoke test...\n");
+
+        // Build two parent networks
+        long long parentA = build(DENSE_NETWORK_JSON);
+        long long parentB = build(DENSE_NETWORK_JSON);
+        if (parentA < 0 || parentB < 0) {
+            printf("[!] Failed to build parent networks\n");
+            goto evolution_done;
+        }
+        printf("[+] Parent networks built. A=%lld B=%lld\n", parentA, parentB);
+
+        // Default splice config
+        char* splice_cfg_json = default_splice_cfg();
+        printf("[+] Default splice config: %s\n", splice_cfg_json);
+
+        // SpliceDNA
+        long long child = splice_dna(parentA, parentB, splice_cfg_json);
+        if (child >= 0) {
+            printf("[+] SpliceDNA child handle: %lld\n", child);
+            free_net(child);
+        } else {
+            printf("[!] SpliceDNA failed\n");
+        }
+
+        // SpliceDNAWithReport
+        char* report = splice_dna_report(parentA, parentB, splice_cfg_json);
+        printf("[+] SpliceDNAWithReport: %.80s...\n", report);
+        // Extract child handle from report — it is registered; free via FreeNetwork
+        // (child_handle value is in JSON; for smoke test we just verify no error key)
+        free_str(report);
+        free_str(splice_cfg_json);
+
+        // Default NEAT config (dModel=10 matches DENSE_NETWORK_JSON layer size)
+        char* neat_cfg_json = default_neat_cfg(10);
+        printf("[+] Default NEAT config (dModel=10): %.60s...\n", neat_cfg_json);
+
+        // NEATMutate
+        long long mutant = neat_mutate(parentA, neat_cfg_json);
+        if (mutant >= 0) {
+            printf("[+] NEATMutate mutant handle: %lld\n", mutant);
+            free_net(mutant);
+        } else {
+            printf("[!] NEATMutate failed\n");
+        }
+
+        // NEAT Population
+        long long pop = new_pop(parentA, 4, neat_cfg_json);
+        if (pop >= 0) {
+            printf("[+] NEATPopulation handle: %lld, size=%d\n", pop, pop_size(pop));
+
+            // Get a member network
+            long long member = pop_get_net(pop, 0);
+            printf("[+] Population[0] network handle: %lld\n", member);
+
+            // Evolve with dummy fitnesses [1.0, 0.8, 0.5, 0.3]
+            char* evolve_result = pop_evolve(pop, "[1.0, 0.8, 0.5, 0.3]");
+            printf("[+] Evolve result: %s\n", evolve_result);
+            free_str(evolve_result);
+
+            // Best
+            long long best = pop_best(pop);
+            double best_fit = pop_best_fitness(pop);
+            printf("[+] Best network handle: %lld, best fitness: %.4f\n", best, best_fit);
+
+            // Summary
+            char* summary = pop_summary(pop, 1);
+            printf("[+] Summary: %s\n", summary);
+            free_str(summary);
+
+            free_pop(pop);
+            printf("[+] Population freed.\n");
+        } else {
+            printf("[!] NewNEATPopulation failed\n");
+        }
+
+        free_str(neat_cfg_json);
+        free_net(parentA);
+        free_net(parentB);
+        printf("[+] Evolution smoke test complete.\n");
+    } else {
+        printf("[!] Skipping evolution smoke test — one or more symbols missing\n");
+    }
+    evolution_done:;
 
     close_lib(handle);
     printf("[*] Verification complete.\n");

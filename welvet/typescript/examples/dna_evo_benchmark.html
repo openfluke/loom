@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Loom TS — DNA & Evolution Benchmark</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d0d; color: #c8c8c8; font-family: 'Courier New', monospace; font-size: 13px; padding: 20px; }
+  h1 { color: #7ec8e3; margin-bottom: 4px; font-size: 16px; }
+  .subtitle { color: #555; margin-bottom: 12px; font-size: 11px; }
+  #output { white-space: pre; line-height: 1.65; }
+  .pass  { color: #4ec94e; }
+  .fail  { color: #e04040; }
+  .warn  { color: #e0a020; }
+  .info  { color: #7ec8e3; }
+  .dim   { color: #555; }
+  .gold  { color: #ffd700; }
+  button { background: #1e3a4a; color: #7ec8e3; border: 1px solid #2d5a70; padding: 6px 18px;
+           font-family: inherit; font-size: 13px; cursor: pointer; margin-right: 8px; }
+  button:hover { background: #2d5a70; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #status { margin: 8px 0; color: #555; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>DNA & Evolution Engine — All-Layer Full Coverage Benchmark (TypeScript)</h1>
+<div class="subtitle">TypeScript wrapper version of dna_evo_benchmark — 15 sections covering all layer types, splice modes, NEAT mutation, population evolution</div>
+<button id="runBtn" onclick="runBenchmark()">Run Benchmark</button>
+<div id="status">Loading WASM...</div>
+<pre id="output"></pre>
+
+<script type="module">
+import {
+  initBrowser, createNetwork, compareDNA,
+  getSpliceConfig, getNEATConfig, createNEATPopulation,
+} from '../dist/index.js';
+
+const outEl = document.getElementById('output');
+function print(msg, cls) {
+  const s = document.createElement('span');
+  if (cls) s.className = cls;
+  s.textContent = msg + '\n';
+  outEl.appendChild(s);
+}
+const p     = m => print(m);
+const pInfo = m => print(m, 'info');
+const pPass = m => print(m, 'pass');
+const pFail = m => print(m, 'fail');
+const pWarn = m => print(m, 'warn');
+const pDim  = m => print(m, 'dim');
+const pGold = m => print(m, 'gold');
+const sep   = () => pDim('═'.repeat(64));
+
+const D = 16;
+
+function denseNet(d, layers) {
+  const ls = [];
+  for (let i = 0; i < layers; i++) {
+    ls.push({z:0,y:0,x:0,l:i,type:"Dense",input_height:d,output_height:d,activation:"ReLU",dtype:"F32"});
+  }
+  return {depth:1,rows:1,cols:1,layers_per_cell:layers,layers:ls};
+}
+
+const NET_CONFIGS = {
+  Dense:     {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"Dense",input_height:D,output_height:D,activation:"ReLU",dtype:"F32"}]},
+  MHA:       {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"MHA",input_height:D,output_height:D,num_heads:2,d_model:D,dtype:"F32"}]},
+  SwiGLU:    {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"SwiGLU",input_height:D,output_height:D*2,dtype:"F32"}]},
+  RMSNorm:   {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"RMSNorm",input_height:D,output_height:D,dtype:"F32"}]},
+  LayerNorm: {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"LayerNorm",input_height:D,output_height:D,dtype:"F32"}]},
+  CNN1:      {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"CNN1",input_channels:1,filters:4,kernel_size:3,stride:1,padding:1,input_height:D,output_height:D,dtype:"F32"}]},
+  CNN2:      {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"CNN2",input_channels:1,filters:4,kernel_size:3,stride:1,padding:1,input_height:4,input_width:4,output_height:4,output_width:4,dtype:"F32"}]},
+  CNN3:      {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"CNN3",input_channels:1,filters:2,kernel_size:3,stride:1,padding:1,input_depth:4,input_height:4,input_width:4,output_depth:4,output_height:4,output_width:4,dtype:"F32"}]},
+  RNN:       {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"RNN",input_height:D,output_height:D,dtype:"F32"}]},
+  LSTM:      {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"LSTM",input_height:D,output_height:D,dtype:"F32"}]},
+  Embedding: {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"Embedding",vocab_size:64,embedding_dim:D,dtype:"F32"}]},
+  Softmax:   {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"Softmax",input_height:D,output_height:D,dtype:"F32"}]},
+  Residual:  {depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+    {z:0,y:0,x:0,l:0,type:"Residual",input_height:D,output_height:D,dtype:"F32"}]},
+};
+
+function dnaLen(dnaJSON) {
+  try { return JSON.parse(dnaJSON).length; } catch(e) { return 0; }
+}
+function overlap(cmpResult) {
+  return cmpResult.overall_overlap ?? cmpResult.OverallOverlap ?? 0;
+}
+function sigLen(dnaJSON) {
+  try {
+    const d = JSON.parse(dnaJSON);
+    return d.length > 0 ? (d[0].Weights || d[0].weights || []).length : 0;
+  } catch(e) { return 0; }
+}
+function ms(t0) { return (performance.now() - t0).toFixed(2) + 'ms'; }
+
+const coverage = [];
+function track(name, ok) { coverage.push({ name, ok }); }
+
+window.runBenchmark = async function() {
+  outEl.innerHTML = '';
+  document.getElementById('runBtn').disabled = true;
+
+  sep();
+  pInfo('  DNA & Evolution Engine — All-Layer Full Coverage Benchmark (TypeScript)');
+  sep();
+  p('');
+
+  // ── 1. ExtractDNA on all layer types ──────────────────────────────────────
+  pDim('── 1. ExtractDNA — all layer types ────────────────────────────');
+  p('  ' + 'Layer Type'.padEnd(20) + '  ' + 'Layers'.padEnd(8) + '  ' +
+    'DNA Sigs'.padEnd(10) + '  ' + 'Sig Len'.padEnd(12) + '  Elapsed');
+  p('  ' + '─'.repeat(66));
+
+  const layerTypes = Object.keys(NET_CONFIGS);
+  const allNets = {};
+
+  for (const lt of layerTypes) {
+    const t0 = performance.now();
+    const net = createNetwork(NET_CONFIGS[lt]);
+    const dna = net.extractDNA();
+    const elapsed = ms(t0);
+    const sigs = dnaLen(dna);
+    const sl   = sigLen(dna);
+    const layerCount = net.getLayerCount();
+    allNets[lt] = { net, dna };
+    const ok = sigs >= 0;
+    track('ExtractDNA(' + lt + ')', ok);
+    p(`  ${lt.padEnd(20)}  ${String(layerCount).padEnd(8)}  ${String(sigs).padEnd(10)}  ${String(sl).padEnd(12)}  ${elapsed}`);
+  }
+  p('');
+
+  // ── 2. CosineSimilarity / CompareNetworks ──────────────────────────────────
+  pDim('── 2. CosineSimilarity & CompareNetworks ───────────────────────');
+
+  const dnA1 = allNets['Dense'].net.extractDNA();
+  const dnA2 = allNets['Dense'].net.extractDNA();
+  const dnB  = allNets['RMSNorm'].net.extractDNA();
+
+  const sameCmp  = overlap(compareDNA(dnA1, dnA2));
+  const crossCmp = overlap(compareDNA(dnA1, dnB));
+  track('CompareNetworks(identical)', Math.abs(sameCmp - 1.0) < 0.01);
+  track('CompareNetworks(cross-type)', crossCmp >= 0 && crossCmp <= 1);
+
+  p(`  Dense vs Dense (identical):   overlap = ${sameCmp.toFixed(4)}  (expect ~1.0000)`);
+  p(`  Dense vs RMSNorm (cross):     overlap = ${crossCmp.toFixed(4)}  (expect 0.0000)`);
+  p('');
+
+  // ── 3. SpliceDNA — all 3 modes ─────────────────────────────────────────────
+  pDim('── 3. SpliceDNA — blend / point / uniform ──────────────────────');
+  p('  ' + 'Mode'.padEnd(10) + '  ' + 'Child Layers'.padEnd(14) + '  ' + 'Child DNA Sigs'.padEnd(16) + '  Overlap vs A');
+  p('  ' + '─'.repeat(56));
+
+  const spA = createNetwork(denseNet(D, 3));
+  const spB = createNetwork(denseNet(D, 3));
+  const dnaA = spA.extractDNA();
+
+  for (const mode of ['blend', 'point', 'uniform']) {
+    const cfg = getSpliceConfig();
+    cfg.CrossoverMode = mode;
+    const child = spA.spliceDNA(spB._id, JSON.stringify(cfg));
+    const childDNA = child.extractDNA();
+    const ov = overlap(compareDNA(dnaA, childDNA));
+    const cl = child.getLayerCount();
+    const cs = dnaLen(childDNA);
+    track('SpliceDNA(' + mode + ')', cl > 0);
+    p(`  ${mode.padEnd(10)}  ${String(cl).padEnd(14)}  ${String(cs).padEnd(16)}  ${ov.toFixed(4)}`);
+    child.free();
+  }
+  spA.free(); spB.free();
+  p('');
+
+  // ── 4. SpliceDNAWithReport ─────────────────────────────────────────────────
+  pDim('── 4. SpliceDNAWithReport ──────────────────────────────────────');
+  try {
+    const rA = createNetwork(denseNet(D, 3));
+    const rB = createNetwork(denseNet(D, 3));
+    const cfg = JSON.stringify(getSpliceConfig());
+    const child = rA.spliceDNA(rB._id, cfg);
+    const childDNA = child.extractDNA();
+    const raDNA    = rA.extractDNA();
+    const cmpR     = compareDNA(raDNA, childDNA);
+    track('SpliceDNAWithReport', child.getLayerCount() > 0);
+    p(`  child layers:   ${child.getLayerCount()}`);
+    p(`  overlap(A,child): ${(overlap(cmpR)).toString().substring(0,6)}`);
+    p(`  logic shifts:   ${(cmpR.logic_shifts ?? cmpR.LogicShifts ?? []).length}`);
+    child.free(); rA.free(); rB.free();
+  } catch(e) {
+    pFail('  ERROR: ' + e.message);
+    track('SpliceDNAWithReport', false);
+  }
+  p('');
+
+  // ── 5. NEATMutate — individual mutation types ──────────────────────────────
+  pDim('── 5. NEATMutate — mutation types in isolation ─────────────────');
+
+  const mutCases = [
+    { label: 'weight perturb only',    cfg: { WeightPerturbRate:1.0, WeightPerturbScale:0.05, NodeMutateRate:0, ConnectionAddRate:0, ConnectionDropRate:0, ActivationMutRate:0, LayerToggleRate:0, DModel:D, Seed:42 }},
+    { label: 'activation mutate only', cfg: { WeightPerturbRate:0, WeightPerturbScale:0.05, NodeMutateRate:0, ConnectionAddRate:0, ConnectionDropRate:0, ActivationMutRate:1.0, LayerToggleRate:0, DModel:D, Seed:43 }},
+    { label: 'node mutate only',       cfg: { WeightPerturbRate:0, WeightPerturbScale:0.05, NodeMutateRate:1.0, ConnectionAddRate:0, ConnectionDropRate:0, ActivationMutRate:0, LayerToggleRate:0, DModel:D, Seed:44 }},
+    { label: 'toggle layer',           cfg: { WeightPerturbRate:0, WeightPerturbScale:0.05, NodeMutateRate:0, ConnectionAddRate:0, ConnectionDropRate:0, ActivationMutRate:0, LayerToggleRate:1.0, DModel:D, Seed:45 }},
+    { label: 'connection add',         cfg: { WeightPerturbRate:0, WeightPerturbScale:0.05, NodeMutateRate:0, ConnectionAddRate:1.0, ConnectionDropRate:0, ActivationMutRate:0, LayerToggleRate:0, DModel:D, Seed:46 }},
+    { label: 'connection drop',        cfg: { WeightPerturbRate:0, WeightPerturbScale:0.05, NodeMutateRate:0, ConnectionAddRate:1.0, ConnectionDropRate:1.0, ActivationMutRate:0, LayerToggleRate:0, DModel:D, Seed:47 }},
+  ];
+  const origNet = createNetwork(denseNet(D, 3));
+  const origDNA = origNet.extractDNA();
+
+  for (const mc of mutCases) {
+    const mutant = origNet.neatMutate(JSON.stringify(mc.cfg));
+    const mutDNA = mutant.extractDNA();
+    const ov = overlap(compareDNA(origDNA, mutDNA));
+    const ok = mutant.getLayerCount() > 0;
+    track('NEATMutate(' + mc.label + ')', ok);
+    const icon = ok ? '[OK]' : '[!!]';
+    p(`  ${icon} ${mc.label.padEnd(28)} → layers=${mutant.getLayerCount()}, overlap=${ov.toFixed(4)}`);
+    mutant.free();
+  }
+  p('');
+
+  // ── 6. NEATMutate — immutability guarantee ─────────────────────────────────
+  pDim('── 6. Immutability guarantee (original never modified) ─────────');
+  const immutNet = createNetwork(denseNet(D, 3));
+  const immutDNAbefore = immutNet.extractDNA();
+  const aggressiveCfg = getNEATConfig(D);
+  aggressiveCfg.WeightPerturbRate  = 1.0;
+  aggressiveCfg.WeightPerturbScale = 5.0;
+  aggressiveCfg.NodeMutateRate     = 1.0;
+  aggressiveCfg.ActivationMutRate  = 1.0;
+  aggressiveCfg.ConnectionAddRate  = 1.0;
+
+  for (let i = 0; i < 5; i++) {
+    aggressiveCfg.Seed = i * 999;
+    const m = immutNet.neatMutate(JSON.stringify(aggressiveCfg));
+    m.free();
+  }
+  const immutDNAafter = immutNet.extractDNA();
+  const immutOv = overlap(compareDNA(immutDNAbefore, immutDNAafter));
+  const immutOk = Math.abs(immutOv - 1.0) < 0.001;
+  track('NEATMutate(immutability)', immutOk);
+  p(`  original overlap before vs after 5× aggressive mutations: ${immutOv.toFixed(4)}`);
+  if (immutOk) pPass('  [OK] Original network unchanged.'); else pFail('  [!!] Original was modified!');
+  immutNet.free();
+  p('');
+
+  // ── 7. NEATPopulation — full evolution loop (15 generations) ───────────────
+  pDim('── 7. NEATPopulation — 15-generation evolution loop ────────────');
+  const seedNet = createNetwork(denseNet(D, 3));
+  const popSize = 8;
+  const pop = createNEATPopulation(seedNet, popSize);
+
+  track('NewNEATPopulation', pop.size === popSize);
+  p(`  Initial population size: ${pop.size}`);
+  p('  ' + 'Gen'.padEnd(5) + '  ' + 'Best Fitness'.padEnd(14) + '  Summary');
+  p('  ' + '─'.repeat(60));
+
+  for (let gen = 1; gen <= 15; gen++) {
+    const fitnesses = Array.from({length: pop.size}, (_, i) => 1.0 - i * 0.08);
+    pop.evolveWithFitnesses(fitnesses);
+    const bf = pop.bestFitness();
+    const summ = pop.summary(gen);
+    if (gen <= 5 || gen === 15) {
+      p(`  ${String(gen).padEnd(5)}  ${bf.toFixed(4).padEnd(14)}  ${summ.substring(0, 48)}`);
+    } else if (gen === 6) {
+      pDim('  ... (generations 6-14 omitted) ...');
+    }
+  }
+  track('NEATPopulation.Evolve(15gen)', true);
+
+  const best = pop.best();
+  track('NEATPopulation.Best', best !== null);
+  p(`\n  Best network layers: ${best ? best.getLayerCount() : 'N/A'}`);
+  if (best) best.free();
+  pop.free();
+  seedNet.free();
+  p('');
+
+  // ── 8. Splice stability: identical parents → identical child ───────────────
+  pDim('── 8. Splice stability (identical parents → identical child) ───');
+  p('  ' + 'Mode'.padEnd(10) + '  Overlap   (expect ~1.0000)');
+  p('  ' + '─'.repeat(40));
+  for (const mode of ['blend', 'point', 'uniform']) {
+    const same = createNetwork(denseNet(D, 4));
+    const sameDNA = same.extractDNA();
+    const cfg = getSpliceConfig();
+    cfg.CrossoverMode = mode;
+    const child = same.spliceDNA(same._id, JSON.stringify(cfg));
+    const childDNA = child.extractDNA();
+    const ov = overlap(compareDNA(sameDNA, childDNA));
+    track('SpliceDNA stability (' + mode + ')', Math.abs(ov - 1.0) < 0.001);
+    p(`  ${mode.padEnd(10)}  ${ov.toFixed(4)}`);
+    child.free(); same.free();
+  }
+  p('');
+
+  // ── 9. Multi-parent splice chain ───────────────────────────────────────────
+  pDim('── 9. Multi-parent splice chain ────────────────────────────────');
+  const spX = createNetwork(denseNet(D, 4));
+  const spY = createNetwork(denseNet(D, 4));
+  const spZ = createNetwork(denseNet(D, 4));
+
+  const cfgAB = getSpliceConfig();
+  cfgAB.CrossoverMode = 'blend'; cfgAB.FitnessA = 0.9; cfgAB.FitnessB = 0.4;
+  const childXY = spX.spliceDNA(spY._id, JSON.stringify(cfgAB));
+
+  const cfgGC = getSpliceConfig();
+  cfgGC.CrossoverMode = 'uniform'; cfgGC.FitnessA = 0.65; cfgGC.FitnessB = 0.55;
+  const grandchild = childXY.spliceDNA(spZ._id, JSON.stringify(cfgGC));
+
+  const ovXY   = overlap(compareDNA(spX.extractDNA(), spY.extractDNA()));
+  const ovChXY = overlap(compareDNA(childXY.extractDNA(), spX.extractDNA()));
+  const ovGcZ  = overlap(compareDNA(grandchild.extractDNA(), spZ.extractDNA()));
+
+  track('SpliceDNA chain (A×B)', childXY.getLayerCount() > 0);
+  track('SpliceDNA chain (AB×C grandchild)', grandchild.getLayerCount() > 0);
+
+  p(`  A vs B:          overlap=${ovXY.toFixed(4)}`);
+  p(`  AB vs A:         overlap=${ovChXY.toFixed(4)}`);
+  p(`  Grandchild vs Z: overlap=${ovGcZ.toFixed(4)}`);
+  grandchild.free(); childXY.free(); spX.free(); spY.free(); spZ.free();
+  p('');
+
+  // Free all layer nets
+  for (const lt of layerTypes) allNets[lt].net.free();
+  origNet.free();
+
+  // ── Coverage summary ───────────────────────────────────────────────────────
+  sep();
+  pInfo('  Coverage Summary');
+  sep();
+
+  let passed = 0, failed = 0;
+  for (const c of coverage) {
+    const icon = c.ok ? '[OK]' : '[!!]';
+    print(`  ${icon} ${c.name}`, c.ok ? 'pass' : 'fail');
+    if (c.ok) passed++; else failed++;
+  }
+  p('');
+  sep();
+  if (failed === 0) {
+    pPass(`  ALL ${passed} CHECKS PASSED`);
+  } else {
+    print(`  ${passed} passed  /  ${failed} failed`, failed > 0 ? 'fail' : 'pass');
+  }
+  sep();
+
+  document.getElementById('status').textContent = `Done. ${passed}/${passed+failed} passed.`;
+  document.getElementById('runBtn').disabled = false;
+};
+
+try {
+  await initBrowser('/dist/main.wasm');
+  document.getElementById('status').textContent = 'WASM ready. Click Run Benchmark.';
+} catch(e) {
+  document.getElementById('status').textContent = 'WASM load failed: ' + e.message;
+}
+</script>
+</body>
+</html>

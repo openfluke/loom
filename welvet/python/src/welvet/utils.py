@@ -41,10 +41,10 @@ def _lib_path() -> Path:
         platform_dir = f"linux_{arch_key}"
     elif plat == "darwin":
         lib_name = "welvet.dylib"
-        platform_dir = f"darwin_{arch_key}"
+        platform_dir = f"macos_{arch_key}"
         candidate = PKG_DIR / platform_dir / lib_name
         if not Path(candidate).is_file():
-            platform_dir = "darwin_universal"
+            platform_dir = "macos_universal"
     elif plat.startswith("win"):
         lib_name = "welvet.dll"
         platform_dir = f"windows_{arch_key}"
@@ -62,7 +62,15 @@ def _lib_path() -> Path:
 
 
 # Load the native library
-_LIB = ctypes.CDLL(str(_lib_path()), mode=_RTLD_GLOBAL)
+# On Windows (Python 3.8+) the DLL loader requires explicit directory
+# registration or winmode=0 to load Go-compiled shared libraries.
+_lib_file = _lib_path()
+if sys.platform.startswith("win"):
+    import os
+    os.add_dll_directory(str(_lib_file.parent))
+    _LIB = ctypes.CDLL(str(_lib_file), winmode=0)
+else:
+    _LIB = ctypes.CDLL(str(_lib_file), mode=_RTLD_GLOBAL)
 
 
 def _sym(name: str):
@@ -99,6 +107,68 @@ def _to_cfloat_array(data: List[float]):
     arr = (ctypes.c_float * len(data))(*data)
     return arr, len(data)
 
+
+# ---------------------------------------------------------------------------
+# C-ABI Structures
+# ---------------------------------------------------------------------------
+
+class LoomLayerSpec(ctypes.Structure):
+    _fields_ = [
+        ("Z", ctypes.c_int), ("Y", ctypes.c_int), ("X", ctypes.c_int), ("L", ctypes.c_int),
+        ("Type", ctypes.c_int),
+        ("Activation", ctypes.c_int),
+        ("DType", ctypes.c_int),
+        ("InputHeight", ctypes.c_int), ("InputWidth", ctypes.c_int), ("InputDepth", ctypes.c_int),
+        ("OutputHeight", ctypes.c_int), ("OutputWidth", ctypes.c_int), ("OutputDepth", ctypes.c_int),
+        ("InputChannels", ctypes.c_int), ("Filters", ctypes.c_int), ("KernelSize", ctypes.c_int), 
+        ("Stride", ctypes.c_int), ("Padding", ctypes.c_int),
+        ("NumHeads", ctypes.c_int), ("NumKVHeads", ctypes.c_int), 
+        ("DModel", ctypes.c_int), ("SeqLength", ctypes.c_int),
+        ("VocabSize", ctypes.c_int), ("EmbeddingDim", ctypes.c_int),
+        ("NumClusters", ctypes.c_int),
+        ("UseTiling", ctypes.c_int), ("TileSize", ctypes.c_int),
+    ]
+
+class LoomLayerStats(ctypes.Structure):
+    _fields_ = [
+        ("Avg", ctypes.c_float),
+        ("Max", ctypes.c_float),
+        ("Min", ctypes.c_float),
+        ("Active", ctypes.c_int),
+        ("Total", ctypes.c_int),
+    ]
+
+class LoomTensorMeta(ctypes.Structure):
+    _fields_ = [
+        ("DType", ctypes.c_int),
+        ("Rank", ctypes.c_int),
+        ("Shape", ctypes.c_int64 * 8),
+    ]
+
+class LoomTensorInfo(ctypes.Structure):
+    _fields_ = [
+        ("Name", ctypes.c_char_p),
+        ("DType", ctypes.c_int),
+        ("Rank", ctypes.c_int),
+        ("Shape", ctypes.c_int64 * 8),
+        ("DataOffset", ctypes.c_uint64),
+        ("DataLength", ctypes.c_uint64),
+    ]
+
+class LoomSafetensorsHeader(ctypes.Structure):
+    _fields_ = [
+        ("NumTensors", ctypes.c_int),
+        ("Tensors", ctypes.POINTER(LoomTensorInfo)),
+    ]
+
+class LoomNetworkBlueprint(ctypes.Structure):
+    _fields_ = [
+        ("ID", ctypes.c_char_p),
+        ("Name", ctypes.c_char_p),
+        ("GridDepth", ctypes.c_int),
+        ("GridRows", ctypes.c_int),
+        ("GridCols", ctypes.c_int),
+    ]
 
 # ---------------------------------------------------------------------------
 # C Function Bindings
@@ -148,6 +218,16 @@ _LoomGetLayerTelemetry = _sym("LoomGetLayerTelemetry")
 if _LoomGetLayerTelemetry:
     _LoomGetLayerTelemetry.restype = ctypes.c_char_p
     _LoomGetLayerTelemetry.argtypes = [ctypes.c_longlong, ctypes.c_int]
+
+_LoomGetLayerSpec = _sym("LoomGetLayerSpec")
+if _LoomGetLayerSpec:
+    _LoomGetLayerSpec.restype = LoomLayerSpec
+    _LoomGetLayerSpec.argtypes = [ctypes.c_longlong, ctypes.c_int]
+
+_LoomGetLayerStats = _sym("LoomGetLayerStats")
+if _LoomGetLayerStats:
+    _LoomGetLayerStats.restype = LoomLayerStats
+    _LoomGetLayerStats.argtypes = [ctypes.c_longlong, ctypes.c_int]
 
 _LoomExtractDNA = _sym("LoomExtractDNA")
 if _LoomExtractDNA:
@@ -208,6 +288,17 @@ if _LoomSequentialForward:
     ]
 
 # Training / gradients
+_LoomTrain = _sym("LoomTrain")
+if _LoomTrain:
+    _LoomTrain.restype = ctypes.c_char_p
+    _LoomTrain.argtypes = [
+        ctypes.c_longlong,           # networkHandle
+        ctypes.POINTER(ctypes.c_float), ctypes.c_int,  # inputData, inputLen
+        ctypes.POINTER(ctypes.c_float), ctypes.c_int,  # targetData, targetLen
+        ctypes.c_int, ctypes.c_int, ctypes.c_int,      # batchSize, inDim, outDim
+        ctypes.c_char_p,             # configJSON
+    ]
+
 _LoomSystolicBackward = _sym("LoomSystolicBackward")
 if _LoomSystolicBackward:
     _LoomSystolicBackward.restype = ctypes.c_char_p
@@ -233,6 +324,7 @@ if _LoomApplyRecursiveGradients:
     _LoomApplyRecursiveGradients.restype = None
     _LoomApplyRecursiveGradients.argtypes = [
         ctypes.c_longlong,
+        ctypes.c_int,
         ctypes.c_char_p,
         ctypes.c_float,
     ]
@@ -242,8 +334,7 @@ if _LoomComputeLossGradient:
     _LoomComputeLossGradient.restype = ctypes.c_char_p
     _LoomComputeLossGradient.argtypes = [
         ctypes.c_longlong,
-        ctypes.POINTER(ctypes.c_float),
-        ctypes.c_int,
+        ctypes.c_longlong,
         ctypes.c_char_p,
     ]
 
@@ -286,25 +377,13 @@ if _LoomTargetPropBackward:
 
 _LoomTargetPropBackwardChainRule = _sym("LoomTargetPropBackwardChainRule")
 if _LoomTargetPropBackwardChainRule:
-    _LoomTargetPropBackwardChainRule.restype = ctypes.c_char_p
-    _LoomTargetPropBackwardChainRule.argtypes = [
-        ctypes.c_longlong,
-        ctypes.c_longlong,
-        ctypes.POINTER(ctypes.c_float),
-        ctypes.c_int,
-        ctypes.c_float,
-    ]
+    _LoomTargetPropBackwardChainRule.restype = None
+    _LoomTargetPropBackwardChainRule.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
 
 _LoomTargetPropBackwardTargetProp = _sym("LoomTargetPropBackwardTargetProp")
 if _LoomTargetPropBackwardTargetProp:
-    _LoomTargetPropBackwardTargetProp.restype = ctypes.c_char_p
-    _LoomTargetPropBackwardTargetProp.argtypes = [
-        ctypes.c_longlong,
-        ctypes.c_longlong,
-        ctypes.POINTER(ctypes.c_float),
-        ctypes.c_int,
-        ctypes.c_float,
-    ]
+    _LoomTargetPropBackwardTargetProp.restype = None
+    _LoomTargetPropBackwardTargetProp.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
 
 _LoomDefaultTargetPropConfig = _sym("LoomDefaultTargetPropConfig")
 if _LoomDefaultTargetPropConfig:
@@ -336,18 +415,8 @@ if _LoomSyncToCPU:
 _LoomForwardWGPU = _sym("LoomForwardWGPU")
 if _LoomForwardWGPU:
     _LoomForwardWGPU.restype = ctypes.c_char_p
-    _LoomForwardWGPU.argtypes = [
-        ctypes.c_longlong,
-        ctypes.POINTER(ctypes.c_float),
-        ctypes.c_int,
-    ]
+    _LoomForwardWGPU.argtypes = [ctypes.c_longlong, ctypes.c_longlong]
 
-_LoomForwardTokenIDsWGPU = _sym("LoomForwardTokenIDsWGPU")
-if _LoomForwardTokenIDsWGPU:
-    _LoomForwardTokenIDsWGPU.restype = ctypes.c_char_p
-    _LoomForwardTokenIDsWGPU.argtypes = [ctypes.c_longlong, ctypes.c_char_p]
-
-# GPU Buffer Management
 _LoomCreateGPUBuffer = _sym("LoomCreateGPUBuffer")
 if _LoomCreateGPUBuffer:
     _LoomCreateGPUBuffer.restype = ctypes.c_longlong
@@ -358,16 +427,135 @@ if _LoomFreeGPUBuffer:
     _LoomFreeGPUBuffer.restype = None
     _LoomFreeGPUBuffer.argtypes = [ctypes.c_longlong]
 
-# Shader Source Getters
-_LoomShaderDenseBackwardDX = _sym("LoomShaderDenseBackwardDX")
-if _LoomShaderDenseBackwardDX:
-    _LoomShaderDenseBackwardDX.restype = ctypes.c_char_p
-    _LoomShaderDenseBackwardDX.argtypes = [ctypes.c_int]
+_LoomWriteGPUBuffer = _sym("LoomWriteGPUBuffer")
+if _LoomWriteGPUBuffer:
+    _LoomWriteGPUBuffer.restype = ctypes.c_char_p
+    _LoomWriteGPUBuffer.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
 
-_LoomShaderDenseBackwardDW = _sym("LoomShaderDenseBackwardDW")
-if _LoomShaderDenseBackwardDW:
-    _LoomShaderDenseBackwardDW.restype = ctypes.c_char_p
-    _LoomShaderDenseBackwardDW.argtypes = [ctypes.c_int]
+_LoomReadGPUBuffer = _sym("LoomReadGPUBuffer")
+if _LoomReadGPUBuffer:
+    _LoomReadGPUBuffer.restype = ctypes.c_char_p
+    _LoomReadGPUBuffer.argtypes = [ctypes.c_longlong, ctypes.c_longlong]
+
+_LoomDispatchDense = _sym("LoomDispatchDense")
+if _LoomDispatchDense:
+    _LoomDispatchDense.restype = ctypes.c_char_p
+    _LoomDispatchDense.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
+
+_LoomDispatchDenseQ4 = _sym("LoomDispatchDenseQ4")
+if _LoomDispatchDenseQ4:
+    _LoomDispatchDenseQ4.restype = ctypes.c_char_p
+    _LoomDispatchDenseQ4.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
+
+_LoomDispatchMHA = _sym("LoomDispatchMHA")
+if _LoomDispatchMHA:
+    _LoomDispatchMHA.restype = ctypes.c_char_p
+    _LoomDispatchMHA.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
+
+_LoomDispatchSwiGLU = _sym("LoomDispatchSwiGLU")
+if _LoomDispatchSwiGLU:
+    _LoomDispatchSwiGLU.restype = ctypes.c_char_p
+    _LoomDispatchSwiGLU.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
+
+_LoomDispatchRMSNorm = _sym("LoomDispatchRMSNorm")
+if _LoomDispatchRMSNorm:
+    _LoomDispatchRMSNorm.restype = ctypes.c_char_p
+    _LoomDispatchRMSNorm.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_float,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchKVUpdate = _sym("LoomDispatchKVUpdate")
+if _LoomDispatchKVUpdate:
+    _LoomDispatchKVUpdate.restype = ctypes.c_char_p
+    _LoomDispatchKVUpdate.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchResidual = _sym("LoomDispatchResidual")
+if _LoomDispatchResidual:
+    _LoomDispatchResidual.restype = ctypes.c_char_p
+    _LoomDispatchResidual.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
+
+_LoomDispatchRoPE = _sym("LoomDispatchRoPE")
+if _LoomDispatchRoPE:
+    _LoomDispatchRoPE.restype = ctypes.c_char_p
+    _LoomDispatchRoPE.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_longlong]
+
+_LoomDispatchEmbedding = _sym("LoomDispatchEmbedding")
+if _LoomDispatchEmbedding:
+    _LoomDispatchEmbedding.restype = ctypes.c_char_p
+    _LoomDispatchEmbedding.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
+
+_LoomDispatchRNNStep = _sym("LoomDispatchRNNStep")
+if _LoomDispatchRNNStep:
+    _LoomDispatchRNNStep.restype = ctypes.c_char_p
+    _LoomDispatchRNNStep.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchLSTMStep = _sym("LoomDispatchLSTMStep")
+if _LoomDispatchLSTMStep:
+    _LoomDispatchLSTMStep.restype = ctypes.c_char_p
+    _LoomDispatchLSTMStep.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchCNN1 = _sym("LoomDispatchCNN1")
+if _LoomDispatchCNN1:
+    _LoomDispatchCNN1.restype = ctypes.c_char_p
+    _LoomDispatchCNN1.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchCNN2 = _sym("LoomDispatchCNN2")
+if _LoomDispatchCNN2:
+    _LoomDispatchCNN2.restype = ctypes.c_char_p
+    _LoomDispatchCNN2.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchCNN3 = _sym("LoomDispatchCNN3")
+if _LoomDispatchCNN3:
+    _LoomDispatchCNN3.restype = ctypes.c_char_p
+    _LoomDispatchCNN3.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchSwiGLUQ4 = _sym("LoomDispatchSwiGLUQ4")
+if _LoomDispatchSwiGLUQ4:
+    _LoomDispatchSwiGLUQ4.restype = ctypes.c_char_p
+    _LoomDispatchSwiGLUQ4.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
 
 # Dense Backward
 _LoomDispatchDenseBackwardDX = _sym("LoomDispatchDenseBackwardDX")
@@ -592,12 +780,189 @@ _LoomFreeTokenizer = _sym("LoomFreeTokenizer")
 if _LoomFreeTokenizer:
     _LoomFreeTokenizer.argtypes = [ctypes.c_longlong]
 
+# Additional WGPU Dispatch
+_LoomDispatchDenseQ4 = _sym("LoomDispatchDenseQ4")
+if _LoomDispatchDenseQ4:
+    _LoomDispatchDenseQ4.restype = ctypes.c_char_p
+    _LoomDispatchDenseQ4.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
+
+_LoomDispatchSwiGLUQ4 = _sym("LoomDispatchSwiGLUQ4")
+if _LoomDispatchSwiGLUQ4:
+    _LoomDispatchSwiGLUQ4.restype = ctypes.c_char_p
+    _LoomDispatchSwiGLUQ4.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
+
+_LoomDispatchKVUpdate = _sym("LoomDispatchKVUpdate")
+if _LoomDispatchKVUpdate:
+    _LoomDispatchKVUpdate.restype = ctypes.c_char_p
+    _LoomDispatchKVUpdate.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchRNNStep = _sym("LoomDispatchRNNStep")
+if _LoomDispatchRNNStep:
+    _LoomDispatchRNNStep.restype = ctypes.c_char_p
+    _LoomDispatchRNNStep.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchLSTMStep = _sym("LoomDispatchLSTMStep")
+if _LoomDispatchLSTMStep:
+    _LoomDispatchLSTMStep.restype = ctypes.c_char_p
+    _LoomDispatchLSTMStep.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchCNN1 = _sym("LoomDispatchCNN1")
+if _LoomDispatchCNN1:
+    _LoomDispatchCNN1.restype = ctypes.c_char_p
+    _LoomDispatchCNN1.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchCNN2 = _sym("LoomDispatchCNN2")
+if _LoomDispatchCNN2:
+    _LoomDispatchCNN2.restype = ctypes.c_char_p
+    _LoomDispatchCNN2.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchCNN3 = _sym("LoomDispatchCNN3")
+if _LoomDispatchCNN3:
+    _LoomDispatchCNN3.restype = ctypes.c_char_p
+    _LoomDispatchCNN3.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomCreateTransformer = _sym("LoomCreateTransformer")
+if _LoomCreateTransformer:
+    _LoomCreateTransformer.restype = ctypes.c_longlong
+    _LoomCreateTransformer.argtypes = [ctypes.c_longlong, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+
+_LoomInitLayerNormCell = _sym("LoomInitLayerNormCell")
+if _LoomInitLayerNormCell:
+    _LoomInitLayerNormCell.restype = None
+    _LoomInitLayerNormCell.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+
+_LoomDispatchLayer = _sym("LoomDispatchLayer")
+if _LoomDispatchLayer:
+    _LoomDispatchLayer.restype = ctypes.c_char_p
+    _LoomDispatchLayer.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
+
+_LoomDispatchLayerBackward = _sym("LoomDispatchLayerBackward")
+if _LoomDispatchLayerBackward:
+    _LoomDispatchLayerBackward.restype = ctypes.c_char_p
+    _LoomDispatchLayerBackward.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
+
+_LoomComputeLayerStats = _sym("LoomComputeLayerStats")
+if _LoomComputeLayerStats:
+    _LoomComputeLayerStats.restype = ctypes.c_char_p
+    _LoomComputeLayerStats.argtypes = [ctypes.c_longlong]
+
+_LoomApplyTargetPropGaps = _sym("LoomApplyTargetPropGaps")
+if _LoomApplyTargetPropGaps:
+    _LoomApplyTargetPropGaps.restype = None
+    _LoomApplyTargetPropGaps.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_float]
+
+# DNA Splice
+_LoomDefaultSpliceConfig = _sym("LoomDefaultSpliceConfig")
+if _LoomDefaultSpliceConfig:
+    _LoomDefaultSpliceConfig.restype = ctypes.c_char_p
+    _LoomDefaultSpliceConfig.argtypes = []
+
+_LoomSpliceDNA = _sym("LoomSpliceDNA")
+if _LoomSpliceDNA:
+    _LoomSpliceDNA.restype = ctypes.c_longlong
+    _LoomSpliceDNA.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_char_p]
+
+_LoomSpliceDNAWithReport = _sym("LoomSpliceDNAWithReport")
+if _LoomSpliceDNAWithReport:
+    _LoomSpliceDNAWithReport.restype = ctypes.c_char_p
+    _LoomSpliceDNAWithReport.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_char_p]
+
+# NEAT Mutation
+_LoomDefaultNEATConfig = _sym("LoomDefaultNEATConfig")
+if _LoomDefaultNEATConfig:
+    _LoomDefaultNEATConfig.restype = ctypes.c_char_p
+    _LoomDefaultNEATConfig.argtypes = [ctypes.c_int]
+
+_LoomNEATMutate = _sym("LoomNEATMutate")
+if _LoomNEATMutate:
+    _LoomNEATMutate.restype = ctypes.c_longlong
+    _LoomNEATMutate.argtypes = [ctypes.c_longlong, ctypes.c_char_p]
+
+# NEAT Population
+_LoomNewNEATPopulation = _sym("LoomNewNEATPopulation")
+if _LoomNewNEATPopulation:
+    _LoomNewNEATPopulation.restype = ctypes.c_longlong
+    _LoomNewNEATPopulation.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_char_p]
+
+_LoomNEATPopulationSize = _sym("LoomNEATPopulationSize")
+if _LoomNEATPopulationSize:
+    _LoomNEATPopulationSize.restype = ctypes.c_int
+    _LoomNEATPopulationSize.argtypes = [ctypes.c_longlong]
+
+_LoomNEATPopulationGetNetwork = _sym("LoomNEATPopulationGetNetwork")
+if _LoomNEATPopulationGetNetwork:
+    _LoomNEATPopulationGetNetwork.restype = ctypes.c_longlong
+    _LoomNEATPopulationGetNetwork.argtypes = [ctypes.c_longlong, ctypes.c_int]
+
+_LoomNEATPopulationEvolveWithFitnesses = _sym("LoomNEATPopulationEvolveWithFitnesses")
+if _LoomNEATPopulationEvolveWithFitnesses:
+    _LoomNEATPopulationEvolveWithFitnesses.restype = ctypes.c_char_p
+    _LoomNEATPopulationEvolveWithFitnesses.argtypes = [ctypes.c_longlong, ctypes.c_char_p]
+
+_LoomNEATPopulationBest = _sym("LoomNEATPopulationBest")
+if _LoomNEATPopulationBest:
+    _LoomNEATPopulationBest.restype = ctypes.c_longlong
+    _LoomNEATPopulationBest.argtypes = [ctypes.c_longlong]
+
+_LoomNEATPopulationBestFitness = _sym("LoomNEATPopulationBestFitness")
+if _LoomNEATPopulationBestFitness:
+    _LoomNEATPopulationBestFitness.restype = ctypes.c_double
+    _LoomNEATPopulationBestFitness.argtypes = [ctypes.c_longlong]
+
+_LoomNEATPopulationSummary = _sym("LoomNEATPopulationSummary")
+if _LoomNEATPopulationSummary:
+    _LoomNEATPopulationSummary.restype = ctypes.c_char_p
+    _LoomNEATPopulationSummary.argtypes = [ctypes.c_longlong, ctypes.c_int]
+
+_LoomFreeNEATPopulation = _sym("LoomFreeNEATPopulation")
+if _LoomFreeNEATPopulation:
+    _LoomFreeNEATPopulation.argtypes = [ctypes.c_longlong]
+
 # Per-layer forward dispatch (for granular control)
 _LAYER_NAMES = [
     "Dense", "RMSNorm", "LayerNorm", "MHA", "Softmax", "SwiGLU",
     "Embedding", "Residual", "KMeans", "RNN", "LSTM",
     "CNN1", "CNN2", "CNN3",
     "ConvTransposed1D", "ConvTransposed2D", "ConvTransposed3D",
+    "Parallel",
+]
+
+_TILED_LAYER_NAMES = [
+    "Dense", "CNN1", "CNN2", "CNN3", "RNN", "LSTM", "MHA",
+    "SwiGLU", "Embedding", "Residual",
 ]
 
 _layer_forward_fns: Dict[str, Any] = {}
@@ -605,17 +970,64 @@ for _ln in _LAYER_NAMES:
     _fn = _sym(f"Loom{_ln}Forward")
     if _fn:
         _fn.restype = ctypes.c_char_p
-        _fn.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong]
+        # Most forward functions take (net, idx, state/input)
+        if _ln == "Residual":
+            _fn.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
+        else:
+            _fn.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong]
         _layer_forward_fns[_ln] = _fn
+
+for _ln in _TILED_LAYER_NAMES:
+    _fn = _sym(f"Loom{_ln}ForwardTiled")
+    if _fn:
+        _fn.restype = ctypes.c_char_p
+        _fn.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong]
+        _layer_forward_fns[f"{_ln}Tiled"] = _fn
 
 _layer_backward_fns: Dict[str, Any] = {}
 for _ln in _LAYER_NAMES:
     _fn = _sym(f"Loom{_ln}Backward")
     if _fn:
         _fn.restype = ctypes.c_char_p
-        _fn.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong]
+        # Standard native backward: (net, idx, gradOut, input, preAct)
+        if _ln in ["Softmax", "Parallel"]:
+             _fn.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong]
+        elif _ln == "Residual":
+             _fn.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
+        else:
+            _fn.argtypes = [
+                ctypes.c_longlong, ctypes.c_int,
+                ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+            ]
         _layer_backward_fns[_ln] = _fn
 
+for _ln in _TILED_LAYER_NAMES:
+    _fn = _sym(f"Loom{_ln}BackwardTiled")
+    if _fn:
+        _fn.restype = ctypes.c_char_p
+        _fn.argtypes = [
+            ctypes.c_longlong, ctypes.c_int,
+            ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+        ]
+        _layer_backward_fns[f"{_ln}Tiled"] = _fn
+
+# Additional polymorphic dispatch
+_LoomDispatchForwardLayer = _sym("LoomDispatchForwardLayer")
+if _LoomDispatchForwardLayer:
+    _LoomDispatchForwardLayer.restype = ctypes.c_char_p
+    _LoomDispatchForwardLayer.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong,
+    ]
+
+_LoomDispatchBackwardLayer = _sym("LoomDispatchBackwardLayer")
+if _LoomDispatchBackwardLayer:
+    _LoomDispatchBackwardLayer.restype = ctypes.c_char_p
+    _LoomDispatchBackwardLayer.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong,
+    ]
 
 # ---------------------------------------------------------------------------
 # Type Definitions
@@ -685,6 +1097,19 @@ class LayerType:
     PARALLEL        = 16  # MoE / Ensemble
     SEQUENTIAL      = 17
     RESIDUAL        = 18
+
+    _NAMES = {
+        0: "Dense", 1: "MHA", 2: "SwiGLU", 3: "RMSNorm",
+        4: "CNN1", 5: "CNN2", 6: "CNN3", 7: "ConvTransposed1D",
+        8: "ConvTransposed2D", 9: "ConvTransposed3D",
+        10: "RNN", 11: "LSTM", 12: "LayerNorm", 13: "Embedding",
+        14: "KMeans", 15: "Softmax", 16: "Parallel", 17: "Sequential",
+        18: "Residual",
+    }
+
+    @classmethod
+    def name(cls, l_type: int) -> str:
+        return cls._NAMES.get(l_type, f"layer({l_type})")
 
 
 class Activation:
@@ -981,25 +1406,24 @@ def systolic_backward(network_handle: int, state_handle: int,
     return result if isinstance(result, list) else []
 
 
-def compute_loss_gradient(state_handle: int, targets: List[float],
+def compute_loss_gradient(output_handle: int, target_handle: int,
                           loss_type: str = "mse") -> List[float]:
     """
-    Compute the loss gradient between the network output and target values.
+    Compute the loss gradient between the network output and target values on CPU.
 
     Args:
-        state_handle: SystolicState handle (after forward pass).
-        targets: Target output values.
+        output_handle: Handle to the output tensor.
+        target_handle: Handle to the target tensor.
         loss_type: Loss function: "mse", "cross_entropy", "mae", etc.
 
     Returns:
-        Gradient vector to pass to systolic_backward().
+        Gradient vector (JSON list).
     """
     if not _LoomComputeLossGradient:
         raise RuntimeError("LoomComputeLossGradient not available in library")
-    arr, length = _to_cfloat_array(targets)
     result = _parse_json(
         _LoomComputeLossGradient(
-            int(state_handle), arr, length, loss_type.encode("utf-8")
+            int(output_handle), int(target_handle), loss_type.encode("utf-8")
         )
     )
     _check(result, "compute_loss_gradient")
@@ -1024,13 +1448,14 @@ def apply_gradients(network_handle: int, layer_idx: int,
                         float(learning_rate))
 
 
-def apply_recursive_gradients(network_handle: int, grad_json: dict,
+def apply_recursive_gradients(network_handle: int, layer_idx: int, grad_json: dict,
                                learning_rate: float) -> None:
     """
     Apply gradients to all layers at once using a pre-computed gradient map.
 
     Args:
         network_handle: Network handle.
+        layer_idx: Root layer index for recursion.
         grad_json: Dict mapping layer indices to gradient tensors.
         learning_rate: Step size.
     """
@@ -1038,6 +1463,7 @@ def apply_recursive_gradients(network_handle: int, grad_json: dict,
         raise RuntimeError("LoomApplyRecursiveGradients not available in library")
     _LoomApplyRecursiveGradients(
         int(network_handle),
+        int(layer_idx),
         json.dumps(grad_json).encode("utf-8"),
         float(learning_rate),
     )
@@ -1113,19 +1539,19 @@ def target_prop_backward(network_handle: int, tp_handle: int,
 
 
 def target_prop_backward_chain_rule(network_handle: int, tp_handle: int,
-                                    target: List[float],
-                                    learning_rate: float) -> List[float]:
+                                    target_handle: int) -> None:
     """Run target prop backward with chain-rule hybrid."""
     if not _LoomTargetPropBackwardChainRule:
         raise RuntimeError("LoomTargetPropBackwardChainRule not available in library")
-    arr, length = _to_cfloat_array(target)
-    result = _parse_json(
-        _LoomTargetPropBackwardChainRule(
-            int(network_handle), int(tp_handle), arr, length, float(learning_rate)
-        )
-    )
-    _check(result, "target_prop_backward_chain_rule")
-    return result if isinstance(result, list) else []
+    _LoomTargetPropBackwardChainRule(int(network_handle), int(tp_handle), int(target_handle))
+
+
+def target_prop_backward_target_prop(network_handle: int, tp_handle: int,
+                                     target_handle: int) -> None:
+    """Run target prop backward using pure target propagation."""
+    if not _LoomTargetPropBackwardTargetProp:
+        raise RuntimeError("LoomTargetPropBackwardTargetProp not available in library")
+    _LoomTargetPropBackwardTargetProp(int(network_handle), int(tp_handle), int(target_handle))
 
 
 def get_default_target_prop_config() -> dict:
@@ -1239,6 +1665,213 @@ def free_gpu_buffer(buf_handle: int) -> None:
         raise RuntimeError("LoomFreeGPUBuffer not available in library")
     _LoomFreeGPUBuffer(int(buf_handle))
 
+
+def write_gpu_buffer(network_handle: int, buf_handle: int, data: List[float]) -> dict:
+    """Write an array of floats to a given GPU buffer."""
+    if not _LoomWriteGPUBuffer:
+        raise RuntimeError("LoomWriteGPUBuffer not available in library")
+    arr, length = _to_cfloat_array(data)
+    result = _parse_json(_LoomWriteGPUBuffer(int(network_handle), int(buf_handle), arr, length))
+    return _check(result, "write_gpu_buffer")
+
+
+def read_gpu_buffer(network_handle: int, buf_handle: int) -> List[float]:
+    """Read an array of floats from a GPU buffer to the host."""
+    if not _LoomReadGPUBuffer:
+        raise RuntimeError("LoomReadGPUBuffer not available in library")
+    result = _parse_json(_LoomReadGPUBuffer(int(network_handle), int(buf_handle)))
+    _check(result, "read_gpu_buffer")
+    return result if isinstance(result, list) else []
+
+
+# ---------------------------------------------------------------------------
+# GPU Dispatch (Forward)
+# ---------------------------------------------------------------------------
+
+def dispatch_dense(network_handle: int, batch_size: int, input_size: int,
+                   output_size: int, input_handle: int, weight_handle: int,
+                   output_handle: int, tile_size: int = 32) -> dict:
+    if not _LoomDispatchDense:
+        raise RuntimeError("LoomDispatchDense not available")
+    result = _parse_json(_LoomDispatchDense(
+        int(network_handle), int(batch_size), int(input_size), int(output_size),
+        int(input_handle), int(weight_handle), int(output_handle), int(tile_size)
+    ))
+    return _check(result, "dispatch_dense")
+
+def dispatch_dense_q4(network_handle: int, batch_size: int, input_size: int,
+                      output_size: int, input_handle: int, scale_handle: int,
+                      weight_handle: int, output_handle: int, tile_size: int = 32) -> dict:
+    if not _LoomDispatchDenseQ4:
+        raise RuntimeError("LoomDispatchDenseQ4 not available")
+    result = _parse_json(_LoomDispatchDenseQ4(
+        int(network_handle), int(batch_size), int(input_size), int(output_size),
+        int(input_handle), int(scale_handle), int(weight_handle), int(output_handle), int(tile_size)
+    ))
+    return _check(result, "dispatch_dense_q4")
+
+def dispatch_mha(network_handle: int, num_heads: int, num_kv_heads: int,
+                 head_dim: int, seq_len: int, kv_offset: int, max_seq_len: int,
+                 q_handle: int, k_handle: int, v_handle: int, o_handle: int,
+                 tile_size: int = 32) -> dict:
+    if not _LoomDispatchMHA:
+        raise RuntimeError("LoomDispatchMHA not available")
+    result = _parse_json(_LoomDispatchMHA(
+        int(network_handle), int(num_heads), int(num_kv_heads), int(head_dim),
+        int(seq_len), int(kv_offset), int(max_seq_len),
+        int(q_handle), int(k_handle), int(v_handle), int(o_handle), int(tile_size)
+    ))
+    return _check(result, "dispatch_mha")
+
+def dispatch_swiglu(network_handle: int, batch_size: int, input_size: int,
+                    output_size: int, input_handle: int, gate_handle: int,
+                    up_handle: int, output_handle: int, tile_size: int = 32) -> dict:
+    if not _LoomDispatchSwiGLU:
+        raise RuntimeError("LoomDispatchSwiGLU not available")
+    result = _parse_json(_LoomDispatchSwiGLU(
+        int(network_handle), int(batch_size), int(input_size), int(output_size),
+        int(input_handle), int(gate_handle), int(up_handle), int(output_handle), int(tile_size)
+    ))
+    return _check(result, "dispatch_swiglu")
+
+def dispatch_rms_norm(network_handle: int, batch_size: int, size: int,
+                      epsilon: float, input_handle: int, weight_handle: int,
+                      output_handle: int) -> dict:
+    if not _LoomDispatchRMSNorm:
+        raise RuntimeError("LoomDispatchRMSNorm not available")
+    result = _parse_json(_LoomDispatchRMSNorm(
+        int(network_handle), int(batch_size), int(size), float(epsilon),
+        int(input_handle), int(weight_handle), int(output_handle)
+    ))
+    return _check(result, "dispatch_rms_norm")
+
+def dispatch_kv_update(network_handle: int , offset: int, head_dim: int,
+                       max_seq_len: int, num_kv_heads: int, num_tokens: int,
+                       k_cache_handle: int, v_cache_handle: int,
+                       new_k_handle: int, new_v_handle: int) -> dict:
+    if not _LoomDispatchKVUpdate:
+        raise RuntimeError("LoomDispatchKVUpdate not available")
+    result = _parse_json(_LoomDispatchKVUpdate(
+        int(network_handle), int(offset), int(head_dim), int(max_seq_len),
+        int(num_kv_heads), int(num_tokens),
+        int(k_cache_handle), int(v_cache_handle), int(new_k_handle), int(new_v_handle)
+    ))
+    return _check(result, "dispatch_kv_update")
+
+def dispatch_residual(network_handle: int, size: int, input_handle: int,
+                      residual_handle: int) -> dict:
+    if not _LoomDispatchResidual:
+        raise RuntimeError("LoomDispatchResidual not available")
+    result = _parse_json(_LoomDispatchResidual(
+        int(network_handle), int(size), int(input_handle), int(residual_handle)
+    ))
+    return _check(result, "dispatch_residual")
+
+def dispatch_rope(network_handle: int, seq_len: int, head_dim: int,
+                  num_heads: int, offset: int, theta: float, target_handle: int) -> dict:
+    if not _LoomDispatchRoPE:
+        raise RuntimeError("LoomDispatchRoPE not available")
+    result = _parse_json(_LoomDispatchRoPE(
+        int(network_handle), int(seq_len), int(head_dim), int(num_heads),
+        int(offset), float(theta), int(target_handle)
+    ))
+    return _check(result, "dispatch_rope")
+
+def dispatch_embedding(network_handle: int, vocab_size: int, hidden_size: int,
+                       num_tokens: int, indices_handle: int, weights_handle: int,
+                       output_handle: int) -> dict:
+    if not _LoomDispatchEmbedding:
+        raise RuntimeError("LoomDispatchEmbedding not available")
+    result = _parse_json(_LoomDispatchEmbedding(
+        int(network_handle), int(vocab_size), int(hidden_size), int(num_tokens),
+        int(indices_handle), int(weights_handle), int(output_handle)
+    ))
+    return _check(result, "dispatch_embedding")
+
+def dispatch_rnn_step(network_handle: int, batch_size: int, input_size: int,
+                      hidden_size: int, input_handle: int, h_prev_handle: int,
+                      w_ih_handle: int, w_hh_handle: int, bias_handle: int,
+                      h_curr_handle: int) -> dict:
+    if not _LoomDispatchRNNStep:
+        raise RuntimeError("LoomDispatchRNNStep not available")
+    result = _parse_json(_LoomDispatchRNNStep(
+        int(network_handle), int(batch_size), int(input_size), int(hidden_size),
+        int(input_handle), int(h_prev_handle), int(w_ih_handle), int(w_hh_handle),
+        int(bias_handle), int(h_curr_handle)
+    ))
+    return _check(result, "dispatch_rnn_step")
+
+def dispatch_lstm_step(network_handle: int, batch_size: int, input_size: int,
+                       hidden_size: int, input_handle: int, h_prev_handle: int,
+                       c_prev_handle: int, weight_handle: int,
+                       h_curr_handle: int, c_curr_handle: int) -> dict:
+    if not _LoomDispatchLSTMStep:
+        raise RuntimeError("LoomDispatchLSTMStep not available")
+    result = _parse_json(_LoomDispatchLSTMStep(
+        int(network_handle), int(batch_size), int(input_size), int(hidden_size),
+        int(input_handle), int(h_prev_handle), int(c_prev_handle),
+        int(weight_handle), int(h_curr_handle), int(c_curr_handle)
+    ))
+    return _check(result, "dispatch_lstm_step")
+
+def dispatch_cnn1(network_handle: int, batch_size: int, in_c: int, in_l: int,
+                  out_c: int, out_l: int, k_size: int, stride: int, padding: int,
+                  input_handle: int, weight_handle: int, output_handle: int) -> dict:
+    if not _LoomDispatchCNN1:
+        raise RuntimeError("LoomDispatchCNN1 not available")
+    result = _parse_json(_LoomDispatchCNN1(
+        int(network_handle), int(batch_size), int(in_c), int(in_l),
+        int(out_c), int(out_l), int(k_size), int(stride), int(padding),
+        int(input_handle), int(weight_handle), int(output_handle)
+    ))
+    return _check(result, "dispatch_cnn1")
+
+def dispatch_cnn2(network_handle: int, batch_size: int, in_c: int, in_h: int,
+                  in_w: int, out_c: int, out_h: int, out_w: int,
+                  k_h: int, k_w: int, stride_h: int, stride_w: int, pad_h: int, pad_w: int,
+                  input_handle: int, weight_handle: int, output_handle: int) -> dict:
+    if not _LoomDispatchCNN2:
+        raise RuntimeError("LoomDispatchCNN2 not available")
+    result = _parse_json(_LoomDispatchCNN2(
+        int(network_handle), int(batch_size), int(in_c), int(in_h), int(in_w),
+        int(out_c), int(out_h), int(out_w), int(k_h), int(k_w),
+        int(stride_h), int(stride_w), int(pad_h), int(pad_w),
+        int(input_handle), int(weight_handle), int(output_handle)
+    ))
+    return _check(result, "dispatch_cnn2")
+
+def dispatch_cnn3(network_handle: int, batch_size: int, in_c: int, in_d: int,
+                  in_h: int, in_w: int, out_c: int, out_d: int, out_h: int,
+                  out_w: int, k_d: int, k_h: int, k_w: int, s_d: int, s_h: int, s_w: int,
+                  p_d: int, p_h: int, p_w: int,
+                  input_handle: int, weight_handle: int, output_handle: int) -> dict:
+    if not _LoomDispatchCNN3:
+        raise RuntimeError("LoomDispatchCNN3 not available")
+    result = _parse_json(_LoomDispatchCNN3(
+        int(network_handle), int(batch_size), int(in_c), int(in_d), int(in_h), int(in_w),
+        int(out_c), int(out_d), int(out_h), int(out_w),
+        int(k_d), int(k_h), int(k_w), int(s_d), int(s_h), int(s_w),
+        int(p_d), int(p_h), int(p_w),
+        int(input_handle), int(weight_handle), int(output_handle)
+    ))
+    return _check(result, "dispatch_cnn3")
+
+def dispatch_swiglu_q4(network_handle: int, batch_size: int, input_size: int,
+                       output_size: int, input_handle: int, gate_scale_handle: int,
+                       gate_weight_handle: int, up_scale_handle: int,
+                       up_weight_handle: int, output_handle: int, tile_size: int = 32) -> dict:
+    if not _LoomDispatchSwiGLUQ4:
+        raise RuntimeError("LoomDispatchSwiGLUQ4 not available")
+    result = _parse_json(_LoomDispatchSwiGLUQ4(
+        int(network_handle), int(batch_size), int(input_size), int(output_size),
+        int(input_handle), int(gate_scale_handle), int(gate_weight_handle),
+        int(up_scale_handle), int(up_weight_handle), int(output_handle), int(tile_size)
+    ))
+    return _check(result, "dispatch_swiglu_q4")
+
+# ---------------------------------------------------------------------------
+# GPU Dispatch (Backward)
+# ---------------------------------------------------------------------------
 
 def shader_dense_backward_dx(tile_size: int = 16) -> str:
     """Return the WGSL shader source for dense backward input gradient (DX)."""
@@ -1640,6 +2273,179 @@ def extract_network_blueprint(network_handle: int,
         _LoomExtractNetworkBlueprint(int(network_handle), model_id.encode("utf-8"))
     )
     return _check(result, "extract_network_blueprint")
+
+
+# ---------------------------------------------------------------------------
+# DNA Splice / Crossover
+# ---------------------------------------------------------------------------
+
+def default_splice_config() -> dict:
+    """Return the default SpliceConfig dict."""
+    if not _LoomDefaultSpliceConfig:
+        return {}
+    result = _parse_json(_LoomDefaultSpliceConfig())
+    return result or {}
+
+
+def splice_dna(handle_a: int, handle_b: int, config: Optional[dict] = None) -> int:
+    """
+    Splice two networks together (genetic crossover) and return a child network handle.
+
+    Args:
+        handle_a: First parent network handle.
+        handle_b: Second parent network handle.
+        config: SpliceConfig dict (use default_splice_config() as starting point).
+                Pass None to use the library default.
+
+    Returns:
+        Child network handle. Free with free_network().
+    """
+    if not _LoomSpliceDNA:
+        raise RuntimeError("LoomSpliceDNA not available in library")
+    cfg_json = json.dumps(config).encode("utf-8") if config else b"{}"
+    handle = _LoomSpliceDNA(int(handle_a), int(handle_b), cfg_json)
+    if handle < 0:
+        raise RuntimeError("splice_dna failed (invalid parent handles?)")
+    return int(handle)
+
+
+def splice_dna_with_report(handle_a: int, handle_b: int,
+                            config: Optional[dict] = None) -> dict:
+    """
+    Splice two networks and return a report with child handle + DNA similarities.
+
+    Returns:
+        Dict with 'child_handle', 'parent_a_dna', 'parent_b_dna', 'child_dna',
+        'similarities', and 'blended_count'.
+    """
+    if not _LoomSpliceDNAWithReport:
+        raise RuntimeError("LoomSpliceDNAWithReport not available in library")
+    cfg_json = json.dumps(config).encode("utf-8") if config else b"{}"
+    result = _parse_json(_LoomSpliceDNAWithReport(int(handle_a), int(handle_b), cfg_json))
+    return _check(result, "splice_dna_with_report")
+
+
+# ---------------------------------------------------------------------------
+# NEAT Mutation / Evolution
+# ---------------------------------------------------------------------------
+
+def default_neat_config(d_model: int = 32) -> dict:
+    """Return the default NEATConfig for the given model dimension."""
+    if not _LoomDefaultNEATConfig:
+        return {}
+    result = _parse_json(_LoomDefaultNEATConfig(int(d_model)))
+    return result or {}
+
+
+def neat_mutate(handle: int, config: dict) -> int:
+    """
+    Apply NEAT mutation to a network, returning a new mutated child handle.
+
+    Args:
+        handle: Parent network handle.
+        config: NEATConfig dict (use default_neat_config() as starting point).
+
+    Returns:
+        Mutated child network handle. Free with free_network().
+    """
+    if not _LoomNEATMutate:
+        raise RuntimeError("LoomNEATMutate not available in library")
+    cfg_json = json.dumps(config).encode("utf-8")
+    child = _LoomNEATMutate(int(handle), cfg_json)
+    if child < 0:
+        raise RuntimeError("neat_mutate failed")
+    return int(child)
+
+
+def new_neat_population(seed_handle: int, size: int, config: dict) -> int:
+    """
+    Create a NEAT population of 'size' networks derived from a seed network.
+
+    Args:
+        seed_handle: Seed network handle.
+        size: Population size.
+        config: NEATConfig dict.
+
+    Returns:
+        Population handle. Free with free_neat_population().
+    """
+    if not _LoomNewNEATPopulation:
+        raise RuntimeError("LoomNewNEATPopulation not available in library")
+    cfg_json = json.dumps(config).encode("utf-8")
+    pop = _LoomNewNEATPopulation(int(seed_handle), int(size), cfg_json)
+    if pop < 0:
+        raise RuntimeError("new_neat_population failed")
+    return int(pop)
+
+
+def neat_population_size(pop_handle: int) -> int:
+    """Return the number of networks in a NEAT population."""
+    if not _LoomNEATPopulationSize:
+        raise RuntimeError("LoomNEATPopulationSize not available in library")
+    return int(_LoomNEATPopulationSize(int(pop_handle)))
+
+
+def neat_population_get_network(pop_handle: int, index: int) -> int:
+    """
+    Get a network handle for the i-th member of a NEAT population.
+
+    The returned handle shares the underlying pointer with the population —
+    do NOT call free_network() on it while the population is alive.
+    """
+    if not _LoomNEATPopulationGetNetwork:
+        raise RuntimeError("LoomNEATPopulationGetNetwork not available in library")
+    h = _LoomNEATPopulationGetNetwork(int(pop_handle), int(index))
+    if h < 0:
+        raise RuntimeError(f"neat_population_get_network: invalid index {index}")
+    return int(h)
+
+
+def neat_population_evolve(pop_handle: int, fitnesses: List[float]) -> None:
+    """
+    Run one generation of NEAT evolution with pre-computed fitness scores.
+
+    Args:
+        pop_handle: Population handle.
+        fitnesses: Fitness value for each member (same order as population).
+    """
+    if not _LoomNEATPopulationEvolveWithFitnesses:
+        raise RuntimeError("LoomNEATPopulationEvolveWithFitnesses not available in library")
+    fit_json = json.dumps(fitnesses).encode("utf-8")
+    result = _parse_json(_LoomNEATPopulationEvolveWithFitnesses(int(pop_handle), fit_json))
+    _check(result, "neat_population_evolve")
+
+
+def neat_population_best(pop_handle: int) -> int:
+    """Return a network handle pointing to the best-fitness member."""
+    if not _LoomNEATPopulationBest:
+        raise RuntimeError("LoomNEATPopulationBest not available in library")
+    h = _LoomNEATPopulationBest(int(pop_handle))
+    if h < 0:
+        raise RuntimeError("neat_population_best: no best network available")
+    return int(h)
+
+
+def neat_population_best_fitness(pop_handle: int) -> float:
+    """Return the best fitness score in the current population."""
+    if not _LoomNEATPopulationBestFitness:
+        raise RuntimeError("LoomNEATPopulationBestFitness not available in library")
+    return float(_LoomNEATPopulationBestFitness(int(pop_handle)))
+
+
+def neat_population_summary(pop_handle: int, generation: int = 0) -> str:
+    """Return a human-readable population summary string."""
+    if not _LoomNEATPopulationSummary:
+        raise RuntimeError("LoomNEATPopulationSummary not available in library")
+    raw = _LoomNEATPopulationSummary(int(pop_handle), int(generation))
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw) if raw else ""
+
+
+def free_neat_population(pop_handle: int) -> None:
+    """Free a NEAT population handle."""
+    if _LoomFreeNEATPopulation and pop_handle >= 0:
+        _LoomFreeNEATPopulation(int(pop_handle))
 
 
 # ---------------------------------------------------------------------------
@@ -2077,6 +2883,64 @@ class Tokenizer:
 # ---------------------------------------------------------------------------
 # Convenience training loop helper
 # ---------------------------------------------------------------------------
+
+def train(
+    network: Network,
+    batches_in: List[List[List[float]]],
+    batches_tgt: List[List[List[float]]],
+    *,
+    epochs: int = 10,
+    learning_rate: float = 0.01,
+    loss_type: str = "mse",
+    use_gpu: bool = False,
+    verbose: bool = False,
+) -> List[float]:
+    """
+    Train a network via poly.Train (proper sequential forward, no systolic).
+
+    batches_in:  list of batches, each batch is a list of input vectors.
+    batches_tgt: list of batches, each batch is a list of target vectors.
+
+    Returns list of per-epoch mean losses.
+    """
+    if not _LoomTrain:
+        raise RuntimeError("LoomTrain not available in library")
+    if not batches_in or not batches_tgt:
+        raise ValueError("batches cannot be empty")
+
+    batch_size = len(batches_in[0])
+    in_dim     = len(batches_in[0][0])
+    out_dim    = len(batches_tgt[0][0])
+
+    flat_in  = [v for batch in batches_in  for row in batch for v in row]
+    flat_tgt = [v for batch in batches_tgt for row in batch for v in row]
+
+    ArrF = ctypes.c_float * len(flat_in)
+    ArrT = ctypes.c_float * len(flat_tgt)
+    in_arr  = ArrF(*flat_in)
+    tgt_arr = ArrT(*flat_tgt)
+
+    config = {
+        "Epochs": epochs,
+        "LearningRate": learning_rate,
+        "LossType": loss_type,
+        "UseGPU": use_gpu,
+        "Verbose": verbose,
+        "GradientClip": 0.0,
+    }
+    cfg_json = json.dumps(config).encode("utf-8")
+
+    raw = _LoomTrain(
+        int(network._handle),
+        in_arr,  len(flat_in),
+        tgt_arr, len(flat_tgt),
+        batch_size, in_dim, out_dim,
+        cfg_json,
+    )
+    result = _parse_json(raw)
+    _check(result, "train")
+    return result.get("loss_history", [])
+
 
 def train_network(
     network: Network,

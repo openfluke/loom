@@ -25,28 +25,18 @@ type NetworkDNA []LayerSignature
 
 // ExtractDNA generates the topological signatures for all layers in a network.
 // It uses SimulatePrecision to ensure that comparison reflects the actual numerical behavior.
+//
+// All 19 layer types are handled:
+//   - Weighted layers (Dense, RNN, LSTM, MHA, CNN*, ConvTransposed*, SwiGLU,
+//     RMSNorm, LayerNorm, Embedding, KMeans): signature derived from WeightStore.Master.
+//   - Structural containers (Parallel, Sequential): weights are collected by
+//     recursing into ParallelBranches / SequentialLayers, then concatenated and
+//     normalized into a single flat signature vector.
+//   - Weightless layers (Softmax, Residual): neutral signature []float32{1.0}.
 func ExtractDNA(n *VolumetricNetwork) NetworkDNA {
 	dna := make(NetworkDNA, 0, len(n.Layers))
 	for _, l := range n.Layers {
-		var norm []float32
-		if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
-			// 1. Simulate the actual numerical behavior based on DType/Scale
-			simulated := make([]float32, len(l.WeightStore.Master))
-			scale := l.WeightStore.Scale
-			if scale == 0 { scale = 1.0 }
-
-			for i, w := range l.WeightStore.Master {
-				simulated[i] = SimulatePrecision(w, l.DType, scale)
-			}
-
-			// 2. Normalize the vector for direction-based comparison (Cosine Similarity)
-			norm = Normalize(simulated)
-		} else {
-			// Structural layer with no parameters (e.g., Softmax)
-			// Give it a unique but neutral signature based on its presence
-			norm = []float32{1.0}
-		}
-
+		norm := extractLayerSignature(l)
 		dna = append(dna, LayerSignature{
 			Z: l.Z, Y: l.Y, X: l.X, L: l.L,
 			Type:    l.Type,
@@ -55,6 +45,63 @@ func ExtractDNA(n *VolumetricNetwork) NetworkDNA {
 		})
 	}
 	return dna
+}
+
+// extractLayerSignature returns the normalized weight vector for a single layer.
+// For Parallel/Sequential it recurses into branches to capture nested weights.
+func extractLayerSignature(l VolumetricLayer) []float32 {
+	switch l.Type {
+
+	case LayerParallel:
+		// Concatenate signatures from all parallel branches
+		var flat []float32
+		for _, branch := range l.ParallelBranches {
+			if branch.IsRemoteLink {
+				// Remote links have no local weights — skip
+				continue
+			}
+			flat = append(flat, extractLayerSignature(branch)...)
+		}
+		// Also include the gate config weights if present (MoE filter)
+		if l.FilterGateConfig != nil {
+			flat = append(flat, extractLayerSignature(*l.FilterGateConfig)...)
+		}
+		if len(flat) == 0 {
+			return []float32{1.0}
+		}
+		return Normalize(flat)
+
+	case LayerSequential:
+		// Concatenate signatures from all sequential sub-layers
+		var flat []float32
+		for _, sub := range l.SequentialLayers {
+			flat = append(flat, extractLayerSignature(sub)...)
+		}
+		if len(flat) == 0 {
+			return []float32{1.0}
+		}
+		return Normalize(flat)
+
+	case LayerSoftmax, LayerResidual:
+		// Weightless structural layers — neutral but distinct presence marker
+		return []float32{1.0}
+
+	default:
+		// All weighted layers: Dense, RNN, LSTM, MHA, CNN*, ConvTransposed*,
+		// SwiGLU, RMSNorm, LayerNorm, Embedding, KMeans
+		if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
+			scale := l.WeightStore.Scale
+			if scale == 0 {
+				scale = 1.0
+			}
+			simulated := make([]float32, len(l.WeightStore.Master))
+			for i, w := range l.WeightStore.Master {
+				simulated[i] = SimulatePrecision(w, l.DType, scale)
+			}
+			return Normalize(simulated)
+		}
+		return []float32{1.0}
+	}
 }
 
 // Normalize computes the unit vector of the input weight slice.

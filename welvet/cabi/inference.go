@@ -77,50 +77,52 @@ func LoomSetInput(stateHandle C.longlong, data *C.float, length C.int) {
 		st := c.State.(*poly.SystolicState[float64])
 		f := make([]float64, l)
 		for i, v := range slice { f[i] = float64(v) }
-		st.SetInput(poly.NewTensorFromSlice(f, l))
+		st.SetInput(poly.NewTensorFromSlice(f, 1, l))
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
 		st := c.State.(*poly.SystolicState[float32])
-		st.SetInput(poly.NewTensorFromSlice(slice, l))
+		ts := make([]float32, l)
+		copy(ts, slice)
+		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeInt64:
 		st := c.State.(*poly.SystolicState[int64])
 		ts := make([]int64, l)
 		for i, v := range slice { ts[i] = int64(v) }
-		st.SetInput(poly.NewTensorFromSlice(ts, l))
+		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeInt32:
 		st := c.State.(*poly.SystolicState[int32])
 		ts := make([]int32, l)
 		for i, v := range slice { ts[i] = int32(v) }
-		st.SetInput(poly.NewTensorFromSlice(ts, l))
+		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeInt16:
 		st := c.State.(*poly.SystolicState[int16])
 		ts := make([]int16, l)
 		for i, v := range slice { ts[i] = int16(v) }
-		st.SetInput(poly.NewTensorFromSlice(ts, l))
+		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
 		st := c.State.(*poly.SystolicState[int8])
 		ts := make([]int8, l)
 		for i, v := range slice { ts[i] = int8(v) }
-		st.SetInput(poly.NewTensorFromSlice(ts, l))
+		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeUint64:
 		st := c.State.(*poly.SystolicState[uint64])
 		ts := make([]uint64, l)
 		for i, v := range slice { ts[i] = uint64(v) }
-		st.SetInput(poly.NewTensorFromSlice(ts, l))
+		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeUint32:
 		st := c.State.(*poly.SystolicState[uint32])
 		ts := make([]uint32, l)
 		for i, v := range slice { ts[i] = uint32(v) }
-		st.SetInput(poly.NewTensorFromSlice(ts, l))
+		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeUint16:
 		st := c.State.(*poly.SystolicState[uint16])
 		ts := make([]uint16, l)
 		for i, v := range slice { ts[i] = uint16(v) }
-		st.SetInput(poly.NewTensorFromSlice(ts, l))
+		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
 		st := c.State.(*poly.SystolicState[uint8])
 		ts := make([]uint8, l)
 		for i, v := range slice { ts[i] = uint8(v) }
-		st.SetInput(poly.NewTensorFromSlice(ts, l))
+		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	}
 }
 
@@ -249,59 +251,59 @@ func LoomSequentialForward(networkHandle C.longlong, inputData *C.float, inputLe
 	case poly.DTypeFloat64:
 		f := make([]float64, l)
 		for i, v := range slice { f[i] = float64(v) }
-		t := poly.NewTensorFromSlice(f, l)
+		t := poly.NewTensorFromSlice(f, 1, l)
 		o, _, _ := poly.ForwardPolymorphic(n, t)
 		out = poly.ConvertTensor[float64, float32](o)
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		t := poly.NewTensorFromSlice(slice, l)
+		t := poly.NewTensorFromSlice(slice, 1, l)
 		o, _, _ := poly.ForwardPolymorphic(n, t)
 		out = o
 	case poly.DTypeInt64:
 		ts := make([]int64, l)
 		for i, v := range slice { ts[i] = int64(v) }
-		t := poly.NewTensorFromSlice(ts, l)
+		t := poly.NewTensorFromSlice(ts, 1, l)
 		o, _, _ := poly.ForwardPolymorphic(n, t)
 		out = poly.ConvertTensor[int64, float32](o)
 	case poly.DTypeInt32:
 		ts := make([]int32, l)
 		for i, v := range slice { ts[i] = int32(v) }
-		t := poly.NewTensorFromSlice(ts, l)
+		t := poly.NewTensorFromSlice(ts, 1, l)
 		o, _, _ := poly.ForwardPolymorphic(n, t)
 		out = poly.ConvertTensor[int32, float32](o)
 	case poly.DTypeInt16:
 		ts := make([]int16, l)
 		for i, v := range slice { ts[i] = int16(v) }
-		t := poly.NewTensorFromSlice(ts, l)
+		t := poly.NewTensorFromSlice(ts, 1, l)
 		o, _, _ := poly.ForwardPolymorphic(n, t)
 		out = poly.ConvertTensor[int16, float32](o)
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
 		ts := make([]int8, l)
 		for i, v := range slice { ts[i] = int8(v) }
-		t := poly.NewTensorFromSlice(ts, l)
+		t := poly.NewTensorFromSlice(ts, 1, l)
 		o, _, _ := poly.ForwardPolymorphic(n, t)
 		out = poly.ConvertTensor[int8, float32](o)
 	case poly.DTypeUint64:
 		ts := make([]uint64, l)
 		for i, v := range slice { ts[i] = uint64(v) }
-		t := poly.NewTensorFromSlice(ts, l)
+		t := poly.NewTensorFromSlice(ts, 1, l)
 		o, _, _ := poly.ForwardPolymorphic(n, t)
 		out = poly.ConvertTensor[uint64, float32](o)
 	case poly.DTypeUint32:
 		ts := make([]uint32, l)
 		for i, v := range slice { ts[i] = uint32(v) }
-		t := poly.NewTensorFromSlice(ts, l)
+		t := poly.NewTensorFromSlice(ts, 1, l)
 		o, _, _ := poly.ForwardPolymorphic(n, t)
 		out = poly.ConvertTensor[uint32, float32](o)
 	case poly.DTypeUint16:
 		ts := make([]uint16, l)
 		for i, v := range slice { ts[i] = uint16(v) }
-		t := poly.NewTensorFromSlice(ts, l)
+		t := poly.NewTensorFromSlice(ts, 1, l)
 		o, _, _ := poly.ForwardPolymorphic(n, t)
 		out = poly.ConvertTensor[uint16, float32](o)
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
 		ts := make([]uint8, l)
 		for i, v := range slice { ts[i] = uint8(v) }
-		t := poly.NewTensorFromSlice(ts, l)
+		t := poly.NewTensorFromSlice(ts, 1, l)
 		o, _, _ := poly.ForwardPolymorphic(n, t)
 		out = poly.ConvertTensor[uint8, float32](o)
 	default:

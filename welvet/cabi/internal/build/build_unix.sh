@@ -77,3 +77,9 @@ else
   echo "Building $TARGET_OS $TARGET_ARCH..."
   go run builder.go -os "$TARGET_OS" -arch "$TARGET_ARCH" $EXTRA_FLAGS
 fi
+
+# Mirror to Python source
+echo "Mirroring to Python source..."
+mkdir -p ../../../python/src/welvet
+cp -rv dist/* ../../../python/src/welvet/
+echo "Mirror complete."

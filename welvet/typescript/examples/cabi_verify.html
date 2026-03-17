@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Loom TS — C-ABI Verify</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d0d; color: #c8c8c8; font-family: 'Courier New', monospace; font-size: 13px; padding: 20px; }
+  h1 { color: #7ec8e3; margin-bottom: 4px; font-size: 16px; }
+  .subtitle { color: #555; margin-bottom: 16px; font-size: 11px; }
+  #output { white-space: pre; line-height: 1.6; }
+  .pass { color: #4ec94e; }
+  .fail { color: #e04040; }
+  .warn { color: #e0a020; }
+  .info { color: #7ec8e3; }
+  .dim  { color: #555; }
+  button { background: #1e3a4a; color: #7ec8e3; border: 1px solid #2d5a70; padding: 6px 18px;
+           font-family: inherit; font-size: 13px; cursor: pointer; margin-right: 8px; }
+  button:hover { background: #2d5a70; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #status { margin: 8px 0; color: #555; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>=== Loom TypeScript — C-ABI Diagnostic Report ===</h1>
+<div class="subtitle">TypeScript wrapper version of cabi_verify — checks all welvet exports and runs smoke tests</div>
+<button id="runBtn" onclick="runAll()">Run Verification</button>
+<div id="status">Loading WASM...</div>
+<pre id="output"></pre>
+
+<script type="module">
+import {
+  initBrowser, createNetwork, compareDNA, defaultTargetPropConfig,
+  getSpliceConfig, getNEATConfig, createNEATPopulation,
+} from '../dist/index.js';
+
+const out = document.getElementById('output');
+const status = document.getElementById('status');
+
+function print(msg, cls) {
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = msg + '\n';
+  out.appendChild(span);
+}
+const pRaw  = m => print(m);
+const pPass = m => print(m, 'pass');
+const pFail = m => print(m, 'fail');
+const pInfo = m => print(m, 'info');
+const pDim  = m => print(m, 'dim');
+
+function tableRow(name, st, detail) {
+  const cls = st === 'PASS' ? 'pass' : (st === 'FAIL' ? 'fail' : 'warn');
+  return `  <span class="${cls}">[${st}]</span> ${name.padEnd(52)} ${detail||''}`;
+}
+
+const DENSE_3L = JSON.stringify({
+  depth:3, rows:1, cols:1, layers_per_cell:1,
+  layers:[
+    {z:0,y:0,x:0,l:0,type:"Dense",input_height:16,output_height:16,activation:"ReLU",dtype:"F32"},
+    {z:1,y:0,x:0,l:0,type:"Dense",input_height:16,output_height:16,activation:"ReLU",dtype:"F32"},
+    {z:2,y:0,x:0,l:0,type:"Dense",input_height:16,output_height:4,activation:"Linear",dtype:"F32"},
+  ]
+});
+
+// ── 1. Global TS exports ──────────────────────────────────────────────────────
+function checkExports() {
+  const fns = { initBrowser, createNetwork, compareDNA, defaultTargetPropConfig, getSpliceConfig, getNEATConfig, createNEATPopulation };
+  let pass = 0, fail = 0;
+  pInfo('\n[1] Checking TypeScript module exports...\n');
+  pDim('  ' + 'Export'.padEnd(40) + 'Status');
+  pDim('  ' + '─'.repeat(55));
+  for (const [name, fn] of Object.entries(fns)) {
+    if (typeof fn === 'function') { pRaw(tableRow(name, 'PASS')); pass++; }
+    else { pRaw(tableRow(name, 'FAIL', '← missing')); fail++; }
+  }
+  pDim('  ' + '─'.repeat(55));
+  pRaw(`  Exports checked: ${pass+fail} | PASS: ${pass} | FAIL: ${fail}`);
+  return { pass, fail };
+}
+
+// ── 2. Raw WASM globals ───────────────────────────────────────────────────────
+function checkWASMGlobals() {
+  const syms = ['createLoomNetwork','loadLoomNetwork','compareLoomDNA',
+    'getDefaultTargetPropConfig','defaultSpliceConfig','defaultNEATConfig','createLoomNEATPopulation','setupWebGPU'];
+  let pass = 0, fail = 0;
+  pInfo('\n[2] Checking raw WASM globals...\n');
+  pDim('  ' + 'Symbol'.padEnd(40) + 'Status');
+  pDim('  ' + '─'.repeat(55));
+  for (const sym of syms) {
+    if (typeof window[sym] === 'function') { pRaw(tableRow(sym, 'PASS')); pass++; }
+    else { pRaw(tableRow(sym, 'FAIL', '← missing')); fail++; }
+  }
+  pDim('  ' + '─'.repeat(55));
+  pRaw(`  WASM globals: ${pass+fail} | PASS: ${pass} | FAIL: ${fail}`);
+  return { pass, fail };
+}
+
+// ── 3. Network method check ───────────────────────────────────────────────────
+function checkNetworkMethods() {
+  const METHODS = ['sequentialForward','extractDNA','extractBlueprint','getLayerCount',
+    'getLayerSpec','morphLayer','spliceDNA','neatMutate','createSystolicState',
+    'createTargetPropState','initGPU','syncToGPU','syncToCPU','train','free','_id'];
+  let pass = 0, fail = 0;
+  pInfo('\n[3] Checking network wrapper methods...\n');
+  let net = null;
+  try {
+    net = createNetwork(DENSE_3L);
+    pPass('  createNetwork returned: ' + typeof net);
+  } catch(e) {
+    pFail('  createNetwork threw: ' + e);
+    return { pass, fail };
+  }
+  pDim('  ' + 'Method'.padEnd(40) + 'Status');
+  pDim('  ' + '─'.repeat(55));
+  for (const m of METHODS) {
+    if (net[m] !== undefined) { pass++; pRaw(tableRow(m, 'PASS')); }
+    else { fail++; pRaw(tableRow(m, 'FAIL', '← missing')); }
+  }
+  pDim('  ' + '─'.repeat(55));
+  pRaw(`  Methods: ${pass+fail} | PASS: ${pass} | FAIL: ${fail}`);
+  net.free();
+  return { pass, fail };
+}
+
+// ── 4. Functional smoke tests ─────────────────────────────────────────────────
+function runSmokes() {
+  let pass = 0, fail = 0;
+  pInfo('\n[4] Running functional smoke tests...\n');
+
+  function smoke(name, fn) {
+    try {
+      const r = fn();
+      pPass('  [PASS] ' + name + (r ? ' → ' + r : ''));
+      pass++;
+    } catch(e) {
+      pFail('  [FAIL] ' + name + ' → ' + e.message);
+      fail++;
+    }
+  }
+
+  smoke('createNetwork(Dense)', () => {
+    const n = createNetwork(DENSE_3L);
+    const c = n.getLayerCount();
+    n.free();
+    return 'layers=' + c;
+  });
+
+  smoke('sequentialForward (16→16→16→4)', () => {
+    const n = createNetwork(DENSE_3L);
+    const out = n.sequentialForward(new Float32Array(16).fill(0.5));
+    n.free();
+    if (!out || out.length === 0) throw new Error('empty output');
+    return 'out[0]=' + out[0].toFixed(4);
+  });
+
+  smoke('extractDNA', () => {
+    const n = createNetwork(DENSE_3L);
+    const dna = n.extractDNA();
+    n.free();
+    return 'sigs=' + JSON.parse(dna).length;
+  });
+
+  smoke('compareDNA (TS wrapper)', () => {
+    const n1 = createNetwork(DENSE_3L);
+    const n2 = createNetwork(DENSE_3L);
+    const r = compareDNA(n1.extractDNA(), n2.extractDNA());
+    n1.free(); n2.free();
+    return 'overlap=' + (r.overall_overlap ?? r.OverallOverlap ?? '?');
+  });
+
+  smoke('getSpliceConfig', () => {
+    const cfg = getSpliceConfig();
+    return 'mode=' + cfg.CrossoverMode;
+  });
+
+  smoke('spliceDNA (blend)', () => {
+    const a = createNetwork(DENSE_3L);
+    const b = createNetwork(DENSE_3L);
+    const cfg = JSON.stringify(getSpliceConfig());
+    const child = a.spliceDNA(b._id, cfg);
+    const c = child.getLayerCount();
+    a.free(); b.free(); child.free();
+    return 'child layers=' + c;
+  });
+
+  smoke('getNEATConfig(16)', () => {
+    const cfg = getNEATConfig(16);
+    return 'perturb=' + cfg.WeightPerturbRate;
+  });
+
+  smoke('neatMutate', () => {
+    const n = createNetwork(DENSE_3L);
+    const cfg = JSON.stringify(getNEATConfig(16));
+    const m = n.neatMutate(cfg);
+    const c = m.getLayerCount();
+    n.free(); m.free();
+    return 'mutant layers=' + c;
+  });
+
+  smoke('createNEATPopulation + evolveWithFitnesses', () => {
+    const n = createNetwork(DENSE_3L);
+    const pop = createNEATPopulation(n, 4);
+    pop.evolveWithFitnesses([1.0, 0.8, 0.5, 0.3]);
+    const s = pop.summary(1);
+    pop.free(); n.free();
+    return s.substring(0, 60);
+  });
+
+  smoke('defaultTargetPropConfig', () => {
+    const cfg = defaultTargetPropConfig();
+    return 'ok (keys=' + Object.keys(cfg).length + ')';
+  });
+
+  smoke('extractBlueprint', () => {
+    const n = createNetwork(DENSE_3L);
+    JSON.parse(n.extractBlueprint('test'));
+    n.free();
+    return 'ok';
+  });
+
+  smoke('getLayerSpec(0)', () => {
+    const n = createNetwork(DENSE_3L);
+    const spec = JSON.parse(n.getLayerSpec(0));
+    n.free();
+    return 'type=' + spec.type + ' ih=' + spec.input_height;
+  });
+
+  pDim('\n  ' + '─'.repeat(55));
+  pRaw(`  Smoke tests: ${pass+fail} | PASS: ${pass} | FAIL: ${fail}`);
+  return { pass, fail };
+}
+
+window.runAll = async function() {
+  out.innerHTML = '';
+  document.getElementById('runBtn').disabled = true;
+
+  status.textContent = 'Checking exports...';
+  const e = checkExports();
+
+  status.textContent = 'Checking WASM globals...';
+  const g = checkWASMGlobals();
+
+  status.textContent = 'Checking network methods...';
+  const n = checkNetworkMethods();
+
+  status.textContent = 'Running smoke tests...';
+  const s = runSmokes();
+
+  const totalPass = e.pass + g.pass + n.pass + s.pass;
+  const totalFail = e.fail + g.fail + n.fail + s.fail;
+
+  pInfo('\n[5] Final Summary\n');
+  pDim('  ═'.repeat(28));
+  if (totalFail === 0) pPass(`  SUCCESS: All ${totalPass} checks passed.`);
+  else pFail(`  PARTIAL: ${totalPass} passed, ${totalFail} FAILED.`);
+  pDim('  ═'.repeat(28));
+
+  status.textContent = 'Done.';
+  document.getElementById('runBtn').disabled = false;
+};
+
+// Auto-load
+try {
+  await initBrowser('/dist/main.wasm');
+  status.textContent = 'WASM ready. Click Run Verification.';
+} catch(e) {
+  status.textContent = 'WASM load failed: ' + e.message;
+}
+</script>
+</body>
+</html>

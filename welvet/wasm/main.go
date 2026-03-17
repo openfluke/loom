@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"sync"
 	"syscall/js"
-	"time"
 
 	"github.com/openfluke/loom/poly"
 )
@@ -24,14 +23,17 @@ import (
 // ──────────────────────────────────────────────────────────────────────────────
 
 var (
-	networks     = make(map[int64]*poly.VolumetricNetwork)
+	networks      = make(map[int64]*poly.VolumetricNetwork)
 	networkNextID int64 = 1
 
-	systolicStates   = make(map[int64]*poly.SystolicState[float32])
-	systolicNextID   int64 = 1
+	systolicStates  = make(map[int64]*poly.SystolicState[float32])
+	systolicNextID  int64 = 1
 
-	targetPropStates  = make(map[int64]*poly.TargetPropState[float32])
-	targetPropNextID  int64 = 1
+	targetPropStates = make(map[int64]*poly.TargetPropState[float32])
+	targetPropNextID int64 = 1
+
+	neatPopulations  = make(map[int64]*poly.NEATPopulation)
+	neatPopNextID    int64 = 1
 
 	mu sync.RWMutex
 )
@@ -84,6 +86,22 @@ func getTargetPropState(id int64) (*poly.TargetPropState[float32], bool) {
 	return s, ok
 }
 
+func storeNEATPopulation(pop *poly.NEATPopulation) int64 {
+	mu.Lock()
+	id := neatPopNextID
+	neatPopNextID++
+	neatPopulations[id] = pop
+	mu.Unlock()
+	return id
+}
+
+func getNEATPopulation(id int64) (*poly.NEATPopulation, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	p, ok := neatPopulations[id]
+	return p, ok
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // JS ↔ Go Helpers
 // ──────────────────────────────────────────────────────────────────────────────
@@ -129,7 +147,7 @@ func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState
 			return "Expected input data"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		s.SetInput(t)
 		return nil
 	}))
@@ -168,7 +186,7 @@ func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState
 			return "Expected gradients"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		gradIn, _, err := poly.SystolicBackward(n, s, t)
 		if err != nil {
 			return errObj(err.Error())
@@ -185,7 +203,7 @@ func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState
 		}
 		data := readFloat32Array(args[0])
 		lr := float32(args[1].Float())
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		poly.SystolicApplyTargetProp(n, s, t, lr)
 		return nil
 	}))
@@ -213,7 +231,7 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 			return "Expected input data"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		out := poly.TargetPropForward(n, s, t)
 		if out == nil {
 			return js.Global().Get("Float32Array").New(0)
@@ -226,7 +244,7 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 			return "Expected target data"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		poly.TargetPropBackward(n, s, t)
 		return nil
 	}))
@@ -236,7 +254,7 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 			return "Expected target data"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data))
 		poly.TargetPropBackwardChainRule(n, s, t)
 		return nil
 	}))
@@ -262,7 +280,9 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 // ──────────────────────────────────────────────────────────────────────────────
 
 func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
+	id := storeNetwork(n)
 	obj := js.Global().Get("Object").New()
+	obj.Set("_id", float64(id))
 
 	// sequentialForward(Float32Array | number[]) -> Float32Array
 	obj.Set("sequentialForward", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
@@ -270,7 +290,7 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 			return "Expected input data"
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, len(data))
+		t := poly.NewTensorFromSlice(data, 1, len(data)) // shape: [batchSize=1, features]
 		out, _, _ := poly.ForwardPolymorphic(n, t)
 		if out == nil {
 			return js.Global().Get("Float32Array").New(0)
@@ -300,6 +320,46 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 		dna := poly.ExtractDNA(n)
 		b, _ := json.Marshal(dna)
 		return string(b)
+	}))
+
+	// spliceDNA(otherNetworkID int, cfgJSON? string) -> Network JS object
+	obj.Set("spliceDNA", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return `{"error": "Expected other network ID"}`
+		}
+		otherID := int64(args[0].Int())
+		cfgJSON := "{}"
+		if len(args) > 1 {
+			cfgJSON = args[1].String()
+		}
+		other, ok := getNetwork(otherID)
+		if !ok {
+			return `{"error": "invalid other network ID"}`
+		}
+		var cfg poly.SpliceConfig
+		if err := json.Unmarshal([]byte(cfgJSON), &cfg); err != nil {
+			cfg = poly.DefaultSpliceConfig()
+		}
+		child := poly.SpliceDNA(n, other, cfg)
+		return createNetworkWrapper(child)
+	}))
+
+	// neatMutate(cfgJSON? string) -> Network JS object
+	obj.Set("neatMutate", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		cfgJSON := "{}"
+		if len(args) > 0 {
+			cfgJSON = args[0].String()
+		}
+		var cfg poly.NEATConfig
+		if err := json.Unmarshal([]byte(cfgJSON), &cfg); err != nil {
+			dModel := 64
+			if len(n.Layers) > 0 {
+				dModel = n.Layers[0].InputHeight
+			}
+			cfg = poly.DefaultNEATConfig(dModel)
+		}
+		child := poly.NEATMutate(n, cfg)
+		return createNetworkWrapper(child)
 	}))
 
 	// extractBlueprint(modelID) -> JSON string
@@ -406,73 +466,47 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 			return `{"error": "Expected batchesJSON, epochs, learningRate"}`
 		}
 
-		type batch struct {
-			Input  []float32 `json:"input"`
-			Target []float32 `json:"target"`
+		type tensorData struct {
+			Shape []int     `json:"shape"`
+			Data  []float32 `json:"data"`
 		}
-		var batches []batch
-		if err := json.Unmarshal([]byte(args[0].String()), &batches); err != nil {
+		type batchJSON struct {
+			Input  tensorData `json:"input"`
+			Target tensorData `json:"target"`
+		}
+		var rawBatches []batchJSON
+		if err := json.Unmarshal([]byte(args[0].String()), &rawBatches); err != nil {
 			return fmt.Sprintf(`{"error": "invalid batches JSON: %v"}`, err)
 		}
 
 		epochs := args[1].Int()
 		lr := float32(args[2].Float())
 
-		var finalLoss float64
-		start := time.Now()
-
-		s := poly.NewSystolicState[float32](n)
-
-		for ep := 0; ep < epochs; ep++ {
-			var epochLoss float64
-			for _, b := range batches {
-				in := poly.NewTensorFromSlice(b.Input, len(b.Input))
-				tgt := poly.NewTensorFromSlice(b.Target, len(b.Target))
-
-				s.SetInput(in)
-				poly.SystolicForward(n, s, true)
-
-				// Get output
-				var out *poly.Tensor[float32]
-				for i := len(s.LayerData) - 1; i >= 0; i-- {
-					if s.LayerData[i] != nil {
-						out = s.LayerData[i]
-						break
-					}
-				}
-				if out == nil {
-					continue
-				}
-
-				// MSE loss gradient
-				grad := poly.NewTensor[float32](len(out.Data))
-				var loss float64
-				for i := range out.Data {
-					diff := out.Data[i] - tgt.Data[i]
-					grad.Data[i] = 2.0 * diff / float32(len(out.Data))
-					loss += float64(diff * diff)
-				}
-				epochLoss += loss / float64(len(out.Data))
-
-				_, layerGrads, bErr := poly.SystolicBackward(n, s, grad)
-				if bErr != nil || layerGrads == nil {
-					continue
-				}
-
-				// Apply gradients to all layers
-				for i := range n.Layers {
-					if i < len(layerGrads) && layerGrads[i][1] != nil {
-						poly.ApplyRecursiveGradients(&n.Layers[i], poly.ConvertTensor[float32, float32](layerGrads[i][1]), lr)
-					}
-				}
+		batches := make([]poly.TrainingBatch[float32], len(rawBatches))
+		for i, b := range rawBatches {
+			batches[i] = poly.TrainingBatch[float32]{
+				Input:  poly.NewTensorFromSlice(b.Input.Data, b.Input.Shape...),
+				Target: poly.NewTensorFromSlice(b.Target.Data, b.Target.Shape...),
 			}
-			finalLoss = epochLoss / float64(len(batches))
+		}
+
+		cfg := &poly.TrainingConfig{
+			Epochs:       epochs,
+			LearningRate: lr,
+			LossType:     "mse",
+			Verbose:      false,
+		}
+
+		trainResult, err := poly.Train(n, batches, cfg)
+		if err != nil {
+			return fmt.Sprintf(`{"error": "%v"}`, err)
 		}
 
 		result := map[string]interface{}{
-			"final_loss":       finalLoss,
-			"duration_ms":      float64(time.Since(start).Nanoseconds()) / 1e6,
+			"final_loss":       trainResult.FinalLoss,
+			"duration_ms":      float64(trainResult.TotalTime.Nanoseconds()) / 1e6,
 			"epochs_completed": epochs,
+			"loss_history":     trainResult.LossHistory,
 		}
 		b, _ := json.Marshal(result)
 		return string(b)
@@ -496,6 +530,85 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 
 	// free() - no-op in WASM (GC handles it), but provided for API compatibility
 	obj.Set("free", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		return nil
+	}))
+
+	return obj
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// NEAT Population Wrapper
+// ──────────────────────────────────────────────────────────────────────────────
+
+func createNEATPopulationWrapper(pop *poly.NEATPopulation) js.Value {
+	id := storeNEATPopulation(pop)
+	obj := js.Global().Get("Object").New()
+	obj.Set("_id", float64(id))
+	obj.Set("size", float64(len(pop.Networks)))
+
+	// getNetwork(index) -> Network JS object (shared reference into population)
+	obj.Set("getNetwork", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return nil
+		}
+		idx := args[0].Int()
+		if idx < 0 || idx >= len(pop.Networks) {
+			return nil
+		}
+		return createNetworkWrapper(pop.Networks[idx])
+	}))
+
+	// evolveWithFitnesses(Float64Array | number[]) -> status JSON
+	obj.Set("evolveWithFitnesses", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return `{"error": "Expected fitnesses array"}`
+		}
+		length := args[0].Get("length").Int()
+		fitnesses := make([]float64, length)
+		for i := 0; i < length; i++ {
+			fitnesses[i] = args[0].Index(i).Float()
+		}
+		i := 0
+		pop.Evolve(func(_ *poly.VolumetricNetwork) float64 {
+			if i < len(fitnesses) {
+				f := fitnesses[i]
+				i++
+				return f
+			}
+			return 0
+		})
+		obj.Set("size", float64(len(pop.Networks)))
+		return `{"status": "ok"}`
+	}))
+
+	// best() -> Network JS object
+	obj.Set("best", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		best := pop.Best()
+		if best == nil {
+			return nil
+		}
+		return createNetworkWrapper(best)
+	}))
+
+	// bestFitness() -> float
+	obj.Set("bestFitness", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		return pop.BestFitness()
+	}))
+
+	// summary(generation int) -> string
+	obj.Set("summary", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		gen := 0
+		if len(args) > 0 {
+			gen = args[0].Int()
+		}
+		return pop.Summary(gen)
+	}))
+
+	// free()
+	obj.Set("free", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		mu.Lock()
+		delete(neatPopulations, id)
+		mu.Unlock()
 		return nil
 	}))
 
@@ -552,6 +665,54 @@ func getDefaultTargetPropConfigFn(this js.Value, args []js.Value) interface{} {
 	cfg := poly.DefaultTargetPropConfig()
 	b, _ := json.Marshal(cfg)
 	return string(b)
+}
+
+// defaultSpliceConfig() -> JSON
+func defaultSpliceConfigFn(this js.Value, args []js.Value) interface{} {
+	cfg := poly.DefaultSpliceConfig()
+	b, _ := json.Marshal(cfg)
+	return string(b)
+}
+
+// defaultNEATConfig(dModel int) -> JSON
+func defaultNEATConfigFn(this js.Value, args []js.Value) interface{} {
+	dModel := 64
+	if len(args) > 0 {
+		dModel = args[0].Int()
+	}
+	cfg := poly.DefaultNEATConfig(dModel)
+	b, _ := json.Marshal(cfg)
+	return string(b)
+}
+
+// createLoomNEATPopulation(networkID int, size int, cfgJSON? string) -> Population JS object
+func createLoomNEATPopulationFn(this js.Value, args []js.Value) interface{} {
+	if len(args) < 2 {
+		return `{"error": "Expected networkID and size"}`
+	}
+	networkID := int64(args[0].Int())
+	size := args[1].Int()
+	cfgJSON := "{}"
+	if len(args) > 2 {
+		cfgJSON = args[2].String()
+	}
+
+	seed, ok := getNetwork(networkID)
+	if !ok {
+		return `{"error": "invalid network ID"}`
+	}
+
+	var cfg poly.NEATConfig
+	if err := json.Unmarshal([]byte(cfgJSON), &cfg); err != nil {
+		dModel := 64
+		if len(seed.Layers) > 0 {
+			dModel = seed.Layers[0].InputHeight
+		}
+		cfg = poly.DefaultNEATConfig(dModel)
+	}
+
+	pop := poly.NewNEATPopulation(seed, size, cfg)
+	return createNEATPopulationWrapper(pop)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -627,29 +788,44 @@ func setupWebGPUFn(this js.Value, args []js.Value) interface{} {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func main() {
-	fmt.Println("welvet WASM — M-POLY-VTD Engine (Loom v0.73.0) initialized")
+	fmt.Println("welvet WASM — M-POLY-VTD Engine (Loom v0.74.0) initialized")
 
 	js.Global().Set("createLoomNetwork", js.FuncOf(createLoomNetworkFn))
 	js.Global().Set("loadLoomNetwork", js.FuncOf(loadLoomNetworkFn))
 	js.Global().Set("setupWebGPU", js.FuncOf(setupWebGPUFn))
 	js.Global().Set("compareLoomDNA", js.FuncOf(compareDNAFn))
 	js.Global().Set("getDefaultTargetPropConfig", js.FuncOf(getDefaultTargetPropConfigFn))
+	js.Global().Set("defaultSpliceConfig", js.FuncOf(defaultSpliceConfigFn))
+	js.Global().Set("defaultNEATConfig", js.FuncOf(defaultNEATConfigFn))
+	js.Global().Set("createLoomNEATPopulation", js.FuncOf(createLoomNEATPopulationFn))
 
 	fmt.Println("Exposed globals:")
-	fmt.Println("  createLoomNetwork(jsonConfig)     - Build network from JSON")
-	fmt.Println("  loadLoomNetwork(path)             - Load from SafeTensors")
-	fmt.Println("  setupWebGPU()                     - Init WebGPU (Promise)")
-	fmt.Println("  compareLoomDNA(dnaA, dnaB)        - Compare network DNA")
-	fmt.Println("  getDefaultTargetPropConfig(n)     - Default TP config JSON")
+	fmt.Println("  createLoomNetwork(jsonConfig)          - Build network from JSON")
+	fmt.Println("  loadLoomNetwork(path)                  - Load from SafeTensors")
+	fmt.Println("  setupWebGPU()                          - Init WebGPU (Promise)")
+	fmt.Println("  compareLoomDNA(dnaA, dnaB)             - Compare network DNA")
+	fmt.Println("  getDefaultTargetPropConfig(n)          - Default TP config JSON")
+	fmt.Println("  defaultSpliceConfig()                  - Default splice config JSON")
+	fmt.Println("  defaultNEATConfig(dModel)              - Default NEAT config JSON")
+	fmt.Println("  createLoomNEATPopulation(id, size, cfg)- Create NEAT population")
 	fmt.Println("")
 	fmt.Println("Network methods:")
-	fmt.Println("  .sequentialForward(Float32Array)  - Full forward pass")
-	fmt.Println("  .createSystolicState()            - Stepping API")
-	fmt.Println("  .createTargetPropState(chainRule) - Target propagation")
-	fmt.Println("  .morphLayer(idx, dtype)           - Switch numerical type")
-	fmt.Println("  .initGPU()  .syncToGPU()          - WebGPU acceleration")
+	fmt.Println("  .sequentialForward(Float32Array)       - Full forward pass")
+	fmt.Println("  .createSystolicState()                 - Stepping API")
+	fmt.Println("  .createTargetPropState(chainRule)      - Target propagation")
+	fmt.Println("  .morphLayer(idx, dtype)                - Switch numerical type")
+	fmt.Println("  .initGPU()  .syncToGPU()               - WebGPU acceleration")
 	fmt.Println("  .extractDNA()  .extractBlueprint()")
+	fmt.Println("  .spliceDNA(otherID, cfgJSON)           - Genetic crossover")
+	fmt.Println("  .neatMutate(cfgJSON)                   - NEAT mutation")
 	fmt.Println("  .train(batchesJSON, epochs, lr)")
+	fmt.Println("")
+	fmt.Println("Population methods:")
+	fmt.Println("  .getNetwork(index)                     - Get member network")
+	fmt.Println("  .evolveWithFitnesses(float64[])        - Run one generation")
+	fmt.Println("  .best()                                - Best network wrapper")
+	fmt.Println("  .bestFitness()                         - Top fitness score")
+	fmt.Println("  .summary(generation)                   - Diagnostic string")
 
 	select {}
 }

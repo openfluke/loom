@@ -35,6 +35,8 @@ from .utils import (
     # GPU buffer management
     create_gpu_buffer,
     free_gpu_buffer,
+    write_gpu_buffer,
+    read_gpu_buffer,
     # GPU shader sources
     shader_dense_backward_dx,
     shader_dense_backward_dw,
@@ -52,6 +54,23 @@ from .utils import (
     dispatch_cnn3_backward_dx,
     dispatch_cnn3_backward_dw,
     dispatch_mha_backward,
+    # GPU forward dispatch
+    dispatch_dense,
+    dispatch_dense_q4,
+    dispatch_mha,
+    dispatch_swiglu,
+    dispatch_rms_norm,
+    dispatch_kv_update,
+    dispatch_residual,
+    dispatch_rope,
+    dispatch_embedding,
+    dispatch_rnn_step,
+    dispatch_lstm_step,
+    dispatch_cnn1,
+    dispatch_cnn2,
+    dispatch_cnn3,
+    dispatch_swiglu_q4,
+    # Gradients / training
     dispatch_apply_gradients,
     dispatch_mse_grad_partial_loss,
     dispatch_forward_layer,
@@ -89,11 +108,27 @@ from .utils import (
     # Per-layer dispatch
     layer_forward,
     layer_backward,
-    # Training helper
+    # Training helpers
+    train,
     train_network,
+    # DNA Splice / Crossover
+    default_splice_config,
+    splice_dna,
+    splice_dna_with_report,
+    # NEAT Mutation / Evolution
+    default_neat_config,
+    neat_mutate,
+    new_neat_population,
+    neat_population_size,
+    neat_population_get_network,
+    neat_population_evolve,
+    neat_population_best,
+    neat_population_best_fitness,
+    neat_population_summary,
+    free_neat_population,
 )
 
-__version__ = "0.7.0"
+__version__ = "0.74.0"
 
 __all__ = [
     # Version
@@ -131,6 +166,8 @@ __all__ = [
     # GPU buffer management
     "create_gpu_buffer",
     "free_gpu_buffer",
+    "write_gpu_buffer",
+    "read_gpu_buffer",
     # GPU shader sources
     "shader_dense_backward_dx",
     "shader_dense_backward_dw",
@@ -149,6 +186,22 @@ __all__ = [
     "dispatch_cnn3_backward_dw",
     "dispatch_mha_backward",
     "dispatch_apply_gradients",
+    # GPU forward dispatch
+    "dispatch_dense",
+    "dispatch_dense_q4",
+    "dispatch_mha",
+    "dispatch_swiglu",
+    "dispatch_rms_norm",
+    "dispatch_kv_update",
+    "dispatch_residual",
+    "dispatch_rope",
+    "dispatch_embedding",
+    "dispatch_rnn_step",
+    "dispatch_lstm_step",
+    "dispatch_cnn1",
+    "dispatch_cnn2",
+    "dispatch_cnn3",
+    "dispatch_swiglu_q4",
     "dispatch_mse_grad_partial_loss",
     "dispatch_forward_layer",
     "dispatch_backward_layer",
@@ -185,6 +238,22 @@ __all__ = [
     # Per-layer
     "layer_forward",
     "layer_backward",
-    # Training helper
+    # Training helpers
+    "train",
     "train_network",
+    # DNA Splice / Crossover
+    "default_splice_config",
+    "splice_dna",
+    "splice_dna_with_report",
+    # NEAT Mutation / Evolution
+    "default_neat_config",
+    "neat_mutate",
+    "new_neat_population",
+    "neat_population_size",
+    "neat_population_get_network",
+    "neat_population_evolve",
+    "neat_population_best",
+    "neat_population_best_fitness",
+    "neat_population_summary",
+    "free_neat_population",
 ]

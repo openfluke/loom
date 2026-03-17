@@ -82,31 +82,23 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		limits.MaxBufferSize = 2 * 1024 * 1024 * 1024
 	}
 
-	deviceDesc := &wgpu.DeviceDescriptor{
+	// Request the device with explicitly supported baseline limits + necessary boosts
+	device, err := adapter.RequestDevice(&wgpu.DeviceDescriptor{
 		RequiredLimits: &wgpu.RequiredLimits{
 			Limits: limits,
 		},
-	}
-
-	// Request the device with explicitly supported baseline limits + necessary boosts
-	fmt.Printf("⚠️  DEBUG: Requesting Device %s (backend %v) with MaxStorage=%d MB, MaxBuffer=%d MB, WorkgroupStorage=%d\n",
-		adapter.GetInfo().Name, adapter.GetInfo().BackendType,
-		limits.MaxStorageBufferBindingSize/(1024*1024),
-		limits.MaxBufferSize/(1024*1024),
-		limits.MaxComputeWorkgroupStorageSize)
-
-	device, err := adapter.RequestDevice(deviceDesc)
-
+		RequiredFeatures: []wgpu.FeatureName{
+			wgpu.FeatureNameShaderF16,
+		},
+	})
 	if err != nil {
-		fmt.Printf("⚠️  High GPU limits request failed: %v. Falling back to default limits (large models will likely crash)\n", err)
+		// If requesting with boosted limits and F16 fails, try again with default limits only.
 		device, err = adapter.RequestDevice(nil)
-	}
-
-	if err != nil {
-		fmt.Printf("⚠️  WebGPU device request failed completely: %v\n", err)
-		adapter.Release()
-		instance.Release()
-		return fmt.Errorf("failed to request device: %v", err)
+		if err != nil {
+			adapter.Release()
+			instance.Release()
+			return fmt.Errorf("failed to request device even with default limits: %v", err)
+		}
 	}
 
 	finalLimits := device.GetLimits()

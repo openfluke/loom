@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Loom TS — Tiling Benchmark</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d0d; color: #c8c8c8; font-family: 'Courier New', monospace; font-size: 13px; padding: 20px; }
+  h1 { color: #7ec8e3; margin-bottom: 4px; font-size: 16px; }
+  .subtitle { color: #555; margin-bottom: 12px; font-size: 11px; }
+  #output { white-space: pre; line-height: 1.65; }
+  .pass { color: #4ec94e; } .fail { color: #e04040; }
+  .warn { color: #e0a020; } .info { color: #7ec8e3; } .dim { color: #555; }
+  button { background: #1e3a4a; color: #7ec8e3; border: 1px solid #2d5a70; padding: 6px 18px;
+           font-family: inherit; font-size: 13px; cursor: pointer; margin-right: 8px; }
+  button:hover { background: #2d5a70; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #status { margin: 8px 0; color: #555; font-size: 11px; }
+</style>
+</head>
+<body>
+<h1>=== M-POLY-VTD Performance Showdown: CPU vs WebGPU (TypeScript) ===</h1>
+<div class="subtitle">TypeScript wrapper version of benchmark_tiling — forward pass timing across 11 layer types</div>
+<button id="runBtn" onclick="runBench()">Run Benchmark</button>
+<div id="status">Loading WASM...</div>
+<pre id="output"></pre>
+
+<script type="module">
+import { initBrowser, createNetwork } from '../dist/index.js';
+
+const outEl = document.getElementById('output');
+function print(msg, cls) {
+  const s = document.createElement('span');
+  if (cls) s.className = cls;
+  s.textContent = msg + '\n';
+  outEl.appendChild(s);
+}
+const p = m => print(m);
+const pInfo = m => print(m, 'info');
+const pPass = m => print(m, 'pass');
+const pDim  = m => print(m, 'dim');
+
+const BENCH_CASES = [
+  { name: 'Dense (Linear)', inputSize: [1024], iters: 20,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"Dense",input_height:1024,output_height:1024,activation:"Linear",dtype:"F32"}
+    ]}
+  },
+  { name: 'RNN Cell', inputSize: [512], iters: 10,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"RNN",input_height:512,output_height:512,dtype:"F32"}
+    ]}
+  },
+  { name: 'LSTM Cell', inputSize: [512], iters: 10,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"LSTM",input_height:512,output_height:512,dtype:"F32"}
+    ]}
+  },
+  { name: 'CNN 1D', inputSize: [64, 512], iters: 10,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"CNN1",input_channels:64,filters:64,kernel_size:3,stride:1,padding:1,input_height:512,output_height:512,dtype:"F32"}
+    ]}
+  },
+  { name: 'CNN 2D', inputSize: [32, 64, 64], iters: 5,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"CNN2",input_channels:32,filters:32,kernel_size:3,stride:1,padding:1,input_height:64,input_width:64,output_height:64,output_width:64,dtype:"F32"}
+    ]}
+  },
+  { name: 'CNN 3D', inputSize: [16, 16, 16, 16], iters: 5,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"CNN3",input_channels:16,filters:16,kernel_size:3,stride:1,padding:1,input_depth:16,input_height:16,input_width:16,output_depth:16,output_height:16,output_width:16,dtype:"F32"}
+    ]}
+  },
+  { name: 'Embedding', inputSize: [64], iters: 20, isEmbedding: true,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"Embedding",vocab_size:2048,embedding_dim:128,dtype:"F32"}
+    ]}
+  },
+  { name: 'RMSNorm', inputSize: [1024], iters: 30,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"RMSNorm",input_height:1024,output_height:1024,dtype:"F32"}
+    ]}
+  },
+  { name: 'MHA (Attn)', inputSize: [128], iters: 10,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"MHA",input_height:128,output_height:128,num_heads:4,d_model:128,dtype:"F32"}
+    ]}
+  },
+  { name: 'SwiGLU (MLP)', inputSize: [512], iters: 10,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"SwiGLU",input_height:512,output_height:1024,dtype:"F32"}
+    ]}
+  },
+  { name: 'Residual Add', inputSize: [1024], iters: 30,
+    cfg: { depth:1,rows:1,cols:1,layers_per_cell:1, layers:[
+      {z:0,y:0,x:0,l:0,type:"Residual",input_height:1024,output_height:1024,dtype:"F32"}
+    ]}
+  },
+];
+
+function makeInput(sizes, isEmbedding) {
+  const total = sizes.reduce((a,b) => a*b, 1);
+  const arr = new Float32Array(total);
+  if (isEmbedding) { for (let i = 0; i < arr.length; i++) arr[i] = i % 2048; }
+  else arr.fill(0.5);
+  return arr;
+}
+
+async function runBenchFor(bc) {
+  const net = createNetwork(bc.cfg);
+  const input = makeInput(bc.inputSize, bc.isEmbedding);
+  net.sequentialForward(input); // warm-up
+  const t0 = performance.now();
+  let lastOut;
+  for (let i = 0; i < bc.iters; i++) lastOut = net.sequentialForward(input);
+  const ms = (performance.now() - t0) / bc.iters;
+  const sample = lastOut ? [lastOut[0], lastOut[1], lastOut[2]] : null;
+  net.free();
+  return { ms, sample };
+}
+
+window.runBench = async function() {
+  outEl.innerHTML = '';
+  document.getElementById('runBtn').disabled = true;
+
+  pInfo('=== M-POLY-VTD Performance Showdown: CPU (TypeScript) ===\n');
+  p('11 layer types | sequentialForward timing via TypeScript API');
+  p('');
+  p('| ' + 'Layer type'.padEnd(16) + ' | ' + 'CPU (ms/it)'.padEnd(13) + ' | ' + 'Sample[0]'.padEnd(12) + ' | Sanity   |');
+  p('|' + '-'.repeat(17) + '|' + '-'.repeat(14) + '|' + '-'.repeat(13) + '|' + '-'.repeat(10) + '|');
+
+  const samples = [];
+  for (const bc of BENCH_CASES) {
+    document.getElementById('status').textContent = 'Running: ' + bc.name + '...';
+    await new Promise(r => setTimeout(r, 0));
+    const { ms, sample } = await runBenchFor(bc);
+    const sanity = sample && sample.some(v => Math.abs(v) > 1e-9) ? 'REAL 💎 ' : 'ZERO 💀 ';
+    const msStr = ms.toFixed(3).padEnd(12);
+    const s0    = sample ? (sample[0]??0).toFixed(4).padEnd(11) : 'N/A'.padEnd(11);
+    samples.push({ name: bc.name, sample });
+    p(`| ${bc.name.padEnd(15)} | ${msStr} | ${s0} | ${sanity} |`);
+  }
+
+  p('');
+  pInfo('=== Output Sample (first 3 values) ===\n');
+  p('| Layer'.padEnd(18) + '| Sample[0..2]');
+  p('|' + '-'.repeat(17) + '|' + '-'.repeat(45));
+  for (const s of samples) {
+    const vals = s.sample ? s.sample.map(v => (v??0).toFixed(4)).join(', ') : 'N/A';
+    p(`| ${s.name.padEnd(15)} | ${vals}`);
+  }
+
+  document.getElementById('status').textContent = 'Done.';
+  document.getElementById('runBtn').disabled = false;
+};
+
+try {
+  await initBrowser('/dist/main.wasm');
+  document.getElementById('status').textContent = 'WASM ready. Click Run Benchmark.';
+} catch(e) {
+  document.getElementById('status').textContent = 'WASM load failed: ' + e.message;
+}
+</script>
+</body>
+</html>

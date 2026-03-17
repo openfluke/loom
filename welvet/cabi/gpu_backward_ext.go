@@ -7,6 +7,9 @@ package main
 import "C"
 
 import (
+	"encoding/json"
+	"unsafe"
+
 	"github.com/openfluke/loom/poly"
 	"github.com/openfluke/webgpu/wgpu"
 )
@@ -52,6 +55,47 @@ func LoomFreeGPUBuffer(bufHandle C.longlong) {
 			buf.Destroy()
 		}
 	}
+}
+
+//export LoomWriteGPUBuffer
+func LoomWriteGPUBuffer(networkHandle C.longlong, bufHandle C.longlong, data *C.float, length C.int) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok || n.GPUContext == nil {
+		return errJSON("invalid network or WGPU not init")
+	}
+	buf, ok := getGPUBufferFromHandle(int64(bufHandle))
+	if !ok {
+		return errJSON("invalid buffer handle")
+	}
+	
+	ptr := unsafe.Pointer(data)
+	slice := (*[1 << 30]float32)(ptr)[:length:length]
+	
+	ts := make([]float32, int(length))
+	copy(ts, slice)
+	
+	n.GPUContext.Queue.WriteBuffer(buf, 0, wgpu.ToBytes(ts))
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomReadGPUBuffer
+func LoomReadGPUBuffer(networkHandle C.longlong, bufHandle C.longlong) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok || n.GPUContext == nil {
+		return errJSON("invalid network or WGPU not init")
+	}
+	buf, ok := getGPUBufferFromHandle(int64(bufHandle))
+	if !ok {
+		return errJSON("invalid buffer handle")
+	}
+	
+	res, err := n.GPUContext.ReadBuffer(buf)
+	if err != nil {
+		return errJSON(err.Error())
+	}
+	
+	j, _ := json.Marshal(res)
+	return C.CString(string(j))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
