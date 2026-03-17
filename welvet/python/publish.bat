@@ -2,6 +2,9 @@
 echo === Building and Publishing welvet to PyPI ===
 echo.
 
+:: Activate conda base so we get the right python (build + twine live there)
+call conda activate base 2>nul || call "%USERPROFILE%\miniconda3\Scripts\activate.bat" base 2>nul
+
 echo Cleaning previous builds...
 if exist dist rmdir /s /q dist
 if exist build rmdir /s /q build
