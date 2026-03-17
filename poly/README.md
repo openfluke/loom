@@ -448,7 +448,7 @@ Our semantic version number directly reflects our progress against this absolute
 
 ### 5.3 Polyglot Ecosystem & I/O
 - [x] Universal C-ABI Core API
-- [ ] Python Bindings (`welvet`) - *(In Development)*
+- [x] Python Bindings (`welvet`) — Published to PyPI
 - [x] Node.js / TypeScript Bindings (@openfluke/welvet)
 - [x] C# / .NET Bindings
 - [x] Java Bindings
@@ -464,7 +464,7 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Model Ensemble Diversity Metrics
 - [x] Training Method Comparison Analysis
 
-**Ecosystem Progress: 15 / 22**
+**Ecosystem Progress: 16 / 22**
 
 ---
 
@@ -504,13 +504,13 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 | 2. Architectural Layers | 30 | 35 |
 | 3. Edge Orchestration | 0 | 10 |
 | 4. Training Automation | 13 | 16 |
-| 5. Deployment Ecosystem | 18 | 22 |
+| 5. Deployment Ecosystem | 19 | 22 |
 | 6. LLM & Tokenization | 15 | 15 |
-| **GRAND TOTAL** | **96** | **130** |
+| **GRAND TOTAL** | **97** | **130** |
 
-### **Completion Ratio: 73.8%**
+### **Completion Ratio: 74.6%**
 
-## **Version 0.74.0 (Alpha)**
-*(Status: Mathematical tensor representations and local architectural structures are robustly established up to transformer scale. Advanced deployment bindings for TypeScript and WASM are now fully verified and stable. Numerical precision support is exceptionally deep, with native FP4 acceleration on both CPU (Dense/SwiGLU) and GPU (MHA/RoPE/CNN). WebGPU offloading is fully verified with 7000x+ spatial speedups on inference and **17x–65x on end-to-end GPU training** (Dense/CNN/RMSNorm). The GPU training backend now batches the entire forward pass + backward pass + weight updates into a single command buffer submission per batch. Local LLM token generation is cross-platform via WebGPU. Loom remains in **Alpha** as we complete SwiGLU/MHA backward wiring and transition to specialized **Edge-First** orchestration (Thermal-Awareness, UMA, Command Buffer Graphing) required for mobile and wearable deployment.)*
+## **Version 0.74.0 — Complete**
+*(Status: **0.74.0 "Polyglot Bridge" is now fully shipped.** Mathematical tensor representations and local architectural structures are robustly established up to transformer scale. The full polyglot bridge is now live: TypeScript/WASM, Python (`welvet` on PyPI), Go, C#, Java, Dart, and Browser (WASM/WebGPU) bindings are all stable and verified. Numerical precision support is exceptionally deep, with native FP4 acceleration on both CPU (Dense/SwiGLU) and GPU (MHA/RoPE/CNN). WebGPU offloading is fully verified with 7000x+ spatial speedups on inference and **17x–65x on end-to-end GPU training** (Dense/CNN/RMSNorm). The GPU training backend batches the entire forward pass + backward pass + weight updates into a single command buffer submission per batch. Local LLM token generation is cross-platform via WebGPU. Next milestone: **v0.8.0** — wiring SwiGLU/MHA/Embedding into `DispatchBackwardLayer` and transitioning to specialized **Edge-First** orchestration (Thermal-Awareness, UMA, Command Buffer Graphing) required for mobile and wearable deployment.)*
 
 
