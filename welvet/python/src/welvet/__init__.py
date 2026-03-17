@@ -108,7 +108,8 @@ from .utils import (
     # Per-layer dispatch
     layer_forward,
     layer_backward,
-    # Training helper
+    # Training helpers
+    train,
     train_network,
     # DNA Splice / Crossover
     default_splice_config,
@@ -237,7 +238,8 @@ __all__ = [
     # Per-layer
     "layer_forward",
     "layer_backward",
-    # Training helper
+    # Training helpers
+    "train",
     "train_network",
     # DNA Splice / Crossover
     "default_splice_config",

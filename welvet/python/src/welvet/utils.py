@@ -288,6 +288,17 @@ if _LoomSequentialForward:
     ]
 
 # Training / gradients
+_LoomTrain = _sym("LoomTrain")
+if _LoomTrain:
+    _LoomTrain.restype = ctypes.c_char_p
+    _LoomTrain.argtypes = [
+        ctypes.c_longlong,           # networkHandle
+        ctypes.POINTER(ctypes.c_float), ctypes.c_int,  # inputData, inputLen
+        ctypes.POINTER(ctypes.c_float), ctypes.c_int,  # targetData, targetLen
+        ctypes.c_int, ctypes.c_int, ctypes.c_int,      # batchSize, inDim, outDim
+        ctypes.c_char_p,             # configJSON
+    ]
+
 _LoomSystolicBackward = _sym("LoomSystolicBackward")
 if _LoomSystolicBackward:
     _LoomSystolicBackward.restype = ctypes.c_char_p
@@ -2872,6 +2883,64 @@ class Tokenizer:
 # ---------------------------------------------------------------------------
 # Convenience training loop helper
 # ---------------------------------------------------------------------------
+
+def train(
+    network: Network,
+    batches_in: List[List[List[float]]],
+    batches_tgt: List[List[List[float]]],
+    *,
+    epochs: int = 10,
+    learning_rate: float = 0.01,
+    loss_type: str = "mse",
+    use_gpu: bool = False,
+    verbose: bool = False,
+) -> List[float]:
+    """
+    Train a network via poly.Train (proper sequential forward, no systolic).
+
+    batches_in:  list of batches, each batch is a list of input vectors.
+    batches_tgt: list of batches, each batch is a list of target vectors.
+
+    Returns list of per-epoch mean losses.
+    """
+    if not _LoomTrain:
+        raise RuntimeError("LoomTrain not available in library")
+    if not batches_in or not batches_tgt:
+        raise ValueError("batches cannot be empty")
+
+    batch_size = len(batches_in[0])
+    in_dim     = len(batches_in[0][0])
+    out_dim    = len(batches_tgt[0][0])
+
+    flat_in  = [v for batch in batches_in  for row in batch for v in row]
+    flat_tgt = [v for batch in batches_tgt for row in batch for v in row]
+
+    ArrF = ctypes.c_float * len(flat_in)
+    ArrT = ctypes.c_float * len(flat_tgt)
+    in_arr  = ArrF(*flat_in)
+    tgt_arr = ArrT(*flat_tgt)
+
+    config = {
+        "Epochs": epochs,
+        "LearningRate": learning_rate,
+        "LossType": loss_type,
+        "UseGPU": use_gpu,
+        "Verbose": verbose,
+        "GradientClip": 0.0,
+    }
+    cfg_json = json.dumps(config).encode("utf-8")
+
+    raw = _LoomTrain(
+        int(network._handle),
+        in_arr,  len(flat_in),
+        tgt_arr, len(flat_tgt),
+        batch_size, in_dim, out_dim,
+        cfg_json,
+    )
+    result = _parse_json(raw)
+    _check(result, "train")
+    return result.get("loss_history", [])
+
 
 def train_network(
     network: Network,

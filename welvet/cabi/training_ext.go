@@ -499,6 +499,74 @@ func LoomComputeLossGradient(outputHandle C.longlong, targetHandle C.longlong, l
 	return C.CString(string(data))
 }
 
+//export LoomTrain
+// LoomTrain runs poly.Train on a network using the full TrainingConfig.
+// inputData:  flat float32 — numBatches * batchSize * inDim elements.
+// targetData: flat float32 — numBatches * batchSize * outDim elements.
+// configJSON: JSON-serialised poly.TrainingConfig (UseGPU, Epochs, LearningRate, etc.)
+// Returns JSON: {"loss_history": [...], "final_loss": float64, "total_time_ms": int64}
+func LoomTrain(
+	networkHandle C.longlong,
+	inputData *C.float, inputLen C.int,
+	targetData *C.float, targetLen C.int,
+	batchSize C.int, inDim C.int, outDim C.int,
+	configJSON *C.char,
+) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok { return errJSON("invalid network handle") }
+
+	bs    := int(batchSize)
+	id    := int(inDim)
+	od    := int(outDim)
+	total := int(inputLen)
+
+	if bs <= 0 || id <= 0 || od <= 0 || total == 0 {
+		return errJSON("invalid dimensions")
+	}
+
+	inSlice  := (*[1 << 30]float32)(unsafe.Pointer(inputData))[:inputLen:inputLen]
+	tgtSlice := (*[1 << 30]float32)(unsafe.Pointer(targetData))[:targetLen:targetLen]
+
+	numBatches := total / (bs * id)
+	if numBatches == 0 {
+		return errJSON("inputLen too small for one batch")
+	}
+
+	batches := make([]poly.TrainingBatch[float32], numBatches)
+	for b := 0; b < numBatches; b++ {
+		iOff := b * bs * id
+		tOff := b * bs * od
+		inCopy  := make([]float32, bs*id)
+		tgtCopy := make([]float32, bs*od)
+		copy(inCopy,  inSlice[iOff:iOff+bs*id])
+		copy(tgtCopy, tgtSlice[tOff:tOff+bs*od])
+		batches[b] = poly.TrainingBatch[float32]{
+			Input:  poly.NewTensorFromSlice(inCopy,  bs, id),
+			Target: poly.NewTensorFromSlice(tgtCopy, bs, od),
+		}
+	}
+
+	config := poly.DefaultTrainingConfig()
+	if s := C.GoString(configJSON); s != "" && s != "null" {
+		if err := json.Unmarshal([]byte(s), config); err != nil {
+			return errJSON("invalid config JSON: " + err.Error())
+		}
+	}
+
+	result, err := poly.Train[float32](n, batches, config)
+	if err != nil {
+		return errJSON(err.Error())
+	}
+
+	resp := map[string]interface{}{
+		"loss_history":   result.LossHistory,
+		"final_loss":     result.FinalLoss,
+		"total_time_ms":  result.TotalTime.Milliseconds(),
+	}
+	data, _ := json.Marshal(resp)
+	return C.CString(string(data))
+}
+
 //export LoomDenseBackward
 func LoomDenseBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
