@@ -91,6 +91,21 @@ from .utils import (
     layer_backward,
     # Training helper
     train_network,
+    # DNA Splice / Crossover
+    default_splice_config,
+    splice_dna,
+    splice_dna_with_report,
+    # NEAT Mutation / Evolution
+    default_neat_config,
+    neat_mutate,
+    new_neat_population,
+    neat_population_size,
+    neat_population_get_network,
+    neat_population_evolve,
+    neat_population_best,
+    neat_population_best_fitness,
+    neat_population_summary,
+    free_neat_population,
 )
 
 __version__ = "0.7.0"
@@ -187,4 +202,19 @@ __all__ = [
     "layer_backward",
     # Training helper
     "train_network",
+    # DNA Splice / Crossover
+    "default_splice_config",
+    "splice_dna",
+    "splice_dna_with_report",
+    # NEAT Mutation / Evolution
+    "default_neat_config",
+    "neat_mutate",
+    "new_neat_population",
+    "neat_population_size",
+    "neat_population_get_network",
+    "neat_population_evolve",
+    "neat_population_best",
+    "neat_population_best_fitness",
+    "neat_population_summary",
+    "free_neat_population",
 ]

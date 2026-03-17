@@ -43,4 +43,10 @@ if errorlevel 1 (
 echo.
 echo Build complete. Files are in dist\windows_%TARGET_ARCH%
 echo.
+
+:: Mirror to Python source
+echo Mirroring to Python source...
+xcopy /s /i /y dist ..\..\..\python\src\welvet
+echo.
+
 endlocal
