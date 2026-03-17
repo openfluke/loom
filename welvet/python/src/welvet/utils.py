@@ -406,23 +406,6 @@ if _LoomForwardWGPU:
     _LoomForwardWGPU.restype = ctypes.c_char_p
     _LoomForwardWGPU.argtypes = [ctypes.c_longlong, ctypes.c_longlong]
 
-_LoomForwardTokenIDsWGPU = _sym("LoomForwardTokenIDsWGPU")
-if _LoomForwardTokenIDsWGPU:
-    _LoomForwardTokenIDsWGPU.restype = ctypes.c_char_p
-    _LoomForwardTokenIDsWGPU.argtypes = [
-        ctypes.c_longlong, 
-        ctypes.POINTER(ctypes.c_uint), 
-        ctypes.c_int, 
-        ctypes.c_int, 
-        ctypes.c_int
-    ]
-
-_LoomCalculateOptimalGPUTileSizeFromLimits = _sym("LoomCalculateOptimalGPUTileSizeFromLimits")
-if _LoomCalculateOptimalGPUTileSizeFromLimits:
-    _LoomCalculateOptimalGPUTileSizeFromLimits.restype = ctypes.c_int
-    _LoomCalculateOptimalGPUTileSizeFromLimits.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
-
-# GPU Buffer Management
 _LoomCreateGPUBuffer = _sym("LoomCreateGPUBuffer")
 if _LoomCreateGPUBuffer:
     _LoomCreateGPUBuffer.restype = ctypes.c_longlong
@@ -433,16 +416,135 @@ if _LoomFreeGPUBuffer:
     _LoomFreeGPUBuffer.restype = None
     _LoomFreeGPUBuffer.argtypes = [ctypes.c_longlong]
 
-# Shader Source Getters
-_LoomShaderDenseBackwardDX = _sym("LoomShaderDenseBackwardDX")
-if _LoomShaderDenseBackwardDX:
-    _LoomShaderDenseBackwardDX.restype = ctypes.c_char_p
-    _LoomShaderDenseBackwardDX.argtypes = [ctypes.c_int]
+_LoomWriteGPUBuffer = _sym("LoomWriteGPUBuffer")
+if _LoomWriteGPUBuffer:
+    _LoomWriteGPUBuffer.restype = ctypes.c_char_p
+    _LoomWriteGPUBuffer.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
 
-_LoomShaderDenseBackwardDW = _sym("LoomShaderDenseBackwardDW")
-if _LoomShaderDenseBackwardDW:
-    _LoomShaderDenseBackwardDW.restype = ctypes.c_char_p
-    _LoomShaderDenseBackwardDW.argtypes = [ctypes.c_int]
+_LoomReadGPUBuffer = _sym("LoomReadGPUBuffer")
+if _LoomReadGPUBuffer:
+    _LoomReadGPUBuffer.restype = ctypes.c_char_p
+    _LoomReadGPUBuffer.argtypes = [ctypes.c_longlong, ctypes.c_longlong]
+
+_LoomDispatchDense = _sym("LoomDispatchDense")
+if _LoomDispatchDense:
+    _LoomDispatchDense.restype = ctypes.c_char_p
+    _LoomDispatchDense.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
+
+_LoomDispatchDenseQ4 = _sym("LoomDispatchDenseQ4")
+if _LoomDispatchDenseQ4:
+    _LoomDispatchDenseQ4.restype = ctypes.c_char_p
+    _LoomDispatchDenseQ4.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
+
+_LoomDispatchMHA = _sym("LoomDispatchMHA")
+if _LoomDispatchMHA:
+    _LoomDispatchMHA.restype = ctypes.c_char_p
+    _LoomDispatchMHA.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
+
+_LoomDispatchSwiGLU = _sym("LoomDispatchSwiGLU")
+if _LoomDispatchSwiGLU:
+    _LoomDispatchSwiGLU.restype = ctypes.c_char_p
+    _LoomDispatchSwiGLU.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
+
+_LoomDispatchRMSNorm = _sym("LoomDispatchRMSNorm")
+if _LoomDispatchRMSNorm:
+    _LoomDispatchRMSNorm.restype = ctypes.c_char_p
+    _LoomDispatchRMSNorm.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_float,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchKVUpdate = _sym("LoomDispatchKVUpdate")
+if _LoomDispatchKVUpdate:
+    _LoomDispatchKVUpdate.restype = ctypes.c_char_p
+    _LoomDispatchKVUpdate.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchResidual = _sym("LoomDispatchResidual")
+if _LoomDispatchResidual:
+    _LoomDispatchResidual.restype = ctypes.c_char_p
+    _LoomDispatchResidual.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
+
+_LoomDispatchRoPE = _sym("LoomDispatchRoPE")
+if _LoomDispatchRoPE:
+    _LoomDispatchRoPE.restype = ctypes.c_char_p
+    _LoomDispatchRoPE.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_longlong]
+
+_LoomDispatchEmbedding = _sym("LoomDispatchEmbedding")
+if _LoomDispatchEmbedding:
+    _LoomDispatchEmbedding.restype = ctypes.c_char_p
+    _LoomDispatchEmbedding.argtypes = [ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
+
+_LoomDispatchRNNStep = _sym("LoomDispatchRNNStep")
+if _LoomDispatchRNNStep:
+    _LoomDispatchRNNStep.restype = ctypes.c_char_p
+    _LoomDispatchRNNStep.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchLSTMStep = _sym("LoomDispatchLSTMStep")
+if _LoomDispatchLSTMStep:
+    _LoomDispatchLSTMStep.restype = ctypes.c_char_p
+    _LoomDispatchLSTMStep.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchCNN1 = _sym("LoomDispatchCNN1")
+if _LoomDispatchCNN1:
+    _LoomDispatchCNN1.restype = ctypes.c_char_p
+    _LoomDispatchCNN1.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchCNN2 = _sym("LoomDispatchCNN2")
+if _LoomDispatchCNN2:
+    _LoomDispatchCNN2.restype = ctypes.c_char_p
+    _LoomDispatchCNN2.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchCNN3 = _sym("LoomDispatchCNN3")
+if _LoomDispatchCNN3:
+    _LoomDispatchCNN3.restype = ctypes.c_char_p
+    _LoomDispatchCNN3.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong
+    ]
+
+_LoomDispatchSwiGLUQ4 = _sym("LoomDispatchSwiGLUQ4")
+if _LoomDispatchSwiGLUQ4:
+    _LoomDispatchSwiGLUQ4.restype = ctypes.c_char_p
+    _LoomDispatchSwiGLUQ4.argtypes = [
+        ctypes.c_longlong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong,
+        ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int
+    ]
 
 # Dense Backward
 _LoomDispatchDenseBackwardDX = _sym("LoomDispatchDenseBackwardDX")
@@ -984,6 +1086,19 @@ class LayerType:
     PARALLEL        = 16  # MoE / Ensemble
     SEQUENTIAL      = 17
     RESIDUAL        = 18
+
+    _NAMES = {
+        0: "Dense", 1: "MHA", 2: "SwiGLU", 3: "RMSNorm",
+        4: "CNN1", 5: "CNN2", 6: "CNN3", 7: "ConvTransposed1D",
+        8: "ConvTransposed2D", 9: "ConvTransposed3D",
+        10: "RNN", 11: "LSTM", 12: "LayerNorm", 13: "Embedding",
+        14: "KMeans", 15: "Softmax", 16: "Parallel", 17: "Sequential",
+        18: "Residual",
+    }
+
+    @classmethod
+    def name(cls, l_type: int) -> str:
+        return cls._NAMES.get(l_type, f"layer({l_type})")
 
 
 class Activation:
@@ -1539,6 +1654,213 @@ def free_gpu_buffer(buf_handle: int) -> None:
         raise RuntimeError("LoomFreeGPUBuffer not available in library")
     _LoomFreeGPUBuffer(int(buf_handle))
 
+
+def write_gpu_buffer(network_handle: int, buf_handle: int, data: List[float]) -> dict:
+    """Write an array of floats to a given GPU buffer."""
+    if not _LoomWriteGPUBuffer:
+        raise RuntimeError("LoomWriteGPUBuffer not available in library")
+    arr, length = _to_cfloat_array(data)
+    result = _parse_json(_LoomWriteGPUBuffer(int(network_handle), int(buf_handle), arr, length))
+    return _check(result, "write_gpu_buffer")
+
+
+def read_gpu_buffer(network_handle: int, buf_handle: int) -> List[float]:
+    """Read an array of floats from a GPU buffer to the host."""
+    if not _LoomReadGPUBuffer:
+        raise RuntimeError("LoomReadGPUBuffer not available in library")
+    result = _parse_json(_LoomReadGPUBuffer(int(network_handle), int(buf_handle)))
+    _check(result, "read_gpu_buffer")
+    return result if isinstance(result, list) else []
+
+
+# ---------------------------------------------------------------------------
+# GPU Dispatch (Forward)
+# ---------------------------------------------------------------------------
+
+def dispatch_dense(network_handle: int, batch_size: int, input_size: int,
+                   output_size: int, input_handle: int, weight_handle: int,
+                   output_handle: int, tile_size: int = 32) -> dict:
+    if not _LoomDispatchDense:
+        raise RuntimeError("LoomDispatchDense not available")
+    result = _parse_json(_LoomDispatchDense(
+        int(network_handle), int(batch_size), int(input_size), int(output_size),
+        int(input_handle), int(weight_handle), int(output_handle), int(tile_size)
+    ))
+    return _check(result, "dispatch_dense")
+
+def dispatch_dense_q4(network_handle: int, batch_size: int, input_size: int,
+                      output_size: int, input_handle: int, scale_handle: int,
+                      weight_handle: int, output_handle: int, tile_size: int = 32) -> dict:
+    if not _LoomDispatchDenseQ4:
+        raise RuntimeError("LoomDispatchDenseQ4 not available")
+    result = _parse_json(_LoomDispatchDenseQ4(
+        int(network_handle), int(batch_size), int(input_size), int(output_size),
+        int(input_handle), int(scale_handle), int(weight_handle), int(output_handle), int(tile_size)
+    ))
+    return _check(result, "dispatch_dense_q4")
+
+def dispatch_mha(network_handle: int, num_heads: int, num_kv_heads: int,
+                 head_dim: int, seq_len: int, kv_offset: int, max_seq_len: int,
+                 q_handle: int, k_handle: int, v_handle: int, o_handle: int,
+                 tile_size: int = 32) -> dict:
+    if not _LoomDispatchMHA:
+        raise RuntimeError("LoomDispatchMHA not available")
+    result = _parse_json(_LoomDispatchMHA(
+        int(network_handle), int(num_heads), int(num_kv_heads), int(head_dim),
+        int(seq_len), int(kv_offset), int(max_seq_len),
+        int(q_handle), int(k_handle), int(v_handle), int(o_handle), int(tile_size)
+    ))
+    return _check(result, "dispatch_mha")
+
+def dispatch_swiglu(network_handle: int, batch_size: int, input_size: int,
+                    output_size: int, input_handle: int, gate_handle: int,
+                    up_handle: int, output_handle: int, tile_size: int = 32) -> dict:
+    if not _LoomDispatchSwiGLU:
+        raise RuntimeError("LoomDispatchSwiGLU not available")
+    result = _parse_json(_LoomDispatchSwiGLU(
+        int(network_handle), int(batch_size), int(input_size), int(output_size),
+        int(input_handle), int(gate_handle), int(up_handle), int(output_handle), int(tile_size)
+    ))
+    return _check(result, "dispatch_swiglu")
+
+def dispatch_rms_norm(network_handle: int, batch_size: int, size: int,
+                      epsilon: float, input_handle: int, weight_handle: int,
+                      output_handle: int) -> dict:
+    if not _LoomDispatchRMSNorm:
+        raise RuntimeError("LoomDispatchRMSNorm not available")
+    result = _parse_json(_LoomDispatchRMSNorm(
+        int(network_handle), int(batch_size), int(size), float(epsilon),
+        int(input_handle), int(weight_handle), int(output_handle)
+    ))
+    return _check(result, "dispatch_rms_norm")
+
+def dispatch_kv_update(network_handle: int , offset: int, head_dim: int,
+                       max_seq_len: int, num_kv_heads: int, num_tokens: int,
+                       k_cache_handle: int, v_cache_handle: int,
+                       new_k_handle: int, new_v_handle: int) -> dict:
+    if not _LoomDispatchKVUpdate:
+        raise RuntimeError("LoomDispatchKVUpdate not available")
+    result = _parse_json(_LoomDispatchKVUpdate(
+        int(network_handle), int(offset), int(head_dim), int(max_seq_len),
+        int(num_kv_heads), int(num_tokens),
+        int(k_cache_handle), int(v_cache_handle), int(new_k_handle), int(new_v_handle)
+    ))
+    return _check(result, "dispatch_kv_update")
+
+def dispatch_residual(network_handle: int, size: int, input_handle: int,
+                      residual_handle: int) -> dict:
+    if not _LoomDispatchResidual:
+        raise RuntimeError("LoomDispatchResidual not available")
+    result = _parse_json(_LoomDispatchResidual(
+        int(network_handle), int(size), int(input_handle), int(residual_handle)
+    ))
+    return _check(result, "dispatch_residual")
+
+def dispatch_rope(network_handle: int, seq_len: int, head_dim: int,
+                  num_heads: int, offset: int, theta: float, target_handle: int) -> dict:
+    if not _LoomDispatchRoPE:
+        raise RuntimeError("LoomDispatchRoPE not available")
+    result = _parse_json(_LoomDispatchRoPE(
+        int(network_handle), int(seq_len), int(head_dim), int(num_heads),
+        int(offset), float(theta), int(target_handle)
+    ))
+    return _check(result, "dispatch_rope")
+
+def dispatch_embedding(network_handle: int, vocab_size: int, hidden_size: int,
+                       num_tokens: int, indices_handle: int, weights_handle: int,
+                       output_handle: int) -> dict:
+    if not _LoomDispatchEmbedding:
+        raise RuntimeError("LoomDispatchEmbedding not available")
+    result = _parse_json(_LoomDispatchEmbedding(
+        int(network_handle), int(vocab_size), int(hidden_size), int(num_tokens),
+        int(indices_handle), int(weights_handle), int(output_handle)
+    ))
+    return _check(result, "dispatch_embedding")
+
+def dispatch_rnn_step(network_handle: int, batch_size: int, input_size: int,
+                      hidden_size: int, input_handle: int, h_prev_handle: int,
+                      w_ih_handle: int, w_hh_handle: int, bias_handle: int,
+                      h_curr_handle: int) -> dict:
+    if not _LoomDispatchRNNStep:
+        raise RuntimeError("LoomDispatchRNNStep not available")
+    result = _parse_json(_LoomDispatchRNNStep(
+        int(network_handle), int(batch_size), int(input_size), int(hidden_size),
+        int(input_handle), int(h_prev_handle), int(w_ih_handle), int(w_hh_handle),
+        int(bias_handle), int(h_curr_handle)
+    ))
+    return _check(result, "dispatch_rnn_step")
+
+def dispatch_lstm_step(network_handle: int, batch_size: int, input_size: int,
+                       hidden_size: int, input_handle: int, h_prev_handle: int,
+                       c_prev_handle: int, weight_handle: int,
+                       h_curr_handle: int, c_curr_handle: int) -> dict:
+    if not _LoomDispatchLSTMStep:
+        raise RuntimeError("LoomDispatchLSTMStep not available")
+    result = _parse_json(_LoomDispatchLSTMStep(
+        int(network_handle), int(batch_size), int(input_size), int(hidden_size),
+        int(input_handle), int(h_prev_handle), int(c_prev_handle),
+        int(weight_handle), int(h_curr_handle), int(c_curr_handle)
+    ))
+    return _check(result, "dispatch_lstm_step")
+
+def dispatch_cnn1(network_handle: int, batch_size: int, in_c: int, in_l: int,
+                  out_c: int, out_l: int, k_size: int, stride: int, padding: int,
+                  input_handle: int, weight_handle: int, output_handle: int) -> dict:
+    if not _LoomDispatchCNN1:
+        raise RuntimeError("LoomDispatchCNN1 not available")
+    result = _parse_json(_LoomDispatchCNN1(
+        int(network_handle), int(batch_size), int(in_c), int(in_l),
+        int(out_c), int(out_l), int(k_size), int(stride), int(padding),
+        int(input_handle), int(weight_handle), int(output_handle)
+    ))
+    return _check(result, "dispatch_cnn1")
+
+def dispatch_cnn2(network_handle: int, batch_size: int, in_c: int, in_h: int,
+                  in_w: int, out_c: int, out_h: int, out_w: int,
+                  k_h: int, k_w: int, stride_h: int, stride_w: int, pad_h: int, pad_w: int,
+                  input_handle: int, weight_handle: int, output_handle: int) -> dict:
+    if not _LoomDispatchCNN2:
+        raise RuntimeError("LoomDispatchCNN2 not available")
+    result = _parse_json(_LoomDispatchCNN2(
+        int(network_handle), int(batch_size), int(in_c), int(in_h), int(in_w),
+        int(out_c), int(out_h), int(out_w), int(k_h), int(k_w),
+        int(stride_h), int(stride_w), int(pad_h), int(pad_w),
+        int(input_handle), int(weight_handle), int(output_handle)
+    ))
+    return _check(result, "dispatch_cnn2")
+
+def dispatch_cnn3(network_handle: int, batch_size: int, in_c: int, in_d: int,
+                  in_h: int, in_w: int, out_c: int, out_d: int, out_h: int,
+                  out_w: int, k_d: int, k_h: int, k_w: int, s_d: int, s_h: int, s_w: int,
+                  p_d: int, p_h: int, p_w: int,
+                  input_handle: int, weight_handle: int, output_handle: int) -> dict:
+    if not _LoomDispatchCNN3:
+        raise RuntimeError("LoomDispatchCNN3 not available")
+    result = _parse_json(_LoomDispatchCNN3(
+        int(network_handle), int(batch_size), int(in_c), int(in_d), int(in_h), int(in_w),
+        int(out_c), int(out_d), int(out_h), int(out_w),
+        int(k_d), int(k_h), int(k_w), int(s_d), int(s_h), int(s_w),
+        int(p_d), int(p_h), int(p_w),
+        int(input_handle), int(weight_handle), int(output_handle)
+    ))
+    return _check(result, "dispatch_cnn3")
+
+def dispatch_swiglu_q4(network_handle: int, batch_size: int, input_size: int,
+                       output_size: int, input_handle: int, gate_scale_handle: int,
+                       gate_weight_handle: int, up_scale_handle: int,
+                       up_weight_handle: int, output_handle: int, tile_size: int = 32) -> dict:
+    if not _LoomDispatchSwiGLUQ4:
+        raise RuntimeError("LoomDispatchSwiGLUQ4 not available")
+    result = _parse_json(_LoomDispatchSwiGLUQ4(
+        int(network_handle), int(batch_size), int(input_size), int(output_size),
+        int(input_handle), int(gate_scale_handle), int(gate_weight_handle),
+        int(up_scale_handle), int(up_weight_handle), int(output_handle), int(tile_size)
+    ))
+    return _check(result, "dispatch_swiglu_q4")
+
+# ---------------------------------------------------------------------------
+# GPU Dispatch (Backward)
+# ---------------------------------------------------------------------------
 
 def shader_dense_backward_dx(tile_size: int = 16) -> str:
     """Return the WGSL shader source for dense backward input gradient (DX)."""
