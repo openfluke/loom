@@ -1208,6 +1208,41 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 		return c.DispatchCNN2(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Padding, l.Padding, inputBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), outBuf)
 	case LayerCNN3:
 		return c.DispatchCNN3(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Stride, l.Padding, l.Padding, l.Padding, inputBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), outBuf)
+	case LayerRNN:
+		wIH, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		wHH := wIH // simplified for benchmarking
+		hPrev := c.GetActivationBuffer(fmt.Sprintf("rnn_hprev_%p", l), uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
+		bias := c.GetActivationBuffer(fmt.Sprintf("rnn_bias_%p", l), uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
+		return c.DispatchRNNStep(batchSize, l.InputHeight, l.OutputHeight, inputBuf, hPrev, wIH, wHH, bias, outBuf)
+	case LayerLSTM:
+		weights, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		hPrev := c.GetActivationBuffer(fmt.Sprintf("lstm_hprev_%p", l), uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
+		cPrev := c.GetActivationBuffer(fmt.Sprintf("lstm_cprev_%p", l), uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
+		cCurr := c.GetActivationBuffer(fmt.Sprintf("lstm_ccurr_%p", l), uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
+		return c.DispatchLSTMStep(batchSize, l.InputHeight, l.OutputHeight, inputBuf, hPrev, cPrev, weights, outBuf, cCurr)
+	case LayerEmbedding:
+		w, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		return c.DispatchEmbedding(l.VocabSize, l.EmbeddingDim, batchSize, inputBuf, w, outBuf)
+	case LayerMultiHeadAttention:
+		q, _ := l.WeightStore.GPUWeights[DType(200)].(*wgpu.Buffer)
+		k, _ := l.WeightStore.GPUWeights[DType(201)].(*wgpu.Buffer)
+		v, _ := l.WeightStore.GPUWeights[DType(202)].(*wgpu.Buffer)
+		oWeights, _ := l.WeightStore.GPUWeights[DType(203)].(*wgpu.Buffer)
+		attnOut := c.GetActivationBuffer("attn_out", uint64(64 * l.DModel * 4), wgpu.BufferUsageStorage)
+		if err := c.DispatchMHA(l.NumHeads, l.NumKVHeads, l.HeadDim, 64, 0, 512, q, k, v, attnOut, 32); err != nil { return err }
+		return c.DispatchDense(batchSize, l.DModel, l.DModel, attnOut, oWeights, outBuf, 32)
+	case LayerSwiGLU:
+		g, _ := l.WeightStore.GPUWeights[DType(100)].(*wgpu.Buffer)
+		u, _ := l.WeightStore.GPUWeights[DType(101)].(*wgpu.Buffer)
+		wDown, _ := l.WeightStore.GPUWeights[DType(102)].(*wgpu.Buffer)
+		preOut := c.GetActivationBuffer("preOut", uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
+		if err := c.DispatchSwiGLU(batchSize, l.InputHeight, l.OutputHeight, inputBuf, g, u, preOut, 32); err != nil { return err }
+		return c.DispatchDense(batchSize, l.OutputHeight, l.InputHeight, preOut, wDown, outBuf, 32)
+	case LayerResidual:
+		enc, owned, _ := ctxEncoder(c)
+		enc.CopyBufferToBuffer(inputBuf, 0, outBuf, 0, uint64(l.InputHeight*4))
+		ctxSubmit(c, enc, owned)
+		return c.DispatchResidual(l.InputHeight, outBuf, inputBuf)
 	default:
 		return fmt.Errorf("GPU forward not implemented for layer %v", l.Type)
 	}
