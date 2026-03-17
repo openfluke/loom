@@ -41,10 +41,10 @@ def _lib_path() -> Path:
         platform_dir = f"linux_{arch_key}"
     elif plat == "darwin":
         lib_name = "welvet.dylib"
-        platform_dir = f"darwin_{arch_key}"
+        platform_dir = f"macos_{arch_key}"
         candidate = PKG_DIR / platform_dir / lib_name
         if not Path(candidate).is_file():
-            platform_dir = "darwin_universal"
+            platform_dir = "macos_universal"
     elif plat.startswith("win"):
         lib_name = "welvet.dll"
         platform_dir = f"windows_{arch_key}"

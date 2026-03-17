@@ -128,7 +128,7 @@ from .utils import (
     free_neat_population,
 )
 
-__version__ = "0.7.0"
+__version__ = "0.74.0"
 
 __all__ = [
     # Version

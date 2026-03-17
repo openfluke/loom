@@ -262,6 +262,11 @@ output = sequential_forward(net, [float(i) for i in ids])
 | macOS    | x86-64      | `welvet.dylib` |
 | macOS    | Universal   | `welvet.dylib` |
 | Android  | ARM64       | `welvet.so` |
+| Android  | x86-64      | `welvet.so` |
+| iOS      | ARM64 (device) | `welvet.dylib` |
+| iOS      | Simulator (x86-64) | `welvet.dylib` |
+| iOS      | Simulator (ARM64) | `welvet.dylib` |
+| iOS      | XCFramework (all slices) | `.xcframework` |
 
 ---
 
