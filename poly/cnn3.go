@@ -109,7 +109,7 @@ func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 					for od := 0; od < outD; od++ {
 						for oh := 0; oh < outH; oh++ {
 							for ow := 0; ow < outW; ow++ {
-								var sum int64
+								var sum float64
 								for ic := 0; ic < inC; ic++ {
 									for kd := 0; kd < kSize; kd++ {
 										for kh := 0; kh < kSize; kh++ {
@@ -120,11 +120,14 @@ func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 												if id >= 0 && id < inD && ih >= 0 && ih < inH && iw >= 0 && iw < inW {
 													inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id*inH*inW + ih*inW + iw
 													kWIdx := f*inC*kSize*kSize*kSize + ic*kSize*kSize*kSize + kd*kSize*kSize + kh*kSize + kw
-													sum += int64(input.Data[inIdx]) * rawW[kWIdx]
+													sum += float64(input.Data[inIdx]) * float64(rawW[kWIdx])
 												}
 											}
 										}
 									}
+								}
+								if scale != 1.0 {
+									sum *= float64(scale)
 								}
 								outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
 								preAct.Data[outIdx] = T(sum)
@@ -143,7 +146,7 @@ func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 					for od := 0; od < outD; od++ {
 						for oh := 0; oh < outH; oh++ {
 							for ow := 0; ow < outW; ow++ {
-								var sum int32
+								var sum float32
 								for ic := 0; ic < inC; ic++ {
 									for kd := 0; kd < kSize; kd++ {
 										for kh := 0; kh < kSize; kh++ {
@@ -154,11 +157,14 @@ func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 												if id >= 0 && id < inD && ih >= 0 && ih < inH && iw >= 0 && iw < inW {
 													inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id*inH*inW + ih*inW + iw
 													kWIdx := f*inC*kSize*kSize*kSize + ic*kSize*kSize*kSize + kd*kSize*kSize + kh*kSize + kw
-													sum += int32(input.Data[inIdx]) * rawW[kWIdx]
+													sum += float32(input.Data[inIdx]) * float32(rawW[kWIdx])
 												}
 											}
 										}
 									}
+								}
+								if scale != 1.0 {
+									sum *= scale
 								}
 								outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
 								preAct.Data[outIdx] = T(sum)
@@ -177,7 +183,7 @@ func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 					for od := 0; od < outD; od++ {
 						for oh := 0; oh < outH; oh++ {
 							for ow := 0; ow < outW; ow++ {
-								var sum int32
+								var sum float32
 								for ic := 0; ic < inC; ic++ {
 									for kd := 0; kd < kSize; kd++ {
 										for kh := 0; kh < kSize; kh++ {
@@ -188,11 +194,14 @@ func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 												if id >= 0 && id < inD && ih >= 0 && ih < inH && iw >= 0 && iw < inW {
 													inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id*inH*inW + ih*inW + iw
 													kWIdx := f*inC*kSize*kSize*kSize + ic*kSize*kSize*kSize + kd*kSize*kSize + kh*kSize + kw
-													sum += int32(input.Data[inIdx]) * int32(rawW[kWIdx])
+													sum += float32(input.Data[inIdx]) * float32(rawW[kWIdx])
 												}
 											}
 										}
 									}
+								}
+								if scale != 1.0 {
+									sum *= scale
 								}
 								outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
 								preAct.Data[outIdx] = T(sum)
@@ -211,7 +220,7 @@ func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 					for od := 0; od < outD; od++ {
 						for oh := 0; oh < outH; oh++ {
 							for ow := 0; ow < outW; ow++ {
-								var sum int32
+								var sum float32
 								for ic := 0; ic < inC; ic++ {
 									for kd := 0; kd < kSize; kd++ {
 										for kh := 0; kh < kSize; kh++ {
@@ -222,11 +231,14 @@ func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 												if id >= 0 && id < inD && ih >= 0 && ih < inH && iw >= 0 && iw < inW {
 													inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id*inH*inW + ih*inW + iw
 													kWIdx := f*inC*kSize*kSize*kSize + ic*kSize*kSize*kSize + kd*kSize*kSize + kh*kSize + kw
-													sum += int32(input.Data[inIdx]) * int32(rawW[kWIdx])
+													sum += float32(input.Data[inIdx]) * float32(rawW[kWIdx])
 												}
 											}
 										}
 									}
+								}
+								if scale != 1.0 {
+									sum *= scale
 								}
 								outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
 								preAct.Data[outIdx] = T(sum)
@@ -259,25 +271,23 @@ func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 											inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id*inH*inW + ih*inW + iw
 											kWIdx := f*inC*kSize*kSize*kSize + ic*kSize*kSize*kSize + kd*kSize*kSize + kh*kSize + kw
 
-											val := float32(input.Data[inIdx])
-											var wVal float32
 											if bWeights, ok := weights.([]uint64); ok {
 												isSet := (bWeights[kWIdx/64] >> (uint(kWIdx) % 64)) & 1
 												if isSet != 0 {
-													wVal = scale
+													sum += float32(input.Data[inIdx])
 												} else {
-													wVal = -scale
+													sum -= float32(input.Data[inIdx])
 												}
 											} else if wData != nil {
-												wVal = float32(wData[kWIdx])
-												// Precision Simulation
-												wVal = SimulatePrecision(wVal, layer.DType, scale)
+												sum += float32(input.Data[inIdx]) * float32(wData[kWIdx])
 											}
-											sum += val * wVal
 										}
 									}
 								}
 							}
+						}
+						if scale != 1.0 {
+							sum *= scale
 						}
 						outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
 						preAct.Data[outIdx] = T(sum)
@@ -565,14 +575,16 @@ func CNN3ForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preA
 		case []int8:
 			return cnn3ForwardTiledGenericParallel[T, int8](layer, input, w, scale)
 		case []float64:
-			return cnn3ForwardTiledGenericParallel[T, float64](layer, input, w, 1.0)
+			return cnn3ForwardTiledF64Parallel[T](layer, input, w)
+		case []int64:
+			return cnn3ForwardTiledGenericParallel[T, int64](layer, input, w, scale)
 		case []int32:
 			return cnn3ForwardTiledGenericParallel[T, int32](layer, input, w, scale)
 		case []int16:
 			return cnn3ForwardTiledGenericParallel[T, int16](layer, input, w, scale)
 		default:
 			wData := CastWeights[T](weights)
-			return cnn3ForwardTiledGenericParallel[T, T](layer, input, wData, 1.0)
+			return cnn3ForwardTiledGenericParallel[T, T](layer, input, wData, scale)
 		}
 	}
 
@@ -582,18 +594,18 @@ func CNN3ForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preA
 	case []int8:
 		return cnn3ForwardTiledGeneric[T, int8](layer, input, w, scale)
 	case []float64:
-		return cnn3ForwardTiledGeneric[T, float64](layer, input, w, 1.0)
+		return cnn3ForwardTiledF64[T](layer, input, w)
+	case []int64:
+		return cnn3ForwardTiledGeneric[T, int64](layer, input, w, scale)
 	case []int32:
 		return cnn3ForwardTiledGeneric[T, int32](layer, input, w, scale)
 	case []int16:
 		return cnn3ForwardTiledGeneric[T, int16](layer, input, w, scale)
 	case []uint64:
-		// Specialized bit-packed binary kernel
 		return cnn3ForwardTiledBinaryPacked[T](layer, input, w, scale)
 	default:
-		// Fallback for non-standard or packed types via CastWeights (the "old" way)
 		wData := CastWeights[T](weights)
-		return cnn3ForwardTiledGeneric[T, T](layer, input, wData, 1.0)
+		return cnn3ForwardTiledGeneric[T, T](layer, input, wData, scale)
 	}
 }
 
@@ -731,6 +743,199 @@ func cnn3ForwardTiledGenericParallel[T Numeric, W Numeric](layer *VolumetricLaye
 	}
 	wg.Wait()
 
+	return preAct, postAct
+}
+
+// cnn3ForwardTiledF64Parallel is the float64-accumulating parallel tiled forward pass.
+// Using float64 accumulation preserves precision for float64 weight convolutions.
+func cnn3ForwardTiledF64Parallel[T Numeric](layer *VolumetricLayer, input *Tensor[T], weights []float64) (preAct, postAct *Tensor[T]) {
+	batchSize := input.Shape[0]
+	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
+	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
+	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
+	tileSize := layer.TileSize
+	if tileSize <= 0 {
+		tileSize = 8
+	}
+
+	preAct = NewTensor[T](batchSize, filters, outD, outH, outW)
+	postAct = NewTensor[T](batchSize, filters, outD, outH, outW)
+
+	inCStride := inD * inH * inW
+	inDStride := inH * inW
+	inHStride := inW
+	filtCStride := kSize * kSize * kSize
+	filtDStride := kSize * kSize
+	filtHStride := kSize
+	outFStride := outD * outH * outW
+	outDStride := outH * outW
+	outHStride := outW
+
+	numCPUs := runtime.NumCPU()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, numCPUs)
+
+	for b := 0; b < batchSize; b++ {
+		bInOffset := b * inC * inCStride
+		bOutOffset := b * filters * outFStride
+
+		for f := 0; f < filters; f++ {
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(b, f int) {
+				defer func() { <-sem; wg.Done() }()
+				fWeightsOffset := f * inC * filtCStride
+
+				for odTile := 0; odTile < outD; odTile += tileSize {
+					odEnd := odTile + tileSize
+					if odEnd > outD { odEnd = outD }
+					for ohTile := 0; ohTile < outH; ohTile += tileSize {
+						ohEnd := ohTile + tileSize
+						if ohEnd > outH { ohEnd = outH }
+						for owTile := 0; owTile < outW; owTile += tileSize {
+							owEnd := owTile + tileSize
+							if owEnd > outW { owEnd = outW }
+							for od := odTile; od < odEnd; od++ {
+								for oh := ohTile; oh < ohEnd; oh++ {
+									for ow := owTile; ow < owEnd; ow++ {
+										var sum float64
+										outIdx := bOutOffset + f*outFStride + od*outDStride + oh*outHStride + ow
+										for ic := 0; ic < inC; ic++ {
+											icInOffset := bInOffset + ic*inCStride
+											icWeightsOffset := fWeightsOffset + ic*filtCStride
+											for kd := 0; kd < kSize; kd++ {
+												id := od*stride + kd - padding
+												if id < 0 || id >= inD { continue }
+												idInOffset := icInOffset + id*inDStride
+												idWeightsOffset := icWeightsOffset + kd*filtDStride
+												for kh := 0; kh < kSize; kh++ {
+													ih := oh*stride + kh - padding
+													if ih < 0 || ih >= inH { continue }
+													ihInOffset := idInOffset + ih*inHStride
+													ihWeightsOffset := idWeightsOffset + kh*filtHStride
+													for kw := 0; kw < kSize; kw++ {
+														iw := ow*stride + kw - padding
+														if iw >= 0 && iw < inW {
+															sum += float64(input.Data[ihInOffset+iw]) * weights[ihWeightsOffset+kw]
+														}
+													}
+												}
+											}
+										}
+										preAct.Data[outIdx] = T(sum)
+									}
+								}
+							}
+						}
+					}
+				}
+			}(b, f)
+		}
+	}
+	wg.Wait()
+
+	numCPUs2 := runtime.NumCPU()
+	var wg2 sync.WaitGroup
+	wg2.Add(numCPUs2)
+	totalElements := batchSize * filters * outD * outH * outW
+	chunkSize := (totalElements + numCPUs2 - 1) / numCPUs2
+	for c := 0; c < numCPUs2; c++ {
+		start := c * chunkSize
+		end := start + chunkSize
+		if end > totalElements { end = totalElements }
+		go func(start, end int) {
+			defer wg2.Done()
+			for i := start; i < end; i++ {
+				postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
+			}
+		}(start, end)
+	}
+	wg2.Wait()
+	return preAct, postAct
+}
+
+// cnn3ForwardTiledF64 is the float64-accumulating single-core tiled forward pass.
+func cnn3ForwardTiledF64[T Numeric](layer *VolumetricLayer, input *Tensor[T], weights []float64) (preAct, postAct *Tensor[T]) {
+	batchSize := input.Shape[0]
+	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
+	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
+	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
+	tileSize := layer.TileSize
+	if tileSize <= 0 { tileSize = 8 }
+
+	preAct = NewTensor[T](batchSize, filters, outD, outH, outW)
+	postAct = NewTensor[T](batchSize, filters, outD, outH, outW)
+
+	inCStride := inD * inH * inW
+	inDStride := inH * inW
+	inHStride := inW
+	filtCStride := kSize * kSize * kSize
+	filtDStride := kSize * kSize
+	filtHStride := kSize
+	outFStride := outD * outH * outW
+	outDStride := outH * outW
+	outHStride := outW
+
+	for b := 0; b < batchSize; b++ {
+		bInOffset := b * inC * inCStride
+		bOutOffset := b * filters * outFStride
+
+		for odTile := 0; odTile < outD; odTile += tileSize {
+			odEnd := odTile + tileSize
+			if odEnd > outD { odEnd = outD }
+			for ohTile := 0; ohTile < outH; ohTile += tileSize {
+				ohEnd := ohTile + tileSize
+				if ohEnd > outH { ohEnd = outH }
+				for owTile := 0; owTile < outW; owTile += tileSize {
+					owEnd := owTile + tileSize
+					if owEnd > outW { owEnd = outW }
+					for fTile := 0; fTile < filters; fTile += tileSize {
+						fEnd := fTile + tileSize
+						if fEnd > filters { fEnd = filters }
+						for f := fTile; f < fEnd; f++ {
+							fWeightsOffset := f * inC * filtCStride
+							for od := odTile; od < odEnd; od++ {
+								for oh := ohTile; oh < ohEnd; oh++ {
+									for ow := owTile; ow < owEnd; ow++ {
+										var sum float64
+										outIdx := bOutOffset + f*outFStride + od*outDStride + oh*outHStride + ow
+										for ic := 0; ic < inC; ic++ {
+											icInOffset := bInOffset + ic*inCStride
+											icWeightsOffset := fWeightsOffset + ic*filtCStride
+											for kd := 0; kd < kSize; kd++ {
+												id := od*stride + kd - padding
+												if id < 0 || id >= inD { continue }
+												idInOffset := icInOffset + id*inDStride
+												idWeightsOffset := icWeightsOffset + kd*filtDStride
+												for kh := 0; kh < kSize; kh++ {
+													ih := oh*stride + kh - padding
+													if ih < 0 || ih >= inH { continue }
+													ihInOffset := idInOffset + ih*inHStride
+													ihWeightsOffset := idWeightsOffset + kh*filtHStride
+													for kw := 0; kw < kSize; kw++ {
+														iw := ow*stride + kw - padding
+														if iw >= 0 && iw < inW {
+															sum += float64(input.Data[ihInOffset+iw]) * weights[ihWeightsOffset+kw]
+														}
+													}
+												}
+											}
+										}
+										preAct.Data[outIdx] = T(sum)
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		outBBase := b * filters * outFStride
+		for i := 0; i < filters*outFStride; i++ {
+			idx := outBBase + i
+			postAct.Data[idx] = Activate(preAct.Data[idx], layer.Activation)
+		}
+	}
 	return preAct, postAct
 }
 
