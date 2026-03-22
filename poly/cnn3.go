@@ -626,23 +626,23 @@ func cnn3ForwardTiledGenericParallel[T Numeric, W Numeric](layer *VolumetricLaye
 
 	numCPUs := runtime.NumCPU()
 	var wg sync.WaitGroup
+	// Semaphore caps concurrent goroutines to numCPUs so we saturate all
+	// cores without spawning more OS threads than there are physical cores.
+	sem := make(chan struct{}, numCPUs)
 
-	// Parallelize across batch and filter tiles
+	// One goroutine per filter — gives numCPUs-wide parallelism regardless
+	// of tileSize. Each goroutine owns all spatial tiles for its filter.
 	for b := 0; b < batchSize; b++ {
 		bInOffset := b * inC * inCStride
 		bOutOffset := b * filters * outFStride
 
-		// We can parallelize the filter tiling or spatial tiling
-		// Let's parallelize the filter tiling as it often has many filters
-		for fTile := 0; fTile < filters; fTile += tileSize {
-			fEnd := fTile + tileSize
-			if fEnd > filters {
-				fEnd = filters
-			}
-
+		for f := 0; f < filters; f++ {
+			sem <- struct{}{}
 			wg.Add(1)
-			go func(b int, fTile, fEnd int) {
-				defer wg.Done()
+			go func(b, f int) {
+				defer func() { <-sem; wg.Done() }()
+				fWeightsOffset := f * inC * filtCStride
+
 				for odTile := 0; odTile < outD; odTile += tileSize {
 					odEnd := odTile + tileSize
 					if odEnd > outD {
@@ -661,58 +661,53 @@ func cnn3ForwardTiledGenericParallel[T Numeric, W Numeric](layer *VolumetricLaye
 								owEnd = outW
 							}
 
-							for f := fTile; f < fEnd; f++ {
-								fWeightsOffset := f * inC * filtCStride
-								for od := odTile; od < odEnd; od++ {
-									// Pre-calculate id and check range once for the whole spatial tile row/col? 
-									// No, od changes. But we can hoist kd check.
-									for oh := ohTile; oh < ohEnd; oh++ {
-										for ow := owTile; ow < owEnd; ow++ {
-											var sum float32
-											outIdx := bOutOffset + f*outFStride + od*outDStride + oh*outHStride + ow
+							for od := odTile; od < odEnd; od++ {
+								for oh := ohTile; oh < ohEnd; oh++ {
+									for ow := owTile; ow < owEnd; ow++ {
+										var sum float32
+										outIdx := bOutOffset + f*outFStride + od*outDStride + oh*outHStride + ow
 
-											for ic := 0; ic < inC; ic++ {
-												icInOffset := bInOffset + ic*inCStride
-												icWeightsOffset := fWeightsOffset + ic*filtCStride
+										for ic := 0; ic < inC; ic++ {
+											icInOffset := bInOffset + ic*inCStride
+											icWeightsOffset := fWeightsOffset + ic*filtCStride
 
-												for kd := 0; kd < kSize; kd++ {
-													id := od*stride + kd - padding
-													if id < 0 || id >= inD {
+											for kd := 0; kd < kSize; kd++ {
+												id := od*stride + kd - padding
+												if id < 0 || id >= inD {
+													continue
+												}
+												idInOffset := icInOffset + id*inDStride
+												idWeightsOffset := icWeightsOffset + kd*filtDStride
+
+												for kh := 0; kh < kSize; kh++ {
+													ih := oh*stride + kh - padding
+													if ih < 0 || ih >= inH {
 														continue
 													}
-													idInOffset := icInOffset + id*inDStride
-													idWeightsOffset := icWeightsOffset + kd*filtDStride
+													ihInOffset := idInOffset + ih*inHStride
+													ihWeightsOffset := idWeightsOffset + kh*filtHStride
 
-													for kh := 0; kh < kSize; kh++ {
-														ih := oh*stride + kh - padding
-														if ih < 0 || ih >= inH {
-															continue
-														}
-														ihInOffset := idInOffset + ih*inHStride
-														ihWeightsOffset := idWeightsOffset + kh*filtHStride
-
-														for kw := 0; kw < kSize; kw++ {
-															iw := ow*stride + kw - padding
-															if iw >= 0 && iw < inW {
-																sum += float32(input.Data[ihInOffset+iw]) * float32(weights[ihWeightsOffset+kw])
-															}
+													for kw := 0; kw < kSize; kw++ {
+														iw := ow*stride + kw - padding
+														if iw >= 0 && iw < inW {
+															sum += float32(input.Data[ihInOffset+iw]) * float32(weights[ihWeightsOffset+kw])
 														}
 													}
 												}
 											}
-
-											if scale != 1.0 {
-												sum *= scale
-											}
-											preAct.Data[outIdx] = T(sum)
 										}
+
+										if scale != 1.0 {
+											sum *= scale
+										}
+										preAct.Data[outIdx] = T(sum)
 									}
 								}
 							}
 						}
 					}
 				}
-			}(b, fTile, fEnd)
+			}(b, f)
 		}
 	}
 	wg.Wait()

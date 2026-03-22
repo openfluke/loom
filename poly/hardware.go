@@ -154,21 +154,14 @@ func CalculateOptimalCNN3TileSize(inChannels int) int {
 	// T < cubert(L1 / (4 * C))
 	limit := float64(l1) / float64(4*inChannels)
 	tFloat := math.Pow(limit, 1.0/3.0)
-	tileSize := int(tFloat)
 
-	// Clamp to reasonable ranges
-	if tileSize < 8 {
-		tileSize = 8 // Below 8 is usually too much loop overhead
-	}
-	if tileSize > 32 {
-		tileSize = 32
-	}
-
-	// Align to 8 or 4
-	if tileSize >= 16 {
-		tileSize = (tileSize / 8) * 8
-	} else {
-		tileSize = (tileSize / 4) * 4
+	// Round up to nearest power of 2 within [8, 32].
+	// Floor-to-multiple alignment loses precision (e.g. 10 → 8 on Apple M-series).
+	tileSize := 8
+	for _, candidate := range []int{8, 16, 32} {
+		if float64(candidate) <= tFloat {
+			tileSize = candidate
+		}
 	}
 
 	return tileSize
