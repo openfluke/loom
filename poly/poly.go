@@ -448,8 +448,9 @@ type VolumetricNetwork struct {
 	Layers []VolumetricLayer
 
 	// Global Tiling & GPU Switches
-	UseTiling bool
-	UseGPU    bool
+	UseTiling              bool
+	EnableMultiCoreTiling bool
+	UseGPU                 bool
 
 	// GPU Acceleration context
 	GPUContext *WGPUContext
@@ -528,9 +529,10 @@ type VolumetricLayer struct {
 	SequentialLayers []VolumetricLayer
 
 	// Tiling & GPU Config
-	UseTiling bool
-	TileSize  int
-	UseGPU    bool
+	UseTiling              bool
+	EnableMultiCoreTiling bool
+	TileSize               int
+	UseGPU                 bool
 
 	IsGPUResident        bool
 	IsKVCacheGPUResident bool

@@ -1,6 +1,8 @@
 package poly
 
 import (
+	"runtime"
+	"sync"
 )
 
 // =============================================================================
@@ -556,6 +558,24 @@ func CNN3ForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preA
 		scale = 1.0
 	}
 
+	if layer.EnableMultiCoreTiling {
+		switch w := weights.(type) {
+		case []float32:
+			return cnn3ForwardTiledGenericParallel[T, float32](layer, input, w, 1.0)
+		case []int8:
+			return cnn3ForwardTiledGenericParallel[T, int8](layer, input, w, scale)
+		case []float64:
+			return cnn3ForwardTiledGenericParallel[T, float64](layer, input, w, 1.0)
+		case []int32:
+			return cnn3ForwardTiledGenericParallel[T, int32](layer, input, w, scale)
+		case []int16:
+			return cnn3ForwardTiledGenericParallel[T, int16](layer, input, w, scale)
+		default:
+			wData := CastWeights[T](weights)
+			return cnn3ForwardTiledGenericParallel[T, T](layer, input, wData, 1.0)
+		}
+	}
+
 	switch w := weights.(type) {
 	case []float32:
 		return cnn3ForwardTiledGeneric[T, float32](layer, input, w, 1.0)
@@ -575,6 +595,146 @@ func CNN3ForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preA
 		wData := CastWeights[T](weights)
 		return cnn3ForwardTiledGeneric[T, T](layer, input, wData, 1.0)
 	}
+}
+
+// cnn3ForwardTiledGenericParallel provides a multi-core parallel loop-blocked logic.
+func cnn3ForwardTiledGenericParallel[T Numeric, W Numeric](layer *VolumetricLayer, input *Tensor[T], weights []W, scale float32) (preAct, postAct *Tensor[T]) {
+	batchSize := input.Shape[0]
+	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
+	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
+	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
+	tileSize := layer.TileSize
+	if tileSize <= 0 {
+		tileSize = 8
+	}
+
+	preAct = NewTensor[T](batchSize, filters, outD, outH, outW)
+	postAct = NewTensor[T](batchSize, filters, outD, outH, outW)
+
+	// Pre-calculate strides
+	inCStride := inD * inH * inW
+	inDStride := inH * inW
+	inHStride := inW
+
+	filtCStride := kSize * kSize * kSize
+	filtDStride := kSize * kSize
+	filtHStride := kSize
+
+	outFStride := outD * outH * outW
+	outDStride := outH * outW
+	outHStride := outW
+
+	numCPUs := runtime.NumCPU()
+	var wg sync.WaitGroup
+
+	// Parallelize across batch and filter tiles
+	for b := 0; b < batchSize; b++ {
+		bInOffset := b * inC * inCStride
+		bOutOffset := b * filters * outFStride
+
+		// We can parallelize the filter tiling or spatial tiling
+		// Let's parallelize the filter tiling as it often has many filters
+		for fTile := 0; fTile < filters; fTile += tileSize {
+			fEnd := fTile + tileSize
+			if fEnd > filters {
+				fEnd = filters
+			}
+
+			wg.Add(1)
+			go func(b int, fTile, fEnd int) {
+				defer wg.Done()
+				for odTile := 0; odTile < outD; odTile += tileSize {
+					odEnd := odTile + tileSize
+					if odEnd > outD {
+						odEnd = outD
+					}
+
+					for ohTile := 0; ohTile < outH; ohTile += tileSize {
+						ohEnd := ohTile + tileSize
+						if ohEnd > outH {
+							ohEnd = outH
+						}
+
+						for owTile := 0; owTile < outW; owTile += tileSize {
+							owEnd := owTile + tileSize
+							if owEnd > outW {
+								owEnd = outW
+							}
+
+							for od := odTile; od < odEnd; od++ {
+								for oh := ohTile; oh < ohEnd; oh++ {
+									for ow := owTile; ow < owEnd; ow++ {
+										for f := fTile; f < fEnd; f++ {
+											var sum float32
+											fWeightsOffset := f * inC * filtCStride
+											for ic := 0; ic < inC; ic++ {
+												icInOffset := bInOffset + ic*inCStride
+												icWeightsOffset := fWeightsOffset + ic*filtCStride
+
+												for kd := 0; kd < kSize; kd++ {
+													id := od*stride + kd - padding
+													if id < 0 || id >= inD {
+														continue
+													}
+
+													kdInOffset := icInOffset + id*inDStride
+													kdWeightsOffset := icWeightsOffset + kd*filtDStride
+
+													for kh := 0; kh < kSize; kh++ {
+														ih := oh*stride + kh - padding
+														if ih < 0 || ih >= inH {
+															continue
+														}
+
+														inBase := kdInOffset + ih*inHStride
+														kWBase := kdWeightsOffset + kh*filtHStride
+
+														for kw := 0; kw < kSize; kw++ {
+															iw := ow*stride + kw - padding
+															if iw >= 0 && iw < inW {
+																sum += float32(input.Data[inBase+iw]) * float32(weights[kWBase+kw])
+															}
+														}
+													}
+												}
+											}
+											outIdx := bOutOffset + f*outFStride + od*outDStride + oh*outHStride + ow
+											if scale != 1.0 {
+												sum *= scale
+											}
+											preAct.Data[outIdx] = T(sum)
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}(b, fTile, fEnd)
+		}
+	}
+	wg.Wait()
+
+	// Parallelize activation commit as well
+	wg.Add(numCPUs)
+	totalElements := batchSize * filters * outFStride
+	chunkSize := (totalElements + numCPUs - 1) / numCPUs
+	for c := 0; c < numCPUs; c++ {
+		start := c * chunkSize
+		end := start + chunkSize
+		if end > totalElements {
+			end = totalElements
+		}
+		go func(start, end int) {
+			defer wg.Done()
+			for i := start; i < end; i++ {
+				postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
+			}
+		}(start, end)
+	}
+	wg.Wait()
+
+	return preAct, postAct
 }
 
 // cnn3ForwardTiledGeneric provides the core loop-blocked logic for any weight storage type.

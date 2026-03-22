@@ -322,7 +322,11 @@ Our semantic version number directly reflects our progress against this absolute
 - [ ] SwiGLU GPU Backward Wiring (resolve BROKEN status in benchmark table)
 - [ ] MHA GPU Backward Wiring (resolve PENDING status in benchmark table)
 
-**Numerical Progress: 20 / 32**
+### 1.7 Parallel Tiled Dispatch (Multi-Core Symphony)
+- [ ] Multi-Core CPU Tiling (All 18 Layers x 21 DTypes)
+- [ ] GPU Register Tiling (All 18 Layers x 21 DTypes)
+
+**Numerical Progress: 20 / 34**
 
 ---
 
@@ -500,17 +504,20 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 
 | Category | Completed | Total |
 | :--- | :---: | :---: |
-| 1. Numerical Core | 20 | 32 |
+| 1. Numerical Core | 20 | 34 |
 | 2. Architectural Layers | 30 | 35 |
 | 3. Edge Orchestration | 0 | 10 |
 | 4. Training Automation | 13 | 16 |
 | 5. Deployment Ecosystem | 19 | 22 |
 | 6. LLM & Tokenization | 15 | 15 |
-| **GRAND TOTAL** | **97** | **130** |
+| **GRAND TOTAL** | **97** | **132** |
 
-### **Completion Ratio: 74.6%**
+### **Completion Ratio: 73.5%**
 
-## **Version 0.74.0 — Complete**
-*(Status: **0.74.0 "Polyglot Bridge" is now fully shipped.** Mathematical tensor representations and local architectural structures are robustly established up to transformer scale. The full polyglot bridge is now live: TypeScript/WASM, Python (`welvet` on PyPI), Go, C#, Java, Dart, and Browser (WASM/WebGPU) bindings are all stable and verified. Numerical precision support is exceptionally deep, with native FP4 acceleration on both CPU (Dense/SwiGLU) and GPU (MHA/RoPE/CNN). WebGPU offloading is fully verified with 7000x+ spatial speedups on inference and **17x–65x on end-to-end GPU training** (Dense/CNN/RMSNorm). The GPU training backend batches the entire forward pass + backward pass + weight updates into a single command buffer submission per batch. Local LLM token generation is cross-platform via WebGPU. Next milestone: **v0.8.0** — wiring SwiGLU/MHA/Embedding into `DispatchBackwardLayer` and transitioning to specialized **Edge-First** orchestration (Thermal-Awareness, UMA, Command Buffer Graphing) required for mobile and wearable deployment.)*
+## **Version 0.74.0 — Shipped**
+*(Status: **0.74.0 "Polyglot Bridge" is fully shipped.** Milestone reached: Complete isomorphic support across 7 languages and unified WebGPU training. Currently transitioning to **v0.75.0 "Multi-Core Symphony"**.)*
+
+## **v0.75.0 Roadmap — "Multi-Core Symphony"**
+*(Status: **In Planning / Deep Research.** Following successful experimental results on CNN3 (5.46x speedup), the next milestone is to "Grab the Symphony" across the entire engine. This involves breaking up the tiling technique on **all 18 layers** for **all 21 numerical types** on both CPU and GPU. This will unlock true multi-core L1 cache utilization and unified workgroup register tiling, bridges the gap to v0.8.0's Edge-First orchestration.)*
 
 
