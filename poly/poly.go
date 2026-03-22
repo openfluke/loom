@@ -947,7 +947,7 @@ func (l *VolumetricLayer) SyncToCPU() {
 	l.EnableMultiCoreTiling = l.Network.EnableMultiCoreTiling
 	if l.UseTiling && l.TileSize <= 0 {
 		if l.Type == LayerCNN3 {
-			l.TileSize = CalculateOptimalCNN3TileSize(l.InputChannels)
+			l.TileSize = CalculateOptimalCNN3TileSize(l.InputChannels, l.DType)
 		} else if l.Type == LayerMultiHeadAttention {
 			l.TileSize = CalculateOptimalTileSize(l.HeadDim)
 		} else {

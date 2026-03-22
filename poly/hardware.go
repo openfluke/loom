@@ -140,23 +140,43 @@ func CalculateOptimalTileSize(headDim int) int {
 	return tileSize
 }
 
+// cnn3DTypeBytesPerElement returns the actual bytes-per-weight for a given DType
+// based on how Morph stores it in RAM. Smaller types fit more into L1, allowing
+// larger tile sizes and better cache reuse.
+func cnn3DTypeBytesPerElement(dtype DType) float64 {
+	switch dtype {
+	case DTypeFloat64, DTypeInt64, DTypeUint64:
+		return 8
+	case DTypeFloat32, DTypeInt32, DTypeUint32,
+		DTypeFloat16, DTypeBFloat16: // Float16/BFloat16 stored as []float32 via Morph
+		return 4
+	case DTypeInt16, DTypeUint16:
+		return 2
+	default:
+		// Int8, Uint8, FP8E4M3, FP8E5M2, Int4, Uint4, FP4,
+		// Int2, Uint2, Ternary, Binary — all stored as []int8 via Morph
+		return 1
+	}
+}
+
 // CalculateOptimalCNN3TileSize picks a TileSize that fits the 3D local neighborhood in L1.
-// Working set approx = (TileSize^3 * InChannels * 4) bytes.
-func CalculateOptimalCNN3TileSize(inChannels int) int {
+// Working set approx = (TileSize^3 * InChannels * bytesPerWeight) bytes.
+// Lower-precision types have smaller bytes-per-weight, allowing larger tiles.
+func CalculateOptimalCNN3TileSize(inChannels int, dtype DType) int {
 	info := GetHardwareInfo()
 	l1 := info.L1DataCacheSize
 	if l1 <= 0 {
 		l1 = 65536 // Modern default (64KB)
 	}
 
-	// We want (T^3 * C * 4) < L1
-	// T^3 < L1 / (4 * C)
-	// T < cubert(L1 / (4 * C))
-	limit := float64(l1) / float64(4*inChannels)
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+
+	// We want (T^3 * C * bytesPerWeight) < L1
+	// T < cuberoot(L1 / (bytesPerWeight * C))
+	limit := float64(l1) / (bytesPerWeight * float64(inChannels))
 	tFloat := math.Pow(limit, 1.0/3.0)
 
-	// Round up to nearest power of 2 within [8, 32].
-	// Floor-to-multiple alignment loses precision (e.g. 10 → 8 on Apple M-series).
+	// Round down to largest power of 2 within [8, 32].
 	tileSize := 8
 	for _, candidate := range []int{8, 16, 32} {
 		if float64(candidate) <= tFloat {
