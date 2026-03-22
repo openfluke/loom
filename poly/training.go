@@ -328,13 +328,19 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 		} else if mode == TrainingModeGPUMC {
 			layerTileSize = l.GetGPUMCTileSize(l.DType)
 		}
-		if layerTileSize > 0 && l.Type == LayerCNN3 {
+		scale := float32(1.0)
+		if l.WeightStore != nil && l.WeightStore.Scale != 0 {
+			scale = l.WeightStore.Scale
+		}
+		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		if layerTileSize > 0 && l.Type == LayerCNN1 {
+			kernelVol := l.InputChannels * l.KernelSize
+			fwdErr = ctx.DispatchCNN1Tiled(layerTileSize, kernelVol, batchSize,
+				l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight,
+				l.KernelSize, l.Stride, l.Padding,
+				scale, curBuf, wBuf, preBuf)
+		} else if layerTileSize > 0 && l.Type == LayerCNN3 {
 			kernelVol := l.InputChannels * l.KernelSize * l.KernelSize * l.KernelSize
-			scale := l.WeightStore.Scale
-			if scale == 0 {
-				scale = 1.0
-			}
-			wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 			fwdErr = ctx.DispatchCNN3Tiled(layerTileSize, kernelVol, batchSize,
 				l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth,
 				l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth,
@@ -471,17 +477,30 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 		} else if mode == TrainingModeGPUMC {
 			bwdTileSize = l.GetGPUMCTileSize(l.DType)
 		}
+		bwdWBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		var bwdErr error
-		if bwdTileSize > 0 && l.Type == LayerCNN3 {
+		if bwdTileSize > 0 && l.Type == LayerCNN1 {
+			kernelVol := l.InputChannels * l.KernelSize
+			if err := ctx.DispatchCNN1TiledBackwardDX(bwdTileSize, kernelVol, batchSize,
+				l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight,
+				l.KernelSize, l.Stride, l.Padding,
+				l.Activation, gradPreBuf, bwdWBuf, histPreBuf[i], dxBuf); err != nil {
+				ctx.FlushFrame()
+				return 0, err
+			}
+			bwdErr = ctx.DispatchCNN1TiledBackwardDW(bwdTileSize, batchSize,
+				l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight,
+				l.KernelSize, l.Stride, l.Padding,
+				l.Activation, gradPreBuf, histInBuf[i], histPreBuf[i], dwBuf)
+		} else if bwdTileSize > 0 && l.Type == LayerCNN3 {
 			kernelVol := l.InputChannels * l.KernelSize * l.KernelSize * l.KernelSize
-			wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 			if err := ctx.DispatchCNN3TiledBackwardDX(bwdTileSize, kernelVol, batchSize,
 				l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth,
 				l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth,
 				l.KernelSize, l.KernelSize, l.KernelSize,
 				l.Stride, l.Stride, l.Stride,
 				l.Padding, l.Padding, l.Padding,
-				l.Activation, gradPreBuf, wBuf, histPreBuf[i], dxBuf); err != nil {
+				l.Activation, gradPreBuf, bwdWBuf, histPreBuf[i], dxBuf); err != nil {
 				ctx.FlushFrame()
 				return 0, err
 			}

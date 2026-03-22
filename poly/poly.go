@@ -1057,10 +1057,12 @@ func (l *VolumetricLayer) SyncToCPU() {
 		for _, dtype := range allDTypes {
 			var ts int
 			switch l.Type {
-			case LayerCNN3:
-				ts = CalculateOptimalCNN3TileSize(l.InputChannels, dtype)
+			case LayerCNN1:
+				ts = CalculateOptimalCNN1TileSize(l.InputChannels, dtype)
 			case LayerCNN2:
 				ts = CalculateOptimalCNN2TileSize(l.InputChannels, dtype)
+			case LayerCNN3:
+				ts = CalculateOptimalCNN3TileSize(l.InputChannels, dtype)
 			case LayerMultiHeadAttention:
 				ts = CalculateOptimalTileSize(l.HeadDim)
 			default:
