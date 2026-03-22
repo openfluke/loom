@@ -165,7 +165,7 @@ func EmbeddingForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 	vocabSize := layer.VocabSize
 	embeddingDim := layer.EmbeddingDim
 	seqLen := len(input.Data)
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 32
 	}
@@ -227,7 +227,7 @@ func EmbeddingBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input
 	vocabSize := layer.VocabSize
 	embeddingDim := layer.EmbeddingDim
 	seqLen := len(input.Data)
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 32
 	}

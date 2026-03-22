@@ -907,7 +907,7 @@ func MHAForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAc
 	msl := layer.MaxSeqLen
 	if msl == 0 { msl = 512 }
 	kvDim := numKVHeads * headDim
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 32 }
 
 	outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)

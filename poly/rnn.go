@@ -269,7 +269,7 @@ func RNNBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input
 // RNNForwardTiled performs a tiled forward pass for RNN.
 func RNNForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	batchSize, inputSize, hiddenSize, seqLength := input.Shape[0], layer.InputHeight, layer.OutputHeight, layer.SeqLength
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 32 }
 
 	preAct, postAct = NewTensor[T](batchSize, seqLength, hiddenSize), NewTensor[T](batchSize, seqLength, hiddenSize)
@@ -330,7 +330,7 @@ func RNNForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAc
 func RNNBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
 	batchSize, inputSize, hiddenSize, seqLength := input.Shape[0], layer.InputHeight, layer.OutputHeight, layer.SeqLength
 	gradInput, gradWeights = NewTensor[T](batchSize, seqLength, inputSize), NewTensor[T](len(layer.WeightStore.Master))
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 32 }
 
 	weights := layer.WeightStore.GetActive(layer.DType)

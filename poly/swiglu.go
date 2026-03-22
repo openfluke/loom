@@ -721,7 +721,7 @@ func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 func SwiGLUForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
 	seqLen := len(input.Data) / inputSize
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 32 }
 
 	preAct = NewTensor[T](seqLen, intermediateSize)
@@ -948,7 +948,7 @@ func swigluTiledProjectGateUpInt8[TIn Numeric, TOut Numeric](input []TIn, wData 
 func SwiGLUBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
 	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
 	seqLen := len(input.Data) / inputSize
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 32 }
 
 	gradInput = NewTensor[T](input.Shape...)

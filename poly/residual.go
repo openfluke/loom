@@ -48,7 +48,7 @@ func ResidualBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, 
 // ResidualForwardTiled performs a tiled forward pass for Residual.
 func ResidualForwardTiled[T Numeric](layer *VolumetricLayer, input, skip *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	output := NewTensor[T](input.Shape...)
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 1024 }
 	
 	for t := 0; t < len(input.Data); t += tileSize {

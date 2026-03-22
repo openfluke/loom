@@ -187,6 +187,31 @@ func CalculateOptimalCNN3TileSize(inChannels int, dtype DType) int {
 	return tileSize
 }
 
+// CalculateOptimalCNN2TileSize picks a TileSize that fits the 2D local neighborhood in L1.
+// Working set approx = (TileSize^2 * InChannels * bytesPerWeight) bytes.
+func CalculateOptimalCNN2TileSize(inChannels int, dtype DType) int {
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 65536
+	}
+
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+
+	// T^2 * C * bytesPerWeight < L1  =>  T < sqrt(L1 / (bytesPerWeight * C))
+	limit := float64(l1) / (bytesPerWeight * float64(inChannels))
+	tFloat := math.Sqrt(limit)
+
+	tileSize := 8
+	for _, candidate := range []int{8, 16, 32, 64} {
+		if float64(candidate) <= tFloat {
+			tileSize = candidate
+		}
+	}
+
+	return tileSize
+}
+
 // CalculateOptimalGPUTileSizeFromLimits derives the best GPU tiling size from raw WebGPU Limits.
 //   sharedMemBytes = adapter.GetLimits().Limits.MaxComputeWorkgroupStorageSize
 //   maxInvocations = adapter.GetLimits().Limits.MaxComputeInvocationsPerWorkgroup

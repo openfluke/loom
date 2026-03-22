@@ -398,7 +398,7 @@ func CNN1ForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preA
 	seqLen, inC := layer.InputHeight, layer.InputChannels
 	outLen, filters := layer.OutputHeight, layer.Filters
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 16
 	}
@@ -462,7 +462,7 @@ func CNN1BackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, pre
 	seqLen, inC := layer.InputHeight, layer.InputChannels
 	outLen, filters := layer.OutputHeight, layer.Filters
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 16
 	}

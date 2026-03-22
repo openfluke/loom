@@ -263,7 +263,7 @@ func DenseForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (pre
 	batchSize := input.Shape[0]
 	inputSize := layer.InputHeight
 	outputSize := layer.OutputHeight
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 32 }
 
 	preAct = NewTensor[T](batchSize, outputSize)

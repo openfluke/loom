@@ -629,7 +629,7 @@ func LSTMBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inpu
 // LSTMForwardTiled implements a tiled (blocked) LSTM forward pass for cache efficiency.
 func LSTMForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	batchSize, inputSize, hiddenSize, seqLength := input.Shape[0], layer.InputHeight, layer.OutputHeight, layer.SeqLength
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 32 }
 
 	preAct = NewTensor[T](batchSize, seqLength, 5*hiddenSize) 
@@ -733,7 +733,7 @@ func LSTMForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preA
 // LSTMBackwardTiled implements a tiled (blocked) LSTM backward pass.
 func LSTMBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
 	batchSize, inputSize, hiddenSize, seqLength := input.Shape[0], layer.InputHeight, layer.OutputHeight, layer.SeqLength
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 32 }
 
 	gradInput = NewTensor[T](batchSize, seqLength, inputSize)

@@ -165,16 +165,7 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 		return nil, err
 	}
 
-	// Determine CNN3 tile sizes for GPU tiled modes.
-	cnn3TileSize := 0
-	if n.GPUContext != nil && (mode == TrainingModeGPUSC || mode == TrainingModeGPUMC) {
-		scTile, mcTile := CNN3GPUTileSizes(n.GPUContext)
-		if mode == TrainingModeGPUSC {
-			cnn3TileSize = scTile
-		} else {
-			cnn3TileSize = mcTile
-		}
-	}
+	// GPU tile sizes are now per-layer per-dtype; passed via mode to trainBatchGPU.
 
 	result := &TrainingResult{
 		LossHistory: make([]float64, 0, config.Epochs),
@@ -190,7 +181,7 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 
 		for _, batch := range batches {
 			if mode.IsGPU() {
-				loss, err := trainBatchGPU(n, batch, config, cnn3TileSize)
+				loss, err := trainBatchGPU(n, batch, config, mode)
 				if err != nil {
 					return nil, err
 				}
@@ -261,9 +252,9 @@ func trainBatchCPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 }
 
 // trainBatchGPU runs one training batch on the GPU.
-// cnn3TileSize == 0  → GPU Normal (global-memory DispatchForwardLayer / DispatchBackwardLayer).
-// cnn3TileSize  > 0  → GPU Tiled (DispatchCNN3Tiled / DispatchCNN3TiledBackwardDX+DW for CNN3 layers).
-func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], config *TrainingConfig, cnn3TileSize int) (float64, error) {
+// mode == TrainingModeGPUNormal → global-memory dispatch.
+// mode == TrainingModeGPUSC/MC  → tiled dispatch; tile size is read per-layer from l.GetGPUSCTileSize / GetGPUMCTileSize.
+func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], config *TrainingConfig, mode TrainingMode) (float64, error) {
 	ctx := n.GPUContext
 	if ctx == nil {
 		return 0, fmt.Errorf("GPU context is nil")
@@ -331,14 +322,20 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 		}
 
 		var fwdErr error
-		if cnn3TileSize > 0 && l.Type == LayerCNN3 {
+		layerTileSize := 0
+		if mode == TrainingModeGPUSC {
+			layerTileSize = l.GetGPUSCTileSize(l.DType)
+		} else if mode == TrainingModeGPUMC {
+			layerTileSize = l.GetGPUMCTileSize(l.DType)
+		}
+		if layerTileSize > 0 && l.Type == LayerCNN3 {
 			kernelVol := l.InputChannels * l.KernelSize * l.KernelSize * l.KernelSize
 			scale := l.WeightStore.Scale
 			if scale == 0 {
 				scale = 1.0
 			}
 			wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
-			fwdErr = ctx.DispatchCNN3Tiled(cnn3TileSize, kernelVol, batchSize,
+			fwdErr = ctx.DispatchCNN3Tiled(layerTileSize, kernelVol, batchSize,
 				l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth,
 				l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth,
 				l.KernelSize, l.KernelSize, l.KernelSize,
@@ -468,11 +465,17 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 			gradPreBuf = curGradBuf
 		}
 
+		bwdTileSize := 0
+		if mode == TrainingModeGPUSC {
+			bwdTileSize = l.GetGPUSCTileSize(l.DType)
+		} else if mode == TrainingModeGPUMC {
+			bwdTileSize = l.GetGPUMCTileSize(l.DType)
+		}
 		var bwdErr error
-		if cnn3TileSize > 0 && l.Type == LayerCNN3 {
+		if bwdTileSize > 0 && l.Type == LayerCNN3 {
 			kernelVol := l.InputChannels * l.KernelSize * l.KernelSize * l.KernelSize
 			wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
-			if err := ctx.DispatchCNN3TiledBackwardDX(cnn3TileSize, kernelVol, batchSize,
+			if err := ctx.DispatchCNN3TiledBackwardDX(bwdTileSize, kernelVol, batchSize,
 				l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth,
 				l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth,
 				l.KernelSize, l.KernelSize, l.KernelSize,
@@ -482,7 +485,7 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 				ctx.FlushFrame()
 				return 0, err
 			}
-			bwdErr = ctx.DispatchCNN3TiledBackwardDW(cnn3TileSize, batchSize,
+			bwdErr = ctx.DispatchCNN3TiledBackwardDW(bwdTileSize, batchSize,
 				l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth,
 				l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth,
 				l.KernelSize, l.KernelSize, l.KernelSize,

@@ -615,7 +615,7 @@ func cnn3ForwardTiledGenericParallel[T Numeric, W Numeric](layer *VolumetricLaye
 	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
 	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 8 // Fallback if SyncCPU wasn't called
 	}
@@ -753,7 +753,7 @@ func cnn3ForwardTiledF64Parallel[T Numeric](layer *VolumetricLayer, input *Tenso
 	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
 	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 8
 	}
@@ -860,7 +860,7 @@ func cnn3ForwardTiledF64[T Numeric](layer *VolumetricLayer, input *Tensor[T], we
 	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
 	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 8 }
 
 	preAct = NewTensor[T](batchSize, filters, outD, outH, outW)
@@ -945,7 +945,7 @@ func cnn3ForwardTiledGeneric[T Numeric, W Numeric](layer *VolumetricLayer, input
 	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
 	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 8 // Fallback if SyncToCPU wasn't called
 	}
@@ -1053,7 +1053,7 @@ func CNN3BackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, pre
 	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
 	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 8 }
 
 	gradInput = NewTensor[T](batchSize, inC, inD, inH, inW)
@@ -1239,7 +1239,7 @@ func cnn3ForwardTiledBinaryPacked[T Numeric](layer *VolumetricLayer, input *Tens
 	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
 	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 8 // Fallback if SyncToCPU wasn't called
 	}
