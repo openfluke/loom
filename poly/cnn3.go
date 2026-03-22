@@ -605,7 +605,7 @@ func cnn3ForwardTiledGenericParallel[T Numeric, W Numeric](layer *VolumetricLaye
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
 	tileSize := layer.TileSize
 	if tileSize <= 0 {
-		tileSize = 8
+		tileSize = 8 // Fallback if SyncCPU wasn't called
 	}
 
 	preAct = NewTensor[T](batchSize, filters, outD, outH, outW)
@@ -661,12 +661,16 @@ func cnn3ForwardTiledGenericParallel[T Numeric, W Numeric](layer *VolumetricLaye
 								owEnd = outW
 							}
 
-							for od := odTile; od < odEnd; od++ {
-								for oh := ohTile; oh < ohEnd; oh++ {
-									for ow := owTile; ow < owEnd; ow++ {
-										for f := fTile; f < fEnd; f++ {
+							for f := fTile; f < fEnd; f++ {
+								fWeightsOffset := f * inC * filtCStride
+								for od := odTile; od < odEnd; od++ {
+									// Pre-calculate id and check range once for the whole spatial tile row/col? 
+									// No, od changes. But we can hoist kd check.
+									for oh := ohTile; oh < ohEnd; oh++ {
+										for ow := owTile; ow < owEnd; ow++ {
 											var sum float32
-											fWeightsOffset := f * inC * filtCStride
+											outIdx := bOutOffset + f*outFStride + od*outDStride + oh*outHStride + ow
+
 											for ic := 0; ic < inC; ic++ {
 												icInOffset := bInOffset + ic*inCStride
 												icWeightsOffset := fWeightsOffset + ic*filtCStride
@@ -676,29 +680,27 @@ func cnn3ForwardTiledGenericParallel[T Numeric, W Numeric](layer *VolumetricLaye
 													if id < 0 || id >= inD {
 														continue
 													}
-
-													kdInOffset := icInOffset + id*inDStride
-													kdWeightsOffset := icWeightsOffset + kd*filtDStride
+													idInOffset := icInOffset + id*inDStride
+													idWeightsOffset := icWeightsOffset + kd*filtDStride
 
 													for kh := 0; kh < kSize; kh++ {
 														ih := oh*stride + kh - padding
 														if ih < 0 || ih >= inH {
 															continue
 														}
-
-														inBase := kdInOffset + ih*inHStride
-														kWBase := kdWeightsOffset + kh*filtHStride
+														ihInOffset := idInOffset + ih*inHStride
+														ihWeightsOffset := idWeightsOffset + kh*filtHStride
 
 														for kw := 0; kw < kSize; kw++ {
 															iw := ow*stride + kw - padding
 															if iw >= 0 && iw < inW {
-																sum += float32(input.Data[inBase+iw]) * float32(weights[kWBase+kw])
+																sum += float32(input.Data[ihInOffset+iw]) * float32(weights[ihWeightsOffset+kw])
 															}
 														}
 													}
 												}
 											}
-											outIdx := bOutOffset + f*outFStride + od*outDStride + oh*outHStride + ow
+
 											if scale != 1.0 {
 												sum *= scale
 											}
@@ -745,7 +747,7 @@ func cnn3ForwardTiledGeneric[T Numeric, W Numeric](layer *VolumetricLayer, input
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
 	tileSize := layer.TileSize
 	if tileSize <= 0 {
-		tileSize = 8
+		tileSize = 8 // Fallback if SyncToCPU wasn't called
 	}
 
 	preAct = NewTensor[T](batchSize, filters, outD, outH, outW)
@@ -786,48 +788,51 @@ func cnn3ForwardTiledGeneric[T Numeric, W Numeric](layer *VolumetricLayer, input
 						fEnd := fTile + tileSize
 						if fEnd > filters { fEnd = filters }
 
+					for f := fTile; f < fEnd; f++ {
+						fWeightsOffset := f * inC * filtCStride
 						for od := odTile; od < odEnd; od++ {
 							for oh := ohTile; oh < ohEnd; oh++ {
 								for ow := owTile; ow < owEnd; ow++ {
-									for f := fTile; f < fEnd; f++ {
-										var sum float32
-										fWeightsOffset := f * inC * filtCStride
-										for ic := 0; ic < inC; ic++ {
-											icInOffset := bInOffset + ic*inCStride
-											icWeightsOffset := fWeightsOffset + ic*filtCStride
+									var sum float32
+									outIdx := bOutOffset + f*outFStride + od*outDStride + oh*outHStride + ow
 
-											for kd := 0; kd < kSize; kd++ {
-												id := od*stride + kd - padding
-												if id < 0 || id >= inD { continue }
+									for ic := 0; ic < inC; ic++ {
+										icInOffset := bInOffset + ic*inCStride
+										icWeightsOffset := fWeightsOffset + ic*filtCStride
 
-												kdInOffset := icInOffset + id*inDStride
-												kdWeightsOffset := icWeightsOffset + kd*filtDStride
+										for kd := 0; kd < kSize; kd++ {
+											id := od*stride + kd - padding
+											if id < 0 || id >= inD {
+												continue
+											}
+											idInOffset := icInOffset + id*inDStride
+											idWeightsOffset := icWeightsOffset + kd*filtDStride
 
-												for kh := 0; kh < kSize; kh++ {
-													ih := oh*stride + kh - padding
-													if ih < 0 || ih >= inH { continue }
+											for kh := 0; kh < kSize; kh++ {
+												ih := oh*stride + kh - padding
+												if ih < 0 || ih >= inH {
+													continue
+												}
+												ihInOffset := idInOffset + ih*inHStride
+												ihWeightsOffset := idWeightsOffset + kh*filtHStride
 
-													inBase := kdInOffset + ih*inHStride
-													kWBase := kdWeightsOffset + kh*filtHStride
-
-													for kw := 0; kw < kSize; kw++ {
-														iw := ow*stride + kw - padding
-														if iw >= 0 && iw < inW {
-															sum += float32(input.Data[inBase+iw]) * float32(weights[kWBase+kw])
-														}
+												for kw := 0; kw < kSize; kw++ {
+													iw := ow*stride + kw - padding
+													if iw >= 0 && iw < inW {
+														sum += float32(input.Data[ihInOffset+iw]) * float32(weights[ihWeightsOffset+kw])
 													}
 												}
 											}
 										}
-										outIdx := bOutOffset + f*outFStride + od*outDStride + oh*outHStride + ow
-										if scale != 1.0 {
-											sum *= scale
-										}
-										preAct.Data[outIdx] = T(sum)
 									}
+									if scale != 1.0 {
+										sum *= scale
+									}
+									preAct.Data[outIdx] = T(sum)
 								}
 							}
 						}
+					}
 					}
 				}
 			}
@@ -925,7 +930,7 @@ func cnn3ForwardTiledBinaryPacked[T Numeric](layer *VolumetricLayer, input *Tens
 	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
 	tileSize := layer.TileSize
 	if tileSize <= 0 {
-		tileSize = 8
+		tileSize = 8 // Fallback if SyncToCPU wasn't called
 	}
 
 	preAct = NewTensor[T](batchSize, filters, outD, outH, outW)

@@ -619,6 +619,13 @@ func (n *VolumetricNetwork) SyncToGPU() error {
 	return nil
 }
 
+// SyncToCPU prepares the network for multi-core CPU execution by calculating optimal tiling parameters.
+func (n *VolumetricNetwork) SyncToCPU() {
+	for i := range n.Layers {
+		n.Layers[i].SyncToCPU()
+	}
+}
+
 // GetLayer returns the layer at specific 3D coordinates.
 func (n *VolumetricNetwork) GetLayer(z, y, x, l int) *VolumetricLayer {
 	idx := n.GetIndex(z, y, x, l)
@@ -832,6 +839,7 @@ func (l *VolumetricLayer) SyncToGPU() error {
 	return nil
 }
 
+
 // syncQuantizedDense handles the quantization and upload of a single weight buffer.
 func (l *VolumetricLayer) syncQuantizedDense(ctx *WGPUContext, label string) {
 	blocks := QuantizeQ4_0(l.WeightStore.Master)
@@ -934,8 +942,19 @@ func (l *VolumetricLayer) syncQuantizedMHA(ctx *WGPUContext) {
 	l.syncQuantizedComponent(ctx, w[qwSize+kwSize+vwSize:qwSize+kwSize+vwSize+owSize], "O", DType(203), DType(203))
 }
 
-// SyncToCPU releases GPU resources.
+// SyncToCPU releases GPU resources and prepares the individual layer for CPU tiling optimizations.
 func (l *VolumetricLayer) SyncToCPU() {
+	l.EnableMultiCoreTiling = l.Network.EnableMultiCoreTiling
+	if l.UseTiling && l.TileSize <= 0 {
+		if l.Type == LayerCNN3 {
+			l.TileSize = CalculateOptimalCNN3TileSize(l.InputChannels)
+		} else if l.Type == LayerMultiHeadAttention {
+			l.TileSize = CalculateOptimalTileSize(l.HeadDim)
+		} else {
+			l.TileSize = 8 // Generic fallback
+		}
+	}
+
 	if l.WeightStore != nil {
 		for dtype, buf := range l.WeightStore.GPUWeights {
 			// In a real implementation we'd call Destroy() here
