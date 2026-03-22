@@ -1122,6 +1122,117 @@ func CNN3BackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, pre
 	return gradInput, gradWeights
 }
 
+// CNN3BackwardTiledParallel is the multi-core parallel backward pass for CNN3.
+// It matches CNN3BackwardTiled numerically but dispatches:
+//   - DX (gradInput):    one goroutine per (batch, inputChannel) — no output conflicts.
+//   - DW (gradWeights):  one goroutine per filter          — no output conflicts.
+// Both passes are bounded by a runtime.NumCPU()-wide semaphore for core saturation.
+// Scale is NOT applied (matching CNN3BackwardTiled and DispatchCNN3BackwardDX behaviour).
+func CNN3BackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	batchSize := input.Shape[0]
+	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
+	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
+	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
+
+	gradInput = NewTensor[T](batchSize, inC, inD, inH, inW)
+	gradWeights = NewTensor[T](filters, inC, kSize, kSize, kSize)
+
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[T](weights)
+
+	numCPUs := runtime.NumCPU()
+	sem := make(chan struct{}, numCPUs)
+	var wg sync.WaitGroup
+
+	// --- DX pass: parallel over (batch, inputChannel) ---
+	// Each (b, ic) goroutine computes all gradInput[b, ic, id, ih, iw] independently
+	// by summing contributions from every filter and kernel position (gather pattern).
+	for b := 0; b < batchSize; b++ {
+		for ic := 0; ic < inC; ic++ {
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(b, ic int) {
+				defer func() { <-sem; wg.Done() }()
+				for id := 0; id < inD; id++ {
+					for ih := 0; ih < inH; ih++ {
+						for iw := 0; iw < inW; iw++ {
+							var sum float32
+							for f := 0; f < filters; f++ {
+								for kd := 0; kd < kSize; kd++ {
+									for kh := 0; kh < kSize; kh++ {
+										for kw := 0; kw < kSize; kw++ {
+											vd := id + padding - kd
+											vh := ih + padding - kh
+											vw := iw + padding - kw
+											if vd >= 0 && vd%stride == 0 &&
+												vh >= 0 && vh%stride == 0 &&
+												vw >= 0 && vw%stride == 0 {
+												od, oh, ow := vd/stride, vh/stride, vw/stride
+												if od < outD && oh < outH && ow < outW {
+													outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
+													gOut := float32(gradOutput.Data[outIdx]) * float32(ActivateDerivative(preAct.Data[outIdx], layer.Activation))
+													kWIdx := f*inC*kSize*kSize*kSize + ic*kSize*kSize*kSize + kd*kSize*kSize + kh*kSize + kw
+													sum += gOut * float32(wData[kWIdx])
+												}
+											}
+										}
+									}
+								}
+							}
+							inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id*inH*inW + ih*inW + iw
+							gradInput.Data[inIdx] = T(sum)
+						}
+					}
+				}
+			}(b, ic)
+		}
+	}
+	wg.Wait()
+
+	// --- DW pass: parallel over filters ---
+	// Each filter-f goroutine computes all gradWeights[f, ic, kd, kh, kw] independently
+	// by summing over all (batch, output spatial) positions (scatter pattern per filter).
+	for f := 0; f < filters; f++ {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(f int) {
+			defer func() { <-sem; wg.Done() }()
+			for b := 0; b < batchSize; b++ {
+				for od := 0; od < outD; od++ {
+					for oh := 0; oh < outH; oh++ {
+						for ow := 0; ow < outW; ow++ {
+							outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
+							gOut := float32(gradOutput.Data[outIdx]) * float32(ActivateDerivative(preAct.Data[outIdx], layer.Activation))
+							for ic := 0; ic < inC; ic++ {
+								for kd := 0; kd < kSize; kd++ {
+									for kh := 0; kh < kSize; kh++ {
+										for kw := 0; kw < kSize; kw++ {
+											id_ := od*stride + kd - padding
+											ih_ := oh*stride + kh - padding
+											iw_ := ow*stride + kw - padding
+											if id_ >= 0 && id_ < inD && ih_ >= 0 && ih_ < inH && iw_ >= 0 && iw_ < inW {
+												inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id_*inH*inW + ih_*inW + iw_
+												kWIdx := f*inC*kSize*kSize*kSize + ic*kSize*kSize*kSize + kd*kSize*kSize + kh*kSize + kw
+												gradWeights.Data[kWIdx] += T(gOut * float32(input.Data[inIdx]))
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}(f)
+	}
+	wg.Wait()
+
+	return gradInput, gradWeights
+}
+
 // cnn3ForwardTiledBinaryPacked implement optimized logic for bit-packed binary weights.
 func cnn3ForwardTiledBinaryPacked[T Numeric](layer *VolumetricLayer, input *Tensor[T], weights []uint64, scale float32) (preAct, postAct *Tensor[T]) {
 	batchSize := input.Shape[0]
