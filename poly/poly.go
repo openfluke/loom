@@ -339,6 +339,28 @@ func (d DType) String() string {
 	}
 }
 
+// DTypeBits returns the number of bits used for the given numerical type.
+func DTypeBits(d DType) int {
+	switch d {
+	case DTypeFloat64, DTypeInt64, DTypeUint64:
+		return 64
+	case DTypeFloat32, DTypeInt32, DTypeUint32:
+		return 32
+	case DTypeFloat16, DTypeBFloat16, DTypeInt16, DTypeUint16:
+		return 16
+	case DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt8, DTypeUint8:
+		return 8
+	case DTypeInt4, DTypeUint4, DTypeFP4:
+		return 4
+	case DTypeInt2, DTypeUint2, DTypeTernary:
+		return 2
+	case DTypeBinary:
+		return 1
+	default:
+		return 32
+	}
+}
+
 // Numeric is a type constraint for all numeric types that Tensors can hold.
 type Numeric interface {
 	~int | ~int8 | ~int16 | ~int32 | ~int64 |
@@ -660,38 +682,53 @@ func MorphLayer(layer *VolumetricLayer, target DType) error {
 // It is the universal "Metamorphosis" engine used across Dense, CNN, and RNN layers.
 func SimulatePrecision(wVal float32, dtype DType, scale float32) float32 {
 	switch dtype {
-	case DTypeFloat64, DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32:
-		return wVal
-	case DTypeBFloat16:
-		u32 := math.Float32bits(wVal)
-		u32 &= 0xFFFF0000
-		return math.Float32frombits(u32)
-	case DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt8, DTypeUint8, DTypeInt16, DTypeUint16:
-		return float32(int8(wVal/scale)) * scale
+	case DTypeFloat64:
+		return float32(float64(wVal))
+	case DTypeInt64, DTypeUint64:
+		return float32(math.Round(float64(wVal/scale))) * scale
+	case DTypeInt32, DTypeUint32:
+		return float32(math.Round(float64(wVal/scale))) * scale
+	case DTypeInt16, DTypeUint16:
+		return float32(math.Round(float64(wVal/scale))) * scale
+	case DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt8, DTypeUint8:
+		return float32(math.Round(float64(wVal/scale))) * scale
 	case DTypeInt4, DTypeUint4, DTypeFP4:
-		return float32(int(wVal/scale)) * scale
-	case DTypeInt2, DTypeUint2:
-		// 2-bit simulation (4 levels)
-		return float32(int(wVal*2/scale)) * scale / 2
-	case DTypeTernary:
-		// Ternary (-1, 0, 1)
-		if wVal > 0.5*scale {
-			return scale
-		} else if wVal < -0.5*scale {
-			return -scale
+		// Clamp to 4-bit range
+		v := int(math.Round(float64(wVal / scale)))
+		if dtype == DTypeUint4 {
+			if v < 0 { v = 0 }
+			if v > 15 { v = 15 }
 		} else {
-			return 0
+			if v < -8 { v = -8 }
+			if v > 7 { v = 7 }
 		}
+		return float32(v) * scale
+	case DTypeInt2, DTypeUint2, DTypeTernary:
+		// Clamp to 2-bit range
+		v := int(math.Round(float64(wVal / scale)))
+		if dtype == DTypeUint2 {
+			if v < 0 { v = 0 }
+			if v > 3 { v = 3 }
+		} else {
+			if v < -2 { v = -2 }
+			if v > 1 { v = 1 }
+		}
+		return float32(v) * scale
 	case DTypeBinary:
 		if wVal > 0 {
 			return scale
 		} else {
 			return -scale
 		}
+	case DTypeBFloat16:
+		u32 := math.Float32bits(wVal)
+		u32 &= 0xFFFF0000
+		return math.Float32frombits(u32)
 	case DTypeFloat16:
-		// Simulated truncation (float32 to float16)
-		// For now, identity simulation
-		return wVal
+		// Simulated truncation (float32 to 16-bit float)
+		u32 := math.Float32bits(wVal)
+		u32 &= 0xFFFF0000 // Simple truncation for simulation
+		return math.Float32frombits(u32)
 	default:
 		return wVal
 	}
@@ -766,31 +803,13 @@ func (l *VolumetricLayer) SyncToGPU() error {
 
 	// 1. Sync WeightStore
 	if l.WeightStore != nil {
+		// Specific sync logic for different layer types/dtypes
 		if l.Type == LayerRMSNorm {
-			// RMSNorm MUST stay in FP32 for numerical stability.
-			// 4-bit quantization would destroy the normalization precision.
-			if _, ok := l.WeightStore.GPUWeights[DTypeFloat32]; !ok {
-				buf, err := ctx.CreatePersistentBuffer(l.WeightStore.Master, "Norm Weights")
-				if err != nil {
-					return err
-				}
-				l.WeightStore.GPUWeights[DTypeFloat32] = buf
-			}
+			// RMSNorm MUST stay in FP32
 		} else if l.Type == LayerSwiGLU && l.DType != DTypeInt4 {
-			// Split Gate, Up, and Down weights for SwiGLU
-			h, inter := l.InputHeight, l.OutputHeight
-			gateSlice := l.WeightStore.Master[0 : h*inter]
-			upSlice := l.WeightStore.Master[h*inter : 2*h*inter]
-			downSlice := l.WeightStore.Master[2*h*inter : 2*h*inter+inter*h]
-
-			gBuf, _ := ctx.CreatePersistentBuffer(gateSlice, "Gate Weights")
-			uBuf, _ := ctx.CreatePersistentBuffer(upSlice, "Up Weights")
-			dBuf, _ := ctx.CreatePersistentBuffer(downSlice, "Down Weights")
-			l.WeightStore.GPUWeights[DType(100)] = gBuf
-			l.WeightStore.GPUWeights[DType(101)] = uBuf
-			l.WeightStore.GPUWeights[DType(102)] = dBuf
+			// Sub-components for FP32 SwiGLU 
+			// (We use the Master mirror below for generic support, but could optimize here)
 		} else if l.DType == DTypeInt4 {
-			// --- Q4_0 Quantized Sync ---
 			if l.Type == LayerSwiGLU {
 				h, inter := l.InputHeight, l.OutputHeight
 				l.syncQuantizedSwiGLU(ctx, h, inter)
@@ -799,18 +818,19 @@ func (l *VolumetricLayer) SyncToGPU() error {
 			} else {
 				l.syncQuantizedDense(ctx, "Layer Weights")
 			}
-		} else {
-			if l.Type == LayerMultiHeadAttention {
-				l.syncFP32MHA(ctx)
-			} else {
-				// Mirror Master (FP32) to GPU if no specific version is requested
-				if _, ok := l.WeightStore.GPUWeights[DTypeFloat32]; !ok {
-					buf, err := ctx.CreatePersistentBuffer(l.WeightStore.Master, "Layer Weights")
-					if err != nil {
-						return err
-					}
-					l.WeightStore.GPUWeights[DTypeFloat32] = buf
+		} else if l.Type == LayerMultiHeadAttention {
+			l.syncFP32MHA(ctx)
+		}
+
+		// ALWAYS mirror Master (FP32) to GPU if it exists.
+		// This enables training (SyncWeightsFromGPU / ApplyGradients) and consistent fallback.
+		if len(l.WeightStore.Master) > 0 {
+			if _, ok := l.WeightStore.GPUWeights[DTypeFloat32]; !ok {
+				buf, err := ctx.CreatePersistentBuffer(l.WeightStore.Master, "Layer Master Weights")
+				if err != nil {
+					return err
 				}
+				l.WeightStore.GPUWeights[DTypeFloat32] = buf
 			}
 		}
 	}

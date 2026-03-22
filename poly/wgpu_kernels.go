@@ -1199,15 +1199,32 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 	if tileSize <= 0 { tileSize = 32 }
 	switch l.Type {
 	case LayerDense:
-		return c.DispatchDense(batchSize, l.InputHeight, l.OutputHeight, inputBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), outBuf, tileSize)
+		if l.DType == DTypeInt4 {
+			if scaleBuf, ok := l.WeightStore.GPUWeights[DType(100)].(*wgpu.Buffer); ok {
+				if weightBuf, ok := l.WeightStore.GPUWeights[DTypeInt4].(*wgpu.Buffer); ok {
+					return c.DispatchDenseQ4(batchSize, l.InputHeight, l.OutputHeight, inputBuf, scaleBuf, weightBuf, outBuf, tileSize)
+				}
+			}
+		}
+		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
+		return c.DispatchDense(batchSize, l.InputHeight, l.OutputHeight, inputBuf, wBuf, outBuf, tileSize)
 	case LayerRMSNorm:
-		return c.DispatchRMSNorm(batchSize, l.InputHeight, 1e-5, inputBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), outBuf)
+		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
+		return c.DispatchRMSNorm(batchSize, l.InputHeight, 1e-5, inputBuf, wBuf, outBuf)
 	case LayerCNN1:
-		return c.DispatchCNN1(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, inputBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), outBuf)
+		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
+		return c.DispatchCNN1(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, inputBuf, wBuf, outBuf)
 	case LayerCNN2:
-		return c.DispatchCNN2(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Padding, l.Padding, inputBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), outBuf)
+		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
+		return c.DispatchCNN2(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Padding, l.Padding, inputBuf, wBuf, outBuf)
 	case LayerCNN3:
-		return c.DispatchCNN3(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Stride, l.Padding, l.Padding, l.Padding, inputBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), outBuf)
+		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
+		return c.DispatchCNN3(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Stride, l.Padding, l.Padding, l.Padding, inputBuf, wBuf, outBuf)
 	case LayerRNN:
 		wIH, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		wHH := wIH // simplified for benchmarking

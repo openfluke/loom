@@ -148,6 +148,8 @@ func SyncWeightsFromGPU(n *VolumetricNetwork) error {
 			return fmt.Errorf("layer %d: weight size mismatch GPU=%d CPU=%d", i, len(data), len(l.WeightStore.Master))
 		}
 		copy(l.WeightStore.Master, data)
+		// Clear stale Versions and GPU cache tags (other than the FP32 buffer we just read)
+		l.WeightStore.Versions = make(map[DType]any)
 	}
 	return nil
 }

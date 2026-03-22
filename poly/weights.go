@@ -1,7 +1,9 @@
 package poly
 
 import (
+	"math"
 	"math/rand"
+
 	"github.com/openfluke/webgpu/wgpu"
 )
 
@@ -40,19 +42,19 @@ func (ws *WeightStore) Morph(dtype DType) {
 		ws.Versions[dtype] = w
 	case DTypeInt64, DTypeUint64:
 		w := make([]int64, size)
-		for i, v := range ws.Master { w[i] = int64(v/ws.Scale) }
+		for i, v := range ws.Master { w[i] = int64(math.Round(float64(v/ws.Scale))) }
 		ws.Versions[dtype] = w
 	case DTypeInt32, DTypeUint32:
 		w := make([]int32, size)
-		for i, v := range ws.Master { w[i] = int32(v/ws.Scale) }
+		for i, v := range ws.Master { w[i] = int32(math.Round(float64(v/ws.Scale))) }
 		ws.Versions[dtype] = w
 	case DTypeInt16, DTypeUint16:
 		w := make([]int16, size)
-		for i, v := range ws.Master { w[i] = int16(v/ws.Scale) }
+		for i, v := range ws.Master { w[i] = int16(math.Round(float64(v/ws.Scale))) }
 		ws.Versions[dtype] = w
 	case DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2:
 		w := make([]int8, size)
-		for i, v := range ws.Master { w[i] = int8(v/ws.Scale) }
+		for i, v := range ws.Master { w[i] = int8(math.Round(float64(v/ws.Scale))) }
 		ws.Versions[dtype] = w
 	case DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary, DTypeBinary:
 		// Store as unpacked []int8 in RAM for layer compatibility
@@ -61,7 +63,22 @@ func (ws *WeightStore) Morph(dtype DType) {
 			if dtype == DTypeBinary {
 				if v > 0 { w[i] = 1 } else { w[i] = -1 }
 			} else {
-				w[i] = int8(v/ws.Scale)
+				iv := int(math.Round(float64(v/ws.Scale)))
+				// Explicit clamping to target bit range
+				if dtype == DTypeUint4 {
+					if iv < 0 { iv = 0 }
+					if iv > 15 { iv = 15 }
+				} else if dtype == DTypeInt4 || dtype == DTypeFP4 {
+					if iv < -8 { iv = -8 }
+					if iv > 7 { iv = 7 }
+				} else if dtype == DTypeUint2 {
+					if iv < 0 { iv = 0 }
+					if iv > 3 { iv = 3 }
+				} else if dtype == DTypeInt2 || dtype == DTypeTernary {
+					if iv < -2 { iv = -2 }
+					if iv > 1 { iv = 1 }
+				}
+				w[i] = int8(iv)
 			}
 		}
 		ws.Versions[dtype] = w
