@@ -107,6 +107,18 @@ func (ws *WeightStore) Randomize(seed int64, scale float32) {
 	ws.GPUWeights = make(map[DType]any)
 }
 
+// HeRandomize initializes weights using He initialization (Kaiming Normal).
+func (ws *WeightStore) HeRandomize(seed int64, inputSize int) {
+	r := rand.New(rand.NewSource(seed))
+	stddev := float32(math.Sqrt(2.0 / float64(inputSize)))
+	for i := range ws.Master {
+		ws.Master[i] = float32(r.NormFloat64()) * stddev
+	}
+	// Clear stale versions
+	ws.Versions = make(map[DType]any)
+	ws.GPUWeights = make(map[DType]any)
+}
+
 // GetActive returns the data for the given DType if it exists.
 func (ws *WeightStore) GetActive(dtype DType) any {
 	return ws.Versions[dtype]

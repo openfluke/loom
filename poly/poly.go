@@ -87,8 +87,9 @@ const (
 	ActivationSilu    ActivationType = 1
 	ActivationGELU    ActivationType = 2
 	ActivationTanh    ActivationType = 3
-	ActivationSigmoid ActivationType = 4
-	ActivationLinear  ActivationType = -1
+	ActivationSigmoid   ActivationType = 4
+	ActivationLeakyReLU ActivationType = 5
+	ActivationLinear    ActivationType = -1
 )
 
 // SoftmaxType defines the variant of softmax to use
@@ -119,6 +120,8 @@ func (a ActivationType) String() string {
 		return "Tanh"
 	case ActivationSigmoid:
 		return "Sigmoid"
+	case ActivationLeakyReLU:
+		return "LeakyReLU"
 	case ActivationLinear:
 		return "Linear"
 	default:
@@ -172,6 +175,11 @@ func Activate[T Numeric](v T, act ActivationType) T {
 		return T(math.Tanh(float64(v)))
 	case ActivationSigmoid:
 		return T(1.0 / (1.0 + math.Exp(-float64(v))))
+	case ActivationLeakyReLU:
+		if v < 0 {
+			return T(float64(v) * 0.01)
+		}
+		return v
 	case ActivationLinear:
 		return v
 	default:
@@ -206,6 +214,11 @@ func ActivateDerivative[T Numeric](v T, act ActivationType) T {
 	case ActivationSigmoid:
 		s := 1.0 / (1.0 + math.Exp(-float64(v)))
 		return T(s * (1.0 - s))
+	case ActivationLeakyReLU:
+		if v <= 0 {
+			return T(1) / 100
+		}
+		return T(1)
 	case ActivationLinear:
 		return 1
 	default:
