@@ -660,7 +660,9 @@ func (n *VolumetricNetwork) Release() {
 		buf.Release()
 	}
 	if buf, ok := n.GPULMHead.(*wgpu.Buffer); ok && buf != nil {
-		buf.Release()
+		if n.GPULMHead != n.GPUEmbeddings {
+			buf.Release()
+		}
 	}
 	n.GPUEmbeddings = nil
 	n.GPULMHead = nil
