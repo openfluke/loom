@@ -650,6 +650,44 @@ func (n *VolumetricNetwork) SyncToGPU() error {
 	return nil
 }
 
+// Release releases all GPU resources (weights) for the network.
+func (n *VolumetricNetwork) Release() {
+	for i := range n.Layers {
+		n.Layers[i].Release()
+	}
+
+	if buf, ok := n.GPUEmbeddings.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
+	if buf, ok := n.GPULMHead.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
+	n.GPUEmbeddings = nil
+	n.GPULMHead = nil
+
+	if n.GPUContext != nil {
+		n.GPUContext.Release()
+	}
+}
+
+// Release releases GPU weight buffers for this layer.
+func (l *VolumetricLayer) Release() {
+	if l.WeightStore != nil {
+		l.WeightStore.Release()
+	}
+	
+	if buf, ok := l.GPUKVCacheK.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
+	if buf, ok := l.GPUKVCacheV.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
+	l.GPUKVCacheK = nil
+	l.GPUKVCacheV = nil
+	l.IsGPUResident = false
+	l.IsKVCacheGPUResident = false
+}
+
 // SyncToCPU prepares the network for multi-core CPU execution by calculating optimal tiling parameters.
 func (n *VolumetricNetwork) SyncToCPU() {
 	for i := range n.Layers {

@@ -306,14 +306,16 @@ func cnnGPUTileSizesFromContext(ctx *WGPUContext, dtype DType) (scTile, mcTile i
 	if sc < 32 {
 		sc = 32
 	}
-	if sc > 128 {
-		sc = 128
+	// Strictly cap sc to 64 to avoid exhausting workgroup shared memory
+	// (64 tokens * 64 headDim * 2 buffers * 4 bytes = 32KB)
+	if sc > 64 {
+		sc = 64
 	}
 	sc = (sc / 32) * 32
 
 	mc := int(float64(limits.MaxComputeInvocationsPerWorkgroup) / 4.0 * multiplier)
-	if mc > 256 {
-		mc = 256
+	if mc > 128 {
+		mc = 128
 	}
 	mc = (mc / 64) * 64
 	if mc < 64 {

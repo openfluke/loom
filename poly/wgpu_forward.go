@@ -104,7 +104,15 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 			return nil, fmt.Errorf("layer %d MHA sync error: %v, %v, %v", b, errQ, errK, errV)
 		}
 
-		tileSize := ctx.GPUTileSize
+		tileSize := lMHA.TileSize
+		if tileSize <= 0 {
+			tileSize = ctx.GPUTileSize
+			if t.Network.EnableMultiCoreTiling {
+				tileSize = lMHA.GetGPUMCTileSize(lMHA.DType)
+			} else if lMHA.UseTiling {
+				tileSize = lMHA.GetGPUSCTileSize(lMHA.DType)
+			}
+		}
 		if tileSize <= 0 {
 			tileSize = 32
 		}
@@ -183,7 +191,15 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 			return nil, fmt.Errorf("layer %d MLP sync error: %v, %v, %v", b, errG, errU, errD)
 		}
 
-		tileSize = ctx.GPUTileSize
+		tileSize = lMLP.TileSize
+		if tileSize <= 0 {
+			tileSize = ctx.GPUTileSize
+			if t.Network.EnableMultiCoreTiling {
+				tileSize = lMLP.GetGPUMCTileSize(lMLP.DType)
+			} else if lMLP.UseTiling {
+				tileSize = lMLP.GetGPUSCTileSize(lMLP.DType)
+			}
+		}
 		if tileSize <= 0 { tileSize = 32 }
 
 		if lMLP.DType == DTypeInt4 {

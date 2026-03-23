@@ -235,3 +235,19 @@ func (ws *WeightStore) ApplyGradients(gradWeights *Tensor[float32], lr float32) 
 	ws.Versions = make(map[DType]any)
 	ws.GPUWeights = make(map[DType]any)
 }
+
+// Release explicitly destroys all WGPU weight and scale buffers.
+func (ws *WeightStore) Release() {
+	for dt, buf := range ws.GPUWeights {
+		if b, ok := buf.(*wgpu.Buffer); ok && b != nil {
+			b.Destroy()
+		}
+		delete(ws.GPUWeights, dt)
+	}
+	for dt, b := range ws.GPUScales {
+		if b != nil {
+			b.Destroy()
+		}
+		delete(ws.GPUScales, dt)
+	}
+}
