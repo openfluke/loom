@@ -33,6 +33,7 @@ type PolyLayerEvent struct {
 // LayerStats provides summary statistics for a tensor's activations or gradients.
 type LayerStats struct {
 	Avg float32 `json:"avg"`
+	Std float32 `json:"std"`
 	Max float32 `json:"max"`
 	Min float32 `json:"min"`
 	Active int  `json:"active"`
@@ -43,7 +44,7 @@ type LayerStats struct {
 func ComputeLayerStats[T Numeric](t *Tensor[T]) LayerStats {
 	if t == nil || len(t.Data) == 0 { return LayerStats{} }
 	
-	var sum, max, min float32
+	var sum, sumSq, max, min float32
 	max = float32(t.Data[0])
 	min = float32(t.Data[0])
 	active := 0
@@ -51,13 +52,21 @@ func ComputeLayerStats[T Numeric](t *Tensor[T]) LayerStats {
 	for _, v := range t.Data {
 		f := float32(v)
 		sum += f
+		sumSq += f * f
 		if f > max { max = f }
 		if f < min { min = f }
 		if math.Abs(float64(f)) > 1e-6 { active++ }
 	}
 
+	n := float32(len(t.Data))
+	avg := sum / n
+	variance := (sumSq / n) - (avg * avg)
+	if variance < 0 { variance = 0 }
+	std := float32(math.Sqrt(float64(variance)))
+
 	return LayerStats{
-		Avg:    sum / float32(len(t.Data)),
+		Avg:    avg,
+		Std:    std,
 		Max:    max,
 		Min:    min,
 		Active: active,
@@ -127,10 +136,11 @@ func (o *AggregatingObserver) OnForward(e PolyLayerEvent) {
 	o.Events = append(o.Events, e)
 	if len(o.Events) >= o.WindowSize {
 		// Aggregate
-		var avg, max, min float32
+		var avg, std, max, min float32
 		active := 0
 		for _, ev := range o.Events {
 			avg += ev.Stats.Avg
+			std += ev.Stats.Std
 			if ev.Stats.Max > max { max = ev.Stats.Max }
 			if ev.Stats.Min < min { min = ev.Stats.Min }
 			active += ev.Stats.Active
@@ -138,6 +148,7 @@ func (o *AggregatingObserver) OnForward(e PolyLayerEvent) {
 		n := float32(len(o.Events))
 		o.History = append(o.History, LayerStats{
 			Avg:    avg / n,
+			Std:    std / n,
 			Max:    max,
 			Min:    min,
 			Active: active / len(o.Events),

@@ -601,6 +601,7 @@ type VolumetricLayer struct {
 	MetaSource       string // "input", "stats", "activations", "weights", "combined"
 	MetaSourceLayer  int    // Optional: Index of layer to observe (-1 for self/input)
 	MetaEffect       string // "gate", "residual", "weight_modulation", "select_branch"
+	MetaRules        []MetaRule
 	MetaObservedLayer *VolumetricLayer // Optional: Direct reference to observed layer
 }
 
