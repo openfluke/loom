@@ -437,7 +437,7 @@ fn main(
         for (var i: u32 = tid; i < currentKSize * headDim; i += 64u) {
             let row = i / headDim;
             let col = i %% headDim;
-            let kvIdx = (kTile + row) * (params.numKVHeads * params.headDim) + (kvH * params.headDim) + col;
+            let kvIdx = (kvH * params.maxSeqLen + (kTile + row)) * params.headDim + col;
             tile_k[i] = kCache[kvIdx];
             tile_v[i] = vCache[kvIdx];
         }

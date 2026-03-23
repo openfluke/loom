@@ -288,13 +288,30 @@ func CalculateOptimalGPUTileSizeFromLimits(sharedMemBytes, maxInvocations uint32
 
 // cnnGPUTileSizesFromContext computes SC and MC tile sizes from a GPU context.
 // SC tile = max(GPUTileSize*4, 64); MC tile = MaxInvocations capped at 256, aligned to 64.
-func cnnGPUTileSizesFromContext(ctx *WGPUContext) (scTile, mcTile int) {
+// cnnGPUTileSizesFromContext computes SC and MC tile sizes from a GPU context and numerical type.
+func cnnGPUTileSizesFromContext(ctx *WGPUContext, dtype DType) (scTile, mcTile int) {
 	limits := ctx.Limits
-	sc := ctx.GPUTileSize * 4
-	if sc < 64 {
-		sc = 64
+	bytes := cnn3DTypeBytesPerElement(dtype)
+	
+	// Factor in bandwidth/cache benefits of smaller types
+	multiplier := 1.0
+	if bytes < 4 {
+		multiplier = 4.0 / bytes // e.g. 4.0 for Int8
 	}
-	mc := int(limits.MaxComputeInvocationsPerWorkgroup)
+	if multiplier > 4.0 {
+		multiplier = 4.0 // Cap scaling
+	}
+
+	sc := int(float64(ctx.GPUTileSize) * multiplier)
+	if sc < 32 {
+		sc = 32
+	}
+	if sc > 128 {
+		sc = 128
+	}
+	sc = (sc / 32) * 32
+
+	mc := int(float64(limits.MaxComputeInvocationsPerWorkgroup) / 4.0 * multiplier)
 	if mc > 256 {
 		mc = 256
 	}
@@ -306,14 +323,28 @@ func cnnGPUTileSizesFromContext(ctx *WGPUContext) (scTile, mcTile int) {
 }
 
 // MHAGPUTileSizes returns SC and MC GPU tile sizes for MHA attention kernels.
-// SC uses half the shared memory (conservative, avoids bank conflicts);
-// MC uses the full shared memory budget for larger tiles.
-func MHAGPUTileSizes(ctx *WGPUContext, headDim int) (scTile, mcTile int) {
+func MHAGPUTileSizes(ctx *WGPUContext, headDim int, dtype DType) (scTile, mcTile int) {
 	sharedMem := ctx.Limits.MaxComputeWorkgroupStorageSize
 	maxInv := ctx.Limits.MaxComputeInvocationsPerWorkgroup
+	
+	// MHA shaders use F32 in shared memory regardless of DType (after dequantization),
+	// but smaller types benefit from faster global-to-shared transfers.
+	// We use the base limit calculation but allow slightly larger tiles if DType is small.
 	scTile = CalculateOptimalGPUTileSizeFromLimits(sharedMem/2, maxInv, headDim)
 	mcTile = CalculateOptimalGPUTileSizeFromLimits(sharedMem, maxInv, headDim)
-	return scTile, mcTile
+	
+	bytes := cnn3DTypeBytesPerElement(dtype)
+	if bytes < 4 {
+		// Conservative boost for small types
+		scTile = int(float64(scTile) * 1.5)
+		mcTile = int(float64(mcTile) * 1.5)
+	}
+
+	// Always align to 8 and cap at 128 for MHA
+	if scTile > 64 { scTile = 64 }
+	if mcTile > 128 { mcTile = 128 }
+
+	return (scTile/8)*8, (mcTile/8)*8
 }
 
 // =============================================================================
@@ -352,7 +383,7 @@ func (l *VolumetricLayer) GetGPUSCTileSize(dtype DType) int {
 		}
 	}
 	if l.Network != nil && l.Network.GPUContext != nil {
-		sc, _ := cnnGPUTileSizesFromContext(l.Network.GPUContext)
+		sc, _ := cnnGPUTileSizesFromContext(l.Network.GPUContext, dtype)
 		return sc
 	}
 	return 64
@@ -366,7 +397,7 @@ func (l *VolumetricLayer) GetGPUMCTileSize(dtype DType) int {
 		}
 	}
 	if l.Network != nil && l.Network.GPUContext != nil {
-		_, mc := cnnGPUTileSizesFromContext(l.Network.GPUContext)
+		_, mc := cnnGPUTileSizesFromContext(l.Network.GPUContext, dtype)
 		return mc
 	}
 	return 256

@@ -6,6 +6,12 @@ import (
 
 	"github.com/openfluke/webgpu/wgpu"
 )
+ 
+var (
+	sharedInstance *wgpu.Instance
+	sharedAdapter  *wgpu.Adapter
+	sharedDevice   *wgpu.Device
+)
 
 // WGPUContext manages the GPU device and queue for acceleration.
 type WGPUContext struct {
@@ -62,24 +68,28 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		return nil
 	}
 
-	instance := wgpu.CreateInstance(nil)
-	if instance == nil {
-		return fmt.Errorf("failed to create WGPU instance")
+	if sharedInstance == nil {
+		sharedInstance = wgpu.CreateInstance(nil)
+		if sharedInstance == nil {
+			return fmt.Errorf("failed to create WGPU instance")
+		}
 	}
-
-	adapter, err := instance.RequestAdapter(&wgpu.RequestAdapterOptions{
-		PowerPreference: wgpu.PowerPreferenceHighPerformance,
-	})
-	if err != nil {
-		instance.Release()
-		return fmt.Errorf("failed to request adapter: %v", err)
+ 
+	if sharedAdapter == nil {
+		adapter, err := sharedInstance.RequestAdapter(&wgpu.RequestAdapterOptions{
+			PowerPreference: wgpu.PowerPreferenceHighPerformance,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to request adapter: %v", err)
+		}
+		sharedAdapter = adapter
 	}
+ 
+	adapter := sharedAdapter
 
 	// 1. Request a temporary default device to get a safe baseline for all limits
 	defaultDevice, err := adapter.RequestDevice(nil)
 	if err != nil {
-		adapter.Release()
-		instance.Release()
 		return fmt.Errorf("failed to request default device for limits: %v", err)
 	}
 	limits := defaultDevice.GetLimits().Limits
@@ -93,30 +103,32 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		limits.MaxBufferSize = 2 * 1024 * 1024 * 1024
 	}
 
-	// Request the device with explicitly supported baseline limits + necessary boosts
-	device, err := adapter.RequestDevice(&wgpu.DeviceDescriptor{
-		RequiredLimits: &wgpu.RequiredLimits{
-			Limits: limits,
-		},
-		RequiredFeatures: []wgpu.FeatureName{
-			wgpu.FeatureNameShaderF16,
-		},
-	})
-	if err != nil {
-		// If requesting with boosted limits and F16 fails, try again with default limits only.
-		device, err = adapter.RequestDevice(nil)
+	if sharedDevice == nil {
+		// Request the device with explicitly supported baseline limits + necessary boosts
+		device, err := adapter.RequestDevice(&wgpu.DeviceDescriptor{
+			RequiredLimits: &wgpu.RequiredLimits{
+				Limits: limits,
+			},
+			RequiredFeatures: []wgpu.FeatureName{
+				wgpu.FeatureNameShaderF16,
+			},
+		})
 		if err != nil {
-			adapter.Release()
-			instance.Release()
-			return fmt.Errorf("failed to request device even with default limits: %v", err)
+			// If requesting with boosted limits and F16 fails, try again with default limits only.
+			device, err = adapter.RequestDevice(nil)
+			if err != nil {
+				return fmt.Errorf("failed to request device even with default limits: %v", err)
+			}
 		}
+		sharedDevice = device
 	}
-
+ 
+	device := sharedDevice
 	finalLimits := device.GetLimits()
 
 	n.GPUContext = &WGPUContext{
-		Instance:       instance,
-		Adapter:        adapter,
+		Instance:       sharedInstance,
+		Adapter:        sharedAdapter,
 		Device:         device,
 		Queue:          device.GetQueue(),
 		Limits:         finalLimits.Limits,
@@ -138,17 +150,63 @@ func (n *VolumetricNetwork) InitWGPU() error {
 	return nil
 }
 
-// Release releases all WebGPU resources.
+// Release releases pooled resources. Device is shared and persists.
 func (c *WGPUContext) Release() {
-	if c.Device != nil {
-		c.Device.Release()
+	c.Cleanup()
+}
+
+// Cleanup explicitly releases all cached/pooled resources (buffers, pipelines, bind groups).
+func (c *WGPUContext) Cleanup() {
+	if c == nil { return }
+	
+	// 1. Release Activation Pool
+	for name, buf := range c.ActivationPool {
+		if buf != nil {
+			buf.Release()
+		}
+		delete(c.ActivationPool, name)
 	}
-	if c.Adapter != nil {
-		c.Adapter.Release()
+
+	// 2. Release Uniform Pool
+	for _, buf := range c.UniformPool {
+		if buf != nil {
+			buf.Release()
+		}
 	}
-	if c.Instance != nil {
-		c.Instance.Release()
+	c.UniformPool = nil
+	c.UniformIdx = 0
+
+	// 3. Release Bind Groups
+	for k, bg := range c.BindGroupCache {
+		if bg != nil {
+			bg.Release()
+		}
+		delete(c.BindGroupCache, k)
 	}
+
+	// 4. Release Pipelines
+	for k, p := range c.PipelineCache {
+		if p != nil {
+			p.Release()
+		}
+		delete(c.PipelineCache, k)
+	}
+
+	// 5. Release Layouts
+	for k, l := range c.LayoutCache {
+		if l != nil {
+			l.Release()
+		}
+		delete(c.LayoutCache, k)
+	}
+
+	// 6. Release any pending destroys
+	for _, buf := range c.PendingDestroys {
+		if buf != nil {
+			buf.Release()
+		}
+	}
+	c.PendingDestroys = nil
 }
 
 // BeginFrame creates a shared CommandEncoder that all subsequent Dispatch* calls

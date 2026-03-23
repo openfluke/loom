@@ -749,29 +749,48 @@ func (n *VolumetricNetwork) DestroyWGPU() {
 		return
 	}
 	ctx := n.GPUContext
-	if ctx.Device != nil {
-		ctx.Device.Release()
-	}
-	if ctx.Adapter != nil {
-		ctx.Adapter.Release()
-	}
-	if ctx.Instance != nil {
-		ctx.Instance.Release()
-	}
-	n.GPUContext = nil
-	n.GPUEmbeddings = nil
-	n.GPULMHead = nil
+
+	// Explicitly release all layer weights and caches
 	for i := range n.Layers {
 		l := &n.Layers[i]
 		if l.WeightStore != nil {
-			l.WeightStore.GPUWeights = make(map[DType]any)
-			l.WeightStore.GPUScales = make(map[DType]*wgpu.Buffer)
+			for dtype, wg := range l.WeightStore.GPUWeights {
+				if buf, ok := wg.(*wgpu.Buffer); ok && buf != nil {
+					buf.Release()
+				}
+				delete(l.WeightStore.GPUWeights, dtype)
+			}
+			for dtype, buf := range l.WeightStore.GPUScales {
+				if buf != nil {
+					buf.Release()
+				}
+				delete(l.WeightStore.GPUScales, dtype)
+			}
+		}
+		if buf, ok := l.GPUKVCacheK.(*wgpu.Buffer); ok && buf != nil {
+			buf.Release()
+		}
+		if buf, ok := l.GPUKVCacheV.(*wgpu.Buffer); ok && buf != nil {
+			buf.Release()
 		}
 		l.GPUKVCacheK = nil
 		l.GPUKVCacheV = nil
 		l.IsGPUResident = false
 		l.IsKVCacheGPUResident = false
 	}
+
+	// Release network-level persistent buffers
+	if buf, ok := n.GPUEmbeddings.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
+	if buf, ok := n.GPULMHead.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
+
+	ctx.Release() // Releases device and all pools/caches
+	n.GPUContext = nil
+	n.GPUEmbeddings = nil
+	n.GPULMHead = nil
 }
 
 // SyncAllToGPU mirrors the entire network state to VRAM.
@@ -896,10 +915,15 @@ func (l *VolumetricLayer) SyncToGPU() error {
 
 	// 3. Populate per-dtype GPU tile size maps from the GPU context.
 	if l.Network.GPUContext != nil {
-		sc, mc := cnnGPUTileSizesFromContext(l.Network.GPUContext)
 		l.GPUSCTileSizes = make(map[DType]int, len(allDTypes))
 		l.GPUMCTileSizes = make(map[DType]int, len(allDTypes))
 		for _, dtype := range allDTypes {
+			var sc, mc int
+			if l.Type == LayerMultiHeadAttention {
+				sc, mc = MHAGPUTileSizes(l.Network.GPUContext, l.HeadDim, dtype)
+			} else {
+				sc, mc = cnnGPUTileSizesFromContext(l.Network.GPUContext, dtype)
+			}
 			l.GPUSCTileSizes[dtype] = sc
 			l.GPUMCTileSizes[dtype] = mc
 		}
