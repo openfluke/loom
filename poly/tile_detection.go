@@ -300,6 +300,17 @@ func cnnGPUTileSizesFromContext(ctx *WGPUContext) (scTile, mcTile int) {
 	return sc, mc
 }
 
+// MHAGPUTileSizes returns SC and MC GPU tile sizes for MHA attention kernels.
+// SC uses half the shared memory (conservative, avoids bank conflicts);
+// MC uses the full shared memory budget for larger tiles.
+func MHAGPUTileSizes(ctx *WGPUContext, headDim int) (scTile, mcTile int) {
+	sharedMem := ctx.Limits.MaxComputeWorkgroupStorageSize
+	maxInv := ctx.Limits.MaxComputeInvocationsPerWorkgroup
+	scTile = CalculateOptimalGPUTileSizeFromLimits(sharedMem/2, maxInv, headDim)
+	mcTile = CalculateOptimalGPUTileSizeFromLimits(sharedMem, maxInv, headDim)
+	return scTile, mcTile
+}
+
 // =============================================================================
 // Per-layer per-dtype tile size getters
 // =============================================================================

@@ -288,6 +288,12 @@ const (
 	DTypeUint2    DType = 18 // 2-bit unsigned
 	DTypeTernary  DType = 19 // 2-bit (Ternary: -1, 0, 1)
 	DTypeBinary   DType = 20 // 1-bit (XNOR-Net)
+
+	// Sub-weight identifiers for specific layer types (used as keys in GPUWeights map)
+	WeightMHAQuery      DType = 200
+	WeightMHAKey        DType = 201
+	WeightMHAValue      DType = 202
+	WeightMHAProjection DType = 203
 )
 
 func (d DType) String() string {
@@ -737,6 +743,37 @@ func SimulatePrecision(wVal float32, dtype DType, scale float32) float32 {
 	}
 }
 
+// DestroyWGPU releases all GPU resources associated with the network.
+func (n *VolumetricNetwork) DestroyWGPU() {
+	if n.GPUContext == nil {
+		return
+	}
+	ctx := n.GPUContext
+	if ctx.Device != nil {
+		ctx.Device.Release()
+	}
+	if ctx.Adapter != nil {
+		ctx.Adapter.Release()
+	}
+	if ctx.Instance != nil {
+		ctx.Instance.Release()
+	}
+	n.GPUContext = nil
+	n.GPUEmbeddings = nil
+	n.GPULMHead = nil
+	for i := range n.Layers {
+		l := &n.Layers[i]
+		if l.WeightStore != nil {
+			l.WeightStore.GPUWeights = make(map[DType]any)
+			l.WeightStore.GPUScales = make(map[DType]*wgpu.Buffer)
+		}
+		l.GPUKVCacheK = nil
+		l.GPUKVCacheV = nil
+		l.IsGPUResident = false
+		l.IsKVCacheGPUResident = false
+	}
+}
+
 // SyncAllToGPU mirrors the entire network state to VRAM.
 func (n *VolumetricNetwork) SyncAllToGPU() error {
 	if n.GPUContext == nil {
@@ -810,8 +847,7 @@ func (l *VolumetricLayer) SyncToGPU() error {
 		if l.Type == LayerRMSNorm {
 			// RMSNorm MUST stay in FP32
 		} else if l.Type == LayerSwiGLU && l.DType != DTypeInt4 {
-			// Sub-components for FP32 SwiGLU 
-			// (We use the Master mirror below for generic support, but could optimize here)
+			l.syncFP32SwiGLU(ctx)
 		} else if l.DType == DTypeInt4 {
 			if l.Type == LayerSwiGLU {
 				h, inter := l.InputHeight, l.OutputHeight
@@ -955,10 +991,31 @@ func (l *VolumetricLayer) syncFP32MHA(ctx *WGPUContext) {
 	oBuf, err := ctx.CreatePersistentBuffer(w[qwSize+kwSize+vwSize:qwSize+kwSize+vwSize+owSize], "O Weights")
 	if err != nil { fmt.Printf("O err: %v\n", err) }
 
-	l.WeightStore.GPUWeights[DType(200)] = qBuf
-	l.WeightStore.GPUWeights[DType(201)] = kBuf
-	l.WeightStore.GPUWeights[DType(202)] = vBuf
-	l.WeightStore.GPUWeights[DType(203)] = oBuf
+	l.WeightStore.GPUWeights[WeightMHAQuery] = qBuf
+	l.WeightStore.GPUWeights[WeightMHAKey] = kBuf
+	l.WeightStore.GPUWeights[WeightMHAValue] = vBuf
+	l.WeightStore.GPUWeights[WeightMHAProjection] = oBuf
+}
+
+func (l *VolumetricLayer) syncFP32SwiGLU(ctx *WGPUContext) {
+	h := l.InputHeight
+	inter := l.OutputHeight
+	gSize := h * inter
+	uSize := h * inter
+	dSize := inter * h
+
+	w := l.WeightStore.Master
+	if len(w) < gSize+uSize+dSize {
+		return
+	}
+
+	gBuf, _ := ctx.CreatePersistentBuffer(w[0:gSize], "Gate Weights")
+	uBuf, _ := ctx.CreatePersistentBuffer(w[gSize:gSize+uSize], "Up Weights")
+	dBuf, _ := ctx.CreatePersistentBuffer(w[gSize+uSize:gSize+uSize+dSize], "Down Weights")
+
+	l.WeightStore.GPUWeights[DType(100)] = gBuf
+	l.WeightStore.GPUWeights[DType(101)] = uBuf
+	l.WeightStore.GPUWeights[DType(102)] = dBuf
 }
 
 func (l *VolumetricLayer) syncQuantizedMHA(ctx *WGPUContext) {
@@ -970,10 +1027,10 @@ func (l *VolumetricLayer) syncQuantizedMHA(ctx *WGPUContext) {
 	owSize := d * d
 
 	w := l.WeightStore.Master
-	l.syncQuantizedComponent(ctx, w[0:qwSize], "Q", DType(200), DType(200))
-	l.syncQuantizedComponent(ctx, w[qwSize:qwSize+kwSize], "K", DType(201), DType(201))
-	l.syncQuantizedComponent(ctx, w[qwSize+kwSize:qwSize+kwSize+vwSize], "V", DType(202), DType(202))
-	l.syncQuantizedComponent(ctx, w[qwSize+kwSize+vwSize:qwSize+kwSize+vwSize+owSize], "O", DType(203), DType(203))
+	l.syncQuantizedComponent(ctx, w[0:qwSize], "Q", WeightMHAQuery, WeightMHAQuery)
+	l.syncQuantizedComponent(ctx, w[qwSize:qwSize+kwSize], "K", WeightMHAKey, WeightMHAKey)
+	l.syncQuantizedComponent(ctx, w[qwSize+kwSize:qwSize+kwSize+vwSize], "V", WeightMHAValue, WeightMHAValue)
+	l.syncQuantizedComponent(ctx, w[qwSize+kwSize+vwSize:qwSize+kwSize+vwSize+owSize], "O", WeightMHAProjection, WeightMHAProjection)
 }
 
 // SyncToCPU releases GPU resources and prepares the individual layer for CPU tiling optimizations.

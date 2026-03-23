@@ -187,16 +187,16 @@ func (t *Transformer[T]) Generate(
 				}
 			} else {
 				fmt.Printf("⚠️  GPU Prefill Failed: %v (Falling back to CPU)\n", err)
-				allEmbeds := t.tokensToTensor(tokens)
-				hidden := t.forwardFull(allEmbeds)
+				allEmbeds := t.TokensToTensor(tokens)
+				hidden := t.ForwardFull(allEmbeds)
 				lastHalf := hidden.Data[len(hidden.Data)-t.HiddenSize:]
-				logits = t.applyLMHead(lastHalf)
+				logits = t.ApplyLMHead(lastHalf)
 			}
 		} else {
-			allEmbeds := t.tokensToTensor(tokens)
-			hidden := t.forwardFull(allEmbeds)
+			allEmbeds := t.TokensToTensor(tokens)
+			hidden := t.ForwardFull(allEmbeds)
 			lastHalf := hidden.Data[len(hidden.Data)-t.HiddenSize:]
-			logits = t.applyLMHead(lastHalf)
+			logits = t.ApplyLMHead(lastHalf)
 		}
 	}
 	prefillElapsed := time.Since(prefillStart)
@@ -234,7 +234,7 @@ func (t *Transformer[T]) Generate(
 				copy(input.Data, nextEmbed)
 				hidden := t.forwardOne(input)
 				lastHalf := hidden.Data[len(hidden.Data)-t.HiddenSize:]
-				logits = t.applyLMHead(lastHalf)
+				logits = t.ApplyLMHead(lastHalf)
 			}
 		} else {
 			nextEmbed := t.getEmbedding(nextToken)
@@ -242,7 +242,7 @@ func (t *Transformer[T]) Generate(
 			copy(input.Data, nextEmbed)
 			hidden := t.forwardOne(input)
 			lastHalf := hidden.Data[len(hidden.Data)-t.HiddenSize:]
-			logits = t.applyLMHead(lastHalf)
+			logits = t.ApplyLMHead(lastHalf)
 		}
 	}
 
@@ -281,7 +281,7 @@ func (t *Transformer[T]) getEmbedding(tokenID int) []T {
 	return out
 }
 
-func (t *Transformer[T]) tokensToTensor(tokens []uint32) *Tensor[T] {
+func (t *Transformer[T]) TokensToTensor(tokens []uint32) *Tensor[T] {
 	out := NewTensor[T](len(tokens), t.HiddenSize)
 	for i, tok := range tokens {
 		copy(out.Data[i*t.HiddenSize:], t.getEmbedding(int(tok)))
@@ -300,10 +300,10 @@ func (t *Transformer[T]) forwardOne(input *Tensor[T]) *Tensor[T] {
 		}
 		fmt.Printf("⚠️  GPU Forward Failed: %v (Falling back to CPU)\n", err)
 	}
-	return t.forwardFull(input)
+	return t.ForwardFull(input)
 }
 
-func (t *Transformer[T]) forwardFull(input *Tensor[T]) *Tensor[T] {
+func (t *Transformer[T]) ForwardFull(input *Tensor[T]) *Tensor[T] {
 	if t.Network.UseGPU && t.Network.GPUContext != nil {
 		res, err := t.ForwardWGPU(input)
 		if err == nil {
@@ -359,7 +359,7 @@ func (t *Transformer[T]) forwardFull(input *Tensor[T]) *Tensor[T] {
 	return current
 }
 
-func (t *Transformer[T]) applyLMHead(hidden []T) []float32 {
+func (t *Transformer[T]) ApplyLMHead(hidden []T) []float32 {
 	// Final Norm
 	normalized := hidden
 	if t.finalNormLayer != nil {

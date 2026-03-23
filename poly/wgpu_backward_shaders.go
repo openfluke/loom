@@ -9,7 +9,6 @@ import "fmt"
 // ShaderDenseBackwardDX calculates gradInput = gradOutput * weights
 // dx = dy * W^T  => dx[b, i] = sum_o dy[b, o] * W[o, i]
 func ShaderDenseBackwardDX(tileSize int) string {
-	ts2 := tileSize * tileSize
 	return fmt.Sprintf(`
 struct Params {
     batchSize: u32,
@@ -17,65 +16,28 @@ struct Params {
     outputSize: u32,
     tileSize: u32,
 };
-
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
 @group(0) @binding(2) var<storage, read> weights: array<f32>;
 @group(0) @binding(3) var<storage, read_write> gradInput: array<f32>;
 
-var<workgroup> dyTile: array<f32, %d>;
-var<workgroup> wTile: array<f32, %d>;
-
-@compute @workgroup_size(%d, %d, 1)
-fn main(
-    @builtin(global_invocation_id) global_id: vec3<u32>,
-    @builtin(local_invocation_id) local_id: vec3<u32>,
-    @builtin(workgroup_id) wg_id: vec3<u32>
-) {
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(workgroup_id) wg_id: vec3<u32>) {
     let i = global_id.x;
-    let b = global_id.y;
-    let tx = local_id.x;
-    let ty = local_id.y;
-
+    let b = wg_id.y;
+    if (i >= params.inputSize || b >= params.batchSize) { return; }
     var sum: f32 = 0.0;
-    let numTiles = (params.outputSize + params.tileSize - 1) / params.tileSize;
-
-    for (var t: u32 = 0u; t < numTiles; t++) {
-        // Load dy[b, o] and W[o, i] into shared memory
-        let o_idx = t * params.tileSize + tx;
-        if (b < params.batchSize && o_idx < params.outputSize) {
-            dyTile[ty * params.tileSize + tx] = gradOutput[b * params.outputSize + o_idx];
-        } else {
-            dyTile[ty * params.tileSize + tx] = 0.0;
-        }
-
-        let w_o_idx = t * params.tileSize + ty;
-        if (i < params.inputSize && w_o_idx < params.outputSize) {
-            wTile[ty * params.tileSize + tx] = weights[w_o_idx * params.inputSize + i];
-        } else {
-            wTile[ty * params.tileSize + tx] = 0.0;
-        }
-
-        workgroupBarrier();
-
-        for (var k: u32 = 0u; k < params.tileSize; k++) {
-            sum += dyTile[ty * params.tileSize + k] * wTile[k * params.tileSize + tx];
-        }
-
-        workgroupBarrier();
+    for (var o: u32 = 0u; o < params.outputSize; o++) {
+        sum += gradOutput[b * params.outputSize + o] * weights[o * params.inputSize + i];
     }
-
-    if (b < params.batchSize && i < params.inputSize) {
-        gradInput[b * params.inputSize + i] = sum;
-    }
+    gradInput[b * params.inputSize + i] = sum;
 }
-`, ts2, ts2, tileSize, tileSize)
+`, tileSize)
 }
 
 // ShaderDenseBackwardDW calculates gradWeights = gradOutput^T * input
 // dw = dy^T * x => dw[o, i] = sum_b dy[b, o] * x[b, i]
 func ShaderDenseBackwardDW(tileSize int) string {
-	ts2 := tileSize * tileSize
 	return fmt.Sprintf(`
 struct Params {
     batchSize: u32,
@@ -83,58 +45,23 @@ struct Params {
     outputSize: u32,
     tileSize: u32,
 };
-
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
 @group(0) @binding(2) var<storage, read> input: array<f32>;
 @group(0) @binding(3) var<storage, read_write> gradWeights: array<f32>;
 
-var<workgroup> dyTile: array<f32, %d>;
-var<workgroup> xTile: array<f32, %d>;
-
-@compute @workgroup_size(%d, %d, 1)
-fn main(
-    @builtin(global_invocation_id) global_id: vec3<u32>,
-    @builtin(local_invocation_id) local_id: vec3<u32>,
-    @builtin(workgroup_id) wg_id: vec3<u32>
-) {
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(workgroup_id) wg_id: vec3<u32>) {
     let i = global_id.x;
-    let o = global_id.y;
-    let tx = local_id.x;
-    let ty = local_id.y;
-
+    let o = wg_id.y;
+    if (i >= params.inputSize || o >= params.outputSize) { return; }
     var sum: f32 = 0.0;
-    let numTiles = (params.batchSize + params.tileSize - 1) / params.tileSize;
-
-    for (var t: u32 = 0u; t < numTiles; t++) {
-        let b_idx = t * params.tileSize + tx;
-        if (o < params.outputSize && b_idx < params.batchSize) {
-            dyTile[ty * params.tileSize + tx] = gradOutput[b_idx * params.outputSize + o];
-        } else {
-            dyTile[ty * params.tileSize + tx] = 0.0;
-        }
-
-        let bx_idx = t * params.tileSize + ty;
-        if (i < params.inputSize && bx_idx < params.batchSize) {
-            xTile[ty * params.tileSize + tx] = input[bx_idx * params.inputSize + i];
-        } else {
-            xTile[ty * params.tileSize + tx] = 0.0;
-        }
-
-        workgroupBarrier();
-
-        for (var k: u32 = 0u; k < params.tileSize; k++) {
-            sum += dyTile[ty * params.tileSize + k] * xTile[k * params.tileSize + tx];
-        }
-
-        workgroupBarrier();
+    for (var b: u32 = 0u; b < params.batchSize; b++) {
+        sum += gradOutput[b * params.outputSize + o] * input[b * params.inputSize + i];
     }
-
-    if (o < params.outputSize && i < params.inputSize) {
-        gradWeights[o * params.inputSize + i] += sum;
-    }
+    gradWeights[o * params.inputSize + i] += sum;
 }
-`, ts2, ts2, tileSize, tileSize)
+`, tileSize)
 }
 
 const ShaderRMSNormBackward = `

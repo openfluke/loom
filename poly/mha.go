@@ -2,6 +2,7 @@ package poly
 
 import (
 	"math"
+	"sync"
 )
 
 // MHAForwardPolymorphic performs Multi-Head Attention across any numerical type.
@@ -17,6 +18,9 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 	kvDim := numKVHeads * headDim
 	
 	if layer.UseTiling && layer.TileSize > 0 {
+		if layer.EnableMultiCoreTiling {
+			return MHAForwardTiledParallel(layer, input)
+		}
 		return MHAForwardTiled(layer, input)
 	}
 	
@@ -68,8 +72,8 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 					sumV := float64(vB[i])
 					for j := 0; j < dModel; j++ {
 						inVal := float64(input.Data[s*dModel+j])
-						sumK += inVal * float64(kW[i*kvDim+j])
-						sumV += inVal * float64(vW[i*kvDim+j])
+						sumK += inVal * float64(kW[i*dModel+j])
+						sumV += inVal * float64(vW[i*dModel+j])
 					}
 					K[s*kvDim+i] = sumK
 					V[s*kvDim+i] = sumV
@@ -896,8 +900,20 @@ func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input
 	return gradInput, gradWeights
 }
 
-// MHAForwardTiled performs an optimized, tiled forward pass for MHA.
+// MHAForwardTiled performs an optimized, tiled forward pass for MHA (single-core).
 func MHAForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	return mhaForwardTiledCore[T](layer, input, false)
+}
+
+// MHAForwardTiledParallel performs an optimized, tiled forward pass for MHA
+// with the KV-head outer loop parallelised across goroutines (multi-core).
+func MHAForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	return mhaForwardTiledCore[T](layer, input, true)
+}
+
+// mhaForwardTiledCore is the shared implementation for tiled MHA forward.
+// When parallel=true the attention inner loop is distributed across goroutines.
+func mhaForwardTiledCore[T Numeric](layer *VolumetricLayer, input *Tensor[T], parallel bool) (preAct, postAct *Tensor[T]) {
 	dModel := layer.DModel
 	numHeads := layer.NumHeads
 	numKVHeads := layer.NumKVHeads
@@ -942,14 +958,13 @@ func MHAForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAc
 
 	// Tiled Q Projection (Local)
 	mhaTiledProject(input.Data, weights, qwStart, qbStart, Q, dModel, dModel, seqLen, layer.DType, scaleW, tileSize)
-	
+
 	// Tiled K and V Projections directly into Cache
 	for s := 0; s < seqLen; s++ {
 		pos := (layer.KVOffset + s) % msl
 		kRow := layer.KVCacheK.Data[pos*kvDim : (pos+1)*kvDim]
 		vRow := layer.KVCacheV.Data[pos*kvDim : (pos+1)*kvDim]
-		
-		// We use a temporary slice of one step for the projection helper
+
 		inStep := input.Data[s*dModel : (s+1)*dModel]
 		mhaTiledProject(inStep, weights, kwStart, kbStart, kRow, dModel, kvDim, 1, layer.DType, scaleW, tileSize)
 		mhaTiledProject(inStep, weights, vwStart, vbStart, vRow, dModel, kvDim, 1, layer.DType, scaleW, tileSize)
@@ -987,7 +1002,11 @@ func MHAForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAc
 
 	// Tiled Attention using KV Cache
 	attnOut := make([]float32, seqLen * dModel)
-	mhaTiledAttention(Q, layer.KVCacheK.Data, layer.KVCacheV.Data, attnOut, seqLen, numHeads, numKVHeads, headDim, dModel, kvDim, layer.KVOffset, msl, tileSize)
+	if parallel {
+		mhaTiledAttentionParallel(Q, layer.KVCacheK.Data, layer.KVCacheV.Data, attnOut, seqLen, numHeads, numKVHeads, headDim, dModel, kvDim, layer.KVOffset, msl, tileSize)
+	} else {
+		mhaTiledAttention(Q, layer.KVCacheK.Data, layer.KVCacheV.Data, attnOut, seqLen, numHeads, numKVHeads, headDim, dModel, kvDim, layer.KVOffset, msl, tileSize)
+	}
 
 	// Tiled Output Projection
 	mhaTiledProject(attnOut, weights, owStart, obStart, postAct.Data, dModel, dModel, seqLen, layer.DType, scaleW, tileSize)
@@ -998,6 +1017,127 @@ func MHAForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAc
 
 	layer.KVOffset += seqLen
 	return preAct, postAct
+}
+
+// mhaTiledAttentionParallel is the multi-core variant of mhaTiledAttention.
+// The outer KV-head loop is split across goroutines; each goroutine writes to
+// a disjoint slice of maxSArr/denomArr/vAccArr indexed by its head range, so
+// no locking is needed.
+func mhaTiledAttentionParallel(Q, KRows, VRows, attnOut []float32, seqLen, numHeads, numKVHeads, headDim, dModel, kvDim, kvOffset, msl, tileSize int) {
+	headsPerKV := numHeads / numKVHeads
+	scale := float32(1.0 / math.Sqrt(float64(headDim)))
+
+	numQueries := seqLen * numHeads
+	maxSArr := make([]float32, numQueries)
+	denomArr := make([]float32, numQueries)
+	vAccArr := make([]float32, numQueries*headDim)
+	for i := range maxSArr { maxSArr[i] = -1e9 }
+
+	var wg sync.WaitGroup
+	for kvH := 0; kvH < numKVHeads; kvH++ {
+		wg.Add(1)
+		go func(kvH int) {
+			defer wg.Done()
+			tileScores := make([]float32, tileSize)
+			hStart := kvH * headsPerKV
+			hEnd := hStart + headsPerKV
+
+			for kTile := 0; kTile <= kvOffset+seqLen-1; kTile += tileSize {
+				kEnd := kTile + tileSize
+				if kEnd > kvOffset+seqLen { kEnd = kvOffset + seqLen }
+
+				for s := 0; s < seqLen; s++ {
+					currentTotalPos := kvOffset + s
+					if kTile > currentTotalPos { continue }
+
+					tileKEnd := kEnd
+					if tileKEnd > currentTotalPos+1 { tileKEnd = currentTotalPos + 1 }
+					actualTileSize := tileKEnd - kTile
+					if actualTileSize <= 0 { continue }
+
+					for h := hStart; h < hEnd; h++ {
+						qIdx := s*numHeads + h
+						qBase := s*dModel + h*headDim
+
+						tileMax := float32(-1e9)
+						scores := tileScores[:actualTileSize]
+
+						for kP := 0; kP < actualTileSize; kP++ {
+							kIdx := (kTile + kP) % msl
+							kBase := kIdx*kvDim + kvH*headDim
+
+							var dot float32
+							d := 0
+							for ; d <= headDim-4; d += 4 {
+								dot += Q[qBase+d] * KRows[kBase+d]
+								dot += Q[qBase+d+1] * KRows[kBase+d+1]
+								dot += Q[qBase+d+2] * KRows[kBase+d+2]
+								dot += Q[qBase+d+3] * KRows[kBase+d+3]
+							}
+							for ; d < headDim; d++ {
+								dot += Q[qBase+d] * KRows[kBase+d]
+							}
+
+							sVal := dot * scale
+							scores[kP] = sVal
+							if sVal > tileMax { tileMax = sVal }
+						}
+
+						// Online softmax rescaling
+						oldMax := maxSArr[qIdx]
+						if tileMax > oldMax { maxSArr[qIdx] = tileMax }
+						newMax := maxSArr[qIdx]
+
+						expPrev := float32(math.Exp(float64(oldMax - newMax)))
+						vAccBase := qIdx * headDim
+						for d := 0; d < headDim; d++ { vAccArr[vAccBase+d] *= expPrev }
+						denomArr[qIdx] *= expPrev
+
+						var tileDenom float32
+						for i := 0; i < actualTileSize; i++ {
+							ev := float32(math.Exp(float64(scores[i] - newMax)))
+							scores[i] = ev
+							tileDenom += ev
+						}
+
+						for kP := 0; kP < actualTileSize; kP++ {
+							vIdx := (kTile + kP) % msl
+							vBase := vIdx*kvDim + kvH*headDim
+							sVal := scores[kP]
+
+							d := 0
+							for ; d <= headDim-4; d += 4 {
+								vAccArr[vAccBase+d] += sVal * VRows[vBase+d]
+								vAccArr[vAccBase+d+1] += sVal * VRows[vBase+d+1]
+								vAccArr[vAccBase+d+2] += sVal * VRows[vBase+d+2]
+								vAccArr[vAccBase+d+3] += sVal * VRows[vBase+d+3]
+							}
+							for ; d < headDim; d++ {
+								vAccArr[vAccBase+d] += sVal * VRows[vBase+d]
+							}
+						}
+						denomArr[qIdx] += tileDenom
+					}
+				}
+			}
+		}(kvH)
+	}
+	wg.Wait()
+
+	// Final normalization and output writing
+	for qIdx := 0; qIdx < numQueries; qIdx++ {
+		s := qIdx / numHeads
+		h := qIdx % numHeads
+		d := denomArr[qIdx]
+		if d > 0 {
+			invDenom := 1.0 / d
+			vAccBase := qIdx * headDim
+			outBase := s*dModel + h*headDim
+			for i := 0; i < headDim; i++ {
+				attnOut[outBase+i] = vAccArr[vAccBase+i] * invDenom
+			}
+		}
+	}
 }
 
 func mhaTiledProject[TIn Numeric, TOut Numeric](input []TIn, weights any, wStart, bStart int, output []TOut, inDim, outDim, seqLen int, dtype DType, scale float32, tileSize int) {

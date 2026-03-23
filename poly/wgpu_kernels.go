@@ -2,6 +2,7 @@ package poly
 
 import (
 	"fmt"
+	"math"
 	"unsafe"
 
 	"github.com/openfluke/webgpu/wgpu"
@@ -227,10 +228,31 @@ func (c *WGPUContext) DispatchDenseQ4(
 	return nil
 }
 
+func (c *WGPUContext) DispatchAdd(size int, a, b, res any) error {
+	pipeline, err := c.CreateComputePipeline(ShaderAdd)
+	if err != nil {
+		return err
+	}
+	pBuf := c.GetUniformBuffer(4)
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]uint32{uint32(size)}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, a, b, res)
+	if err != nil {
+		return err
+	}
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
 // DispatchDense dispatches a tiled dense matrix-multiply kernel.
 func (c *WGPUContext) DispatchDense(
 	batchSize, inputSize, outputSize int,
-	inputBuf, weightBuf, outputBuf *wgpu.Buffer,
+	inputBuf, weightBuf, outputBuf any,
 	tileSize int,
 ) error {
 	shaderSrc := ShaderTiledDenseN(tileSize)
@@ -266,7 +288,7 @@ func (c *WGPUContext) DispatchDense(
 // DispatchDenseBackwardDX calculates gradInput = gradOutput * weights
 func (c *WGPUContext) DispatchDenseBackwardDX(
 	batchSize, inputSize, outputSize int,
-	gradOutputBuf, weightBuf, gradInputBuf *wgpu.Buffer,
+	gradOutputBuf, weightBuf, gradInputBuf any,
 	tileSize int,
 ) error {
 	shaderSrc := ShaderDenseBackwardDX(tileSize)
@@ -291,7 +313,7 @@ func (c *WGPUContext) DispatchDenseBackwardDX(
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups(
 		(uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize),
-		(uint32(batchSize)+uint32(tileSize)-1)/uint32(tileSize),
+		uint32(batchSize),
 		1,
 	)
 	pass.End()
@@ -302,7 +324,7 @@ func (c *WGPUContext) DispatchDenseBackwardDX(
 // DispatchDenseBackwardDW calculates gradWeights = gradOutput^T * input
 func (c *WGPUContext) DispatchDenseBackwardDW(
 	batchSize, inputSize, outputSize int,
-	gradOutputBuf, inputBuf, gradWeightBuf *wgpu.Buffer,
+	gradOutputBuf, inputBuf, gradWeightBuf any,
 	tileSize int,
 ) error {
 	shaderSrc := ShaderDenseBackwardDW(tileSize)
@@ -325,8 +347,11 @@ func (c *WGPUContext) DispatchDenseBackwardDW(
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
-	// Dispatch over weights [outputSize, inputSize]
-	pass.DispatchWorkgroups((uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), (uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), 1)
+	pass.DispatchWorkgroups(
+		(uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize),
+		uint32(outputSize),
+		1,
+	)
 	pass.End()
 	ctxSubmit(c, enc, owned)
 	return nil
@@ -336,7 +361,7 @@ func (c *WGPUContext) DispatchDenseBackwardDW(
 // DispatchMHA dispatches the tiled multi-head attention kernel.
 func (c *WGPUContext) DispatchMHA(
 	numHeads, numKVHeads, headDim, seqLen, kvOffset, maxSeqLen int,
-	qBuf, kBuf, vBuf, oBuf *wgpu.Buffer,
+	qBuf, kBuf, vBuf, oBuf any,
 	tileSize int,
 ) error {
 	shaderSrc := ShaderTiledMHAN(tileSize, headDim)
@@ -626,6 +651,7 @@ type WGPUKVParams struct {
 	MaxSeqLen  uint32
 	NumKVHeads uint32
 	NumTokens  uint32
+	_          [3]uint32 // Pad to 32 bytes
 }
 
 func (c *WGPUContext) DispatchKVUpdate(
@@ -1102,7 +1128,7 @@ func (c *WGPUContext) DispatchCNN3BackwardDW(
 
 func (c *WGPUContext) DispatchMHABackward(
 	batchSize, numHeads, numKVHeads, headDim, seqLen int, scale float32,
-	gradOutputBuf, qBuf, kBuf, vBuf, dQBuf, dKBuf, dVBuf *wgpu.Buffer,
+	gradOutputBuf, qBuf, kBuf, vBuf, dQBuf, dKBuf, dVBuf any,
 ) error {
 	pipeline, err := c.CreateComputePipeline(ShaderMHABackward)
 	if err != nil { return err }
@@ -1241,13 +1267,44 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 		w, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		return c.DispatchEmbedding(l.VocabSize, l.EmbeddingDim, batchSize, inputBuf, w, outBuf)
 	case LayerMultiHeadAttention:
-		q, _ := l.WeightStore.GPUWeights[DType(200)].(*wgpu.Buffer)
-		k, _ := l.WeightStore.GPUWeights[DType(201)].(*wgpu.Buffer)
-		v, _ := l.WeightStore.GPUWeights[DType(202)].(*wgpu.Buffer)
-		oWeights, _ := l.WeightStore.GPUWeights[DType(203)].(*wgpu.Buffer)
-		attnOut := c.GetActivationBuffer("attn_out", uint64(64 * l.DModel * 4), wgpu.BufferUsageStorage)
-		if err := c.DispatchMHA(l.NumHeads, l.NumKVHeads, l.HeadDim, 64, 0, 512, q, k, v, attnOut, 32); err != nil { return err }
-		return c.DispatchDense(batchSize, l.DModel, l.DModel, attnOut, oWeights, outBuf, 32)
+		qWeights, _ := l.WeightStore.GPUWeights[WeightMHAQuery].(*wgpu.Buffer)
+		kWeights, _ := l.WeightStore.GPUWeights[WeightMHAKey].(*wgpu.Buffer)
+		vWeights, _ := l.WeightStore.GPUWeights[WeightMHAValue].(*wgpu.Buffer)
+		oWeights, _ := l.WeightStore.GPUWeights[WeightMHAProjection].(*wgpu.Buffer)
+		sl := l.SeqLength
+		if sl <= 0 {
+			sl = 1
+		}
+		maxSL := l.MaxSeqLen
+		if maxSL <= 0 {
+			maxSL = 512
+		}
+		tileSize := l.GetGPUSCTileSize(l.DType)
+		if tileSize <= 0 {
+			tileSize = 32
+		}
+
+		kvDim := l.NumKVHeads * l.HeadDim
+		qBuf := c.GetActivationBuffer(fmt.Sprintf("mha_q_%p", l), uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
+		kBuf := c.GetActivationBuffer(fmt.Sprintf("mha_k_%p", l), uint64(batchSize*sl*kvDim*4), wgpu.BufferUsageStorage)
+		vBuf := c.GetActivationBuffer(fmt.Sprintf("mha_v_%p", l), uint64(batchSize*sl*kvDim*4), wgpu.BufferUsageStorage)
+
+		// Q, K, V Projections
+		if err := c.DispatchDense(batchSize*sl, l.DModel, l.DModel, inputBuf, qWeights, qBuf, tileSize); err != nil {
+			return err
+		}
+		if err := c.DispatchDense(batchSize*sl, l.DModel, kvDim, inputBuf, kWeights, kBuf, tileSize); err != nil {
+			return err
+		}
+		if err := c.DispatchDense(batchSize*sl, l.DModel, kvDim, inputBuf, vWeights, vBuf, tileSize); err != nil {
+			return err
+		}
+
+		attnOut := c.GetActivationBuffer(fmt.Sprintf("attn_out_%p", l), uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
+		if err := c.DispatchMHA(l.NumHeads, l.NumKVHeads, l.HeadDim, sl, l.KVOffset, maxSL, qBuf, kBuf, vBuf, attnOut, tileSize); err != nil {
+			return err
+		}
+		return c.DispatchDense(batchSize*sl, l.DModel, l.DModel, attnOut, oWeights, outBuf, tileSize)
 	case LayerSwiGLU:
 		g, _ := l.WeightStore.GPUWeights[DType(100)].(*wgpu.Buffer)
 		u, _ := l.WeightStore.GPUWeights[DType(101)].(*wgpu.Buffer)
@@ -1307,14 +1364,93 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 	case LayerResidual:
 		return c.DispatchResidualBackward(l.InputHeight*batchSize, gradOutBuf, dxBuf, dwBuf)
 	case LayerMultiHeadAttention:
-		dummyMHAData := make([]float32, l.InputHeight*batchSize*l.NumHeads*l.HeadDim)
-		for i := range dummyMHAData { dummyMHAData[i] = 0.5 }
-		q, _ := c.CreatePersistentBuffer(dummyMHAData, fmt.Sprintf("Q_%p", l))
-		k, _ := c.CreatePersistentBuffer(dummyMHAData, fmt.Sprintf("K_%p", l))
-		v, _ := c.CreatePersistentBuffer(dummyMHAData, fmt.Sprintf("V_%p", l))
-		dkBuf := c.GetActivationBuffer("dK", uint64(l.InputHeight*batchSize*l.NumHeads*l.HeadDim*4), wgpu.BufferUsageStorage|wgpu.BufferUsageCopySrc)
-		dvBuf := c.GetActivationBuffer("dV", uint64(l.InputHeight*batchSize*l.NumHeads*l.HeadDim*4), wgpu.BufferUsageStorage|wgpu.BufferUsageCopySrc)
-		return c.DispatchMHABackward(batchSize, l.NumHeads, l.NumKVHeads, l.HeadDim, l.InputHeight, 1.0, gradOutBuf, q, k, v, dxBuf, dkBuf, dvBuf)
+		sl := l.SeqLength
+		if sl <= 0 {
+			sl = 1
+		}
+		kvDim := l.NumKVHeads * l.HeadDim
+		tileSize := l.GetGPUSCTileSize(l.DType)
+		if tileSize <= 0 {
+			tileSize = 32
+		}
+
+		qWeights, _ := l.WeightStore.GPUWeights[WeightMHAQuery].(*wgpu.Buffer)
+		kWeights, _ := l.WeightStore.GPUWeights[WeightMHAKey].(*wgpu.Buffer)
+		vWeights, _ := l.WeightStore.GPUWeights[WeightMHAValue].(*wgpu.Buffer)
+		oWeights, _ := l.WeightStore.GPUWeights[WeightMHAProjection].(*wgpu.Buffer)
+
+		// 1. Output Projection Backward
+		attnOut := c.GetActivationBuffer(fmt.Sprintf("attn_out_%p", l), uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
+		dAttnOut := c.GetActivationBuffer(fmt.Sprintf("mha_dat_%p", l), uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
+
+		qwSize := l.DModel * l.DModel
+		kwSize := l.DModel * kvDim
+		vwSize := l.DModel * kvDim
+		owSize := l.DModel * l.DModel
+
+		// Sub-buffers from dwBuf for each projection's weight gradients
+		dqWeights := c.GetSubBuffer(dwBuf, 0, uint64(qwSize*4))
+		dkWeights := c.GetSubBuffer(dwBuf, uint64(qwSize*4), uint64(kwSize*4))
+		dvWeights := c.GetSubBuffer(dwBuf, uint64((qwSize+kwSize)*4), uint64(vwSize*4))
+		doWeights := c.GetSubBuffer(dwBuf, uint64((qwSize+kwSize+vwSize)*4), uint64(owSize*4))
+
+		// Output Backward
+		if err := c.DispatchDenseBackwardDX(batchSize*sl, l.DModel, l.DModel, gradOutBuf, oWeights, dAttnOut, tileSize); err != nil {
+			return err
+		}
+		if err := c.DispatchDenseBackwardDW(batchSize*sl, l.DModel, l.DModel, gradOutBuf, attnOut, doWeights, tileSize); err != nil {
+			return err
+		}
+
+		// 2. MHA Backward
+		qAct := c.GetActivationBuffer(fmt.Sprintf("mha_q_%p", l), uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
+		kAct := c.GetActivationBuffer(fmt.Sprintf("mha_k_%p", l), uint64(batchSize*sl*kvDim*4), wgpu.BufferUsageStorage)
+		vAct := c.GetActivationBuffer(fmt.Sprintf("mha_v_%p", l), uint64(batchSize*sl*kvDim*4), wgpu.BufferUsageStorage)
+
+		dqAct := c.GetActivationBuffer(fmt.Sprintf("mha_dq_%p", l), uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
+		dkAct := c.GetActivationBuffer(fmt.Sprintf("mha_dk_%p", l), uint64(batchSize*sl*kvDim*4), wgpu.BufferUsageStorage)
+		dvAct := c.GetActivationBuffer(fmt.Sprintf("mha_dv_%p", l), uint64(batchSize*sl*kvDim*4), wgpu.BufferUsageStorage)
+
+		scaleF := float32(1.0 / math.Sqrt(float64(l.HeadDim)))
+		if err := c.DispatchMHABackward(batchSize, l.NumHeads, l.NumKVHeads, l.HeadDim, sl, scaleF, dAttnOut, qAct, kAct, vAct, dqAct, dkAct, dvAct); err != nil {
+			return err
+		}
+
+		// 3. Q, K, V Projections Backward
+		dInputQ := c.GetActivationBuffer(fmt.Sprintf("mha_diq_%p", l), uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
+		dInputK := c.GetActivationBuffer(fmt.Sprintf("mha_dik_%p", l), uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
+		dInputV := c.GetActivationBuffer(fmt.Sprintf("mha_div_%p", l), uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
+
+		// Q Projection Backward
+		if err := c.DispatchDenseBackwardDX(batchSize*sl, l.DModel, l.DModel, dqAct, qWeights, dInputQ, tileSize); err != nil {
+			return err
+		}
+		if err := c.DispatchDenseBackwardDW(batchSize*sl, l.DModel, l.DModel, dqAct, inputBuf, dqWeights, tileSize); err != nil {
+			return err
+		}
+
+		// K Projection Backward
+		if err := c.DispatchDenseBackwardDX(batchSize*sl, l.DModel, kvDim, dkAct, kWeights, dInputK, tileSize); err != nil {
+			return err
+		}
+		if err := c.DispatchDenseBackwardDW(batchSize*sl, l.DModel, kvDim, dkAct, inputBuf, dkWeights, tileSize); err != nil {
+			return err
+		}
+
+		// V Projection Backward
+		if err := c.DispatchDenseBackwardDX(batchSize*sl, l.DModel, kvDim, dvAct, vWeights, dInputV, tileSize); err != nil {
+			return err
+		}
+		if err := c.DispatchDenseBackwardDW(batchSize*sl, l.DModel, kvDim, dvAct, inputBuf, dvWeights, tileSize); err != nil {
+			return err
+		}
+
+		// 4. Sum gradients for Input
+		tempSum := c.GetActivationBuffer("mha_sum_tmp", uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
+		if err := c.DispatchAdd(batchSize*sl*l.DModel, dInputQ, dInputK, tempSum); err != nil {
+			return err
+		}
+		return c.DispatchAdd(batchSize*sl*l.DModel, tempSum, dInputV, dxBuf)
 	default:
 		return fmt.Errorf("GPU backward not implemented for layer %v", l.Type)
 	}

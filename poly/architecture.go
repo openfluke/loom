@@ -142,6 +142,7 @@ func (n *VolumetricNetwork) InitMHACell(z, y, x, l int, dModel, numHeads int, sc
 	layer.SeqLength = 1
 	layer.InputHeight = dModel
 	layer.OutputHeight = dModel
+	layer.MaxSeqLen = 512
 
 	kv := layer.NumKVHeads * layer.HeadDim
 	wCount := 2*dModel*dModel + 2*dModel*kv + 2*dModel + 2*kv

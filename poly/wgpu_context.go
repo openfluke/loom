@@ -39,6 +39,17 @@ type WGPUContext struct {
 	Limits wgpu.Limits
 }
 
+// WGPUBufferBinding represents a slice of a GPU buffer for binding.
+type WGPUBufferBinding struct {
+	Buffer *wgpu.Buffer
+	Offset uint64
+	Size   uint64
+}
+
+func (c *WGPUContext) GetSubBuffer(buf *wgpu.Buffer, offset, size uint64) *WGPUBufferBinding {
+	return &WGPUBufferBinding{Buffer: buf, Offset: offset, Size: size}
+}
+
 // BindGroupKey is used for the BindGroupCache
 type BindGroupKey struct {
 	Pipeline *wgpu.ComputePipeline
@@ -217,33 +228,56 @@ func (c *WGPUContext) GetUniformBuffer(size uint64) *wgpu.Buffer {
 	return buf
 }
 
-// BindGroupKeyHash generates a stable hash for a set of buffers and a pipeline.
-func BindGroupKeyHash(pipeline *wgpu.ComputePipeline, buffers ...*wgpu.Buffer) uint64 {
+// BindGroupKeyHash generates a stable hash for a set of buffers (or bindings) and a pipeline.
+func BindGroupKeyHash(pipeline *wgpu.ComputePipeline, bindings ...any) uint64 {
 	h := uint64(uintptr(unsafe.Pointer(pipeline)))
-	for _, b := range buffers {
-		h ^= uint64(uintptr(unsafe.Pointer(b))) + 0x9e3779b9 + (h << 6) + (h >> 2)
+	for _, b := range bindings {
+		if b == nil { continue }
+		switch v := b.(type) {
+		case *wgpu.Buffer:
+			h ^= uint64(uintptr(unsafe.Pointer(v))) + 0x9e3779b9 + (h << 6) + (h >> 2)
+		case *WGPUBufferBinding:
+			h ^= uint64(uintptr(unsafe.Pointer(v.Buffer))) + 0x9e3779b9 + (h << 6) + (h >> 2)
+			h ^= v.Offset + 0x9e3779b9 + (h << 6) + (h >> 2)
+			h ^= v.Size + 0x9e3779b9 + (h << 6) + (h >> 2)
+		}
 	}
 	return h
 }
 
-// GetBindGroup retrieves or creates a BindGroup for the given pipeline and buffers.
-func (c *WGPUContext) GetBindGroup(pipeline *wgpu.ComputePipeline, buffers ...*wgpu.Buffer) (*wgpu.BindGroup, error) {
-	key := BindGroupKeyHash(pipeline, buffers...)
+// GetBindGroup retrieves or creates a BindGroup for the given pipeline and buffers/bindings.
+func (c *WGPUContext) GetBindGroup(pipeline *wgpu.ComputePipeline, bindings ...any) (*wgpu.BindGroup, error) {
+	key := BindGroupKeyHash(pipeline, bindings...)
 	if bg, ok := c.BindGroupCache[key]; ok {
 		return bg, nil
 	}
 
-	entries := make([]wgpu.BindGroupEntry, len(buffers))
-	for i, b := range buffers {
+	entries := make([]wgpu.BindGroupEntry, len(bindings))
+	for i, b := range bindings {
 		if b == nil {
 			return nil, fmt.Errorf("binding %d is nil", i)
 		}
 
-		size := b.GetSize()
+		var bBuf *wgpu.Buffer
+		var offset, size uint64
+
+		switch v := b.(type) {
+		case *wgpu.Buffer:
+			bBuf = v
+			offset = 0
+			size = v.GetSize()
+		case *WGPUBufferBinding:
+			bBuf = v.Buffer
+			offset = v.Offset
+			size = v.Size
+		default:
+			return nil, fmt.Errorf("binding %d has invalid type %T", i, b)
+		}
 
 		entries[i] = wgpu.BindGroupEntry{
 			Binding: uint32(i),
-			Buffer:  b,
+			Buffer:  bBuf,
+			Offset:  offset,
 			Size:    size,
 		}
 	}

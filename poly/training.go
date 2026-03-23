@@ -310,6 +310,12 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 			outSize = d * h * w * l.Filters
 		} else if l.Type == LayerCNN1 {
 			outSize = l.OutputHeight * l.Filters
+		} else if l.Type == LayerMultiHeadAttention {
+			sl := l.SeqLength
+			if sl <= 0 {
+				sl = 1
+			}
+			outSize = sl * l.DModel
 		}
 		if outSize == 0 {
 			outSize = l.InputHeight
@@ -414,6 +420,12 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 			inSize = d * h * w * l.InputChannels
 		} else if l.Type == LayerCNN1 {
 			inSize = l.InputHeight * l.InputChannels
+		} else if l.Type == LayerMultiHeadAttention {
+			sl := l.SeqLength
+			if sl <= 0 {
+				sl = 1
+			}
+			inSize = sl * l.DModel
 		}
 		if inSize == 0 {
 			inSize = l.OutputHeight
@@ -436,6 +448,12 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 			outSize = d * h * w * l.Filters
 		} else if l.Type == LayerCNN1 {
 			outSize = l.OutputHeight * l.Filters
+		} else if l.Type == LayerMultiHeadAttention {
+			sl := l.SeqLength
+			if sl <= 0 {
+				sl = 1
+			}
+			outSize = sl * l.DModel
 		}
 		if outSize == 0 {
 			outSize = l.InputHeight
@@ -582,6 +600,7 @@ func ComputeLossGradient[T Numeric](output, target *Tensor[T], lossType string) 
 	}
 	return grad
 }
+
 // ApplyRecursiveGradients traverses the layer hierarchy and updates weights in all nested WeightStores.
 func ApplyRecursiveGradients(layer *VolumetricLayer, gradWeights *Tensor[float32], lr float32) {
 	if layer == nil || gradWeights == nil {

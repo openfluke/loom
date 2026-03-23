@@ -437,7 +437,7 @@ fn main(
         for (var i: u32 = tid; i < currentKSize * headDim; i += 64u) {
             let row = i / headDim;
             let col = i %% headDim;
-            let kvIdx = (kvH * params.maxSeqLen + (kTile + row)) * headDim + col;
+            let kvIdx = (kTile + row) * (params.numKVHeads * params.headDim) + (kvH * params.headDim) + col;
             tile_k[i] = kCache[kvIdx];
             tile_v[i] = vCache[kvIdx];
         }
@@ -458,11 +458,15 @@ fn main(
                 max_score = score;
                 let exp_factor = exp(old_max - max_score);
                 denom = denom * exp_factor + 1.0;
-                local_v_acc = local_v_acc * exp_factor + tile_v[j * headDim + tid];
+                if (tid < headDim) {
+                    local_v_acc = local_v_acc * exp_factor + tile_v[j * headDim + tid];
+                }
             } else {
                 let exp_val = exp(score - max_score);
                 denom += exp_val;
-                local_v_acc += tile_v[j * headDim + tid] * exp_val;
+                if (tid < headDim) {
+                    local_v_acc += tile_v[j * headDim + tid] * exp_val;
+                }
             }
         }
         workgroupBarrier();
@@ -551,6 +555,7 @@ struct KVParams {
     maxSeqLen: u32,
     numKVHeads: u32,
     numTokens: u32,
+    padding: vec3<u32>,
 };
 @group(0) @binding(0) var<storage, read_write> kCache: array<f32>;
 @group(0) @binding(1) var<storage, read_write> vCache: array<f32>;
@@ -910,5 +915,21 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
     output[batchIdx * params.outC * oArea + filterIdx * oArea + outIdx_flat] = sum;
+}
+`
+
+const ShaderAdd = `
+struct Params {
+    size: u32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> a: array<f32>;
+@group(0) @binding(2) var<storage, read> b: array<f32>;
+@group(0) @binding(3) var<storage, read_write> res: array<f32>;
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    if (global_id.x >= params.size) { return; }
+    res[global_id.x] = a[global_id.x] + b[global_id.x];
 }
 `
