@@ -32,6 +32,7 @@ const (
 	LayerParallel           LayerType = 16
 	LayerSequential         LayerType = 17
 	LayerResidual           LayerType = 18
+	LayerMetacognition      LayerType = 19
 )
 
 func (t LayerType) String() string {
@@ -74,6 +75,8 @@ func (t LayerType) String() string {
 		return "Sequential"
 	case LayerResidual:
 		return "Residual"
+	case LayerMetacognition:
+		return "Metacognition"
 	default:
 		return fmt.Sprintf("LayerType(%d)", t)
 	}
@@ -592,6 +595,13 @@ type VolumetricLayer struct {
 	// Persistent GPU KV buffers
 	GPUKVCacheK any // *wgpu.Buffer
 	GPUKVCacheV any // *wgpu.Buffer
+
+	// Metacognition (Sub-network)
+	MetaNetwork      *VolumetricNetwork
+	MetaSource       string // "input", "stats", "activations", "weights", "combined"
+	MetaSourceLayer  int    // Optional: Index of layer to observe (-1 for self/input)
+	MetaEffect       string // "gate", "residual", "weight_modulation", "select_branch"
+	MetaObservedLayer *VolumetricLayer // Optional: Direct reference to observed layer
 }
 
 // AlignedFloat32 allocates a slice of float32 aligned to 64-byte boundaries.
