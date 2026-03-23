@@ -126,8 +126,9 @@ func cnn3DTypeBytesPerElement(dtype DType) float64 {
 	switch dtype {
 	case DTypeFloat64, DTypeInt64, DTypeUint64:
 		return 8
-	case DTypeFloat32, DTypeInt32, DTypeUint32,
-		DTypeFloat16, DTypeBFloat16: // Float16/BFloat16 stored as []float32 via Morph
+	case DTypeFloat32, DTypeFloat16, DTypeBFloat16: // Float16/BFloat16 stored as []float32 via Morph
+		return 4
+	case DTypeInt32, DTypeUint32:
 		return 4
 	case DTypeInt16, DTypeUint16:
 		return 2
@@ -143,11 +144,15 @@ func cnn3DTypeBytesPerElement(dtype DType) float64 {
 // =============================================================================
 
 // CalculateOptimalTileSize returns a tile size that fits the working set in L1.
-// For MHA: Working set = TileSize * headDim * 2 * 4 (K and V tiles in float32).
-func CalculateOptimalTileSize(headDim int) int {
+// For MHA: Working set = TileSize * headDim * 2 * bytesPerWeight (K and V tiles in RAM).
+func CalculateOptimalTileSize(headDim int, dtype DType) int {
 	info := GetHardwareInfo()
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
 
-	tileSize := info.L1DataCacheSize / (headDim * 2 * 4)
+	tileSize := info.L1DataCacheSize / int(float64(headDim*2)*bytesPerWeight)
 
 	if tileSize < 8 {
 		tileSize = 8

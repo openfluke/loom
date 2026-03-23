@@ -1050,7 +1050,10 @@ func (l *VolumetricLayer) SyncToCPU() {
 			case LayerCNN3:
 				ts = CalculateOptimalCNN3TileSize(l.InputChannels, dtype)
 			case LayerMultiHeadAttention:
-				ts = CalculateOptimalTileSize(l.HeadDim)
+				ts = CalculateOptimalTileSize(l.HeadDim, dtype)
+			case LayerSwiGLU:
+				// SwiGLU is effectively a 1D projection of input channels to intermediate
+				ts = CalculateOptimalCNN1TileSize(l.InputHeight, dtype)
 			default:
 				ts = 8
 			}

@@ -162,7 +162,7 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 			}
 			return preAct, postAct
 		}
-	case DTypeFloat32:
+	case DTypeFloat32, DTypeFloat16, DTypeBFloat16:
 		if rawW, ok := weights.([]float32); ok {
 			qW := rawW[qwStart : qwStart + dModel * dModel]
 			kW := rawW[kwStart : kwStart + dModel * kvDim]

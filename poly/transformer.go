@@ -96,7 +96,7 @@ func (t *Transformer[T]) EnableTiling(tileSize int) {
 			// Auto-detect based on headDim
 			dim := l.HeadDim
 			if dim == 0 { dim = 64 } // Sane default
-			finalSize = CalculateOptimalTileSize(dim)
+			finalSize = CalculateOptimalTileSize(dim, l.DType)
 		}
 		l.TileSize = finalSize
 	}
@@ -104,7 +104,7 @@ func (t *Transformer[T]) EnableTiling(tileSize int) {
 		t.finalNormLayer.UseTiling = true
 		finalSize := tileSize
 		if finalSize <= 0 {
-			finalSize = CalculateOptimalTileSize(64)
+			finalSize = CalculateOptimalTileSize(64, t.Network.Layers[0].DType)
 		}
 		t.finalNormLayer.TileSize = finalSize
 

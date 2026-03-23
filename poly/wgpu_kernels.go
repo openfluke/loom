@@ -651,7 +651,7 @@ type WGPUKVParams struct {
 	MaxSeqLen  uint32
 	NumKVHeads uint32
 	NumTokens  uint32
-	_          [3]uint32 // Pad to 32 bytes
+	_          [7]uint32 // Pad to 48 bytes (5 + 7 = 12 * 4)
 }
 
 func (c *WGPUContext) DispatchKVUpdate(
