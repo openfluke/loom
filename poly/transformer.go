@@ -90,23 +90,15 @@ func (t *Transformer[T]) EnableTiling(tileSize int) {
 	for i := range t.Network.Layers {
 		l := &t.Network.Layers[i]
 		l.UseTiling = true
-		
-		finalSize := tileSize
-		if finalSize <= 0 {
-			// Auto-detect based on headDim
-			dim := l.HeadDim
-			if dim == 0 { dim = 64 } // Sane default
-			finalSize = CalculateOptimalTileSize(dim, l.DType)
+		if tileSize > 0 {
+			l.TileSize = tileSize
 		}
-		l.TileSize = finalSize
 	}
 	if t.finalNormLayer != nil {
 		t.finalNormLayer.UseTiling = true
-		finalSize := tileSize
-		if finalSize <= 0 {
-			finalSize = CalculateOptimalTileSize(64, t.Network.Layers[0].DType)
+		if tileSize > 0 {
+			t.finalNormLayer.TileSize = tileSize
 		}
-		t.finalNormLayer.TileSize = finalSize
 
 		if t.Network.UseGPU {
 			t.finalNormLayer.SyncToGPU()
@@ -157,6 +149,20 @@ func (t *Transformer[T]) SyncToGPU() error {
 	return nil
 }
 
+// GenMetrics holds the performance measurements of a generation pass
+type GenMetrics struct {
+	PrefillTime      time.Duration
+	DecodeTime       time.Duration
+	PrefillTokens    int
+	GeneratedTokens  int
+	PrefillTokPerSec float64
+	DecodeTokPerSec  float64
+	TotalTokPerSec   float64
+	FirstLogit       float32
+	RAMUsageMB       float64
+	VRAMUsageMB      float64
+}
+
 // Generate implements the stateless generation logic
 func (t *Transformer[T]) Generate(
 	encode func(text string) []uint32,
@@ -164,7 +170,7 @@ func (t *Transformer[T]) Generate(
 	turns []Turn,
 	systemPrompt, userMsg string,
 	opts GenOptions,
-) string {
+) (string, GenMetrics) {
 	prompt := t.Template.BuildPrompt(turns, systemPrompt, userMsg)
 	inputIDs := encode(prompt)
 
@@ -200,6 +206,14 @@ func (t *Transformer[T]) Generate(
 		}
 	}
 	prefillElapsed := time.Since(prefillStart)
+	
+	metrics := GenMetrics{
+		PrefillTime:   prefillElapsed,
+		PrefillTokens: len(tokens),
+	}
+	if len(logits) > 0 {
+		metrics.FirstLogit = logits[0]
+	}
 
 	// 2. Generate
 	decodeStart := time.Now()
@@ -211,7 +225,7 @@ func (t *Transformer[T]) Generate(
 		nextToken := SampleTopK(logits, opts.TopK, opts.Temperature, opts.Deterministic)
 		
 		tokens = append(tokens, uint32(nextToken))
-		stream.Push(tokens)
+		stream.Push(tokens, opts.Silent)
 		generatedCount++
 
 		if t.isEOS(nextToken, opts.EOSTokens) || (opts.UseKVCache && stream.HasNewUserTurn(tokens)) {
@@ -247,26 +261,36 @@ func (t *Transformer[T]) Generate(
 	}
 
 	decodeElapsed := time.Since(decodeStart)
+	metrics.DecodeTime = decodeElapsed
+	metrics.GeneratedTokens = generatedCount
+	
+	ramBytes := t.Network.CalculateTotalMemory()
+	vramBytes := t.Network.GetVRAMUsage()
+	metrics.RAMUsageMB = float64(ramBytes) / (1024 * 1024)
+	metrics.VRAMUsageMB = float64(vramBytes) / (1024 * 1024)
+
 	if generatedCount > 0 {
-		decodeTPS := float64(generatedCount) / decodeElapsed.Seconds()
+		metrics.DecodeTokPerSec = float64(generatedCount) / decodeElapsed.Seconds()
 		totalTokens := len(inputIDs) + generatedCount
 		totalElapsed := prefillElapsed + decodeElapsed
-		totalTPS := float64(totalTokens) / totalElapsed.Seconds()
-		prefillTPS := 0.0
+		metrics.TotalTokPerSec = float64(totalTokens) / totalElapsed.Seconds()
 		if len(inputIDs) > 0 && prefillElapsed > 0 {
-			prefillTPS = float64(len(inputIDs)) / prefillElapsed.Seconds()
+			metrics.PrefillTokPerSec = float64(len(inputIDs)) / prefillElapsed.Seconds()
 		}
-		fmt.Printf(
-			"\n\n(prefill: %.2f tok/s, %d prompt tokens | decode: %.2f tok/s, %d generated | total: %.2f tok/s)\n",
-			prefillTPS,
-			len(inputIDs),
-			decodeTPS,
-			generatedCount,
-			totalTPS,
-		)
+		if !opts.Silent {
+			fmt.Printf(
+				"\n\n(prefill: %.2f tok/s, %d prompt tokens | decode: %.2f tok/s, %d generated | total: %.2f tok/s)\n",
+				metrics.PrefillTokPerSec,
+				len(inputIDs),
+				metrics.DecodeTokPerSec,
+				generatedCount,
+				metrics.TotalTokPerSec,
+			)
+			fmt.Printf("(ram: %.2f MB | vram: %.2f MB)\n", metrics.RAMUsageMB, metrics.VRAMUsageMB)
+		}
 	}
 
-	return stream.String()
+	return stream.String(), metrics
 }
 
 func (t *Transformer[T]) getEmbedding(tokenID int) []T {

@@ -18,6 +18,7 @@ type GenOptions struct {
 	RepetitionPenalty float32
 	RepetitionWindow  int
 	EOSTokens         []int
+	Silent            bool
 }
 
 // SampleTopK performs top-K sampling with temperature and optional determinism
@@ -92,12 +93,14 @@ func NewStreamer(decode func(tokens []uint32) string, promptTokens []uint32) *St
 	}
 }
 
-func (s *Streamer) Push(allTokens []uint32) {
+func (s *Streamer) Push(allTokens []uint32, silent bool) {
 	full := s.Decode(allTokens)
 	if len(full) > s.lastLen {
 		diff := full[s.lastLen:]
 		diff = s.replacer.Replace(diff)
-		fmt.Print(diff)
+		if !silent {
+			fmt.Print(diff)
+		}
 		s.sb.WriteString(diff)
 		s.lastLen = len(full)
 	}

@@ -715,6 +715,59 @@ func (n *VolumetricNetwork) CalculateTotalMemory() int {
 	return total
 }
 
+// GetVRAMUsage calculates the total GPU memory allocated by the network in bytes.
+func (n *VolumetricNetwork) GetVRAMUsage() int64 {
+	if n.GPUContext == nil {
+		return 0
+	}
+	var total int64 = 0
+
+	// 1. Embeddings & LM Head
+	type sizer interface{ GetSize() uint64 }
+	if buf, ok := n.GPUEmbeddings.(sizer); ok && buf != nil {
+		total += int64(buf.GetSize())
+	}
+	if buf, ok := n.GPULMHead.(sizer); ok && buf != nil {
+		if n.GPULMHead != n.GPUEmbeddings { // Avoid double-counting tied weights
+			total += int64(buf.GetSize())
+		}
+	}
+
+	// 2. Layers (Weights, Scales, KV Cache)
+	for i := range n.Layers {
+		l := &n.Layers[i]
+		if l.WeightStore != nil {
+			for _, wAny := range l.WeightStore.GPUWeights {
+				if buf, ok := wAny.(sizer); ok && buf != nil {
+					total += int64(buf.GetSize())
+				}
+			}
+			for _, sBuf := range l.WeightStore.GPUScales {
+				if sBuf != nil {
+					// We know sBuf is *wgpu.Buffer, which has GetSize()
+					total += int64(sBuf.GetSize())
+				}
+			}
+		}
+		if buf, ok := l.GPUKVCacheK.(sizer); ok && buf != nil {
+			total += int64(buf.GetSize())
+		}
+		if buf, ok := l.GPUKVCacheV.(sizer); ok && buf != nil {
+			total += int64(buf.GetSize())
+		}
+	}
+	
+	// 3. Internal Context Buffers (Activation, Uniforms)
+	for _, buf := range n.GPUContext.ActivationPool {
+		total += int64(buf.GetSize())
+	}
+	for _, buf := range n.GPUContext.UniformPool {
+		total += int64(buf.GetSize())
+	}
+
+	return total
+}
+
 // MorphLayer performs an on-the-fly conversion of a layer's weights to a new DType.
 func MorphLayer(layer *VolumetricLayer, target DType) error {
 	if layer.WeightStore == nil {
