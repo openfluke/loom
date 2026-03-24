@@ -83,6 +83,9 @@ func BuildNetworkFromJSON(jsonData []byte) (*VolumetricNetwork, error) {
 }
 
 func applyLayerSpec(l *VolumetricLayer, ls LayerSpec) error {
+	if l == nil {
+		return fmt.Errorf("layer at (%d,%d,%d,%d) is nil; check network dimensions", ls.Z, ls.Y, ls.X, ls.L)
+	}
 	l.Type = ParseLayerType(ls.Type)
 	l.Activation = ParseActivationType(ls.Activation)
 	l.DType = ParseDType(ls.DType)
@@ -116,6 +119,7 @@ func applyLayerSpec(l *VolumetricLayer, ls LayerSpec) error {
 	if len(ls.ParallelBranches) > 0 {
 		l.ParallelBranches = make([]VolumetricLayer, len(ls.ParallelBranches))
 		for i, bs := range ls.ParallelBranches {
+			l.ParallelBranches[i].Network = l.Network
 			if err := applyLayerSpec(&l.ParallelBranches[i], bs); err != nil {
 				return err
 			}
@@ -126,6 +130,7 @@ func applyLayerSpec(l *VolumetricLayer, ls LayerSpec) error {
 	if len(ls.SequentialLayers) > 0 {
 		l.SequentialLayers = make([]VolumetricLayer, len(ls.SequentialLayers))
 		for i, ss := range ls.SequentialLayers {
+			l.SequentialLayers[i].Network = l.Network
 			if err := applyLayerSpec(&l.SequentialLayers[i], ss); err != nil {
 				return err
 			}
