@@ -250,6 +250,8 @@ func ParseLayerType(s string) LayerType {
 		return LayerResidual
 	case "SEQUENTIAL":
 		return LayerSequential
+	case "META", "METACOGNITION":
+		return LayerMetacognition
 	default:
 		return LayerDense
 	}

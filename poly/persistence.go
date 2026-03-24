@@ -73,8 +73,13 @@ type PersistenceLayerSpec struct {
 	CombineMode      string                 `json:"combine_mode,omitempty"`
 	SequentialLayers []PersistenceLayerSpec `json:"sequential_layers,omitempty"`
 
-	UseTiling bool `json:"use_tiling,omitempty"`
-	TileSize  int  `json:"tile_size,omitempty"`
+	UseTiling  bool `json:"use_tiling,omitempty"`
+	TileSize   int  `json:"tile_size,omitempty"`
+	IsDisabled bool `json:"is_disabled,omitempty"`
+
+	// Metacognition
+	MetaRules         []MetaRule            `json:"meta_rules,omitempty"`
+	MetaObservedLayer *PersistenceLayerSpec `json:"meta_observed_layer,omitempty"`
 }
 
 // SerializeNetwork converts a VolumetricNetwork into a JSON byte slice.
@@ -139,6 +144,7 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 		CombineMode: l.CombineMode,
 		UseTiling:   l.UseTiling,
 		TileSize:    l.TileSize,
+		IsDisabled:  l.IsDisabled,
 	}
 
 	if l.WeightStore != nil {
@@ -174,6 +180,12 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 			ls.SequentialLayers[i] = serializeLayer(&l.SequentialLayers[i])
 		}
 	}
+
+	if l.MetaObservedLayer != nil {
+		observed := serializeLayer(l.MetaObservedLayer)
+		ls.MetaObservedLayer = &observed
+	}
+	ls.MetaRules = l.MetaRules
 
 	return ls
 }
@@ -238,6 +250,7 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	l.CombineMode = ls.CombineMode
 	l.UseTiling = ls.UseTiling
 	l.TileSize = ls.TileSize
+	l.IsDisabled = ls.IsDisabled
 
 	// Initialize weights based on populated fields
 	initializeWeights(l)
@@ -286,6 +299,14 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 			}
 		}
 	}
+
+	if ls.MetaObservedLayer != nil {
+		l.MetaObservedLayer = new(VolumetricLayer)
+		if err := applyPersistenceLayerSpec(l.MetaObservedLayer, *ls.MetaObservedLayer); err != nil {
+			return err
+		}
+	}
+	l.MetaRules = ls.MetaRules
 
 	return nil
 }

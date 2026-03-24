@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"reflect"
 	"sync"
+	"time"
 )
 
 // ============================================================================
@@ -408,14 +409,28 @@ func executeMorphCommand(net *VolumetricNetwork, target *VolumetricLayer, cmdVal
 
 	case cmdVal == 98: // MorphToKMeans
 		if target.Type != LayerKMeans && net != nil {
-			numClusters := target.OutputHeight
+			numClusters := int(param)
+			if numClusters <= 0 {
+				numClusters = target.OutputHeight
+			}
+			if numClusters <= 0 {
+				numClusters = 2 // Safety fallback
+			}
 			fmt.Printf("[META] Heuristic: MorphToKMeans(Clusters %d) [WEIGHT PRESERVED]\n", numClusters)
 			oldW := target.WeightStore.Master
 			target.Type = LayerKMeans
+			target.NumClusters = numClusters
+			target.OutputHeight = numClusters
 			needed := numClusters * target.InputHeight
 			target.WeightStore = NewWeightStore(needed)
-			if len(oldW) >= needed {
-				copy(target.WeightStore.Master, oldW[:needed])
+			if len(oldW) > 0 {
+				n := len(oldW)
+				if n > needed { n = needed }
+				copy(target.WeightStore.Master, oldW[:n])
+			}
+			if len(target.WeightStore.Master) > len(oldW) {
+				// Randomize new centers
+				target.WeightStore.Randomize(time.Now().UnixNano(), 0.1)
 			}
 			target.KMeansTemperature = 1.0
 		}
