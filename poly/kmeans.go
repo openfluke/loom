@@ -4,14 +4,18 @@ package poly
 func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	numClusters := layer.NumClusters
 	temp := layer.KMeansTemperature
-	if temp == 0 { temp = 1.0 }
-	
+	if temp == 0 {
+		temp = 1.0
+	}
+
 	// Input is treated as a single feature vector for this coordinate
 	featureDim := len(input.Data)
-	
+
 	// Weights are cluster centers [NumClusters, FeatureDim]
 	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil { weights = layer.WeightStore.Master }
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
 
 	logits := make([]float32, numClusters)
 
@@ -25,7 +29,7 @@ func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					diff := float32(input.Data[d]) - float32(rawW[offset+d])
 					sqDist += diff * diff
 				}
-				logits[k] = -sqDist / (2 * float32(temp * temp))
+				logits[k] = -sqDist / (2 * float32(temp*temp))
 			}
 		}
 	case DTypeFloat32:
@@ -37,7 +41,7 @@ func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					diff := float32(input.Data[d]) - float32(rawW[offset+d])
 					sqDist += diff * diff
 				}
-				logits[k] = -sqDist / (2 * float32(temp * temp))
+				logits[k] = -sqDist / (2 * float32(temp*temp))
 			}
 		}
 	case DTypeInt64, DTypeUint64:
@@ -49,7 +53,7 @@ func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					diff := float32(input.Data[d]) - float32(rawW[offset+d])
 					sqDist += diff * diff
 				}
-				logits[k] = -sqDist / (2 * float32(temp * temp))
+				logits[k] = -sqDist / (2 * float32(temp*temp))
 			}
 		}
 	case DTypeInt32, DTypeUint32:
@@ -61,7 +65,7 @@ func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					diff := float32(input.Data[d]) - float32(rawW[offset+d])
 					sqDist += diff * diff
 				}
-				logits[k] = -sqDist / (2 * float32(temp * temp))
+				logits[k] = -sqDist / (2 * float32(temp*temp))
 			}
 		}
 	case DTypeInt16, DTypeUint16:
@@ -73,7 +77,7 @@ func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					diff := float32(input.Data[d]) - float32(rawW[offset+d])
 					sqDist += diff * diff
 				}
-				logits[k] = -sqDist / (2 * float32(temp * temp))
+				logits[k] = -sqDist / (2 * float32(temp*temp))
 			}
 		}
 	case DTypeInt8, DTypeUint8:
@@ -85,13 +89,15 @@ func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 					diff := float32(input.Data[d]) - float32(rawW[offset+d])
 					sqDist += diff * diff
 				}
-				logits[k] = -sqDist / (2 * float32(temp * temp))
+				logits[k] = -sqDist / (2 * float32(temp*temp))
 			}
 		}
 	default:
 		// Universal fallback
 		scaleW := layer.WeightStore.Scale
-		if scaleW == 0 { scaleW = 1.0 }
+		if scaleW == 0 {
+			scaleW = 1.0
+		}
 		wData := CastWeights[float32](weights)
 		for k := 0; k < numClusters; k++ {
 			var sqDist float32
@@ -101,20 +107,20 @@ func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 				diff := float32(input.Data[d]) - wVal
 				sqDist += diff * diff
 			}
-			logits[k] = -sqDist / (2 * float32(temp * temp))
+			logits[k] = -sqDist / (2 * float32(temp*temp))
 		}
 	}
 
 	// Softmax to get assignments
 	assignments := Softmax(logits)
-	
+
 	if layer.KMeansOutputMode == "features" {
-	// Output mode: weighted sum of cluster centers (reconstruction)
-	outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)
-	outShape = append(outShape, featureDim)
-	preAct = NewTensor[T](outShape...)
-	postAct = NewTensor[T](outShape...)
-		
+		// Output mode: weighted sum of cluster centers (reconstruction)
+		outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)
+		outShape = append(outShape, featureDim)
+		preAct = NewTensor[T](outShape...)
+		postAct = NewTensor[T](outShape...)
+
 		// Fallback for reconstruction logic (using float32 intermediate)
 		wData := CastWeights[float32](weights)
 		for k := 0; k < numClusters; k++ {
@@ -148,12 +154,14 @@ func KMeansBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 	numClusters := layer.NumClusters
 	featureDim := len(input.Data)
 	temp := layer.KMeansTemperature
-	if temp == 0 { temp = 1.0 }
+	if temp == 0 {
+		temp = 1.0
+	}
 	tempSq := float32(temp * temp)
-	
+
 	gradInput = NewTensor[T](featureDim)
 	gradWeights = NewTensor[T](numClusters * featureDim)
-	
+
 	// Re-compute assignments for backward logic
 	assignments := make([]float32, numClusters)
 	if layer.KMeansOutputMode != "features" {
@@ -167,17 +175,19 @@ func KMeansBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 	gradLogits := SoftmaxBackward(ConvertTensor[T, float32](gradOutput).Data, assignments)
 
 	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil { weights = layer.WeightStore.Master }
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
 	wData := CastWeights[float32](weights)
 
 	for k := 0; k < numClusters; k++ {
 		offset := k * featureDim
 		for d := 0; d < featureDim; d++ {
 			diff := float32(input.Data[d]) - wData[offset+d]
-			
+
 			// dL/dc_k = gradLogits[k] * (x - c_k) / tempSq
 			gradWeights.Data[offset+d] += T(gradLogits[k] * diff / tempSq)
-			
+
 			// dL/dx = - Sum gradLogits[k] * (x - c_k) / tempSq
 			gradInput.Data[d] -= T(gradLogits[k] * diff / tempSq)
 		}
