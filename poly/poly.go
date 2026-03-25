@@ -1216,8 +1216,17 @@ func (l *VolumetricLayer) SyncToCPU() {
 			case LayerMultiHeadAttention:
 				ts = CalculateOptimalTileSize(l.HeadDim, dtype)
 			case LayerSwiGLU:
-				// SwiGLU is effectively a 1D projection of input channels to intermediate
-				ts = CalculateOptimalCNN1TileSize(l.InputHeight, dtype)
+				ts = CalculateOptimalSwiGLUTileSize(l.InputHeight, dtype)
+			case LayerDense:
+				ts = CalculateOptimalDenseTileSize(l.InputHeight, dtype)
+			case LayerRNN:
+				ts = CalculateOptimalRNNTileSize(l.InputHeight, l.OutputHeight, dtype)
+			case LayerLSTM:
+				ts = CalculateOptimalLSTMTileSize(l.InputHeight, l.OutputHeight, dtype)
+			case LayerEmbedding:
+				ts = CalculateOptimalEmbeddingTileSize(l.EmbeddingDim, dtype)
+			case LayerResidual:
+				ts = CalculateOptimalResidualTileSize(dtype)
 			default:
 				ts = 8
 			}

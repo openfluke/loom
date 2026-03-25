@@ -1,5 +1,10 @@
 package poly
 
+import (
+	"runtime"
+	"sync"
+)
+
 // EmbeddingForwardPolymorphic performs an embedding lookup across any numerical type.
 func EmbeddingForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	if layer.UseTiling && layer.TileSize > 0 {
@@ -185,41 +190,72 @@ func EmbeddingForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 		scaleW = 1.0
 	}
 
-	// Double-blocked lookup
-	for iTile := 0; iTile < seqLen; iTile += tileSize {
-		iEnd := iTile + tileSize
-		if iEnd > seqLen {
-			iEnd = seqLen
-		}
-
-		for jTile := 0; jTile < embeddingDim; jTile += tileSize {
-			jEnd := jTile + tileSize
-			if jEnd > embeddingDim {
-				jEnd = embeddingDim
+	if layer.EnableMultiCoreTiling {
+		embeddingForwardTiledParallel(input.Data, wData, preAct.Data, vocabSize, embeddingDim, seqLen, layer.DType, scaleW, tileSize)
+	} else {
+		// Double-blocked lookup
+		for iTile := 0; iTile < seqLen; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > seqLen {
+				iEnd = seqLen
 			}
+			for jTile := 0; jTile < embeddingDim; jTile += tileSize {
+				jEnd := jTile + tileSize
+				if jEnd > embeddingDim {
+					jEnd = embeddingDim
+				}
+				for i := iTile; i < iEnd; i++ {
+					tokenID := int(input.Data[i])
+					if tokenID < 0 || tokenID >= vocabSize {
+						continue
+					}
+					rowBase := tokenID * embeddingDim
+					outBase := i * embeddingDim
+					for j := jTile; j < jEnd; j++ {
+						val := SimulatePrecision(wData[rowBase+j], layer.DType, scaleW)
+						preAct.Data[outBase+j] = T(val)
+					}
+				}
+			}
+		}
+	}
 
-			// Core tile
+	for i := range preAct.Data {
+		postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
+	}
+	return preAct, postAct
+}
+
+// embeddingForwardTiledParallel runs token lookups in parallel across sequence tiles.
+// Each goroutine owns a non-overlapping slice of sequence positions so there are no races.
+func embeddingForwardTiledParallel[T Numeric](input []T, wData []float32, out []T, vocabSize, embeddingDim, seqLen int, dtype DType, scale float32, tileSize int) {
+	numCPUs := runtime.NumCPU()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, numCPUs)
+
+	for iTile := 0; iTile < seqLen; iTile += tileSize {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(iTile int) {
+			defer func() { <-sem; wg.Done() }()
+			iEnd := iTile + tileSize
+			if iEnd > seqLen {
+				iEnd = seqLen
+			}
 			for i := iTile; i < iEnd; i++ {
-				tokenID := int(input.Data[i])
+				tokenID := int(input[i])
 				if tokenID < 0 || tokenID >= vocabSize {
 					continue
 				}
 				rowBase := tokenID * embeddingDim
 				outBase := i * embeddingDim
-				for j := jTile; j < jEnd; j++ {
-					val := SimulatePrecision(wData[rowBase+j], layer.DType, scaleW)
-					preAct.Data[outBase+j] = T(val)
+				for j := 0; j < embeddingDim; j++ {
+					out[outBase+j] = T(SimulatePrecision(wData[rowBase+j], dtype, scale))
 				}
 			}
-		}
+		}(iTile)
 	}
-
-	// Final Activation pass
-	for i := 0; i < len(preAct.Data); i++ {
-		postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
-	}
-
-	return preAct, postAct
+	wg.Wait()
 }
 
 // EmbeddingBackwardTiled implements a loop-blocked gradient calculation for embeddings.
@@ -258,6 +294,68 @@ func EmbeddingBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input
 					gradWeights.Data[rowBase+j] += gradOutput.Data[outBase+j]
 				}
 			}
+		}
+	}
+
+	return gradInput, gradWeights
+}
+
+// embeddingBackwardTiledParallel computes embedding backward in parallel over seqLen tiles.
+// Each goroutine accumulates gradWeights into a local buffer (token IDs may collide across
+// sequence positions). After WaitGroup, local buffers are merged.
+// gradInput is always zero for embeddings — no backprop through token IDs.
+func embeddingBackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	vocabSize := layer.VocabSize
+	embeddingDim := layer.EmbeddingDim
+	seqLen := len(input.Data)
+	tileSize := layer.GetCPUTileSize(layer.DType)
+	if tileSize <= 0 {
+		tileSize = 32
+	}
+
+	gradInput = NewTensor[T](input.Shape...)
+	gradWeights = NewTensor[T](vocabSize, embeddingDim)
+
+	numCPUs := runtime.NumCPU()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, numCPUs)
+
+	numTiles := (seqLen + tileSize - 1) / tileSize
+	localGradWSlices := make([][]T, numTiles)
+	for k := 0; k < numTiles; k++ {
+		localGradWSlices[k] = make([]T, vocabSize*embeddingDim)
+	}
+
+	for k := 0; k < numTiles; k++ {
+		iTile := k * tileSize
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(k, iTile int) {
+			defer func() { <-sem; wg.Done() }()
+			iEnd := iTile + tileSize
+			if iEnd > seqLen {
+				iEnd = seqLen
+			}
+			localGW := localGradWSlices[k]
+			for i := iTile; i < iEnd; i++ {
+				tokenID := int(input.Data[i])
+				if tokenID < 0 || tokenID >= vocabSize {
+					continue
+				}
+				rowBase := tokenID * embeddingDim
+				outBase := i * embeddingDim
+				for j := 0; j < embeddingDim; j++ {
+					localGW[rowBase+j] += gradOutput.Data[outBase+j]
+				}
+			}
+		}(k, iTile)
+	}
+	wg.Wait()
+
+	// Merge local gradient buffers
+	for k := 0; k < numTiles; k++ {
+		for i, v := range localGradWSlices[k] {
+			gradWeights.Data[i] += v
 		}
 	}
 

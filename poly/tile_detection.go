@@ -244,6 +244,125 @@ func CalculateOptimalCNN3TileSize(inChannels int, dtype DType) int {
 	return tileSize
 }
 
+// CalculateOptimalDenseTileSize picks a TileSize for Dense forward/backward.
+// Working set per output tile ≈ TileSize × inputSize × bytesPerWeight (weight row slice).
+func CalculateOptimalDenseTileSize(inputSize int, dtype DType) int {
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+	limit := float64(l1) / (bytesPerWeight * float64(inputSize))
+	tileSize := 8
+	for _, candidate := range []int{8, 16, 32, 64, 128, 256} {
+		if float64(candidate) <= limit {
+			tileSize = candidate
+		}
+	}
+	return tileSize
+}
+
+// CalculateOptimalSwiGLUTileSize picks a TileSize for SwiGLU sequence-tiled computation.
+// Working set per sequence tile ≈ TileSize × inputSize × bytesPerWeight (gate/down row slice).
+func CalculateOptimalSwiGLUTileSize(inputSize int, dtype DType) int {
+	return CalculateOptimalDenseTileSize(inputSize, dtype)
+}
+
+// CalculateOptimalRNNTileSize picks a TileSize for RNN hidden-state tiling.
+// Working set per tile ≈ TileSize × (inputSize + hiddenSize) × bytesPerWeight (combined weight row).
+func CalculateOptimalRNNTileSize(inputSize, hiddenSize int, dtype DType) int {
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+	combined := inputSize + hiddenSize
+	limit := float64(l1) / (bytesPerWeight * float64(combined))
+	tileSize := 8
+	for _, candidate := range []int{8, 16, 32, 64, 128, 256} {
+		if float64(candidate) <= limit {
+			tileSize = candidate
+		}
+	}
+	return tileSize
+}
+
+// CalculateOptimalLSTMTileSize picks a TileSize for LSTM hidden-state tiling.
+// Working set per tile ≈ TileSize × (inputSize + hiddenSize) × 4 gates × bytesPerWeight.
+func CalculateOptimalLSTMTileSize(inputSize, hiddenSize int, dtype DType) int {
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+	combined := inputSize + hiddenSize
+	limit := float64(l1) / (bytesPerWeight * float64(combined) * 4)
+	tileSize := 8
+	for _, candidate := range []int{8, 16, 32, 64, 128, 256} {
+		if float64(candidate) <= limit {
+			tileSize = candidate
+		}
+	}
+	return tileSize
+}
+
+// CalculateOptimalEmbeddingTileSize picks a TileSize for Embedding sequence-tiled lookup.
+// Working set per tile ≈ TileSize × embeddingDim × bytesPerWeight (embedding row slice).
+func CalculateOptimalEmbeddingTileSize(embeddingDim int, dtype DType) int {
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+	limit := float64(l1) / (bytesPerWeight * float64(embeddingDim))
+	tileSize := 8
+	for _, candidate := range []int{8, 16, 32, 64, 128, 256} {
+		if float64(candidate) <= limit {
+			tileSize = candidate
+		}
+	}
+	return tileSize
+}
+
+// CalculateOptimalResidualTileSize picks a TileSize for Residual (skip-connection add).
+// Working set per tile ≈ TileSize × 3 arrays (input, skip, output) × bytesPerWeight.
+// Residual is trivially parallel so large tiles are preferred.
+func CalculateOptimalResidualTileSize(dtype DType) int {
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+	limit := float64(l1) / (bytesPerWeight * 3.0)
+	tileSize := 64
+	for _, candidate := range []int{64, 128, 256, 512, 1024, 2048} {
+		if float64(candidate) <= limit {
+			tileSize = candidate
+		}
+	}
+	return tileSize
+}
+
 // =============================================================================
 // GPU tile size calculators
 // =============================================================================
