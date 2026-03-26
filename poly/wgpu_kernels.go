@@ -452,6 +452,42 @@ func (c *WGPUContext) DispatchSwiGLU(
 	return nil
 }
 
+// DispatchSwiGLUWithActCache runs the SwiGLU forward pass and also stores the raw gate and
+// up projections to gateOutBuf/upOutBuf so the backward pass can use them.
+func (c *WGPUContext) DispatchSwiGLUWithActCache(
+	batchSize, inputSize, outputSize int,
+	inputBuf, gateBuf, upBuf, gateBiasBuf, upBiasBuf, outputBuf, gateOutBuf, upOutBuf *wgpu.Buffer,
+	tileSize int,
+) error {
+	if tileSize <= 0 {
+		tileSize = 32
+	}
+	pipeline, err := c.CreateComputePipeline(ShaderTiledSwiGLUActCache(tileSize))
+	if err != nil {
+		return err
+	}
+	params := WGPUDenseParams{
+		BatchSize:  uint32(batchSize),
+		InputSize:  uint32(inputSize),
+		OutputSize: uint32(outputSize),
+		TileSize:   uint32(tileSize),
+	}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateBuf, upBuf, gateBiasBuf, upBiasBuf, outputBuf, gateOutBuf, upOutBuf)
+	if err != nil {
+		return err
+	}
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
 func (c *WGPUContext) DispatchSwiGLUBackward(
 	batchSize, inputSize, outputSize int,
 	gradOutputBuf, gateInBuf, upInBuf, gradGateBuf, gradUpBuf *wgpu.Buffer,
@@ -827,6 +863,115 @@ func (c *WGPUContext) DispatchLSTMStep(
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups((uint32(hiddenSize)+63)/64, uint32(batchSize), 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+func (c *WGPUContext) DispatchLSTMStepPreAct(
+	batchSize, inputSize, hiddenSize int,
+	inputBuf, hPrevBuf, cPrevBuf, weightBuf, hCurrBuf, cCurrBuf, preActBuf *wgpu.Buffer,
+) error {
+	pipeline, err := c.CreateComputePipeline(ShaderLSTMStepPreAct)
+	if err != nil { return err }
+	p := WGPULSTMParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPULSTMParams{p}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, hPrevBuf, cPrevBuf, weightBuf, hCurrBuf, cCurrBuf, preActBuf)
+	if err != nil { return err }
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(hiddenSize)+63)/64, uint32(batchSize), 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+func (c *WGPUContext) DispatchRNNBackwardDX(
+	tileSize, batchSize, inputSize, hiddenSize int,
+	gradOutputBuf, wIHBuf, hCurrBuf, gradInputBuf *wgpu.Buffer,
+) error {
+	if tileSize <= 0 { tileSize = 64 }
+	pipeline, err := c.CreateComputePipeline(ShaderTiledRNNBackwardDX(tileSize))
+	if err != nil { return err }
+	p := WGPURNNParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURNNParams{p}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, wIHBuf, hCurrBuf, gradInputBuf)
+	if err != nil { return err }
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+func (c *WGPUContext) DispatchRNNBackwardDW(
+	tileSize, batchSize, inputSize, hiddenSize int,
+	gradOutputBuf, inputBuf, hCurrBuf, hPrevBuf, gradWeightsBuf *wgpu.Buffer,
+) error {
+	if tileSize <= 0 { tileSize = 64 }
+	pipeline, err := c.CreateComputePipeline(ShaderTiledRNNBackwardDW(tileSize))
+	if err != nil { return err }
+	p := WGPURNNParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURNNParams{p}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, hCurrBuf, hPrevBuf, gradWeightsBuf)
+	if err != nil { return err }
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(hiddenSize)+uint32(tileSize)-1)/uint32(tileSize), 1, 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+func (c *WGPUContext) DispatchLSTMBackwardDX(
+	tileSize, batchSize, inputSize, hiddenSize int,
+	gradOutputBuf, weightBuf, preActBuf, gradInputBuf *wgpu.Buffer,
+) error {
+	if tileSize <= 0 { tileSize = 64 }
+	pipeline, err := c.CreateComputePipeline(ShaderTiledLSTMBackwardDX(tileSize))
+	if err != nil { return err }
+	p := WGPULSTMParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPULSTMParams{p}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, preActBuf, gradInputBuf)
+	if err != nil { return err }
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+func (c *WGPUContext) DispatchLSTMBackwardDW(
+	tileSize, batchSize, inputSize, hiddenSize int,
+	gradOutputBuf, inputBuf, preActBuf, hPrevBuf, gradWeightsBuf *wgpu.Buffer,
+) error {
+	if tileSize <= 0 { tileSize = 64 }
+	pipeline, err := c.CreateComputePipeline(ShaderTiledLSTMBackwardDW(tileSize))
+	if err != nil { return err }
+	p := WGPULSTMParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPULSTMParams{p}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, preActBuf, hPrevBuf, gradWeightsBuf)
+	if err != nil { return err }
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(hiddenSize)+uint32(tileSize)-1)/uint32(tileSize), 1, 1)
 	pass.End()
 	ctxSubmit(c, enc, owned)
 	return nil
@@ -1275,17 +1420,38 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 		if err := c.DispatchCNN3(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Stride, l.Padding, l.Padding, l.Padding, inputBuf, wBuf, cnn3PreBuf); err != nil { return err }
 		return c.DispatchActivation(cnn3OutSize, l.Activation, cnn3PreBuf, outBuf)
 	case LayerRNN:
-		wIH, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
-		wHH := wIH // simplified for benchmarking
-		hPrev := c.GetActivationBuffer(fmt.Sprintf("rnn_hprev_%p", l), uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
-		bias := c.GetActivationBuffer(fmt.Sprintf("rnn_bias_%p", l), uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
-		return c.DispatchRNNStep(batchSize, l.InputHeight, l.OutputHeight, inputBuf, hPrev, wIH, wHH, bias, outBuf)
+		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		ihSize := l.OutputHeight * l.InputHeight
+		hhSize := l.OutputHeight * l.OutputHeight
+		hPrev := c.GetActivationBuffer(fmt.Sprintf("rnn_hprev_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		// Inline RNN step with correct sub-buffer bindings for wIH, wHH, bias
+		{
+			pipeline, err := c.CreateComputePipeline(ShaderRNNStep)
+			if err != nil { return err }
+			p := WGPURNNParams{BatchSize: uint32(batchSize), InputSize: uint32(l.InputHeight), HiddenSize: uint32(l.OutputHeight)}
+			pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
+			c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURNNParams{p}))
+			wIHBind  := c.GetSubBuffer(wBuf, 0, uint64(ihSize*4))
+			wHHBind  := c.GetSubBuffer(wBuf, uint64(ihSize*4), uint64(hhSize*4))
+			biasBind := c.GetSubBuffer(wBuf, uint64((ihSize+hhSize)*4), uint64(l.OutputHeight*4))
+			bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, hPrev, wIHBind, wHHBind, biasBind, outBuf)
+			if err != nil { return err }
+			enc, owned, _ := ctxEncoder(c)
+			pass := enc.BeginComputePass(nil)
+			pass.SetPipeline(pipeline)
+			pass.SetBindGroup(0, bindGroup, nil)
+			pass.DispatchWorkgroups((uint32(l.OutputHeight)+63)/64, uint32(batchSize), 1)
+			pass.End()
+			ctxSubmit(c, enc, owned)
+			return nil
+		}
 	case LayerLSTM:
 		weights, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
-		hPrev := c.GetActivationBuffer(fmt.Sprintf("lstm_hprev_%p", l), uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
-		cPrev := c.GetActivationBuffer(fmt.Sprintf("lstm_cprev_%p", l), uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
-		cCurr := c.GetActivationBuffer(fmt.Sprintf("lstm_ccurr_%p", l), uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
-		return c.DispatchLSTMStep(batchSize, l.InputHeight, l.OutputHeight, inputBuf, hPrev, cPrev, weights, outBuf, cCurr)
+		hPrev := c.GetActivationBuffer(fmt.Sprintf("lstm_hprev_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		cPrev := c.GetActivationBuffer(fmt.Sprintf("lstm_cprev_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		cCurr := c.GetActivationBuffer(fmt.Sprintf("lstm_ccurr_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		lstmPreAct := c.GetActivationBuffer(fmt.Sprintf("lstm_preact_%p", l), uint64(batchSize*5*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		return c.DispatchLSTMStepPreAct(batchSize, l.InputHeight, l.OutputHeight, inputBuf, hPrev, cPrev, weights, outBuf, cCurr, lstmPreAct)
 	case LayerEmbedding:
 		w, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		sl := l.SeqLength
@@ -1335,18 +1501,19 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 		g, _ := l.WeightStore.GPUWeights[DType(100)].(*wgpu.Buffer)
 		u, _ := l.WeightStore.GPUWeights[DType(101)].(*wgpu.Buffer)
 		wDown, _ := l.WeightStore.GPUWeights[DType(102)].(*wgpu.Buffer)
-		
+
 		gB, _ := l.WeightStore.GPUWeights[DType(110)].(*wgpu.Buffer)
 		uB, _ := l.WeightStore.GPUWeights[DType(111)].(*wgpu.Buffer)
 		dB, _ := l.WeightStore.GPUWeights[DType(112)].(*wgpu.Buffer)
-		
+
 		if gB == nil { gB = c.BlankBuffer }
 		if uB == nil { uB = c.BlankBuffer }
 		if dB == nil { dB = c.BlankBuffer }
 
-		preOut := c.GetActivationBuffer("preOut", uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
-		if err := c.DispatchSwiGLU(batchSize, l.InputHeight, l.OutputHeight, inputBuf, g, u, gB, uB, preOut, 32); err != nil { return err }
-		// Use DispatchDenseTiled or DispatchDense with bias support
+		preOut := c.GetActivationBuffer(fmt.Sprintf("preOut_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		gatePreBuf := c.GetActivationBuffer(fmt.Sprintf("gateIn_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		upPreBuf := c.GetActivationBuffer(fmt.Sprintf("upIn_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		if err := c.DispatchSwiGLUWithActCache(batchSize, l.InputHeight, l.OutputHeight, inputBuf, g, u, gB, uB, preOut, gatePreBuf, upPreBuf, 32); err != nil { return err }
 		var act uint32 = 99
 		return c.DispatchDenseTiled(32, batchSize, l.OutputHeight, l.InputHeight, act, 1.0, preOut, wDown, dB, outBuf)
 	case LayerResidual:
@@ -1395,12 +1562,24 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 	case LayerSwiGLU:
 		gIn := c.GetActivationBuffer(fmt.Sprintf("gateIn_%p", l), uint64(l.OutputHeight*batchSize*4), wgpu.BufferUsageStorage)
 		uIn := c.GetActivationBuffer(fmt.Sprintf("upIn_%p", l), uint64(l.OutputHeight*batchSize*4), wgpu.BufferUsageStorage)
-		// Fill with non-zero dummy data for verification
-		dummyData := make([]float32, l.OutputHeight*batchSize)
-		for i := range dummyData { dummyData[i] = 0.5 }
-		c.Queue.WriteBuffer(gIn, 0, wgpu.ToBytes(dummyData))
-		c.Queue.WriteBuffer(uIn, 0, wgpu.ToBytes(dummyData))
 		return c.DispatchSwiGLUBackward(batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, gIn, uIn, dxBuf, dwBuf)
+	case LayerRNN:
+		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		// hCurrBuf = histPreBuf[i] = post-tanh output; backward uses 1-hCurr^2 for tanh derivative.
+		// wBuf starts with wIH at offset 0, so DX can read wIH[h*I+i] correctly from the full buffer.
+		hPrevBuf := c.GetActivationBuffer(fmt.Sprintf("rnn_hprev_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		if err := c.DispatchRNNBackwardDX(tileSize, batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
+			return fmt.Errorf("rnn dx: %w", err)
+		}
+		return c.DispatchRNNBackwardDW(tileSize, batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, inputBuf, preActBuf, hPrevBuf, dwBuf)
+	case LayerLSTM:
+		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		lstmPreAct := c.GetActivationBuffer(fmt.Sprintf("lstm_preact_%p", l), uint64(batchSize*5*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		hPrevBuf := c.GetActivationBuffer(fmt.Sprintf("lstm_hprev_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		if err := c.DispatchLSTMBackwardDX(tileSize, batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, wBuf, lstmPreAct, dxBuf); err != nil {
+			return fmt.Errorf("lstm dx: %w", err)
+		}
+		return c.DispatchLSTMBackwardDW(tileSize, batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, inputBuf, lstmPreAct, hPrevBuf, dwBuf)
 	case LayerEmbedding:
 		// Re-cast input floats to uint32 indices
 		sl := l.SeqLength

@@ -458,6 +458,80 @@ fn main(
 `, tileSize)
 }
 
+// ShaderTiledSwiGLUActCache is like ShaderTiledSwiGLUN but also stores the raw gate and up
+// projections (before SiLU) to separate buffers needed for the backward pass.
+func ShaderTiledSwiGLUActCache(tileSize int) string {
+	return fmt.Sprintf(`
+struct Params {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    tileSize: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> gateWeights: array<f32>;
+@group(0) @binding(3) var<storage, read> upWeights: array<f32>;
+@group(0) @binding(4) var<storage, read> gateBiases: array<f32>;
+@group(0) @binding(5) var<storage, read> upBiases: array<f32>;
+@group(0) @binding(6) var<storage, read_write> output: array<f32>;
+@group(0) @binding(7) var<storage, read_write> gateOut: array<f32>;
+@group(0) @binding(8) var<storage, read_write> upOut: array<f32>;
+
+fn silu(x: f32) -> f32 {
+    return x * (1.0 / (1.0 + exp(-x)));
+}
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>
+) {
+    let o = global_id.x;
+    let b = wg_id.y;
+
+    if (o >= params.outputSize || b >= params.batchSize) { return; }
+
+    var gateSum: f32 = 0.0;
+    var upSum: f32 = 0.0;
+
+    let limit = params.inputSize / 4u;
+    let rem = params.inputSize %% 4u;
+
+    let base_in = b * params.inputSize;
+    let base_w = o * params.inputSize;
+
+    var i: u32 = 0u;
+    for (var k: u32 = 0u; k < limit; k++) {
+        let in0 = input[base_in + i];
+        let in1 = input[base_in + i + 1u];
+        let in2 = input[base_in + i + 2u];
+        let in3 = input[base_in + i + 3u];
+        gateSum += in0 * gateWeights[base_w + i]     + in1 * gateWeights[base_w + i + 1u] +
+                   in2 * gateWeights[base_w + i + 2u] + in3 * gateWeights[base_w + i + 3u];
+        upSum   += in0 * upWeights[base_w + i]       + in1 * upWeights[base_w + i + 1u] +
+                   in2 * upWeights[base_w + i + 2u]   + in3 * upWeights[base_w + i + 3u];
+        i += 4u;
+    }
+    for (var k: u32 = 0u; k < rem; k++) {
+        let in_val = input[base_in + i + k];
+        gateSum += in_val * gateWeights[base_w + i + k];
+        upSum   += in_val * upWeights[base_w + i + k];
+    }
+
+    gateSum += gateBiases[o];
+    upSum   += upBiases[o];
+
+    let idx = b * params.outputSize + o;
+    gateOut[idx] = gateSum;
+    upOut[idx]   = upSum;
+    output[idx]  = silu(gateSum) * upSum;
+}
+`, tileSize)
+}
+
 // ShaderTiledMHAN generates a tiled MHA shader for the given tile size and headDim.
 // Both are baked in as WGSL compile-time constants.
 func ShaderTiledMHAN(tileSize, headDim int) string {
@@ -840,6 +914,84 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let cell = fG * cPrev[base_h_prev + h] + iG * gG;
     cCurr[base_h_prev + h] = cell;
     hCurr[base_h_prev + h] = oG * tanh(cell);
+}
+`
+
+// ShaderLSTMStepPreAct is like ShaderLSTMStep but also writes
+// [iS, fS, gS, oS, cC] per (batch, hidden) to preAct for use in the backward pass.
+// preAct layout: batchSize × 5 × hiddenSize.
+const ShaderLSTMStepPreAct = `
+struct LSTMParams {
+    batchSize: u32,
+    inputSize: u32,
+    hiddenSize: u32,
+};
+
+@group(0) @binding(0) var<uniform>             params:  LSTMParams;
+@group(0) @binding(1) var<storage, read>       input:   array<f32>;
+@group(0) @binding(2) var<storage, read>       hPrev:   array<f32>;
+@group(0) @binding(3) var<storage, read>       cPrev:   array<f32>;
+@group(0) @binding(4) var<storage, read>       weights: array<f32>;
+@group(0) @binding(5) var<storage, read_write> hCurr:   array<f32>;
+@group(0) @binding(6) var<storage, read_write> cCurr:   array<f32>;
+@group(0) @binding(7) var<storage, read_write> preAct:  array<f32>; // [batchSize, 5*hiddenSize]
+
+fn lstmpa_sigmoid(x: f32) -> f32 { return 1.0 / (1.0 + exp(-x)); }
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let h = global_id.x;
+    let b = global_id.y;
+    if (h >= params.hiddenSize || b >= params.batchSize) { return; }
+
+    let ihSize   = params.hiddenSize * params.inputSize;
+    let hhSize   = params.hiddenSize * params.hiddenSize;
+    let gateSize = ihSize + hhSize + params.hiddenSize;
+
+    let wF_off = gateSize;
+    let wG_off = 2u * gateSize;
+    let wO_off = 3u * gateSize;
+
+    var iSum: f32 = weights[ihSize + hhSize + h];
+    var fSum: f32 = weights[wF_off + ihSize + hhSize + h];
+    var gSum: f32 = weights[wG_off + ihSize + hhSize + h];
+    var oSum: f32 = weights[wO_off + ihSize + hhSize + h];
+
+    let base_in     = b * params.inputSize;
+    let base_h_prev = b * params.hiddenSize;
+
+    for (var i: u32 = 0u; i < params.inputSize; i++) {
+        let x     = input[base_in + i];
+        let w_idx = h * params.inputSize + i;
+        iSum += x * weights[w_idx];
+        fSum += x * weights[wF_off + w_idx];
+        gSum += x * weights[wG_off + w_idx];
+        oSum += x * weights[wO_off + w_idx];
+    }
+    for (var hp: u32 = 0u; hp < params.hiddenSize; hp++) {
+        let hv    = hPrev[base_h_prev + hp];
+        let w_idx = ihSize + h * params.hiddenSize + hp;
+        iSum += hv * weights[w_idx];
+        fSum += hv * weights[wF_off + w_idx];
+        gSum += hv * weights[wG_off + w_idx];
+        oSum += hv * weights[wO_off + w_idx];
+    }
+
+    let iG   = lstmpa_sigmoid(iSum);
+    let fG   = lstmpa_sigmoid(fSum);
+    let gG   = tanh(gSum);
+    let oG   = lstmpa_sigmoid(oSum);
+    let cell = fG * cPrev[base_h_prev + h] + iG * gG;
+
+    cCurr[base_h_prev + h] = cell;
+    hCurr[base_h_prev + h] = oG * tanh(cell);
+
+    let pIdx = b * 5u * params.hiddenSize;
+    preAct[pIdx + h]                              = iSum;
+    preAct[pIdx + params.hiddenSize + h]          = fSum;
+    preAct[pIdx + 2u * params.hiddenSize + h]     = gSum;
+    preAct[pIdx + 3u * params.hiddenSize + h]     = oSum;
+    preAct[pIdx + 4u * params.hiddenSize + h]     = cell;
 }
 `
 
