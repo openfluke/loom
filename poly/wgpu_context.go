@@ -43,6 +43,9 @@ type WGPUContext struct {
 
 	// Negotiated limits
 	Limits wgpu.Limits
+
+	// BlankBuffer is a small zeroed buffer for optional bindings (e.g. bias)
+	BlankBuffer *wgpu.Buffer
 }
 
 // WGPUBufferBinding represents a slice of a GPU buffer for binding.
@@ -145,6 +148,13 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		finalLimits.Limits.MaxComputeInvocationsPerWorkgroup,
 		64, // default headDim; caller can override via GPUTileSize after init
 	)
+
+	// Initialize BlankBuffer
+	n.GPUContext.BlankBuffer, _ = device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: "Blank Buffer",
+		Size:  64,
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
+	})
 
 	n.UseGPU = true
 	return nil

@@ -64,6 +64,139 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(workgroup_
 `, tileSize)
 }
 
+func ShaderTiledDenseBackwardDX(tileSize int) string {
+	return fmt.Sprintf(`
+struct DenseScaleParams {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    activation: u32,
+    scale: f32,
+    p1: u32, p2: u32, p3: u32, p4: u32, p5: u32, p6: u32, p7: u32,
+};
+@group(0) @binding(0) var<uniform> params: DenseScaleParams;
+@group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
+@group(0) @binding(2) var<storage, read> weights: array<f32>;
+@group(0) @binding(3) var<storage, read> preAct: array<f32>;
+@group(0) @binding(4) var<storage, read_write> gradInput: array<f32>;
+
+var<workgroup> gCache: array<f32, %d>;
+
+` + wgslActivateDerivative + `
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id)  local_id:  vec3<u32>,
+    @builtin(workgroup_id)         wg_id:      vec3<u32>
+) {
+    let i = global_id.x;
+    let b = wg_id.y;
+    let tid = local_id.x;
+    let tileSize: u32 = %du;
+
+    if (i >= params.inputSize || b >= params.batchSize) { return; }
+
+    var sum: f32 = 0.0;
+    let base_go = b * params.outputSize;
+
+    // DX = GO * W^T  => sum_o GO[o] * W[o,i]
+    // Threads in WG share the same input 'i' BUT GO[o] can be shared across different 'i'.
+    // If we compute multiple 'i' per WG, we can cache GO[o].
+    
+    for (var oTile: u32 = 0u; oTile < params.outputSize; oTile += tileSize) {
+        // Load GO tile into shared memory (GO[o] * activateDerivative(preAct[o]))
+        let oIdx = oTile + tid;
+        if (oIdx < params.outputSize) {
+            let idx = base_go + oIdx;
+            gCache[tid] = gradOutput[idx] * activateDerivative(preAct[idx], params.activation);
+        } else {
+            gCache[tid] = 0.0;
+        }
+        
+        workgroupBarrier();
+        
+        let limit = min(tileSize, params.outputSize - oTile);
+        for (var o: u32 = 0u; o < limit; o++) {
+            // Weights is [outputSize, inputSize] => W[oTile + o, i]
+            sum += gCache[o] * weights[(oTile + o) * params.inputSize + i];
+        }
+        
+        workgroupBarrier();
+    }
+    
+    gradInput[b * params.inputSize + i] = sum;
+}
+`, tileSize, tileSize, tileSize)
+}
+
+func ShaderTiledDenseBackwardDW(tileSize int) string {
+	return fmt.Sprintf(`
+struct DenseScaleParams {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    activation: u32,
+    scale: f32,
+    p1: u32, p2: u32, p3: u32, p4: u32, p5: u32, p6: u32, p7: u32,
+};
+@group(0) @binding(0) var<uniform> params: DenseScaleParams;
+@group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
+@group(0) @binding(2) var<storage, read> input: array<f32>;
+@group(0) @binding(3) var<storage, read> preAct: array<f32>;
+@group(0) @binding(4) var<storage, read_write> gradWeights: array<f32>;
+
+var<workgroup> inCache: array<f32, %d>;
+
+` + wgslActivateDerivative + `
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id)  local_id:  vec3<u32>,
+    @builtin(workgroup_id)         wg_id:      vec3<u32>
+) {
+    let i = global_id.x; // input
+    let o = global_id.y; // output
+    let tid = local_id.x;
+    let tileSize: u32 = %du;
+
+    if (i >= params.inputSize || o >= params.outputSize) { return; }
+
+    var sum: f32 = 0.0;
+    
+    // DW = GO^T * IN => sum_b GO[b, o] * IN[b, i]
+    // Threads in WG share output 'o', different 'i'.
+    // We can't easily cache GO[b,o] across different 'i' because it's only one 'o'.
+    // But we can cache inputs across batches.
+    
+    for (var bTile: u32 = 0u; bTile < params.batchSize; bTile += tileSize) {
+        // Load input tile for this 'i' across batches? No, tid is 'i'.
+        // Load input[bTile + tid, i]? No.
+        // Let's cache GO[b, o] across batches.
+        let bIdx = bTile + tid;
+        if (bIdx < params.batchSize) {
+            let outIdx = bIdx * params.outputSize + o;
+            inCache[tid] = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
+        } else {
+            inCache[tid] = 0.0;
+        }
+        
+        workgroupBarrier();
+        
+        let limit = min(tileSize, params.batchSize - bTile);
+        for (var b: u32 = 0u; b < limit; b++) {
+            sum += inCache[b] * input[(bTile + b) * params.inputSize + i];
+        }
+        
+        workgroupBarrier();
+    }
+    
+    gradWeights[o * params.inputSize + i] += sum;
+}
+`, tileSize, tileSize, tileSize)
+}
+
 const ShaderRMSNormBackward = `
 struct Params {
     size: u32,

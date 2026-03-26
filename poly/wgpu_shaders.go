@@ -8,6 +8,66 @@ import "fmt"
 // dynamically so the WGSL workgroup array sizes always match the runtime
 // tile size (WGSL doesn't allow runtime-sized workgroup arrays).
 
+const wgslActivate = `
+fn activate(v: f32, act: u32) -> f32 {
+    if (act == 0u) { return max(0.0, v); } // ReLU
+    if (act == 1u) { return v * (1.0 / (1.0 + exp(-v))); } // SiLU
+    if (act == 2u) {
+        // GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+        return 0.5 * v * (1.0 + tanh(0.7978845608 * (v + 0.044715 * v * v * v)));
+    }
+    if (act == 3u) { return tanh(v); } // Tanh
+    if (act == 4u) { return 1.0 / (1.0 + exp(-v)); } // Sigmoid
+    if (act == 5u) {
+        if (v < 0.0) { return v * 0.01; } // LeakyReLU
+        return v;
+    }
+    return v; // Linear/Default
+}
+`
+
+const ShaderDenseScaled = `
+struct DenseScaleParams {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    activation: u32,
+    scale: f32,
+    hasBias: u32,
+    p1: u32, p2: u32, p3: u32, p4: u32, p5: u32, p6: u32,
+};
+
+@group(0) @binding(0) var<uniform>             params:  DenseScaleParams;
+@group(0) @binding(1) var<storage, read>       input:   array<f32>;
+@group(0) @binding(2) var<storage, read>       weights: array<f32>;
+@group(0) @binding(3) var<storage, read>       bias:    array<f32>;
+@group(0) @binding(4) var<storage, read_write> output:  array<f32>;
+
+` + wgslActivate + `
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(workgroup_id) wg_id: vec3<u32>) {
+    let o = global_id.x;
+    let b = wg_id.y;
+    if (o >= params.outputSize || b >= params.batchSize) { return; }
+
+    var sum: f32 = 0.0;
+    let base_in = b * params.inputSize;
+    let base_w = o * params.inputSize;
+
+    for (var i: u32 = 0u; i < params.inputSize; i++) {
+        sum += input[base_in + i] * weights[base_w + i];
+    }
+    
+    var res = sum * params.scale;
+    if (params.hasBias != 0u) {
+        res += bias[o];
+    }
+    
+    output[b * params.outputSize + o] = activate(res, params.activation);
+}
+`
+
 // ShaderTiledDenseN generates a tiled dense (matmul) shader for the given tile size.
 // The tile size is baked into the WGSL workgroup array and @workgroup_size.
 // ShaderTiledDenseQ4 generates a tiled dense shader that dequantizes 4-bit weights on the fly.
@@ -128,66 +188,77 @@ fn main(
 }
 
 func ShaderTiledDenseN(tileSize int) string {
-	// A pure global-memory based, register-unrolled kernel.
-	// We avoid shared memory entirely to eliminate barrier overhead,
-	// because some WebGPU backends emulate workgroup memory poorly.
+	return ShaderTiledDense(tileSize)
+}
+
+func ShaderTiledDense(tileSize int) string {
 	return fmt.Sprintf(`
-struct Params {
+struct DenseScaleParams {
     batchSize: u32,
     inputSize: u32,
     outputSize: u32,
-    tileSize: u32,
+    activation: u32,
+    scale: f32,
+    hasBias: u32,
+    p1: u32, p2: u32, p3: u32, p4: u32, p5: u32, p6: u32,
 };
 
-@group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var<storage, read> input: array<f32>;
-@group(0) @binding(2) var<storage, read> weights: array<f32>;
-@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+@group(0) @binding(0) var<uniform>             params:  DenseScaleParams;
+@group(0) @binding(1) var<storage, read>       input:   array<f32>;
+@group(0) @binding(2) var<storage, read>       weights: array<f32>;
+@group(0) @binding(3) var<storage, read>       bias:    array<f32>;
+@group(0) @binding(4) var<storage, read_write> output:  array<f32>;
 
-// tileSize is typically 32 or 64. Workgroup processes 'tileSize' outputs.
+// Workgroup input cache — holds one row's input values.
+// Since inputSize can be large, we cache it in chunks of tileSize.
+var<workgroup> iCache: array<f32, %d>;
+
+` + wgslActivate + `
+
 @compute @workgroup_size(%d, 1, 1)
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
-    @builtin(local_invocation_id) local_id: vec3<u32>,
-    @builtin(workgroup_id) wg_id: vec3<u32>
+    @builtin(local_invocation_id) local_id:  vec3<u32>,
+    @builtin(workgroup_id)        wg_id:     vec3<u32>
 ) {
     let o = global_id.x;
     let b = wg_id.y;
+    let tid = local_id.x;
+    let tileSize: u32 = %du;
 
     if (o >= params.outputSize || b >= params.batchSize) { return; }
 
     var sum: f32 = 0.0;
-    
-    // We unroll the loop by 4 (a typical SIMD width)
-    let limit = params.inputSize / 4u;
-    let rem = params.inputSize %% 4u;
-    
     let base_in = b * params.inputSize;
     let base_w = o * params.inputSize;
 
-    var i: u32 = 0u;
-    for (var k: u32 = 0u; k < limit; k++) {
-        let in0 = input[base_in + i];
-        let in1 = input[base_in + i + 1u];
-        let in2 = input[base_in + i + 2u];
-        let in3 = input[base_in + i + 3u];
-
-        let w0 = weights[base_w + i];
-        let w1 = weights[base_w + i + 1u];
-        let w2 = weights[base_w + i + 2u];
-        let w3 = weights[base_w + i + 3u];
-
-        sum += in0 * w0 + in1 * w1 + in2 * w2 + in3 * w3;
-        i += 4u;
+    // Process input in tiles
+    for (var iTile: u32 = 0u; iTile < params.inputSize; iTile += tileSize) {
+        let iIdx = iTile + tid;
+        if (iIdx < params.inputSize) {
+            iCache[tid] = input[base_in + iIdx];
+        } else {
+            iCache[tid] = 0.0;
+        }
+        
+        workgroupBarrier();
+        
+        let limit = min(tileSize, params.inputSize - iTile);
+        for (var i: u32 = 0u; i < limit; i++) {
+            sum += iCache[i] * weights[base_w + iTile + i];
+        }
+        
+        workgroupBarrier();
     }
 
-    for (var k: u32 = 0u; k < rem; k++) {
-        sum += input[base_in + i + k] * weights[base_w + i + k];
+    var res = sum * params.scale;
+    if (params.hasBias != 0u) {
+        res += bias[o];
     }
-
-    output[b * params.outputSize + o] = sum;
+    
+    output[b * params.outputSize + o] = activate(res, params.activation);
 }
-`, tileSize)
+`, tileSize, tileSize, tileSize)
 }
 
 // ShaderTiledSwiGLUQ4 generates a tiled SwiGLU shader with Q4_0 weights.

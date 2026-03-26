@@ -405,9 +405,33 @@ func CalculateOptimalGPUTileSizeFromLimits(sharedMemBytes, maxInvocations uint32
 	return tileSize
 }
 
-// cnnGPUTileSizesFromContext computes SC and MC tile sizes from a GPU context.
-// SC tile = max(GPUTileSize*4, 64); MC tile = MaxInvocations capped at 256, aligned to 64.
-// cnnGPUTileSizesFromContext computes SC and MC tile sizes from a GPU context and numerical type.
+// DenseGPUTileSizesFromContext returns the SC and MC GPU tile sizes for Dense kernels.
+func DenseGPUTileSizesFromContext(ctx *WGPUContext, dtype DType) (scTile, mcTile int) {
+	// Dense matmuls are often bound by memory latency for small batches,
+	// and memory bandwidth for large ones. 
+	// Smaller dtypes can support larger tiles.
+	bytes := cnn3DTypeBytesPerElement(dtype)
+	multiplier := 1.0
+	if bytes < 4 {
+		multiplier = 4.0 / bytes
+	}
+	if multiplier > 4.0 { multiplier = 4.0 }
+
+	// For Dense SC, we prioritize being able to fit weights in shared memory if possible.
+	// But usually, we only cache inputs in shared memory.
+	sc := int(float64(ctx.GPUTileSize) * multiplier)
+	if sc < 32 { sc = 32 }
+	if sc > 128 { sc = 128 } // Capped for workgroup size limits
+	sc = (sc / 32) * 32
+
+	mc := int(float64(ctx.Limits.MaxComputeInvocationsPerWorkgroup) * multiplier)
+	if mc > 256 { mc = 256 }
+	mc = (mc / 64) * 64
+	if mc < 64 { mc = 64 }
+
+	return sc, mc
+}
+
 func cnnGPUTileSizesFromContext(ctx *WGPUContext, dtype DType) (scTile, mcTile int) {
 	limits := ctx.Limits
 	bytes := cnn3DTypeBytesPerElement(dtype)

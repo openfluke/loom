@@ -255,34 +255,20 @@ func (c *WGPUContext) DispatchDense(
 	inputBuf, weightBuf, outputBuf any,
 	tileSize int,
 ) error {
-	shaderSrc := ShaderTiledDenseN(tileSize)
-	pipeline, err := c.CreateComputePipeline(shaderSrc)
-	if err != nil {
-		return err
+	// For backward compatibility, use a default scale and linear activation.
+	ib := inputBuf.(*wgpu.Buffer)
+	wb := weightBuf.(*wgpu.Buffer)
+	ob := outputBuf.(*wgpu.Buffer)
+	// Map ActivationLinear (-1) to a safe positive uint32 (99) to avoid constant overflow.
+	var act uint32
+	if int(ActivationLinear) < 0 {
+		act = 99
+	} else {
+		// Use a non-constant cast to satisfy the compiler
+		v := int(ActivationLinear)
+		act = uint32(v)
 	}
-
-	params := WGPUDenseParams{
-		BatchSize:  uint32(batchSize),
-		InputSize:  uint32(inputSize),
-		OutputSize: uint32(outputSize),
-		TileSize:   uint32(tileSize),
-	}
-	paramBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(paramBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
-
-	bindGroup, err := c.GetBindGroup(pipeline, paramBuf, inputBuf, weightBuf, outputBuf)
-	if err != nil {
-		return err
-	}
-
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
-	return nil
+	return c.DispatchDenseTiled(tileSize, batchSize, inputSize, outputSize, act, 1.0, ib, wb, nil, ob)
 }
 
 // DispatchDenseBackwardDX calculates gradInput = gradOutput * weights
@@ -291,8 +277,14 @@ func (c *WGPUContext) DispatchDenseBackwardDX(
 	gradOutputBuf, weightBuf, gradInputBuf any,
 	tileSize int,
 ) error {
-	shaderSrc := ShaderDenseBackwardDX(tileSize)
-	pipeline, err := c.CreateComputePipeline(shaderSrc)
+	goB := gradOutputBuf.(*wgpu.Buffer)
+	wb := weightBuf.(*wgpu.Buffer)
+	giB := gradInputBuf.(*wgpu.Buffer)
+	// We lack preActBuf and activation here in the legacy signature.
+	// We'll have to use the untiled/non-activation version or a dummy preAct.
+	// BUT the premium implementation needs preAct.
+	// For legacy compatibility, we'll restore the simple non-integrated DX shader.
+	pipeline, err := c.CreateComputePipeline(ShaderDenseBackwardDX(tileSize))
 	if err != nil { return err }
 
 	params := WGPUDenseParams{
@@ -304,18 +296,14 @@ func (c *WGPUContext) DispatchDenseBackwardDX(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, goB, wb, giB)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(
-		(uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize),
-		uint32(batchSize),
-		1,
-	)
+	pass.DispatchWorkgroups((uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
 	pass.End()
 	ctxSubmit(c, enc, owned)
 	return nil
@@ -327,8 +315,10 @@ func (c *WGPUContext) DispatchDenseBackwardDW(
 	gradOutputBuf, inputBuf, gradWeightBuf any,
 	tileSize int,
 ) error {
-	shaderSrc := ShaderDenseBackwardDW(tileSize)
-	pipeline, err := c.CreateComputePipeline(shaderSrc)
+	goB := gradOutputBuf.(*wgpu.Buffer)
+	ib := inputBuf.(*wgpu.Buffer)
+	gwB := gradWeightBuf.(*wgpu.Buffer)
+	pipeline, err := c.CreateComputePipeline(ShaderDenseBackwardDW(tileSize))
 	if err != nil { return err }
 
 	params := WGPUDenseParams{
@@ -340,18 +330,14 @@ func (c *WGPUContext) DispatchDenseBackwardDW(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, goB, ib, gwB)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
 	pass := enc.BeginComputePass(nil)
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(
-		(uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize),
-		uint32(outputSize),
-		1,
-	)
+	pass.DispatchWorkgroups((uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(outputSize), 1)
 	pass.End()
 	ctxSubmit(c, enc, owned)
 	return nil
@@ -1233,8 +1219,23 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 			}
 		}
 		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
-		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
-		return c.DispatchDense(batchSize, l.InputHeight, l.OutputHeight, inputBuf, wBuf, outBuf, tileSize)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
+		// Fetch bias buffer if it exists
+		var bBuf *wgpu.Buffer
+		if l.WeightStore != nil {
+			if b, ok := l.WeightStore.GPUWeights[DType(1001)].(*wgpu.Buffer); ok {
+				bBuf = b
+			}
+		}
+
+		// Call the premium tiled dispatcher with the layer's actual scale.
+		scale := float32(1.0)
+		if l.WeightStore != nil && l.WeightStore.Scale != 0 {
+			scale = l.WeightStore.Scale
+		}
+		return c.DispatchDenseTiled(tileSize, batchSize, l.InputHeight, l.OutputHeight, uint32(l.Activation), scale, inputBuf, wBuf, bBuf, outBuf)
 	case LayerRMSNorm:
 		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
@@ -1328,8 +1329,18 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 
 	switch l.Type {
 	case LayerDense:
-		if err := c.DispatchDenseBackwardDX(batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), dxBuf, tileSize); err != nil { return err }
-		return c.DispatchDenseBackwardDW(batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, inputBuf, dwBuf, tileSize)
+		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
+		// Call the premium tiled backward dispatchers in wgpu_dense_tiled.go
+		if err := c.DispatchDenseBackwardDXTiled(tileSize, batchSize, l.InputHeight, l.OutputHeight, uint32(l.Activation), gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
+			return fmt.Errorf("dx: %w", err)
+		}
+		if err := c.DispatchDenseBackwardDWTiled(tileSize, batchSize, l.InputHeight, l.OutputHeight, uint32(l.Activation), gradOutBuf, inputBuf, preActBuf, dwBuf); err != nil {
+			return fmt.Errorf("dw: %w", err)
+		}
+		return nil
 	case LayerRMSNorm:
 		rmsBuf := c.GetActivationBuffer(fmt.Sprintf("rms_%p", l), uint64(batchSize*4), wgpu.BufferUsageStorage)
 		// Provide 1.0 for dummy validation
