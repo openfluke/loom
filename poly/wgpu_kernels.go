@@ -1267,6 +1267,7 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 		if sl <= 0 { sl = 1 }
 		return c.DispatchEmbedding(l.VocabSize, l.EmbeddingDim, batchSize*sl, inputBuf, w, outBuf)
 	case LayerMultiHeadAttention:
+		if err := c.partitionMHAWeights(l); err != nil { return err }
 		qWeights, _ := l.WeightStore.GPUWeights[WeightMHAQuery].(*wgpu.Buffer)
 		kWeights, _ := l.WeightStore.GPUWeights[WeightMHAKey].(*wgpu.Buffer)
 		vWeights, _ := l.WeightStore.GPUWeights[WeightMHAValue].(*wgpu.Buffer)
@@ -1388,20 +1389,18 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 	case LayerResidual:
 		return c.DispatchResidualBackward(l.InputHeight*batchSize, gradOutBuf, dxBuf, dwBuf)
 	case LayerMultiHeadAttention:
-		sl := l.SeqLength
-		if sl <= 0 {
-			sl = 1
-		}
-		kvDim := l.NumKVHeads * l.HeadDim
-		tileSize := l.GetGPUSCTileSize(l.DType)
-		if tileSize <= 0 {
-			tileSize = 32
-		}
-
+		if err := c.partitionMHAWeights(l); err != nil { return err }
 		qWeights, _ := l.WeightStore.GPUWeights[WeightMHAQuery].(*wgpu.Buffer)
 		kWeights, _ := l.WeightStore.GPUWeights[WeightMHAKey].(*wgpu.Buffer)
 		vWeights, _ := l.WeightStore.GPUWeights[WeightMHAValue].(*wgpu.Buffer)
 		oWeights, _ := l.WeightStore.GPUWeights[WeightMHAProjection].(*wgpu.Buffer)
+
+		sl := l.SeqLength
+		if sl <= 0 { sl = 1 }
+		kvDim := l.NumKVHeads * l.HeadDim
+		if kvDim == 0 { kvDim = l.NumHeads * l.HeadDim }
+		tileSize := l.GetGPUSCTileSize(l.DType)
+		if tileSize <= 0 { tileSize = 32 }
 
 		// 1. Output Projection Backward
 		attnOut := c.GetActivationBuffer(fmt.Sprintf("attn_out_%p", l), uint64(batchSize*sl*l.DModel*4), wgpu.BufferUsageStorage)
@@ -1531,5 +1530,32 @@ func (c *WGPUContext) DispatchActivationBackward(size int, act ActivationType, g
 	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
 	pass.End()
 	ctxSubmit(c, enc, owned)
+	return nil
+}
+func (c *WGPUContext) partitionMHAWeights(l *VolumetricLayer) error {
+	if l.WeightStore == nil { return nil }
+	if _, ok := l.WeightStore.GPUWeights[WeightMHAQuery]; ok { return nil }
+
+	dModel := l.DModel
+	numKV := l.NumKVHeads
+	if numKV == 0 { numKV = l.NumHeads }
+	kvDim := numKV * l.HeadDim
+	
+	// offsets based on mha.go
+	qwStart := 0
+	kwStart := dModel * dModel
+	vwStart := dModel * (dModel + kvDim)
+	owStart := dModel * (dModel + 2 * kvDim)
+
+	data := l.WeightStore.Master
+	if len(data) < owStart+dModel*dModel {
+		return fmt.Errorf("insufficient MHA master weights: %d < %d", len(data), owStart+dModel*dModel)
+	}
+
+	l.WeightStore.GPUWeights[WeightMHAQuery], _ = c.CreatePersistentBuffer(data[qwStart : qwStart+dModel*dModel], "mha_q_w")
+	l.WeightStore.GPUWeights[WeightMHAKey], _ = c.CreatePersistentBuffer(data[kwStart : kwStart+dModel*kvDim], "mha_k_w")
+	l.WeightStore.GPUWeights[WeightMHAValue], _ = c.CreatePersistentBuffer(data[vwStart : vwStart+dModel*kvDim], "mha_v_w")
+	l.WeightStore.GPUWeights[WeightMHAProjection], _ = c.CreatePersistentBuffer(data[owStart : owStart+dModel*dModel], "mha_o_w")
+
 	return nil
 }
