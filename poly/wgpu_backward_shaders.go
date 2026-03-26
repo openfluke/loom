@@ -79,6 +79,7 @@ struct DenseScaleParams {
 @group(0) @binding(2) var<storage, read> weights: array<f32>;
 
 @group(0) @binding(3) var<storage, read_write> gradInput: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 var<workgroup> gCache: array<f32, %d>;
 
@@ -103,13 +104,13 @@ fn main(
     // DX = GO * W^T  => sum_o GO[o] * W[o,i]
     // Threads in WG share the same input 'i' BUT GO[o] can be shared across different 'i'.
     // If we compute multiple 'i' per WG, we can cache GO[o].
-    
+
     for (var oTile: u32 = 0u; oTile < params.outputSize; oTile += tileSize) {
         // Load GO tile into shared memory (GO[o] * activateDerivative(preAct[o]))
         let oIdx = oTile + tid;
         if (oIdx < params.outputSize) {
             let idx = base_go + oIdx;
-            gCache[tid] = gradOutput[idx];
+            gCache[tid] = gradOutput[idx] * activateDerivative(preAct[idx], params.activation);
         } else {
             gCache[tid] = 0.0;
         }
@@ -145,6 +146,7 @@ struct DenseScaleParams {
 @group(0) @binding(2) var<storage, read> input: array<f32>;
 
 @group(0) @binding(3) var<storage, read_write> gradWeights: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 var<workgroup> inCache: array<f32, %d>;
 
@@ -164,12 +166,12 @@ fn main(
     if (i >= params.inputSize || o >= params.outputSize) { return; }
 
     var sum: f32 = 0.0;
-    
+
     // DW = GO^T * IN => sum_b GO[b, o] * IN[b, i]
     // Threads in WG share output 'o', different 'i'.
     // We can't easily cache GO[b,o] across different 'i' because it's only one 'o'.
     // But we can cache inputs across batches.
-    
+
     for (var bTile: u32 = 0u; bTile < params.batchSize; bTile += tileSize) {
         // Load input tile for this 'i' across batches? No, tid is 'i'.
         // Load input[bTile + tid, i]? No.
@@ -177,7 +179,7 @@ fn main(
         let bIdx = bTile + tid;
         if (bIdx < params.batchSize) {
             let outIdx = bIdx * params.outputSize + o;
-            inCache[tid] = gradOutput[outIdx];
+            inCache[tid] = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
         } else {
             inCache[tid] = 0.0;
         }
@@ -394,6 +396,7 @@ struct Params {
 @group(0) @binding(2) var<storage, read> weights: array<f32>;
 
 @group(0) @binding(3) var<storage, read_write> gradInput: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -415,7 +418,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 let o = u32(val / i32(params.stride));
                 if (o < params.outL) {
                     let outIdx = b * params.filters * params.outL + f * params.outL + o;
-                    let dy = gradOutput[outIdx];
+                    let dy = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
                     let kWIdx = f * params.inC * params.kSize + ic * params.kSize + k;
                     sum += dy * weights[kWIdx];
                 }
@@ -443,6 +446,7 @@ struct Params {
 @group(0) @binding(2) var<storage, read> input: array<f32>;
 
 @group(0) @binding(3) var<storage, read_write> gradWeights: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -462,7 +466,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             let inPos = i32(o * params.stride) + i32(k) - i32(params.padding);
             if (inPos >= 0 && inPos < i32(params.inL)) {
                 let outIdx = b * params.filters * params.outL + f * params.outL + o;
-                let dy = gradOutput[outIdx];
+                let dy = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
                 let inIdx = b * params.inC * params.inL + ic * params.inL + u32(inPos);
                 sum += dy * input[inIdx];
             }
@@ -491,6 +495,7 @@ struct Params {
 @group(0) @binding(2) var<storage, read> weights: array<f32>;
 
 @group(0) @binding(3) var<storage, read_write> gradInput: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -518,7 +523,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                     let ow = u32(vw / i32(params.stride));
                     if (oh < params.outH && ow < params.outW) {
                         let outIdx = ((b * params.filters + f) * params.outH + oh) * params.outW + ow;
-                        let dy = gradOutput[outIdx];
+                        let dy = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
                         let kWIdx = ((f * params.inC + ic) * params.kSize + kh) * params.kSize + kw;
                         sum += dy * weights[kWIdx];
                     }
@@ -549,6 +554,7 @@ struct Params {
 @group(0) @binding(2) var<storage, read> input: array<f32>;
 
 @group(0) @binding(3) var<storage, read_write> gradWeights: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -573,7 +579,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 let iw = i32(ow * params.stride) + i32(kw) - i32(params.padding);
                 if (ih >= 0 && ih < i32(params.inH) && iw >= 0 && iw < i32(params.inW)) {
                     let outIdx = ((b * params.filters + f) * params.outH + oh) * params.outW + ow;
-                    let dy = gradOutput[outIdx];
+                    let dy = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
                     let inIdx = ((b * params.inC + ic) * params.inH + u32(ih)) * params.inW + u32(iw);
                     sum += dy * input[inIdx];
                 }
@@ -605,6 +611,7 @@ struct Params {
 @group(0) @binding(2) var<storage, read> weights: array<f32>;
 
 @group(0) @binding(3) var<storage, read_write> gradInput: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -632,15 +639,15 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                     let vd = i32(id) + i32(params.padding) - i32(kd);
                     let vh = i32(ih) + i32(params.padding) - i32(kh);
                     let vw = i32(iw) + i32(params.padding) - i32(kw);
-                    if (vd >= 0 && vd % i32(params.stride) == 0 && 
-                        vh >= 0 && vh % i32(params.stride) == 0 && 
+                    if (vd >= 0 && vd % i32(params.stride) == 0 &&
+                        vh >= 0 && vh % i32(params.stride) == 0 &&
                         vw >= 0 && vw % i32(params.stride) == 0) {
                         let od = u32(vd / i32(params.stride));
                         let oh = u32(vh / i32(params.stride));
                         let ow = u32(vw / i32(params.stride));
                         if (od < params.outD && oh < params.outH && ow < params.outW) {
-                            let outIdx = b * params.filters * params.outH * params.outW + f * params.outH * params.outW + oh * params.outW + ow;
-                            let dy = gradOutput[outIdx];
+                            let outIdx = ((b * params.filters + f) * params.outD + od) * params.outH * params.outW + oh * params.outW + ow;
+                            let dy = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
                             let kWIdx = (((f * params.inC + ic) * params.kSize + kd) * params.kSize + kh) * params.kSize + kw;
                             sum += dy * weights[kWIdx];
                         }
@@ -674,7 +681,9 @@ struct Params {
 @group(0) @binding(2) var<storage, read> input: array<f32>;
 
 @group(0) @binding(3) var<storage, read_write> gradWeights: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
+` + wgslActivateDerivative + `
 
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -703,8 +712,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                     if (id >= 0 && id < i32(params.inD) &&
                         ih >= 0 && ih < i32(params.inH) &&
                         iw >= 0 && iw < i32(params.inW)) {
-                        let outIdx = b * params.filters * params.outH * params.outW + f * params.outH * params.outW + u32(oh) * params.outW + u32(ow);
-                        let dy = gradOutput[outIdx];
+                        let outIdx = ((b * params.filters + f) * params.outD + od) * params.outH * params.outW + oh * params.outW + ow;
+                        let dy = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
                         let inIdx = (((b * params.inC + ic) * params.inD + u32(id)) * params.inH + u32(ih)) * params.inW + u32(iw);
                         sum += dy * input[inIdx];
                     }

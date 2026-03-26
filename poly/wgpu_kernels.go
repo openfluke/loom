@@ -941,7 +941,7 @@ func (c *WGPUContext) DispatchCNN1BackwardDX(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN1BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf, preActBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -972,7 +972,7 @@ func (c *WGPUContext) DispatchCNN1BackwardDW(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN1BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf, preActBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -1003,7 +1003,7 @@ func (c *WGPUContext) DispatchCNN2BackwardDX(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN2BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf, preActBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -1034,7 +1034,7 @@ func (c *WGPUContext) DispatchCNN2BackwardDW(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN2BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf, preActBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -1065,7 +1065,7 @@ func (c *WGPUContext) DispatchCNN3BackwardDX(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN3BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf, preActBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -1096,7 +1096,7 @@ func (c *WGPUContext) DispatchCNN3BackwardDW(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN3BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf, preActBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -1232,7 +1232,14 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 		if l.WeightStore != nil && l.WeightStore.Scale != 0 {
 			scale = l.WeightStore.Scale
 		}
-		return c.DispatchDenseTiled(tileSize, batchSize, l.InputHeight, l.OutputHeight, uint32(l.Activation), scale, inputBuf, wBuf, bBuf, outBuf)
+		if l.Activation == ActivationLinear {
+			return c.DispatchDenseTiled(tileSize, batchSize, l.InputHeight, l.OutputHeight, uint32(l.Activation), scale, inputBuf, wBuf, bBuf, outBuf)
+		}
+		denseOutSize := batchSize * l.OutputHeight
+		densePreBuf := c.GetActivationBuffer(fmt.Sprintf("dense_pre_%p", l), uint64(denseOutSize*4), wgpu.BufferUsageStorage)
+		linAct := ActivationLinear
+		if err := c.DispatchDenseTiled(tileSize, batchSize, l.InputHeight, l.OutputHeight, uint32(linAct), scale, inputBuf, wBuf, bBuf, densePreBuf); err != nil { return err }
+		return c.DispatchActivation(denseOutSize, l.Activation, densePreBuf, outBuf)
 	case LayerRMSNorm:
 		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
@@ -1240,15 +1247,33 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 	case LayerCNN1:
 		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
-		return c.DispatchCNN1(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, inputBuf, wBuf, outBuf)
+		if l.Activation == ActivationLinear {
+			return c.DispatchCNN1(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, inputBuf, wBuf, outBuf)
+		}
+		cnn1OutSize := batchSize * l.Filters * l.OutputHeight
+		cnn1PreBuf := c.GetActivationBuffer(fmt.Sprintf("cnn1_pre_%p", l), uint64(cnn1OutSize*4), wgpu.BufferUsageStorage)
+		if err := c.DispatchCNN1(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, inputBuf, wBuf, cnn1PreBuf); err != nil { return err }
+		return c.DispatchActivation(cnn1OutSize, l.Activation, cnn1PreBuf, outBuf)
 	case LayerCNN2:
 		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
-		return c.DispatchCNN2(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Padding, l.Padding, inputBuf, wBuf, outBuf)
+		if l.Activation == ActivationLinear {
+			return c.DispatchCNN2(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Padding, l.Padding, inputBuf, wBuf, outBuf)
+		}
+		cnn2OutSize := batchSize * l.Filters * l.OutputHeight * l.OutputWidth
+		cnn2PreBuf := c.GetActivationBuffer(fmt.Sprintf("cnn2_pre_%p", l), uint64(cnn2OutSize*4), wgpu.BufferUsageStorage)
+		if err := c.DispatchCNN2(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Padding, l.Padding, inputBuf, wBuf, cnn2PreBuf); err != nil { return err }
+		return c.DispatchActivation(cnn2OutSize, l.Activation, cnn2PreBuf, outBuf)
 	case LayerCNN3:
 		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		if wBuf == nil { return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L) }
-		return c.DispatchCNN3(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Stride, l.Padding, l.Padding, l.Padding, inputBuf, wBuf, outBuf)
+		if l.Activation == ActivationLinear {
+			return c.DispatchCNN3(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Stride, l.Padding, l.Padding, l.Padding, inputBuf, wBuf, outBuf)
+		}
+		cnn3OutSize := batchSize * l.Filters * l.OutputDepth * l.OutputHeight * l.OutputWidth
+		cnn3PreBuf := c.GetActivationBuffer(fmt.Sprintf("cnn3_pre_%p", l), uint64(cnn3OutSize*4), wgpu.BufferUsageStorage)
+		if err := c.DispatchCNN3(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.KernelSize, l.KernelSize, l.Stride, l.Stride, l.Stride, l.Padding, l.Padding, l.Padding, inputBuf, wBuf, cnn3PreBuf); err != nil { return err }
+		return c.DispatchActivation(cnn3OutSize, l.Activation, cnn3PreBuf, outBuf)
 	case LayerRNN:
 		wIH, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		wHH := wIH // simplified for benchmarking

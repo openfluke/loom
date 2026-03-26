@@ -174,8 +174,9 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 			vB := rawW[vbStart : vbStart + kvDim]
 			oB := rawW[obStart : obStart + dModel]
 
-			// Initialize KV Cache if needed
-			if layer.KVCacheK == nil {
+			// For batch/training mode (seqLen > 1), always reset KV cache to position 0.
+			// For auto-regressive inference (seqLen == 1), accumulate KVOffset across calls.
+			if seqLen > 1 || layer.KVCacheK == nil {
 				layer.KVCacheK = NewTensor[float32](msl, kvDim)
 				layer.KVCacheV = NewTensor[float32](msl, kvDim)
 				layer.KVOffset = 0
@@ -939,8 +940,9 @@ func mhaForwardTiledCore[T Numeric](layer *VolumetricLayer, input *Tensor[T], pa
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil { weights = layer.WeightStore.Master }
 
-	// Initialize KV Cache if needed
-	if layer.KVCacheK == nil {
+	// For batch/training mode (seqLen > 1), always reset KV cache to position 0.
+	// For auto-regressive inference (seqLen == 1), accumulate KVOffset across calls.
+	if seqLen > 1 || layer.KVCacheK == nil {
 		layer.KVCacheK = NewTensor[float32](msl, kvDim)
 		layer.KVCacheV = NewTensor[float32](msl, kvDim)
 		layer.KVOffset = 0
