@@ -340,10 +340,13 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 			layerTileSize = l.GetGPUMCTileSize(l.DType)
 		}
 		scale := float32(1.0)
-		if l.WeightStore != nil && l.WeightStore.Scale != 0 {
-			scale = l.WeightStore.Scale
+		var wBuf *wgpu.Buffer
+		if l.WeightStore != nil {
+			if l.WeightStore.Scale != 0 {
+				scale = l.WeightStore.Scale
+			}
+			wBuf, _ = l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		}
-		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
 		if layerTileSize > 0 && l.Type == LayerCNN1 {
 			kernelVol := l.InputChannels * l.KernelSize
 			fwdErr = ctx.DispatchCNN1Tiled(layerTileSize, kernelVol, batchSize,
@@ -470,13 +473,17 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 			return 0, fmt.Errorf("failed to get dxBuf for layer %d", i)
 		}
 
-		wSize := len(l.WeightStore.Master)
+		wSize := 1
+		if l.WeightStore != nil {
+			wSize = len(l.WeightStore.Master)
+			if wSize <= 0 { wSize = 1 }
+		}
 		dwBuf := ctx.GetActivationBuffer(fmt.Sprintf("dw_%d", i), uint64(wSize*4), wgpu.BufferUsageStorage)
 		if dwBuf == nil {
 			ctx.FlushFrame()
 			return 0, fmt.Errorf("failed to get dwBuf for layer %d", i)
 		}
-		// Zero DW buffer before accumulation (WriteBuffer is a queue-level op, safe inside BeginFrame)
+		// Zero DW buffer before accumulation
 		ctx.Queue.WriteBuffer(dwBuf, 0, make([]byte, wSize*4))
 
 		var gradPreBuf *wgpu.Buffer
@@ -500,7 +507,10 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 		} else if mode == TrainingModeGPUMC {
 			bwdTileSize = l.GetGPUMCTileSize(l.DType)
 		}
-		bwdWBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		var bwdWBuf *wgpu.Buffer
+		if l.WeightStore != nil {
+			bwdWBuf, _ = l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		}
 		var bwdErr error
 		if bwdTileSize > 0 && l.Type == LayerCNN1 {
 			kernelVol := l.InputChannels * l.KernelSize

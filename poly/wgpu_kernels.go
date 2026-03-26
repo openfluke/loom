@@ -256,9 +256,6 @@ func (c *WGPUContext) DispatchDense(
 	tileSize int,
 ) error {
 	// For backward compatibility, use a default scale and linear activation.
-	ib := inputBuf.(*wgpu.Buffer)
-	wb := weightBuf.(*wgpu.Buffer)
-	ob := outputBuf.(*wgpu.Buffer)
 	// Map ActivationLinear (-1) to a safe positive uint32 (99) to avoid constant overflow.
 	var act uint32
 	if int(ActivationLinear) < 0 {
@@ -268,7 +265,7 @@ func (c *WGPUContext) DispatchDense(
 		v := int(ActivationLinear)
 		act = uint32(v)
 	}
-	return c.DispatchDenseTiled(tileSize, batchSize, inputSize, outputSize, act, 1.0, ib, wb, nil, ob)
+	return c.DispatchDenseTiled(tileSize, batchSize, inputSize, outputSize, act, 1.0, inputBuf, weightBuf, nil, outputBuf)
 }
 
 // DispatchDenseBackwardDX calculates gradInput = gradOutput * weights
@@ -277,9 +274,6 @@ func (c *WGPUContext) DispatchDenseBackwardDX(
 	gradOutputBuf, weightBuf, gradInputBuf any,
 	tileSize int,
 ) error {
-	goB := gradOutputBuf.(*wgpu.Buffer)
-	wb := weightBuf.(*wgpu.Buffer)
-	giB := gradInputBuf.(*wgpu.Buffer)
 	// We lack preActBuf and activation here in the legacy signature.
 	// We'll have to use the untiled/non-activation version or a dummy preAct.
 	// BUT the premium implementation needs preAct.
@@ -296,7 +290,7 @@ func (c *WGPUContext) DispatchDenseBackwardDX(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, goB, wb, giB)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -315,9 +309,6 @@ func (c *WGPUContext) DispatchDenseBackwardDW(
 	gradOutputBuf, inputBuf, gradWeightBuf any,
 	tileSize int,
 ) error {
-	goB := gradOutputBuf.(*wgpu.Buffer)
-	ib := inputBuf.(*wgpu.Buffer)
-	gwB := gradWeightBuf.(*wgpu.Buffer)
 	pipeline, err := c.CreateComputePipeline(ShaderDenseBackwardDW(tileSize))
 	if err != nil { return err }
 
@@ -330,7 +321,7 @@ func (c *WGPUContext) DispatchDenseBackwardDW(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, goB, ib, gwB)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -552,7 +543,7 @@ func (c *WGPUContext) DispatchRMSNormBackward(
 
 func (c *WGPUContext) DispatchEmbeddingBackward(
 	vocabSize, hiddenSize, numTokens int,
-	indicesBuf, gradOutputBuf, gradWeightBuf *wgpu.Buffer,
+	indicesBuf, gradOutputBuf, gradWeightBuf any,
 ) error {
 	pipeline, err := c.CreateComputePipeline(ShaderEmbeddingBackward)
 	if err != nil { return err }
@@ -763,7 +754,7 @@ type WGPUEmbeddingParams struct {
 
 func (c *WGPUContext) DispatchEmbedding(
 	vocabSize, hiddenSize, numTokens int,
-	indicesBuf, weightsBuf, outputBuf *wgpu.Buffer,
+	indicesBuf, weightsBuf, outputBuf any,
 ) error {
 	pipeline, err := c.CreateComputePipeline(ShaderEmbedding)
 	if err != nil {
@@ -1272,7 +1263,9 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 		return c.DispatchLSTMStep(batchSize, l.InputHeight, l.OutputHeight, inputBuf, hPrev, cPrev, weights, outBuf, cCurr)
 	case LayerEmbedding:
 		w, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
-		return c.DispatchEmbedding(l.VocabSize, l.EmbeddingDim, batchSize, inputBuf, w, outBuf)
+		sl := l.SeqLength
+		if sl <= 0 { sl = 1 }
+		return c.DispatchEmbedding(l.VocabSize, l.EmbeddingDim, batchSize*sl, inputBuf, w, outBuf)
 	case LayerMultiHeadAttention:
 		qWeights, _ := l.WeightStore.GPUWeights[WeightMHAQuery].(*wgpu.Buffer)
 		kWeights, _ := l.WeightStore.GPUWeights[WeightMHAKey].(*wgpu.Buffer)
@@ -1331,10 +1324,11 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 		var act uint32 = 99
 		return c.DispatchDenseTiled(32, batchSize, l.OutputHeight, l.InputHeight, act, 1.0, preOut, wDown, dB, outBuf)
 	case LayerResidual:
+		totalSize := l.InputHeight * batchSize
 		enc, owned, _ := ctxEncoder(c)
-		enc.CopyBufferToBuffer(inputBuf, 0, outBuf, 0, uint64(l.InputHeight*4))
+		enc.CopyBufferToBuffer(inputBuf, 0, outBuf, 0, uint64(totalSize*4))
 		ctxSubmit(c, enc, owned)
-		return c.DispatchResidual(l.InputHeight, outBuf, inputBuf)
+		return c.DispatchResidual(totalSize, outBuf, inputBuf)
 	default:
 		return fmt.Errorf("GPU forward not implemented for layer %v", l.Type)
 	}
@@ -1383,12 +1377,14 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 		return c.DispatchSwiGLUBackward(batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, gIn, uIn, dxBuf, dwBuf)
 	case LayerEmbedding:
 		// Re-cast input floats to uint32 indices
-		idxBuf := c.GetActivationBuffer(fmt.Sprintf("emb_idx_%p", l), uint64(l.InputHeight*batchSize*4), wgpu.BufferUsageStorage)
+		sl := l.SeqLength
+		if sl <= 0 { sl = 1 }
+		idxBuf := c.GetActivationBuffer(fmt.Sprintf("emb_idx_%p", l), uint64(sl*batchSize*4), wgpu.BufferUsageStorage)
 		f32Inputs, _ := c.ReadBuffer(inputBuf)
 		u32Indices := make([]uint32, len(f32Inputs))
 		for i, v := range f32Inputs { u32Indices[i] = uint32(v) }
 		c.Queue.WriteBuffer(idxBuf, 0, wgpu.ToBytes(u32Indices))
-		return c.DispatchEmbeddingBackward(l.VocabSize, l.EmbeddingDim, l.InputHeight*batchSize, idxBuf, gradOutBuf, dwBuf)
+		return c.DispatchEmbeddingBackward(l.VocabSize, l.EmbeddingDim, sl*batchSize, idxBuf, gradOutBuf, dwBuf)
 	case LayerResidual:
 		return c.DispatchResidualBackward(l.InputHeight*batchSize, gradOutBuf, dxBuf, dwBuf)
 	case LayerMultiHeadAttention:

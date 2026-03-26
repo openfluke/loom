@@ -331,10 +331,16 @@ func (c *WGPUContext) GetBindGroup(pipeline *wgpu.ComputePipeline, bindings ...a
 
 		switch v := b.(type) {
 		case *wgpu.Buffer:
+			if v == nil {
+				return nil, fmt.Errorf("binding %d is nil *wgpu.Buffer", i)
+			}
 			bBuf = v
 			offset = 0
 			size = v.GetSize()
 		case *WGPUBufferBinding:
+			if v == nil || v.Buffer == nil {
+				return nil, fmt.Errorf("binding %d is nil or has nil buffer in *WGPUBufferBinding", i)
+			}
 			bBuf = v.Buffer
 			offset = v.Offset
 			size = v.Size

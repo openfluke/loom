@@ -18,12 +18,21 @@ type WGPUDenseScaleParams struct {
 	_pad       [6]uint32 // Padding to 48 bytes (multiple of 16)
 }
 
+func isTrulyNil(i any) bool {
+	if i == nil { return true }
+	switch v := i.(type) {
+	case *wgpu.Buffer: return v == nil
+	case *WGPUBufferBinding: return v == nil || v.Buffer == nil
+	}
+	return false
+}
+
 // DispatchDenseScaled dispatches a non-tiled Dense forward pass with a scale uniform.
 func (c *WGPUContext) DispatchDenseScaled(
 	batchSize, inputSize, outputSize int,
 	activation uint32,
 	scale float32,
-	inputBuf, weightBuf, biasBuf, outputBuf *wgpu.Buffer,
+	inputBuf, weightBuf, biasBuf, outputBuf any,
 ) error {
 	pipeline, err := c.CreateComputePipeline(ShaderDenseScaled)
 	if err != nil {
@@ -31,8 +40,8 @@ func (c *WGPUContext) DispatchDenseScaled(
 	}
 
 	hasBias := uint32(0)
-	bb := biasBuf
-	if bb == nil {
+	var bb any = biasBuf
+	if isTrulyNil(biasBuf) {
 		bb = c.BlankBuffer
 	} else {
 		hasBias = 1
@@ -70,7 +79,7 @@ func (c *WGPUContext) DispatchDenseTiled(
 	tileSize, batchSize, inputSize, outputSize int,
 	activation uint32,
 	scale float32,
-	inputBuf, weightBuf, biasBuf, outputBuf *wgpu.Buffer,
+	inputBuf, weightBuf, biasBuf, outputBuf any,
 ) error {
 	if tileSize <= 0 {
 		tileSize = 32
@@ -82,8 +91,8 @@ func (c *WGPUContext) DispatchDenseTiled(
 	}
 
 	hasBias := uint32(0)
-	bb := biasBuf
-	if bb == nil {
+	var bb any = biasBuf
+	if isTrulyNil(biasBuf) {
 		bb = c.BlankBuffer
 	} else {
 		hasBias = 1
@@ -120,7 +129,7 @@ func (c *WGPUContext) DispatchDenseBackwardDXTiled(
 	tileSize int,
 	batchSize, inputSize, outputSize int,
 	activation uint32,
-	gradOutputBuf, weightBuf, preActBuf, gradInputBuf *wgpu.Buffer,
+	gradOutputBuf, weightBuf, preActBuf, gradInputBuf any,
 ) error {
 	if tileSize <= 0 {
 		tileSize = 64
@@ -165,7 +174,7 @@ func (c *WGPUContext) DispatchDenseBackwardDWTiled(
 	tileSize int,
 	batchSize, inputSize, outputSize int,
 	activation uint32,
-	gradOutputBuf, inputBuf, preActBuf, gradWeightsBuf *wgpu.Buffer,
+	gradOutputBuf, inputBuf, preActBuf, gradWeightsBuf any,
 ) error {
 	if tileSize <= 0 {
 		tileSize = 64
