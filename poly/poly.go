@@ -998,9 +998,9 @@ func (l *VolumetricLayer) SyncToGPU() error {
 		// Specific sync logic for different layer types/dtypes
 		if l.Type == LayerRMSNorm {
 			// RMSNorm MUST stay in FP32
-		} else if l.Type == LayerSwiGLU && l.DType != DTypeInt4 {
+		} else if l.Type == LayerSwiGLU && DTypeBits(l.DType) > 4 {
 			l.syncFP32SwiGLU(ctx)
-		} else if l.DType == DTypeInt4 {
+		} else if DTypeBits(l.DType) <= 4 {
 			if l.Type == LayerSwiGLU {
 				h, inter := l.InputHeight, l.OutputHeight
 				l.syncQuantizedSwiGLU(ctx, h, inter)
@@ -1054,6 +1054,8 @@ func (l *VolumetricLayer) SyncToGPU() error {
 			var sc, mc int
 			if l.Type == LayerMultiHeadAttention {
 				sc, mc = MHAGPUTileSizes(l.Network.GPUContext, l.HeadDim, dtype)
+			} else if l.Type == LayerSwiGLU {
+				sc, mc = SwiGLUGPUTileSizes(l.Network.GPUContext, dtype)
 			} else {
 				sc, mc = cnnGPUTileSizesFromContext(l.Network.GPUContext, dtype)
 			}
@@ -1098,15 +1100,27 @@ func (l *VolumetricLayer) syncQuantizedDense(ctx *WGPUContext, label string) {
 
 func (l *VolumetricLayer) syncQuantizedSwiGLU(ctx *WGPUContext, h, inter int) {
 	w := l.WeightStore.Master
-	gateSlice := w[0 : h*inter]
-	upSlice := w[h*inter : 2*h*inter]
-	downSlice := w[2*h*inter : 2*h*inter+inter*h]
+	gateW := w[0 : h*inter]
+	upW := w[h*inter : 2*h*inter]
+	downW := w[2*h*inter : 3*h*inter]
+	
+	gateB := w[3*h*inter : 3*h*inter + inter]
+	upB := w[3*h*inter + inter : 3*h*inter + 2*inter]
+	downB := w[3*h*inter + 2*inter : 3*h*inter + 2*inter + h]
 
-	// We'll use special internal DTypes for the SwiGLU components to avoid collisions
-	// 1100 = Gate scales, 1101 = Gate weights, etc.
-	l.syncQuantizedComponent(ctx, gateSlice, "Gate", DType(1100), DType(100))
-	l.syncQuantizedComponent(ctx, upSlice, "Up", DType(1101), DType(101))
-	l.syncQuantizedComponent(ctx, downSlice, "Down", DType(1102), DType(102))
+	// Weights & Scales
+	l.syncQuantizedComponent(ctx, gateW, "Gate", DType(1100), DType(100))
+	l.syncQuantizedComponent(ctx, upW, "Up", DType(1101), DType(101))
+	l.syncQuantizedComponent(ctx, downW, "Down", DType(1102), DType(102))
+
+	// Biases (typically kept in FP32 on GPU for precision)
+	gBBuf, _ := ctx.CreatePersistentBuffer(gateB, "Gate Bias")
+	uBBuf, _ := ctx.CreatePersistentBuffer(upB, "Up Bias")
+	dBBuf, _ := ctx.CreatePersistentBuffer(downB, "Down Bias")
+	
+	l.WeightStore.GPUWeights[DType(110)] = gBBuf
+	l.WeightStore.GPUWeights[DType(111)] = uBBuf
+	l.WeightStore.GPUWeights[DType(112)] = dBBuf
 }
 
 func (l *VolumetricLayer) syncQuantizedComponent(ctx *WGPUContext, data []float32, label string, scaleDType, weightDType DType) {
@@ -1164,22 +1178,28 @@ func (l *VolumetricLayer) syncFP32MHA(ctx *WGPUContext) {
 func (l *VolumetricLayer) syncFP32SwiGLU(ctx *WGPUContext) {
 	h := l.InputHeight
 	inter := l.OutputHeight
-	gSize := h * inter
-	uSize := h * inter
-	dSize := inter * h
-
+	wSize := h * inter
+	
 	w := l.WeightStore.Master
-	if len(w) < gSize+uSize+dSize {
+	if len(w) < 3*wSize + 2*inter + h {
 		return
 	}
 
-	gBuf, _ := ctx.CreatePersistentBuffer(w[0:gSize], "Gate Weights")
-	uBuf, _ := ctx.CreatePersistentBuffer(w[gSize:gSize+uSize], "Up Weights")
-	dBuf, _ := ctx.CreatePersistentBuffer(w[gSize+uSize:gSize+uSize+dSize], "Down Weights")
+	gBuf, _ := ctx.CreatePersistentBuffer(w[0 : wSize], "Gate Weights")
+	uBuf, _ := ctx.CreatePersistentBuffer(w[wSize : 2*wSize], "Up Weights")
+	dBuf, _ := ctx.CreatePersistentBuffer(w[2*wSize : 3*wSize], "Down Weights")
+	
+	gBBuf, _ := ctx.CreatePersistentBuffer(w[3*wSize : 3*wSize + inter], "Gate Bias")
+	uBBuf, _ := ctx.CreatePersistentBuffer(w[3*wSize + inter : 3*wSize + 2*inter], "Up Bias")
+	dBBuf, _ := ctx.CreatePersistentBuffer(w[3*wSize + 2*inter : 3*wSize + 2*inter + h], "Down Bias")
 
 	l.WeightStore.GPUWeights[DType(100)] = gBuf
 	l.WeightStore.GPUWeights[DType(101)] = uBuf
 	l.WeightStore.GPUWeights[DType(102)] = dBuf
+	
+	l.WeightStore.GPUWeights[DType(110)] = gBBuf
+	l.WeightStore.GPUWeights[DType(111)] = uBBuf
+	l.WeightStore.GPUWeights[DType(112)] = dBBuf
 }
 
 func (l *VolumetricLayer) syncQuantizedMHA(ctx *WGPUContext) {

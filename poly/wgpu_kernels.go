@@ -386,9 +386,12 @@ func (c *WGPUContext) DispatchMHA(
 // DispatchSwiGLUQ4 dispatches a tiled SwiGLU kernel with Q4_0 weights.
 func (c *WGPUContext) DispatchSwiGLUQ4(
 	batchSize, inputSize, outputSize int,
-	inputBuf, gateScaleBuf, gateWeightBuf, upScaleBuf, upWeightBuf, outputBuf *wgpu.Buffer,
+	inputBuf, gateScaleBuf, gateWeightBuf, upScaleBuf, upWeightBuf, gateBiasBuf, upBiasBuf, outputBuf *wgpu.Buffer,
 	tileSize int,
 ) error {
+	if tileSize <= 0 {
+		tileSize = 32
+	}
 	shaderSrc := ShaderTiledSwiGLUQ4(tileSize)
 	pipeline, err := c.CreateComputePipeline(shaderSrc)
 	if err != nil {
@@ -404,7 +407,7 @@ func (c *WGPUContext) DispatchSwiGLUQ4(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateScaleBuf, gateWeightBuf, upScaleBuf, upWeightBuf, outputBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateScaleBuf, gateWeightBuf, upScaleBuf, upWeightBuf, gateBiasBuf, upBiasBuf, outputBuf)
 	if err != nil {
 		return err
 	}
@@ -422,9 +425,12 @@ func (c *WGPUContext) DispatchSwiGLUQ4(
 // DispatchSwiGLU dispatches the tiled SwiGLU MLP kernel.
 func (c *WGPUContext) DispatchSwiGLU(
 	batchSize, inputSize, outputSize int,
-	inputBuf, gateBuf, upBuf, outputBuf *wgpu.Buffer,
+	inputBuf, gateBuf, upBuf, gateBiasBuf, upBiasBuf, outputBuf *wgpu.Buffer,
 	tileSize int,
 ) error {
+	if tileSize <= 0 {
+		tileSize = 32
+	}
 	shaderSrc := ShaderTiledSwiGLUN(tileSize)
 	pipeline, err := c.CreateComputePipeline(shaderSrc)
 	if err != nil {
@@ -440,7 +446,7 @@ func (c *WGPUContext) DispatchSwiGLU(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateBuf, upBuf, outputBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateBuf, upBuf, gateBiasBuf, upBiasBuf, outputBuf)
 	if err != nil {
 		return err
 	}
@@ -1310,9 +1316,20 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 		g, _ := l.WeightStore.GPUWeights[DType(100)].(*wgpu.Buffer)
 		u, _ := l.WeightStore.GPUWeights[DType(101)].(*wgpu.Buffer)
 		wDown, _ := l.WeightStore.GPUWeights[DType(102)].(*wgpu.Buffer)
-		preOut := c.GetActivationBuffer("preOut", uint64(l.OutputHeight*4), wgpu.BufferUsageStorage)
-		if err := c.DispatchSwiGLU(batchSize, l.InputHeight, l.OutputHeight, inputBuf, g, u, preOut, 32); err != nil { return err }
-		return c.DispatchDense(batchSize, l.OutputHeight, l.InputHeight, preOut, wDown, outBuf, 32)
+		
+		gB, _ := l.WeightStore.GPUWeights[DType(110)].(*wgpu.Buffer)
+		uB, _ := l.WeightStore.GPUWeights[DType(111)].(*wgpu.Buffer)
+		dB, _ := l.WeightStore.GPUWeights[DType(112)].(*wgpu.Buffer)
+		
+		if gB == nil { gB = c.BlankBuffer }
+		if uB == nil { uB = c.BlankBuffer }
+		if dB == nil { dB = c.BlankBuffer }
+
+		preOut := c.GetActivationBuffer("preOut", uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
+		if err := c.DispatchSwiGLU(batchSize, l.InputHeight, l.OutputHeight, inputBuf, g, u, gB, uB, preOut, 32); err != nil { return err }
+		// Use DispatchDenseTiled or DispatchDense with bias support
+		var act uint32 = 99
+		return c.DispatchDenseTiled(32, batchSize, l.OutputHeight, l.InputHeight, act, 1.0, preOut, wDown, dB, outBuf)
 	case LayerResidual:
 		enc, owned, _ := ctxEncoder(c)
 		enc.CopyBufferToBuffer(inputBuf, 0, outBuf, 0, uint64(l.InputHeight*4))

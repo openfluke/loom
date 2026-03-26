@@ -202,24 +202,34 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 		}
 		if tileSize <= 0 { tileSize = 32 }
 
+		gB, _ := lMLP.WeightStore.GPUWeights[DType(110)].(*wgpu.Buffer)
+		uB, _ := lMLP.WeightStore.GPUWeights[DType(111)].(*wgpu.Buffer)
+		if gB == nil { gB = ctx.BlankBuffer }
+		if uB == nil { uB = ctx.BlankBuffer }
+
 		if lMLP.DType == DTypeInt4 {
 			sg := lMLP.WeightStore.GPUScales[DType(100)]
 			su := lMLP.WeightStore.GPUScales[DType(101)]
 			if sg != nil && su != nil {
-				if err := ctx.DispatchSwiGLUQ4(numTokens, lMLP.InputHeight, lMLP.OutputHeight, norm2Out, sg, gW, su, uW, interOut, tileSize); err != nil { return nil, err }
+				if err := ctx.DispatchSwiGLUQ4(numTokens, lMLP.InputHeight, lMLP.OutputHeight, norm2Out, sg, gW, su, uW, gB, uB, interOut, tileSize); err != nil { return nil, err }
 			} else {
-				if err := ctx.DispatchSwiGLU(numTokens, lMLP.InputHeight, lMLP.OutputHeight, norm2Out, gW, uW, interOut, tileSize); err != nil { return nil, err }
+				if err := ctx.DispatchSwiGLU(numTokens, lMLP.InputHeight, lMLP.OutputHeight, norm2Out, gW, uW, gB, uB, interOut, tileSize); err != nil { return nil, err }
 			}
 		} else {
-			if err := ctx.DispatchSwiGLU(numTokens, lMLP.InputHeight, lMLP.OutputHeight, norm2Out, gW, uW, interOut, tileSize); err != nil { return nil, err }
+			if err := ctx.DispatchSwiGLU(numTokens, lMLP.InputHeight, lMLP.OutputHeight, norm2Out, gW, uW, gB, uB, interOut, tileSize); err != nil { return nil, err }
 		}
 
 		mlpOut := ctx.GetActivationBuffer("hidden_A", uint64(numTokens*lMLP.InputHeight*4), wgpu.BufferUsageStorage)
 		sd := lMLP.WeightStore.GPUScales[DType(102)]
+		dB, _ := lMLP.WeightStore.GPUWeights[DType(112)].(*wgpu.Buffer)
+		if dB == nil { dB = ctx.BlankBuffer }
+
 		if lMLP.DType == DTypeInt4 && sd != nil {
 			if err := ctx.DispatchDenseQ4(numTokens, lMLP.OutputHeight, lMLP.InputHeight, interOut, sd, dW, mlpOut, tileSize); err != nil { return nil, err }
 		} else {
-			if err := ctx.DispatchDense(numTokens, lMLP.OutputHeight, lMLP.InputHeight, interOut, dW, mlpOut, tileSize); err != nil { return nil, err }
+			// Get actual activation or use 99 for Linear
+			act := uint32(99) // default linear
+			if err := ctx.DispatchDenseTiled(tileSize, numTokens, lMLP.OutputHeight, lMLP.InputHeight, act, 1.0, interOut, dW, dB, mlpOut); err != nil { return nil, err }
 		}
 
 		if err := ctx.DispatchResidual(numTokens*lMLP.InputHeight, mlpOut, residual); err != nil {

@@ -278,7 +278,9 @@ struct Params {
 @group(0) @binding(3) var<storage, read> gateWeights: array<u32>;
 @group(0) @binding(4) var<storage, read> upScales: array<f32>;
 @group(0) @binding(5) var<storage, read> upWeights: array<u32>;
-@group(0) @binding(6) var<storage, read_write> output: array<f32>;
+@group(0) @binding(6) var<storage, read> gateBiases: array<f32>;
+@group(0) @binding(7) var<storage, read> upBiases: array<f32>;
+@group(0) @binding(8) var<storage, read_write> output: array<f32>;
 
 fn silu(x: f32) -> f32 {
     return x * (1.0 / (1.0 + exp(-x)));
@@ -375,6 +377,9 @@ fn main(
         upSum   += val * (f32(uQ) * uScale);
     }
 
+    gateSum += gateBiases[o];
+    upSum   += upBiases[o];
+
     output[b * params.outputSize + o] = silu(gateSum) * upSum;
 }
 `, tileSize)
@@ -394,7 +399,9 @@ struct Params {
 @group(0) @binding(1) var<storage, read> input: array<f32>;
 @group(0) @binding(2) var<storage, read> gateWeights: array<f32>;
 @group(0) @binding(3) var<storage, read> upWeights: array<f32>;
-@group(0) @binding(4) var<storage, read_write> output: array<f32>;
+@group(0) @binding(4) var<storage, read> gateBiases: array<f32>;
+@group(0) @binding(5) var<storage, read> upBiases: array<f32>;
+@group(0) @binding(6) var<storage, read_write> output: array<f32>;
 
 fn silu(x: f32) -> f32 {
     return x * (1.0 / (1.0 + exp(-x)));
@@ -442,6 +449,9 @@ fn main(
         gateSum += in_val * gateWeights[base_w + i + k];
         upSum   += in_val * upWeights[base_w + i + k];
     }
+
+    gateSum += gateBiases[o];
+    upSum   += upBiases[o];
 
     output[b * params.outputSize + o] = silu(gateSum) * upSum;
 }

@@ -72,6 +72,9 @@ func (c *WGPUContext) DispatchDenseTiled(
 	scale float32,
 	inputBuf, weightBuf, biasBuf, outputBuf *wgpu.Buffer,
 ) error {
+	if tileSize <= 0 {
+		tileSize = 32
+	}
 	shaderSrc := ShaderTiledDense(tileSize)
 	pipeline, err := c.CreateComputePipeline(shaderSrc)
 	if err != nil {
@@ -119,6 +122,9 @@ func (c *WGPUContext) DispatchDenseBackwardDXTiled(
 	activation uint32,
 	gradOutputBuf, weightBuf, preActBuf, gradInputBuf *wgpu.Buffer,
 ) error {
+	if tileSize <= 0 {
+		tileSize = 64
+	}
 	pipeline, err := c.CreateComputePipeline(ShaderTiledDenseBackwardDX(tileSize))
 	if err != nil {
 		return err
@@ -161,6 +167,9 @@ func (c *WGPUContext) DispatchDenseBackwardDWTiled(
 	activation uint32,
 	gradOutputBuf, inputBuf, preActBuf, gradWeightsBuf *wgpu.Buffer,
 ) error {
+	if tileSize <= 0 {
+		tileSize = 64
+	}
 	pipeline, err := c.CreateComputePipeline(ShaderTiledDenseBackwardDW(tileSize))
 	if err != nil {
 		return err

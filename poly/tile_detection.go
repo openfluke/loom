@@ -415,19 +415,71 @@ func DenseGPUTileSizesFromContext(ctx *WGPUContext, dtype DType) (scTile, mcTile
 	if bytes < 4 {
 		multiplier = 4.0 / bytes
 	}
-	if multiplier > 4.0 { multiplier = 4.0 }
+	if multiplier > 4.0 {
+		multiplier = 4.0
+	}
 
 	// For Dense SC, we prioritize being able to fit weights in shared memory if possible.
-	// But usually, we only cache inputs in shared memory.
 	sc := int(float64(ctx.GPUTileSize) * multiplier)
-	if sc < 32 { sc = 32 }
-	if sc > 128 { sc = 128 } // Capped for workgroup size limits
+	if sc < 32 {
+		sc = 32
+	}
+	if sc > 128 {
+		sc = 128
+	}
 	sc = (sc / 32) * 32
 
 	mc := int(float64(ctx.Limits.MaxComputeInvocationsPerWorkgroup) * multiplier)
-	if mc > 256 { mc = 256 }
+	if mc > 256 {
+		mc = 256
+	}
 	mc = (mc / 64) * 64
-	if mc < 64 { mc = 64 }
+	if mc < 64 {
+		mc = 64
+	}
+	return sc, mc
+}
+
+// SwiGLUGPUTileSizes returns the SC and MC tile sizes for SwiGLU tiling based on the
+// GPU's auto-detected capabilities and the numerical DType.
+func SwiGLUGPUTileSizes(ctx *WGPUContext, dtype DType) (scTile, mcTile int) {
+	// SwiGLU tiling is similar to Dense tiling but usually involves larger intermediates.
+	bytes := cnn3DTypeBytesPerElement(dtype)
+	multiplier := 1.0
+	if bytes < 4 {
+		multiplier = 4.0 / bytes
+	}
+	if multiplier > 4.0 {
+		multiplier = 4.0
+	}
+
+	sc := int(float64(ctx.GPUTileSize) * 4 * multiplier)
+	if sc < 64 {
+		sc = 64
+	}
+	if sc > 256 {
+		sc = 256
+	}
+	sc = (sc / 64) * 64
+
+	mc := int(float64(ctx.Limits.MaxComputeInvocationsPerWorkgroup))
+	if mc <= 0 || mc > 256 {
+		mc = 256
+	}
+	// Factor in multiplier for MC if possible, but usually workgroup limits are hard.
+	// However, smaller types might allow larger workgroups if register pressure is lower,
+	// but MaxComputeInvocationsPerWorkgroup is a static limit.
+	mc = (mc / 64) * 64
+	if mc < 64 {
+		mc = 64
+	}
+
+	if sc >= mc {
+		sc = mc / 2
+		if sc < 64 {
+			sc = 64
+		}
+	}
 
 	return sc, mc
 }

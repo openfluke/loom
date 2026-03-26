@@ -231,7 +231,8 @@ func LoomDispatchSwiGLU(networkHandle C.longlong, batchSize C.int, inputSize C.i
 		return errJSON("invalid output buffer handle")
 	}
 
-	if err := n.GPUContext.DispatchSwiGLU(int(batchSize), int(inputSize), int(outputSize), in, gate, up, out, int(tileSize)); err != nil {
+	// C-API currently doesn't expose biases separately for SwiGLU, use BlankBuffer
+	if err := n.GPUContext.DispatchSwiGLU(int(batchSize), int(inputSize), int(outputSize), in, gate, up, n.GPUContext.BlankBuffer, n.GPUContext.BlankBuffer, out, int(tileSize)); err != nil {
 		return errJSON(err.Error())
 	}
 	return C.CString(`{"status": "ok"}`)
@@ -578,7 +579,8 @@ func LoomDispatchSwiGLUQ4(networkHandle C.longlong, batchSize C.int, inputSize C
 		return errJSON("invalid output buffer handle")
 	}
 
-	if err := n.GPUContext.DispatchSwiGLUQ4(int(batchSize), int(inputSize), int(outputSize), in, gs, gw, us, uw, out, int(tileSize)); err != nil {
+	// C-API currently doesn't expose biases separately for SwiGLU, use BlankBuffer
+	if err := n.GPUContext.DispatchSwiGLUQ4(int(batchSize), int(inputSize), int(outputSize), in, gs, gw, us, uw, n.GPUContext.BlankBuffer, n.GPUContext.BlankBuffer, out, int(tileSize)); err != nil {
 		return errJSON(err.Error())
 	}
 	return C.CString(`{"status": "ok"}`)
