@@ -944,7 +944,7 @@ func (c *WGPUContext) DispatchCNN1BackwardDX(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN1BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, preActBuf, gradInputBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -975,7 +975,7 @@ func (c *WGPUContext) DispatchCNN1BackwardDW(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN1BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, preActBuf, gradWeightBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -1006,7 +1006,7 @@ func (c *WGPUContext) DispatchCNN2BackwardDX(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN2BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, preActBuf, gradInputBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -1037,7 +1037,7 @@ func (c *WGPUContext) DispatchCNN2BackwardDW(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN2BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, preActBuf, gradWeightBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -1068,7 +1068,7 @@ func (c *WGPUContext) DispatchCNN3BackwardDX(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN3BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, preActBuf, gradInputBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)
@@ -1099,7 +1099,7 @@ func (c *WGPUContext) DispatchCNN3BackwardDW(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN3BackwardParams{p}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, preActBuf, gradWeightBuf)
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf)
 	if err != nil { return err }
 
 	enc, owned, _ := ctxEncoder(c)

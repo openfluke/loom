@@ -134,8 +134,8 @@ func (c *WGPUContext) DispatchDenseBackwardDXTiled(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseScaleParams{p}))
 
-	// Bindings: Params, gradOutput, weights, preAct, gradInput
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, preActBuf, gradInputBuf)
+	// Bindings: Params, gradOutput, weights, gradInput
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf)
 	if err != nil {
 		return err
 	}
@@ -176,8 +176,8 @@ func (c *WGPUContext) DispatchDenseBackwardDWTiled(
 	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
 	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseScaleParams{p}))
 
-	// Bindings: Params, gradOutput, input, preAct, gradWeights
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, preActBuf, gradWeightsBuf)
+	// Bindings: Params, gradOutput, input, gradWeights
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightsBuf)
 	if err != nil {
 		return err
 	}

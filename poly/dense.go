@@ -259,7 +259,6 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 	return gradInput, gradWeights
 }
 
-
 // DenseForwardTiled performs a tiled forward pass for the dense layer.
 // Branches to multi-core parallel sub-functions when layer.EnableMultiCoreTiling is set.
 func DenseForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
@@ -421,44 +420,54 @@ func denseForwardTiledFloat32[T Numeric](layer *VolumetricLayer, input *Tensor[T
 	batchSize := input.Shape[0]
 	inputSize := layer.InputHeight
 	outputSize := layer.OutputHeight
+	scale := layer.WeightStore.Scale
+	if scale == 0 {
+		scale = 1.0
+	}
 
-	// Local buffer for input tile to avoid redundant reads
 	inTileBuf := make([]float32, tileSize)
 
-	for iTile := 0; iTile < inputSize; iTile += tileSize {
-		iEnd := iTile + tileSize
-		if iEnd > inputSize { iEnd = inputSize }
-		currentITileSize := iEnd - iTile
+	for oTile := 0; oTile < outputSize; oTile += tileSize {
+		oEnd := oTile + tileSize
+		if oEnd > outputSize {
+			oEnd = outputSize
+		}
 
-		for b := 0; b < batchSize; b++ {
-			// Load input tile once
-			for i := 0; i < currentITileSize; i++ {
-				inTileBuf[i] = float32(input.Data[b*inputSize+iTile+i])
+		for iTile := 0; iTile < inputSize; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > inputSize {
+				iEnd = inputSize
 			}
+			currentITileSize := iEnd - iTile
 
-			for oTile := 0; oTile < outputSize; oTile += tileSize {
-				oEnd := oTile + tileSize
-				if oEnd > outputSize { oEnd = outputSize }
+			for b := 0; b < batchSize; b++ {
+				// Cache input tile for this batch item
+				for i := 0; i < currentITileSize; i++ {
+					inTileBuf[i] = float32(input.Data[b*inputSize+iTile+i])
+				}
 
 				for o := oTile; o < oEnd; o++ {
 					var sum float32
 					if iTile > 0 {
 						sum = float32(preAct.Data[b*outputSize+o])
 					}
-					
-					rowOff := o * inputSize + iTile
-					// Unrolled dot product using buffered input
+					rowOff := o*inputSize + iTile
+
+					// Unrolled inner loop for F32
 					i := 0
 					for ; i <= currentITileSize-4; i += 4 {
-						sum += inTileBuf[i] * weights[rowOff+i]
-						sum += inTileBuf[i+1] * weights[rowOff+i+1]
-						sum += inTileBuf[i+2] * weights[rowOff+i+2]
-						sum += inTileBuf[i+3] * weights[rowOff+i+3]
+						sum += inTileBuf[i]*weights[rowOff+i] + inTileBuf[i+1]*weights[rowOff+i+1] +
+							inTileBuf[i+2]*weights[rowOff+i+2] + inTileBuf[i+3]*weights[rowOff+i+3]
 					}
 					for ; i < currentITileSize; i++ {
 						sum += inTileBuf[i] * weights[rowOff+i]
 					}
-					preAct.Data[b*outputSize+o] = T(sum)
+
+					if iEnd == inputSize {
+						preAct.Data[b*outputSize+o] = T(sum * scale)
+					} else {
+						preAct.Data[b*outputSize+o] = T(sum)
+					}
 				}
 			}
 		}
@@ -657,6 +666,10 @@ func denseForwardTiledFloat32Parallel[T Numeric](layer *VolumetricLayer, input *
 	batchSize := input.Shape[0]
 	inputSize := layer.InputHeight
 	outputSize := layer.OutputHeight
+	scale := layer.WeightStore.Scale
+	if scale == 0 {
+		scale = 1.0
+	}
 	numCPUs := runtime.NumCPU()
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, numCPUs)
@@ -698,7 +711,12 @@ func denseForwardTiledFloat32Parallel[T Numeric](layer *VolumetricLayer, input *
 						for ; i < currentITileSize; i++ {
 							sum += inTileBuf[i] * weights[rowOff+i]
 						}
-						preAct.Data[b*outputSize+o] = T(sum)
+
+						if iEnd == inputSize {
+							preAct.Data[b*outputSize+o] = T(sum * scale)
+						} else {
+							preAct.Data[b*outputSize+o] = T(sum)
+						}
 					}
 				}
 			}
