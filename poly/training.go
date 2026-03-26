@@ -117,6 +117,11 @@ func configureNetworkForMode(n *VolumetricNetwork, mode TrainingMode) error {
 				return fmt.Errorf("failed to initialize GPU: %w", err)
 			}
 		}
+		// Reset bind group cache so new weight buffers get fresh bind groups.
+		// Stale cached bind groups (keyed by old buffer pointers) can cause
+		// DispatchApplyGradients to write to a previous network's weight buffer
+		// instead of this network's, leaving weights unchanged after training.
+		n.GPUContext.ResetCache()
 		if err := n.SyncToGPU(); err != nil {
 			return fmt.Errorf("failed to sync weights to GPU: %w", err)
 		}
