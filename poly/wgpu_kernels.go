@@ -1527,6 +1527,46 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 	}
 }
 
+// propagateSplitWeights copies sub-ranges of the updated master weight buffer back
+// to the per-projection split buffers used by SwiGLU and MHA forward passes.
+// Must be called within a BeginFrame/FlushFrame block so ActiveEncoder is set.
+func (c *WGPUContext) propagateSplitWeights(l *VolumetricLayer, masterBuf *wgpu.Buffer) {
+	enc := c.ActiveEncoder
+	if enc == nil || l.WeightStore == nil {
+		return
+	}
+	cp := func(key DType, srcOffset, size uint64) {
+		if b, ok := l.WeightStore.GPUWeights[key].(*wgpu.Buffer); ok && b != nil {
+			enc.CopyBufferToBuffer(masterBuf, srcOffset, b, 0, size)
+		}
+	}
+	switch l.Type {
+	case LayerSwiGLU:
+		h := uint64(l.InputHeight)
+		inter := uint64(l.OutputHeight)
+		wSz := h * inter * 4
+		cp(DType(100), 0, wSz)                         // gate weights
+		cp(DType(101), wSz, wSz)                        // up weights
+		cp(DType(102), 2*wSz, wSz)                      // down weights
+		cp(DType(110), 3*wSz, inter*4)                  // gate bias
+		cp(DType(111), 3*wSz+inter*4, inter*4)          // up bias
+		cp(DType(112), 3*wSz+2*inter*4, h*4)            // down bias
+	case LayerMultiHeadAttention:
+		d := uint64(l.DModel)
+		kvH := uint64(l.NumKVHeads)
+		if kvH == 0 { kvH = uint64(l.NumHeads) }
+		kv := kvH * uint64(l.HeadDim)
+		qSz := d * d * 4
+		kSz := d * kv * 4
+		vSz := d * kv * 4
+		oSz := d * d * 4
+		cp(WeightMHAQuery,      0,             qSz)
+		cp(WeightMHAKey,        qSz,           kSz)
+		cp(WeightMHAValue,      qSz+kSz,       vSz)
+		cp(WeightMHAProjection, qSz+kSz+vSz,   oSz)
+	}
+}
+
 func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, gradOutBuf, inputBuf, preActBuf, dxBuf, dwBuf *wgpu.Buffer) error {
 	tileSize := c.GPUTileSize
 	if tileSize <= 0 { tileSize = 32 }

@@ -559,6 +559,13 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 					ctx.FlushFrame()
 					return 0, err
 				}
+				// SwiGLU and MHA store their weights in SPLIT GPU buffers (gate/up/down for SwiGLU,
+				// Q/K/V/O for MHA) that are separate from the master buffer that ApplyGradients just
+				// updated. Propagate the updated master sub-ranges back to the split buffers so the
+				// NEXT epoch's forward pass reads the updated weights.
+				if ctx.ActiveEncoder != nil {
+					ctx.propagateSplitWeights(l, wBuf)
+				}
 			}
 		}
 
