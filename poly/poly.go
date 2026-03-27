@@ -799,7 +799,7 @@ func MorphLayer(layer *VolumetricLayer, target DType) error {
 	if layer.WeightStore == nil {
 		return fmt.Errorf("layer has no WeightStore to morph")
 	}
-	// Conversion logic would go here
+	layer.WeightStore.Morph(target)
 	layer.DType = target
 	return nil
 }

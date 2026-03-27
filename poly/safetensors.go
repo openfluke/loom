@@ -94,6 +94,91 @@ func LoadSafetensorsFromBytes(data []byte) (map[string][]float32, error) {
 	return tensors, nil
 }
 
+// SaveSafetensors saves a map of tensors to a safetensors file
+func SaveSafetensors(filepath string, tensors map[string]TensorWithShape) error {
+	type TensorMetaHeader struct {
+		DType       string `json:"dtype"`
+		Shape       []int  `json:"shape"`
+		DataOffsets []int  `json:"data_offsets"`
+	}
+
+	header := make(map[string]TensorMetaHeader)
+	var totalBytes uint64 = 0
+
+	// Order names for deterministic header
+	var names []string
+	for k := range tensors {
+		names = append(names, k)
+	}
+
+	for _, name := range names {
+		t := tensors[name]
+		numElements := 1
+		for _, dim := range t.Shape {
+			numElements *= dim
+		}
+		
+		var bytesPerElement int
+		switch t.DType {
+		case "F32", "I32", "U32": bytesPerElement = 4
+		case "F64", "I64", "U64": bytesPerElement = 8
+		case "F16", "BF16", "I16", "U16": bytesPerElement = 2
+		case "I8", "U8": bytesPerElement = 1
+		case "F4": bytesPerElement = (numElements + 1) / 2
+		default: bytesPerElement = 4
+		}
+
+		size := uint64(numElements * bytesPerElement)
+		header[name] = TensorMetaHeader{
+			DType:       t.DType,
+			Shape:       t.Shape,
+			DataOffsets: []int{int(totalBytes), int(totalBytes + size)},
+		}
+		totalBytes += size
+	}
+
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return fmt.Errorf("failed to marshal header: %w", err)
+	}
+
+	headerLen := uint64(len(headerJSON))
+
+	f, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	lenBuf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(lenBuf, headerLen)
+	if _, err := f.Write(lenBuf); err != nil {
+		return err
+	}
+
+	if _, err := f.Write(headerJSON); err != nil {
+		return err
+	}
+
+	for _, name := range names {
+		t := tensors[name]
+		if t.DType == "F32" {
+			dataBuf := make([]byte, len(t.Values)*4)
+			for i, v := range t.Values {
+				bits := *(*uint32)(unsafe.Pointer(&v))
+				binary.LittleEndian.PutUint32(dataBuf[i*4:], bits)
+			}
+			if _, err := f.Write(dataBuf); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("only F32 saving supported currently")
+		}
+	}
+
+	return nil
+}
+
 // LoadSafetensorsWithShapes loads safetensors and returns both values and shapes
 func LoadSafetensorsWithShapes(data []byte) (map[string]TensorWithShape, error) {
 	if len(data) < 8 {

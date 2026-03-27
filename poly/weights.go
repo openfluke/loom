@@ -30,13 +30,35 @@ func (ws *WeightStore) Morph(dtype DType) {
 
 	size := len(ws.Master)
 	
+	// Auto-Dynamic Scaling: If scale is 1.0 (unset), find the optimal range.
+	// This ensures INT8 uses the full -128 to 127 range.
+	if ws.Scale == 1.0 && size > 0 {
+		maxAbs := float32(0)
+		sumAbs := float64(0)
+		for _, v := range ws.Master {
+			a := float32(math.Abs(float64(v)))
+			if a > maxAbs {
+				maxAbs = a
+			}
+			sumAbs += float64(a)
+		}
+		
+		if dtype == DTypeBinary {
+			// For Binary, we use the mean absolute value as the representative magnitude.
+			ws.Scale = float32(sumAbs) / float32(size)
+		} else {
+			// For INT8/INT4, we scale based on the absolute peak.
+			ws.Scale = maxAbs / 127.0
+		}
+		if ws.Scale == 0 { ws.Scale = 1.0 }
+	}
+
 	switch dtype {
 	case DTypeFloat64:
 		w := make([]float64, size)
 		for i, v := range ws.Master { w[i] = float64(v) }
 		ws.Versions[dtype] = w
 	case DTypeFloat16, DTypeBFloat16:
-		// Simulated 16-bit storage (using float32 but masked)
 		w := make([]float32, size)
 		for i, v := range ws.Master { w[i] = SimulatePrecision(v, dtype, ws.Scale) }
 		ws.Versions[dtype] = w
@@ -54,17 +76,20 @@ func (ws *WeightStore) Morph(dtype DType) {
 		ws.Versions[dtype] = w
 	case DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2:
 		w := make([]int8, size)
-		for i, v := range ws.Master { w[i] = int8(math.Round(float64(v/ws.Scale))) }
+		for i, v := range ws.Master {
+			iv := int(math.Round(float64(v / ws.Scale)))
+			if iv > 127 { iv = 127 }
+			if iv < -128 { iv = -128 }
+			w[i] = int8(iv)
+		}
 		ws.Versions[dtype] = w
 	case DTypeInt4, DTypeUint4, DTypeFP4, DTypeInt2, DTypeUint2, DTypeTernary, DTypeBinary:
-		// Store as unpacked []int8 in RAM for layer compatibility
 		w := make([]int8, size)
 		for i, v := range ws.Master {
 			if dtype == DTypeBinary {
 				if v > 0 { w[i] = 1 } else { w[i] = -1 }
 			} else {
 				iv := int(math.Round(float64(v/ws.Scale)))
-				// Explicit clamping to target bit range
 				if dtype == DTypeUint4 {
 					if iv < 0 { iv = 0 }
 					if iv > 15 { iv = 15 }
