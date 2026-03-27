@@ -632,6 +632,12 @@ func ApplyRecursiveGradients(layer *VolumetricLayer, gradWeights *Tensor[float32
 	// 1. Update local weights if they exist
 	if layer.WeightStore != nil {
 		layer.WeightStore.ApplyGradients(gradWeights, lr)
+		// Re-quantize after gradient update so the next epoch's forward pass reads
+		// the correct quantized values instead of falling back to float32 Master with
+		// scale applied incorrectly (which causes loss to spike for integer dtypes).
+		if layer.DType != DTypeFloat32 {
+			layer.WeightStore.Morph(layer.DType)
+		}
 	}
 
 	// 2. Recursively update Parallel branches
