@@ -8,6 +8,8 @@ from .utils import (
     Activation,
     # High-level OOP API (recommended)
     Network,
+    Transformer,
+    Population,
     SystolicState,
     TargetPropState,
     Tokenizer,
@@ -139,6 +141,8 @@ __all__ = [
     "Activation",
     # High-level OOP
     "Network",
+    "Transformer",
+    "Population",
     "SystolicState",
     "TargetPropState",
     "Tokenizer",
