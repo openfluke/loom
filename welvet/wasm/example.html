@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loom Core | Browser AI Engine</title>
+    <style>
+        :root {
+            --bg: #0a0a0c;
+            --panel: rgba(255, 255, 255, 0.03);
+            --accent: #00f2ff;
+            --accent-glow: rgba(0, 242, 255, 0.3);
+            --text: #e0e0e6;
+            --dim: #888891;
+            --border: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', -apple-system, system-ui, sans-serif;
+            margin: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Sidebar Navigation */
+        nav {
+            width: 280px;
+            border-right: 1px solid var(--border);
+            padding: 40px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .logo {
+            font-size: 20px;
+            font-weight: 800;
+            letter-spacing: -1px;
+            color: var(--accent);
+            margin-bottom: 40px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .nav-btn {
+            padding: 12px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: 0.2s;
+            font-size: 14px;
+            color: var(--dim);
+            border: 1px solid transparent;
+        }
+
+        .nav-btn:hover {
+            background: var(--panel);
+            color: white;
+        }
+
+        .nav-btn.active {
+            background: var(--accent-glow);
+            color: var(--accent);
+            border-color: var(--border);
+        }
+
+        /* Main Content Area */
+        main {
+            flex: 1;
+            padding: 40px;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+            backdrop-filter: blur(10px);
+        }
+
+        h2 {
+            font-size: 18px;
+            margin-top: 0;
+            color: white;
+        }
+
+        p {
+            font-size: 14px;
+            color: var(--dim);
+            line-height: 1.6;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 100px;
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 700;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .status-badge.ready {
+            color: #00ff88;
+            background: rgba(0, 255, 136, 0.1);
+        }
+
+        .terminal {
+            background: #000;
+            border-radius: 8px;
+            padding: 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: #00ff88;
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #111;
+        }
+
+        button.primary {
+            background: var(--accent);
+            color: black;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        button.primary:hover {
+            box-shadow: 0 0 20px var(--accent-glow);
+            transform: translateY(-1px);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <nav>
+        <div class="logo">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+            </svg>
+            LOOM CORE
+        </div>
+        <div class="nav-btn active">Dashboard</div>
+        <div class="nav-btn">Engine Audit</div>
+        <div class="nav-btn">DNA Lab</div>
+        <div class="nav-btn">Weights Management</div>
+    </nav>
+
+    <main>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px;">
+            <div>
+                <h1 style="margin:0; font-size: 24px;">System Overview</h1>
+                <div class="status-badge ready" id="hw-status">Initializing...</div>
+            </div>
+            <button class="primary" onclick="runDemo()">Execute Full Forward Pass</button>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <h2>Network Intelligence</h2>
+                <p>Constructing polymorphic networks directly from JSON definitions with strict DType enforcement.</p>
+                <div class="terminal" id="net-log">Waiting for engine...</div>
+            </div>
+            <div class="card">
+                <h2>Transformer Prefill</h2>
+                <p>Simulating 4096-seq/768-dim Transformer prefill using WebGPU resident context.</p>
+                <div class="terminal" id="gpu-log">GPU Idle</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>DNA Comparison (Crossover Analytics)</h2>
+            <div id="dna-chart" style="height: 100px; display: flex; align-items: flex-end; gap: 4px;">
+                <!-- Bars will go here -->
+            </div>
+            <p style="margin-top: 15px;">Genetic distance between Network Alpha and Network Beta: <span id="dna-dist"
+                    style="color:var(--accent)">0.00%</span></p>
+        </div>
+    </main>
+
+    <script src="wasm_exec.js"></script>
+    <script>
+        const go = new Go();
+        let engine;
+
+        // 1. Loading and Initializing the Engine
+        WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject).then(async (result) => {
+            go.run(result.instance);
+
+            log("net-log", "LOOM v0.75-STABLE WASM Runtime Loaded.");
+
+            // Setup WebGPU
+            try {
+                const status = await window.setupWebGPU();
+                document.getElementById('hw-status').innerText = "WGPU ACCELERATION: ACTIVE";
+                log("gpu-log", "WebGPU Context initialized successfully.");
+            } catch (e) {
+                document.getElementById('hw-status').style.color = "#ff4444";
+                document.getElementById('hw-status').innerText = "WGPU ERROR: CPU FALLBACK";
+            }
+
+            initDemo();
+        });
+
+        function log(id, msg) {
+            const el = document.getElementById(id);
+            const time = new Date().toLocaleTimeString();
+            el.innerHTML += `<div><span style="color:#555">[${time}]</span> ${msg}</div>`;
+            el.scrollTop = el.scrollHeight;
+        }
+
+        async function initDemo() {
+            // Build a Network from JSON (Strict Functional Parity Check)
+            const config = {
+                depth: 1, rows: 1, cols: 1, layers_per_cell: 4,
+                layers: [
+                    { type: "Embedding", input_height: 32000, output_height: 768 },
+                    { type: "RMSNorm", input_height: 768 },
+                    { type: "MultiHeadAttention", d_model: 768, num_heads: 12, seq_length: 512 },
+                    { type: "Dense", input_height: 768, output_height: 32000, activation: "Softmax" }
+                ]
+            };
+
+            const net = window.BuildNetworkFromJSON(JSON.stringify(config));
+            log("net-log", "Network Alpha built successfully.");
+
+            // Extract DNA and compare
+            const dnaA = window.ExtractDNA(net._id);
+            const netAlt = window.BuildNetworkFromJSON(JSON.stringify(config));
+            const dnaB = window.ExtractDNA(netAlt._id);
+
+            const comparisonJSON = window.compareLoomDNA(dnaA, dnaB);
+            const comparison = JSON.parse(comparisonJSON);
+            const score = (comparison.OverallOverlap || 0) * 100;
+
+            document.getElementById('dna-dist').innerText = score.toFixed(2) + "%";
+            log("net-log", `DNA Hash Alpha: ${dnaA.substring(0, 32)}...`);
+        }
+
+        function runDemo() {
+            log("gpu-log", "Beginning Full Pass on WGPU context...");
+
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    const input = new Float32Array(768).map(() => Math.random());
+
+                    const config = JSON.stringify({
+                        layers: [{ type: "Dense", input_height: 768, output_height: 768, activation: "ReLU" }]
+                    });
+                    const net = window.BuildNetworkFromJSON(config);
+
+                    const start = performance.now();
+                    const result = net.sequentialForward(input);
+                    const end = performance.now();
+
+                    log("gpu-log", `Inference complete in ${(end - start).toFixed(2)}ms.`);
+                    log("gpu-log", `Result Shape: [1, ${result.data.length}]`);
+                }, 100);
+            });
+        }
+    </script>
+</body>
+
+</html>

@@ -192,7 +192,8 @@
         async function init() {
             try {
                 log("Fetching expected_api.json...");
-                const res = await fetch('../expected_api.json');
+                const res = await fetch('./expected_api.json');
+                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
                 expectedApi = await res.json();
                 log("Blueprint loaded. 345 core items mapped.");
                 
