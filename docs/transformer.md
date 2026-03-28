@@ -449,6 +449,26 @@ The GPU path uses the `BeginFrame` / `FlushFrame` pattern (see `gpu.md`) — one
 
 ---
 
+## C-ABI Integration (welvet)
+
+Loom v0.75.0 exposes highly optimized C-ABI entry points for the `Transformer` wrapper, enabling maximum throughput for language bindings like Python and TypeScript.
+
+### 1. LoomTokensToTensor
+A high-speed gather kernel that converts token IDs directly into a pre-allocated model input tensor.
+- **WASM/Go**: Uses direct memory access to avoid intermediate allocations.
+- **WebGPU**: Dispatches a gather compute shader to perform embedding lookup entirely on VRAM.
+
+### 2. LoomForwardFull
+The authoritative entry point for auto-regressive generation. It encapsulates:
+- `Reset()` (optional clearing of KV cache)
+- `TokensToTensor` (Input ID processing)
+- `ForwardPolymorphic` (Engine execution)
+- `ApplyLMHead` (Output projection)
+
+This unified path reduces the number of cross-language calls (e.g., Python → Go) by **75%**, significantly lowering the latency for real-time streaming tokens.
+
+---
+
 ## Loading from SafeTensors / HuggingFace
 
 `universal_loader.go` auto-detects the checkpoint format. For HuggingFace models:

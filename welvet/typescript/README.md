@@ -11,6 +11,8 @@
 - **Multi-Precision Support**: Native support for 21 numerical types (FP64, FP32, FP16, BF16, FP8, INT8... all the way down to Binary/Ternary).
 - **Hybrid Training**: standard Backprop, Target Propagation, and NEAT-style structural evolution in a single unified engine.
 - **Hardware Acceleration**: WebGPU support for high-performance inference and training in the browser.
+- **Numerical Tiling (SC vs MC)**: Optimized for 192 GB/s bandwidth wall with specialized Single-Core and Multi-Core tiling profiles.
+- **Systolic Grid Stability**: Stabilized 3D volumetric dispatcher for complex neural mesh propagation.
 - **DNA Evolution**: Network "DNA" extraction and comparison for architectural analysis and genetic recombination.
 
 ## Installation

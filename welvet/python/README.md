@@ -101,6 +101,11 @@ output = welvet.forward_wgpu(net._handle, inputs)
 net.free()
 ```
 
+### Numerical Tiling (SC vs MC)
+V0.75.0 introduces specialized tiling profiles to maximize throughput:
+- **SC (Single-Core)**: Optimized for Edge/WASM/Small NPUs.
+- **MC (Multi-Core)**: Optimized for high-bandwidth L1/L2 caches (Ryzen, RTX, M4).
+
 GPU backward training is live for Dense, RMSNorm, CNN 1D/2D/3D — **17x–65x** speedup over CPU on real workloads.
 
 ---
