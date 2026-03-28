@@ -60,14 +60,293 @@ import (
 	"github.com/openfluke/webgpu/wgpu"
 )
 
+// Helper: get poly.WGPUContext from network handle
+func getWGPUContext(networkHandle int64) (*poly.WGPUContext, bool) {
+	n, ok := getNetwork(networkHandle)
+	if !ok || n.GPUContext == nil {
+		return nil, false
+	}
+	return n.GPUContext, true
+}
+
 // Helper: get wgpu.Buffer from handle
-func getGPUBufferFromHandle(handle int64) (*wgpu.Buffer, bool) {
+func getBuffer(handle int64) (*wgpu.Buffer, bool) {
 	c, ok := getSystolicContainer(handle)
 	if !ok {
 		return nil, false
 	}
 	buf, ok := c.State.(*wgpu.Buffer)
 	return buf, ok
+}
+
+// Helper: get wgpu.Buffer from handle (legacy alias)
+func getGPUBufferFromHandle(handle int64) (*wgpu.Buffer, bool) {
+	return getBuffer(handle)
+}
+
+// Helper: get wgpu.Buffer from handle (panics on invalid handle in this internal layer)
+func mustGetBuffer(handle int64) *wgpu.Buffer {
+	buf, _ := getBuffer(handle)
+	return buf
+}
+
+//export LoomDestroyWGPU
+func LoomDestroyWGPU(networkHandle C.longlong) {
+	n, ok := getNetwork(int64(networkHandle))
+	if ok {
+		n.DestroyWGPU()
+	}
+}
+
+//export LoomIsGPU
+func LoomIsGPU(networkHandle C.longlong) C.int {
+	n, ok := getNetwork(int64(networkHandle))
+	if ok && n.UseGPU {
+		return 1
+	}
+	return 0
+}
+
+//export LoomGetGPUSCTileSize
+func LoomGetGPUSCTileSize(networkHandle C.longlong) C.int {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok {
+		return 0
+	}
+	return C.int(ctx.GPUTileSize)
+}
+
+//export LoomGetGPUMCTileSize
+func LoomGetGPUMCTileSize(networkHandle C.longlong) C.int {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok {
+		return 0
+	}
+	// Default to SC if MC not specifically tracked in context
+	return C.int(ctx.GPUTileSize)
+}
+
+//export LoomDispatchDenseTiled
+func LoomDispatchDenseTiled(networkHandle C.longlong, tileSize C.int, batchSize C.int, inputSize C.int, outputSize C.int, activation C.uint, scale C.float, inputHandle C.longlong, weightHandle C.longlong, biasHandle C.longlong, outputHandle C.longlong) *C.char {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return errJSON("WGPU context not found") }
+	in, ok := getBuffer(int64(inputHandle))
+	if !ok { return errJSON("invalid input buffer") }
+	wt, ok := getBuffer(int64(weightHandle))
+	if !ok { return errJSON("invalid weight buffer") }
+	out, ok := getBuffer(int64(outputHandle))
+	if !ok { return errJSON("invalid output buffer") }
+	
+	var b *wgpu.Buffer
+	if int64(biasHandle) != 0 {
+		b, _ = getBuffer(int64(biasHandle))
+	}
+
+	if err := ctx.DispatchDenseTiled(int(tileSize), int(batchSize), int(inputSize), int(outputSize), uint32(activation), float32(scale), in, wt, b, out); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDispatchDenseScaled
+func LoomDispatchDenseScaled(networkHandle C.longlong, batchSize C.int, inputSize C.int, outputSize C.int, activation C.uint, scale C.float, inputHandle C.longlong, weightHandle C.longlong, biasHandle C.longlong, outputHandle C.longlong) *C.char {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return errJSON("WGPU context not found") }
+	in, ok := getBuffer(int64(inputHandle))
+	if !ok { return errJSON("invalid input buffer") }
+	wt, ok := getBuffer(int64(weightHandle))
+	if !ok { return errJSON("invalid weight buffer") }
+	out, ok := getBuffer(int64(outputHandle))
+	if !ok { return errJSON("invalid output buffer") }
+	
+	var b *wgpu.Buffer
+	if int64(biasHandle) != 0 {
+		b, _ = getBuffer(int64(biasHandle))
+	}
+
+	if err := ctx.DispatchDenseScaled(int(batchSize), int(inputSize), int(outputSize), uint32(activation), float32(scale), in, wt, b, out); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDispatchCNN1Scaled
+func LoomDispatchCNN1Scaled(networkHandle C.longlong, batchSize C.int, inC C.int, inL C.int, outC C.int, outL C.int, kSize C.int, stride C.int, padding C.int, scale C.float, inputHandle C.longlong, weightHandle C.longlong, outputHandle C.longlong) *C.char {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return errJSON("WGPU context not found") }
+	in, ok := getBuffer(int64(inputHandle))
+	if !ok { return errJSON("invalid input buffer") }
+	wt, ok := getBuffer(int64(weightHandle))
+	if !ok { return errJSON("invalid weight buffer") }
+	out, ok := getBuffer(int64(outputHandle))
+	if !ok { return errJSON("invalid output buffer") }
+
+	if err := ctx.DispatchCNN1Scaled(int(batchSize), int(inC), int(inL), int(outC), int(outL), int(kSize), int(stride), int(padding), float32(scale), in, wt, out); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDispatchCNN2Scaled
+func LoomDispatchCNN2Scaled(networkHandle C.longlong, batchSize C.int, inC C.int, inH C.int, inW C.int, outC C.int, outH C.int, outW C.int, kH C.int, kW C.int, strideH C.int, strideW C.int, padH C.int, padW C.int, scale C.float, inputHandle C.longlong, weightHandle C.longlong, outputHandle C.longlong) *C.char {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return errJSON("WGPU context not found") }
+	in, ok := getBuffer(int64(inputHandle))
+	if !ok { return errJSON("invalid input buffer") }
+	wt, ok := getBuffer(int64(weightHandle))
+	if !ok { return errJSON("invalid weight buffer") }
+	out, ok := getBuffer(int64(outputHandle))
+	if !ok { return errJSON("invalid output buffer") }
+
+	if err := ctx.DispatchCNN2Scaled(int(batchSize), int(inC), int(inH), int(inW), int(outC), int(outH), int(outW), int(kH), int(kW), int(strideH), int(strideW), int(padH), int(padW), float32(scale), in, wt, out); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDispatchCNN3Scaled
+func LoomDispatchCNN3Scaled(networkHandle C.longlong, batchSize C.int, inC C.int, inD C.int, inH C.int, inW C.int, outC C.int, outD C.int, outH C.int, outW C.int, kD C.int, kH C.int, kW C.int, sD C.int, sH C.int, sW C.int, pD C.int, pH C.int, pW C.int, scale C.float, inputHandle C.longlong, weightHandle C.longlong, outputHandle C.longlong) *C.char {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return errJSON("WGPU context not found") }
+	in, ok := getBuffer(int64(inputHandle))
+	if !ok { return errJSON("invalid input buffer") }
+	wt, ok := getBuffer(int64(weightHandle))
+	if !ok { return errJSON("invalid weight buffer") }
+	out, ok := getBuffer(int64(outputHandle))
+	if !ok { return errJSON("invalid output buffer") }
+
+	if err := ctx.DispatchCNN3Scaled(int(batchSize), int(inC), int(inD), int(inH), int(inW), int(outC), int(outD), int(outH), int(outW), int(kD), int(kH), int(kW), int(sD), int(sH), int(sW), int(pD), int(pH), int(pW), float32(scale), in, wt, out); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDispatchAdd
+func LoomDispatchAdd(networkHandle C.longlong, size C.int, aHandle C.longlong, bHandle C.longlong, resHandle C.longlong) *C.char {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return errJSON("WGPU context not found") }
+	a, ok := getBuffer(int64(aHandle))
+	if !ok { return errJSON("invalid A buffer") }
+	b, ok := getBuffer(int64(bHandle))
+	if !ok { return errJSON("invalid B buffer") }
+	res, ok := getBuffer(int64(resHandle))
+	if !ok { return errJSON("invalid result buffer") }
+
+	if err := ctx.DispatchAdd(int(size), a, b, res); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDispatchSwiGLUWithActCache
+func LoomDispatchSwiGLUWithActCache(networkHandle C.longlong, batchSize C.int, inputSize C.int, outputSize C.int, inputHandle C.longlong, gateHandle C.longlong, upHandle C.longlong, gateBiasHandle C.longlong, upBiasHandle C.longlong, outputHandle C.longlong, gateOutHandle C.longlong, upOutHandle C.longlong, tileSize C.int) *C.char {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return errJSON("WGPU context not found") }
+	in, _ := getBuffer(int64(inputHandle))
+	gate, _ := getBuffer(int64(gateHandle))
+	up, _ := getBuffer(int64(upHandle))
+	gB, _ := getBuffer(int64(gateBiasHandle))
+	uB, _ := getBuffer(int64(upBiasHandle))
+	out, _ := getBuffer(int64(outputHandle))
+	gO, _ := getBuffer(int64(gateOutHandle))
+	uO, _ := getBuffer(int64(upOutHandle))
+
+	if err := ctx.DispatchSwiGLUWithActCache(int(batchSize), int(inputSize), int(outputSize), in, gate, up, gB, uB, out, gO, uO, int(tileSize)); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDispatchLSTMStepPreAct
+func LoomDispatchLSTMStepPreAct(networkHandle C.longlong, batchSize C.int, inputSize C.int, hiddenSize C.int, inputHandle C.longlong, hPrevHandle C.longlong, cPrevHandle C.longlong, weightHandle C.longlong, hCurrHandle C.longlong, cCurrHandle C.longlong, preActHandle C.longlong) *C.char {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return errJSON("WGPU context not found") }
+	in, _ := getBuffer(int64(inputHandle))
+	hp, _ := getBuffer(int64(hPrevHandle))
+	cp, _ := getBuffer(int64(cPrevHandle))
+	wt, _ := getBuffer(int64(weightHandle))
+	hc, _ := getBuffer(int64(hCurrHandle))
+	cc, _ := getBuffer(int64(cCurrHandle))
+	pa, _ := getBuffer(int64(preActHandle))
+
+	if err := ctx.DispatchLSTMStepPreAct(int(batchSize), int(inputSize), int(hiddenSize), in, hp, cp, wt, hc, cc, pa); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDenseGPUTileSizes
+func LoomDenseGPUTileSizes(networkHandle C.longlong, dtype C.int, scTile *C.int, mcTile *C.int) {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return }
+	sc, mc := poly.DenseGPUTileSizes(ctx, poly.DType(dtype))
+	*scTile = C.int(sc)
+	*mcTile = C.int(mc)
+}
+
+//export LoomDenseGPUTileSizesFromContext
+func LoomDenseGPUTileSizesFromContext(networkHandle C.longlong, dtype C.int, scTile *C.int, mcTile *C.int) {
+	LoomDenseGPUTileSizes(networkHandle, dtype, scTile, mcTile)
+}
+
+//export LoomCNN1GPUTileSizes
+func LoomCNN1GPUTileSizes(networkHandle C.longlong, dtype C.int, scTile *C.int, mcTile *C.int) {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return }
+	sc, mc := poly.CNN1GPUTileSizes(ctx) // CNN1GPUTileSizes currently doesn't take dtype in poly
+	*scTile = C.int(sc)
+	*mcTile = C.int(mc)
+}
+
+//export LoomCNN2GPUTileSizes
+func LoomCNN2GPUTileSizes(networkHandle C.longlong, dtype C.int, scTile *C.int, mcTile *C.int) {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return }
+	sc, mc := poly.CNN2GPUTileSizes(ctx)
+	*scTile = C.int(sc)
+	*mcTile = C.int(mc)
+}
+
+//export LoomCNN3GPUTileSizes
+func LoomCNN3GPUTileSizes(networkHandle C.longlong, dtype C.int, scTile *C.int, mcTile *C.int) {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return }
+	sc, mc := poly.CNN3GPUTileSizes(ctx)
+	*scTile = C.int(sc)
+	*mcTile = C.int(mc)
+}
+
+//export LoomSwiGLUGPUTileSizes
+func LoomSwiGLUGPUTileSizes(networkHandle C.longlong, dtype C.int, scTile *C.int, mcTile *C.int) {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return }
+	sc, mc := poly.SwiGLUGPUTileSizes(ctx, poly.DType(dtype))
+	*scTile = C.int(sc)
+	*mcTile = C.int(mc)
+}
+
+//export LoomMHAGPUTileSizes
+func LoomMHAGPUTileSizes(networkHandle C.longlong, headDim C.int, dtype C.int, scTile *C.int, mcTile *C.int) {
+	ctx, ok := getWGPUContext(int64(networkHandle))
+	if !ok { return }
+	sc, mc := poly.MHAGPUTileSizes(ctx, int(headDim), poly.DType(dtype))
+	*scTile = C.int(sc)
+	*mcTile = C.int(mc)
+}
+
+//export LoomSyncWeightsFromGPU
+func LoomSyncWeightsFromGPU(networkHandle C.longlong) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok { return errJSON("invalid network") }
+	if err := poly.SyncWeightsFromGPU(n); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomShaderTiledSwiGLUActCache
+func LoomShaderTiledSwiGLUActCache(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderTiledSwiGLUActCache(int(tileSize)))
 }
 
 //export LoomInitWGPU

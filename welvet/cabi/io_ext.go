@@ -150,12 +150,28 @@ func LoomCompareDNA(dna1JSON *C.char, dna2JSON *C.char) *C.char {
 	return C.CString(string(data))
 }
 
+//export LoomSaveSafetensors
+func LoomSaveSafetensors(path *C.char, tensorsJSON *C.char) *C.char {
+	p := C.GoString(path)
+	var tensors map[string]poly.TensorWithShape
+	if err := json.Unmarshal([]byte(C.GoString(tensorsJSON)), &tensors); err != nil {
+		return errJSON("invalid tensors JSON")
+	}
+
+	if err := poly.SaveSafetensors(p, tensors); err != nil {
+		return errJSON(err.Error())
+	}
+	
+	return C.CString(`{"status": "ok"}`)
+}
+
 //export LoomGetMethodsJSON
 func LoomGetMethodsJSON() *C.char {
 	methods := []string{
 		"LoomBuildNetworkFromJSON",
 		"LoomLoadUniversal",
 		"LoomLoadSafetensors",
+		"LoomSaveSafetensors",
 		"LoomSequentialForward",
 		"LoomApplyGradients",
 		"LoomMorphLayer",
@@ -168,7 +184,9 @@ func LoomGetMethodsJSON() *C.char {
 	_ = poly.SequentialForwardPolymorphic[float32]
 	_ = poly.SequentialBackwardPolymorphic[float32]
 	_ = poly.SoftmaxForwardPolymorphic[float32]
+	_ = poly.SoftmaxBackwardPolymorphic[float32]
 	_ = poly.ParallelForwardPolymorphic[float32]
+	_ = poly.ParallelBackwardPolymorphic[float32]
 	_ = poly.ParseLayerType
 	_ = poly.GroupRelatedTensors
 	_ = poly.ReconstructSwiGLULayer
@@ -176,6 +194,11 @@ func LoomGetMethodsJSON() *C.char {
 	_ = poly.ReconstructMHALayer
 	_ = poly.ReconstructCNNLayer
 	_ = poly.ReconstructLayerNormLayer
+	_ = poly.LoadSafetensors
+	_ = poly.LoadSafetensorsFromBytes
+	_ = poly.SaveSafetensors
+	_ = poly.ExtractNetworkBlueprint
+	_ = poly.ExtractLayerTelemetry
 	
 	data, _ := json.Marshal(methods)
 	return C.CString(string(data))
@@ -263,10 +286,11 @@ func LoomCreateTransformer(networkHandle C.longlong, embeddingsJSON *C.char, lmH
 	tr := poly.NewTransformer[float32](n, embeds, lm, fn, poly.Template{})
 
 	networkMu.Lock()
-	id := transfomrerNextID
-	transfomrerNextID++
+	id := transformerNextID
+	transformerNextID++
 	transformers[id] = tr
 	networkMu.Unlock()
+
 
 	return C.longlong(id)
 }

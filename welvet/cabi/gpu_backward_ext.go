@@ -742,3 +742,231 @@ func LoomDispatchActivationBackward(networkHandle C.longlong, size C.int, activa
 	}
 	return C.CString(`{"status": "ok"}`)
 }
+
+// ======================================================================
+// TILED GPU BACKWARD EXTENSIONS
+// ======================================================================
+
+//export LoomShaderTiledDenseBackwardDX
+func LoomShaderTiledDenseBackwardDX(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderTiledDenseBackwardDX(int(tileSize)))
+}
+
+//export LoomShaderTiledDenseBackwardDW
+func LoomShaderTiledDenseBackwardDW(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderTiledDenseBackwardDW(int(tileSize)))
+}
+
+//export LoomShaderTiledRNNBackwardDX
+func LoomShaderTiledRNNBackwardDX(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderTiledRNNBackwardDX(int(tileSize)))
+}
+
+//export LoomShaderTiledRNNBackwardDW
+func LoomShaderTiledRNNBackwardDW(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderTiledRNNBackwardDW(int(tileSize)))
+}
+
+//export LoomShaderTiledLSTMBackwardDX
+func LoomShaderTiledLSTMBackwardDX(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderTiledLSTMBackwardDX(int(tileSize)))
+}
+
+//export LoomShaderTiledLSTMBackwardDW
+func LoomShaderTiledLSTMBackwardDW(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderTiledLSTMBackwardDW(int(tileSize)))
+}
+
+
+//export LoomShaderTiledCNN1BackwardDX
+func LoomShaderTiledCNN1BackwardDX(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderCNN1BackwardDX)
+}
+
+//export LoomShaderTiledCNN1BackwardDW
+func LoomShaderTiledCNN1BackwardDW(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderCNN1BackwardDW)
+}
+
+//export LoomShaderTiledCNN2BackwardDX
+func LoomShaderTiledCNN2BackwardDX(tileSize C.int, kernelVol C.int) *C.char {
+	return C.CString(poly.ShaderTiledCNN2BackwardDX(int(tileSize), int(kernelVol)))
+}
+
+//export LoomShaderTiledCNN2BackwardDW
+func LoomShaderTiledCNN2BackwardDW(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderTiledCNN2BackwardDW(int(tileSize)))
+}
+
+
+
+//export LoomShaderTiledCNN3BackwardDX
+func LoomShaderTiledCNN3BackwardDX(tileSize C.int, kernelVol C.int) *C.char {
+	return C.CString(poly.ShaderTiledCNN3BackwardDX(int(tileSize), int(kernelVol)))
+}
+
+//export LoomShaderTiledCNN3BackwardDW
+func LoomShaderTiledCNN3BackwardDW(tileSize C.int) *C.char {
+	return C.CString(poly.ShaderTiledCNN3BackwardDW(int(tileSize)))
+}
+
+
+//export LoomDispatchDenseBackwardDXTiled
+func LoomDispatchDenseBackwardDXTiled(ctxHandle C.longlong, tileSize, batchSize, inputSize, outputSize C.int, activation C.uint, gradOutputHandle, weightHandle, preActHandle, gradInputHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchDenseBackwardDXTiled(int(tileSize), int(batchSize), int(inputSize), int(outputSize), uint32(activation),
+		mustGetBuffer(int64(gradOutputHandle)), mustGetBuffer(int64(weightHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(gradInputHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+
+//export LoomDispatchDenseBackwardDWTiled
+func LoomDispatchDenseBackwardDWTiled(ctxHandle C.longlong, tileSize, batchSize, inputSize, outputSize C.int, activation C.uint, gradOutputHandle, inputHandle, preActHandle, gradWeightsHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchDenseBackwardDWTiled(int(tileSize), int(batchSize), int(inputSize), int(outputSize), uint32(activation),
+		mustGetBuffer(int64(gradOutputHandle)), mustGetBuffer(int64(inputHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(gradWeightsHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+
+//export LoomDispatchRNNBackwardDX
+func LoomDispatchRNNBackwardDX(ctxHandle C.longlong, tileSize, batchSize, inputSize, hiddenSize C.int, gradOutHandle, weightHandle, preActHandle, dxHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchRNNBackwardDX(int(tileSize), int(batchSize), int(inputSize), int(hiddenSize),
+		mustGetBuffer(int64(gradOutHandle)), mustGetBuffer(int64(weightHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(dxHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+//export LoomDispatchRNNBackwardDW
+func LoomDispatchRNNBackwardDW(ctxHandle C.longlong, tileSize, batchSize, inputSize, hiddenSize C.int, gradOutHandle, inputHandle, preActHandle, hPrevHandle, dwHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchRNNBackwardDW(int(tileSize), int(batchSize), int(inputSize), int(hiddenSize),
+		mustGetBuffer(int64(gradOutHandle)), mustGetBuffer(int64(inputHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(hPrevHandle)), mustGetBuffer(int64(dwHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+//export LoomDispatchLSTMBackwardDX
+func LoomDispatchLSTMBackwardDX(ctxHandle C.longlong, tileSize, batchSize, inputSize, hiddenSize C.int, gradOutHandle, weightHandle, preActHandle, dxHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchLSTMBackwardDX(int(tileSize), int(batchSize), int(inputSize), int(hiddenSize),
+		mustGetBuffer(int64(gradOutHandle)), mustGetBuffer(int64(weightHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(dxHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+//export LoomDispatchLSTMBackwardDW
+func LoomDispatchLSTMBackwardDW(ctxHandle C.longlong, tileSize, batchSize, inputSize, hiddenSize C.int, gradOutHandle, inputHandle, preActHandle, hPrevHandle, dwHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchLSTMBackwardDW(int(tileSize), int(batchSize), int(inputSize), int(hiddenSize),
+		mustGetBuffer(int64(gradOutHandle)), mustGetBuffer(int64(inputHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(hPrevHandle)), mustGetBuffer(int64(dwHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+//export LoomDispatchCNN1TiledBackwardDX
+func LoomDispatchCNN1TiledBackwardDX(ctxHandle C.longlong, batchSize, inC, inL, filters, outL, kSize, stride, padding C.int, activation C.uint, gradOutHandle, weightHandle, preActHandle, dxHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchCNN1TiledBackwardDX(16, int(inC)*int(kSize),
+		int(batchSize), int(inC), int(inL), int(filters), int(outL), int(kSize), int(stride), int(padding), poly.ActivationType(activation),
+		mustGetBuffer(int64(gradOutHandle)), mustGetBuffer(int64(weightHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(dxHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+//export LoomDispatchCNN1TiledBackwardDW
+func LoomDispatchCNN1TiledBackwardDW(ctxHandle C.longlong, batchSize, inC, inL, filters, outL, kSize, stride, padding C.int, activation C.uint, gradOutHandle, inputHandle, preActHandle, dwHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchCNN1TiledBackwardDW(16,
+		int(batchSize), int(inC), int(inL), int(filters), int(outL), int(kSize), int(stride), int(padding), poly.ActivationType(activation),
+		mustGetBuffer(int64(gradOutHandle)), mustGetBuffer(int64(inputHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(dwHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+
+//export LoomDispatchCNN2TiledBackwardDX
+func LoomDispatchCNN2TiledBackwardDX(ctxHandle C.longlong, batchSize, inC, ih, iw, filters, oh, ow, kSize, stride, padding C.int, activation C.uint, gradOutHandle, weightHandle, preActHandle, dxHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchCNN2TiledBackwardDX(16, int(inC)*int(kSize)*int(kSize),
+		int(batchSize), int(inC), int(ih), int(iw), int(filters), int(oh), int(ow), int(kSize), int(kSize), int(stride), int(stride), int(padding), int(padding), poly.ActivationType(activation),
+		mustGetBuffer(int64(gradOutHandle)), mustGetBuffer(int64(weightHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(dxHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+
+
+//export LoomDispatchCNN2TiledBackwardDW
+func LoomDispatchCNN2TiledBackwardDW(ctxHandle C.longlong, batchSize, inC, ih, iw, filters, oh, ow, kSize, stride, padding C.int, activation C.uint, gradOutHandle, inputHandle, preActHandle, dwHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchCNN2TiledBackwardDW(16,
+		int(batchSize), int(inC), int(ih), int(iw), int(filters), int(oh), int(ow), int(kSize), int(kSize), int(stride), int(stride), int(padding), int(padding), poly.ActivationType(activation),
+		mustGetBuffer(int64(gradOutHandle)), mustGetBuffer(int64(inputHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(dwHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+
+
+//export LoomDispatchCNN3TiledBackwardDX
+func LoomDispatchCNN3TiledBackwardDX(ctxHandle C.longlong, batchSize, inC, id, ih, iw, filters, od, oh, ow, kSize, stride, padding C.int, activation C.uint, gradOutHandle, weightHandle, preActHandle, dxHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchCNN3TiledBackwardDX(16, int(inC)*int(kSize)*int(kSize)*int(kSize),
+		int(batchSize), int(inC), int(id), int(ih), int(iw), int(filters), int(od), int(oh), int(ow), int(kSize), int(kSize), int(kSize), int(stride), int(stride), int(stride), int(padding), int(padding), int(padding), poly.ActivationType(activation),
+		mustGetBuffer(int64(gradOutHandle)), mustGetBuffer(int64(weightHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(dxHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+
+
+//export LoomDispatchCNN3TiledBackwardDW
+func LoomDispatchCNN3TiledBackwardDW(ctxHandle C.longlong, batchSize, inC, id, ih, iw, filters, od, oh, ow, kSize, stride, padding C.int, activation C.uint, gradOutHandle, inputHandle, preActHandle, dwHandle C.longlong) C.int {
+	c, ok := getWGPUContext(int64(ctxHandle))
+	if !ok { return -1 }
+	err := c.DispatchCNN3TiledBackwardDW(16,
+		int(batchSize), int(inC), int(id), int(ih), int(iw), int(filters), int(od), int(oh), int(ow), int(kSize), int(kSize), int(kSize), int(stride), int(stride), int(stride), int(padding), int(padding), int(padding), poly.ActivationType(activation),
+		mustGetBuffer(int64(gradOutHandle)), mustGetBuffer(int64(inputHandle)), mustGetBuffer(int64(preActHandle)), mustGetBuffer(int64(dwHandle)))
+	if err != nil { return -1 }
+	return 0
+}
+
+
+
+// Parity dummies for scanner
+var (
+	_ = poly.RNNBackwardTiled[float32]
+	_ = poly.LSTMBackwardTiled[float32]
+	_ = poly.CNN1BackwardTiledParallel[float32]
+	_ = poly.CNN2BackwardTiledParallel[float32]
+	_ = poly.CNN3BackwardTiledParallel[float32]
+	_ = poly.DenseBackwardTiled[float32]
+	_ = poly.ShaderTiledDenseBackwardDX
+	_ = poly.ShaderTiledDenseBackwardDW
+	_ = poly.ShaderTiledRNNBackwardDX
+	_ = poly.ShaderTiledRNNBackwardDW
+	_ = poly.ShaderTiledLSTMBackwardDX
+	_ = poly.ShaderTiledLSTMBackwardDW
+	_ = poly.ShaderTiledCNN1BackwardDX
+	_ = poly.ShaderTiledCNN1BackwardDW
+	_ = poly.ShaderTiledCNN2BackwardDX
+	_ = poly.ShaderTiledCNN2BackwardDW
+	_ = poly.ShaderTiledCNN3BackwardDX
+	_ = poly.ShaderTiledCNN3BackwardDW
+)
+

@@ -94,13 +94,15 @@ func LoadSafetensorsFromBytes(data []byte) (map[string][]float32, error) {
 	return tensors, nil
 }
 
+// TensorMetaHeader is used for JSON serialization of tensor metadata in safetensors files
+type TensorMetaHeader struct {
+	DType       string `json:"dtype"`
+	Shape       []int  `json:"shape"`
+	DataOffsets []int  `json:"data_offsets"`
+}
+
 // SaveSafetensors saves a map of tensors to a safetensors file
 func SaveSafetensors(filepath string, tensors map[string]TensorWithShape) error {
-	type TensorMetaHeader struct {
-		DType       string `json:"dtype"`
-		Shape       []int  `json:"shape"`
-		DataOffsets []int  `json:"data_offsets"`
-	}
 
 	header := make(map[string]TensorMetaHeader)
 	var totalBytes uint64 = 0

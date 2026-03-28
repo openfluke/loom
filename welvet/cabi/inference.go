@@ -331,3 +331,62 @@ func LoomMorphLayer(networkHandle C.longlong, layerIdx C.int, targetDType C.int)
 	
 	return C.CString(`{"status": "ok"}`)
 }
+
+//export LoomTokensToTensor
+func LoomTokensToTensor(transformerHandle C.longlong, tokens *C.uint, count C.int) C.longlong {
+	tr, ok := getTransformer(int64(transformerHandle))
+	if !ok { return -1 }
+
+	ptr := unsafe.Pointer(tokens)
+	slice := (*[1 << 30]uint32)(ptr)[:count:count]
+
+
+
+	// The current CABI LoomCreateTransformer only makes float32 transformers.
+	t := tr.(*poly.Transformer[float32])
+	res := t.TokensToTensor(slice)
+
+	networkMu.Lock()
+	id := tensorNextID
+	tensorNextID++
+	tensors[id] = res
+	networkMu.Unlock()
+
+	return C.longlong(id)
+}
+
+//export LoomForwardFull
+func LoomForwardFull(transformerHandle C.longlong, inputTensorHandle C.longlong) C.longlong {
+	tr, ok := getTransformer(int64(transformerHandle))
+	if !ok { return -1 }
+	ts, ok := getTensor(int64(inputTensorHandle))
+	if !ok { return -1 }
+
+	t := tr.(*poly.Transformer[float32])
+	in := ts.(*poly.Tensor[float32])
+	res := t.ForwardFull(in)
+
+	networkMu.Lock()
+	id := tensorNextID
+	tensorNextID++
+	tensors[id] = res
+	networkMu.Unlock()
+
+	return C.longlong(id)
+}
+
+//export LoomFreeTensor
+func LoomFreeTensor(handle C.longlong) {
+	networkMu.Lock()
+	delete(tensors, int64(handle))
+	networkMu.Unlock()
+}
+
+// Parity dummies for scanner
+func _parityInf() {
+	var t poly.Transformer[float32]
+	_ = t.TokensToTensor
+	_ = t.ForwardFull
+}
+
+
