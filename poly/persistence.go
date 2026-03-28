@@ -73,8 +73,13 @@ type PersistenceLayerSpec struct {
 	CombineMode      string                 `json:"combine_mode,omitempty"`
 	SequentialLayers []PersistenceLayerSpec `json:"sequential_layers,omitempty"`
 
-	UseTiling bool `json:"use_tiling,omitempty"`
-	TileSize  int  `json:"tile_size,omitempty"`
+	UseTiling  bool `json:"use_tiling,omitempty"`
+	TileSize   int  `json:"tile_size,omitempty"`
+	IsDisabled bool `json:"is_disabled,omitempty"`
+
+	// Metacognition
+	MetaRules         []MetaRule            `json:"meta_rules,omitempty"`
+	MetaObservedLayer *PersistenceLayerSpec `json:"meta_observed_layer,omitempty"`
 }
 
 // SerializeNetwork converts a VolumetricNetwork into a JSON byte slice.
@@ -139,19 +144,20 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 		CombineMode: l.CombineMode,
 		UseTiling:   l.UseTiling,
 		TileSize:    l.TileSize,
+		IsDisabled:  l.IsDisabled,
 	}
 
 	if l.WeightStore != nil {
 		dt := l.DType
 		active := l.WeightStore.GetActive(dt)
-		
-		// If not cached, but it's the target DType, we should morph it for saving
+
+		// Prefer quantized (Native) weights if DType is not Float32 to save space.
 		if active == nil && dt != DTypeFloat32 {
 			l.WeightStore.Morph(dt)
 			active = l.WeightStore.GetActive(dt)
 		}
 
-		if active != nil {
+		if active != nil && dt != DTypeFloat32 {
 			ls.Weights = encodeNativeWeights(active, dt)
 			ls.Native = true
 		} else if len(l.WeightStore.Master) > 0 {
@@ -174,6 +180,12 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 			ls.SequentialLayers[i] = serializeLayer(&l.SequentialLayers[i])
 		}
 	}
+
+	if l.MetaObservedLayer != nil {
+		observed := serializeLayer(l.MetaObservedLayer)
+		ls.MetaObservedLayer = &observed
+	}
+	ls.MetaRules = l.MetaRules
 
 	return ls
 }
@@ -238,6 +250,7 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	l.CombineMode = ls.CombineMode
 	l.UseTiling = ls.UseTiling
 	l.TileSize = ls.TileSize
+	l.IsDisabled = ls.IsDisabled
 
 	// Initialize weights based on populated fields
 	initializeWeights(l)
@@ -286,6 +299,14 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 			}
 		}
 	}
+
+	if ls.MetaObservedLayer != nil {
+		l.MetaObservedLayer = new(VolumetricLayer)
+		if err := applyPersistenceLayerSpec(l.MetaObservedLayer, *ls.MetaObservedLayer); err != nil {
+			return err
+		}
+	}
+	l.MetaRules = ls.MetaRules
 
 	return nil
 }
@@ -340,6 +361,24 @@ func encodeNativeWeights(data any, dt DType) string {
 		for i, v := range w { binary.LittleEndian.PutUint64(buf[i*8:], math.Float64bits(v)) }
 		return base64.StdEncoding.EncodeToString(buf)
 	case []float32:
+		if dt == DTypeBFloat16 {
+			// Pack as 16-bit BFloat16 (top 16 bits of float32)
+			buf := make([]byte, len(w)*2)
+			for i, v := range w {
+				u32 := math.Float32bits(v)
+				binary.LittleEndian.PutUint16(buf[i*2:], uint16(u32>>16))
+			}
+			return base64.StdEncoding.EncodeToString(buf)
+		} else if dt == DTypeFloat16 {
+			// Pack as 16-bit IEEE Float16 (simulated truncation for now)
+			buf := make([]byte, len(w)*2)
+			for i, v := range w {
+				// Simple truncation of mantissa for now (not true Float16 but 2 bytes)
+				u32 := math.Float32bits(v)
+				binary.LittleEndian.PutUint16(buf[i*2:], uint16(u32>>16))
+			}
+			return base64.StdEncoding.EncodeToString(buf)
+		}
 		return encodeWeights(w)
 	case []int64:
 		buf := make([]byte, len(w)*8)
@@ -412,8 +451,14 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 		for i := range w { w[i] = math.Float64frombits(binary.LittleEndian.Uint64(bytes[i*8:])) }
 		return w, nil
 	case DTypeFloat16, DTypeBFloat16:
-		// Currently stored as float32 in our simulation, but 16-bit packed is future goal
-		return decodeWeights(s)
+		// Reconstruct float32 from 16-bit packed data
+		w := make([]float32, len(bytes)/2)
+		for i := range w {
+			u16 := binary.LittleEndian.Uint16(bytes[i*2:])
+			u32 := uint32(u16) << 16
+			w[i] = math.Float32frombits(u32)
+		}
+		return w, nil
 	case DTypeInt64, DTypeUint64:
 		w := make([]int64, len(bytes)/8)
 		for i := range w { w[i] = int64(binary.LittleEndian.Uint64(bytes[i*8:])) }
@@ -437,11 +482,14 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 			valHigh := (bytes[i] >> 4) & 0x0F
 			valLow := bytes[i] & 0x0F
 			
-			// Sign extend if needed (approximate)
 			sh := int8(valHigh)
-			if sh > 7 { sh -= 16 }
 			sl := int8(valLow)
-			if sl > 7 { sl -= 16 }
+			
+			// Sign extend only if it's a signed type
+			if dt == DTypeInt4 || dt == DTypeFP4 {
+				if sh > 7 { sh -= 16 }
+				if sl > 7 { sl -= 16 }
+			}
 			
 			w[i*2] = sh
 			if i*2+1 < len(w) { w[i*2+1] = sl }
@@ -455,7 +503,10 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 				shift := uint(6 - j*2)
 				val := (bytes[i] >> shift) & 0x03
 				sv := int8(val)
-				if sv > 1 { sv -= 4 }
+				// Sign extend only if it's a signed type
+				if dt == DTypeInt2 || dt == DTypeTernary {
+					if sv > 1 { sv -= 4 }
+				}
 				if i*4+j < len(w) { w[i*4+j] = sv }
 			}
 		}

@@ -6,6 +6,12 @@ import (
 
 	"github.com/openfluke/webgpu/wgpu"
 )
+ 
+var (
+	sharedInstance *wgpu.Instance
+	sharedAdapter  *wgpu.Adapter
+	sharedDevice   *wgpu.Device
+)
 
 // WGPUContext manages the GPU device and queue for acceleration.
 type WGPUContext struct {
@@ -37,6 +43,20 @@ type WGPUContext struct {
 
 	// Negotiated limits
 	Limits wgpu.Limits
+
+	// BlankBuffer is a small zeroed buffer for optional bindings (e.g. bias)
+	BlankBuffer *wgpu.Buffer
+}
+
+// WGPUBufferBinding represents a slice of a GPU buffer for binding.
+type WGPUBufferBinding struct {
+	Buffer *wgpu.Buffer
+	Offset uint64
+	Size   uint64
+}
+
+func (c *WGPUContext) GetSubBuffer(buf *wgpu.Buffer, offset, size uint64) *WGPUBufferBinding {
+	return &WGPUBufferBinding{Buffer: buf, Offset: offset, Size: size}
 }
 
 // BindGroupKey is used for the BindGroupCache
@@ -51,24 +71,28 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		return nil
 	}
 
-	instance := wgpu.CreateInstance(nil)
-	if instance == nil {
-		return fmt.Errorf("failed to create WGPU instance")
+	if sharedInstance == nil {
+		sharedInstance = wgpu.CreateInstance(nil)
+		if sharedInstance == nil {
+			return fmt.Errorf("failed to create WGPU instance")
+		}
 	}
-
-	adapter, err := instance.RequestAdapter(&wgpu.RequestAdapterOptions{
-		PowerPreference: wgpu.PowerPreferenceHighPerformance,
-	})
-	if err != nil {
-		instance.Release()
-		return fmt.Errorf("failed to request adapter: %v", err)
+ 
+	if sharedAdapter == nil {
+		adapter, err := sharedInstance.RequestAdapter(&wgpu.RequestAdapterOptions{
+			PowerPreference: wgpu.PowerPreferenceHighPerformance,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to request adapter: %v", err)
+		}
+		sharedAdapter = adapter
 	}
+ 
+	adapter := sharedAdapter
 
 	// 1. Request a temporary default device to get a safe baseline for all limits
 	defaultDevice, err := adapter.RequestDevice(nil)
 	if err != nil {
-		adapter.Release()
-		instance.Release()
 		return fmt.Errorf("failed to request default device for limits: %v", err)
 	}
 	limits := defaultDevice.GetLimits().Limits
@@ -82,30 +106,32 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		limits.MaxBufferSize = 2 * 1024 * 1024 * 1024
 	}
 
-	// Request the device with explicitly supported baseline limits + necessary boosts
-	device, err := adapter.RequestDevice(&wgpu.DeviceDescriptor{
-		RequiredLimits: &wgpu.RequiredLimits{
-			Limits: limits,
-		},
-		RequiredFeatures: []wgpu.FeatureName{
-			wgpu.FeatureNameShaderF16,
-		},
-	})
-	if err != nil {
-		// If requesting with boosted limits and F16 fails, try again with default limits only.
-		device, err = adapter.RequestDevice(nil)
+	if sharedDevice == nil {
+		// Request the device with explicitly supported baseline limits + necessary boosts
+		device, err := adapter.RequestDevice(&wgpu.DeviceDescriptor{
+			RequiredLimits: &wgpu.RequiredLimits{
+				Limits: limits,
+			},
+			RequiredFeatures: []wgpu.FeatureName{
+				wgpu.FeatureNameShaderF16,
+			},
+		})
 		if err != nil {
-			adapter.Release()
-			instance.Release()
-			return fmt.Errorf("failed to request device even with default limits: %v", err)
+			// If requesting with boosted limits and F16 fails, try again with default limits only.
+			device, err = adapter.RequestDevice(nil)
+			if err != nil {
+				return fmt.Errorf("failed to request device even with default limits: %v", err)
+			}
 		}
+		sharedDevice = device
 	}
-
+ 
+	device := sharedDevice
 	finalLimits := device.GetLimits()
 
 	n.GPUContext = &WGPUContext{
-		Instance:       instance,
-		Adapter:        adapter,
+		Instance:       sharedInstance,
+		Adapter:        sharedAdapter,
 		Device:         device,
 		Queue:          device.GetQueue(),
 		Limits:         finalLimits.Limits,
@@ -123,21 +149,74 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		64, // default headDim; caller can override via GPUTileSize after init
 	)
 
+	// Initialize BlankBuffer
+	n.GPUContext.BlankBuffer, _ = device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: "Blank Buffer",
+		Size:  64,
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopyDst,
+	})
+
 	n.UseGPU = true
 	return nil
 }
 
-// Release releases all WebGPU resources.
+// Release releases pooled resources. Device is shared and persists.
 func (c *WGPUContext) Release() {
-	if c.Device != nil {
-		c.Device.Release()
+	c.Cleanup()
+}
+
+// Cleanup explicitly releases all cached/pooled resources (buffers, pipelines, bind groups).
+func (c *WGPUContext) Cleanup() {
+	if c == nil { return }
+	
+	// 1. Release Activation Pool
+	for name, buf := range c.ActivationPool {
+		if buf != nil {
+			buf.Release()
+		}
+		delete(c.ActivationPool, name)
 	}
-	if c.Adapter != nil {
-		c.Adapter.Release()
+
+	// 2. Release Uniform Pool
+	for _, buf := range c.UniformPool {
+		if buf != nil {
+			buf.Release()
+		}
 	}
-	if c.Instance != nil {
-		c.Instance.Release()
+	c.UniformPool = nil
+	c.UniformIdx = 0
+
+	// 3. Release Bind Groups
+	for k, bg := range c.BindGroupCache {
+		if bg != nil {
+			bg.Release()
+		}
+		delete(c.BindGroupCache, k)
 	}
+
+	// 4. Release Pipelines
+	for k, p := range c.PipelineCache {
+		if p != nil {
+			p.Release()
+		}
+		delete(c.PipelineCache, k)
+	}
+
+	// 5. Release Layouts
+	for k, l := range c.LayoutCache {
+		if l != nil {
+			l.Release()
+		}
+		delete(c.LayoutCache, k)
+	}
+
+	// 6. Release any pending destroys
+	for _, buf := range c.PendingDestroys {
+		if buf != nil {
+			buf.Release()
+		}
+	}
+	c.PendingDestroys = nil
 }
 
 // BeginFrame creates a shared CommandEncoder that all subsequent Dispatch* calls
@@ -217,33 +296,62 @@ func (c *WGPUContext) GetUniformBuffer(size uint64) *wgpu.Buffer {
 	return buf
 }
 
-// BindGroupKeyHash generates a stable hash for a set of buffers and a pipeline.
-func BindGroupKeyHash(pipeline *wgpu.ComputePipeline, buffers ...*wgpu.Buffer) uint64 {
+// BindGroupKeyHash generates a stable hash for a set of buffers (or bindings) and a pipeline.
+func BindGroupKeyHash(pipeline *wgpu.ComputePipeline, bindings ...any) uint64 {
 	h := uint64(uintptr(unsafe.Pointer(pipeline)))
-	for _, b := range buffers {
-		h ^= uint64(uintptr(unsafe.Pointer(b))) + 0x9e3779b9 + (h << 6) + (h >> 2)
+	for _, b := range bindings {
+		if b == nil { continue }
+		switch v := b.(type) {
+		case *wgpu.Buffer:
+			h ^= uint64(uintptr(unsafe.Pointer(v))) + 0x9e3779b9 + (h << 6) + (h >> 2)
+		case *WGPUBufferBinding:
+			h ^= uint64(uintptr(unsafe.Pointer(v.Buffer))) + 0x9e3779b9 + (h << 6) + (h >> 2)
+			h ^= v.Offset + 0x9e3779b9 + (h << 6) + (h >> 2)
+			h ^= v.Size + 0x9e3779b9 + (h << 6) + (h >> 2)
+		}
 	}
 	return h
 }
 
-// GetBindGroup retrieves or creates a BindGroup for the given pipeline and buffers.
-func (c *WGPUContext) GetBindGroup(pipeline *wgpu.ComputePipeline, buffers ...*wgpu.Buffer) (*wgpu.BindGroup, error) {
-	key := BindGroupKeyHash(pipeline, buffers...)
+// GetBindGroup retrieves or creates a BindGroup for the given pipeline and buffers/bindings.
+func (c *WGPUContext) GetBindGroup(pipeline *wgpu.ComputePipeline, bindings ...any) (*wgpu.BindGroup, error) {
+	key := BindGroupKeyHash(pipeline, bindings...)
 	if bg, ok := c.BindGroupCache[key]; ok {
 		return bg, nil
 	}
 
-	entries := make([]wgpu.BindGroupEntry, len(buffers))
-	for i, b := range buffers {
+	entries := make([]wgpu.BindGroupEntry, len(bindings))
+	for i, b := range bindings {
 		if b == nil {
 			return nil, fmt.Errorf("binding %d is nil", i)
 		}
 
-		size := b.GetSize()
+		var bBuf *wgpu.Buffer
+		var offset, size uint64
+
+		switch v := b.(type) {
+		case *wgpu.Buffer:
+			if v == nil {
+				return nil, fmt.Errorf("binding %d is nil *wgpu.Buffer", i)
+			}
+			bBuf = v
+			offset = 0
+			size = v.GetSize()
+		case *WGPUBufferBinding:
+			if v == nil || v.Buffer == nil {
+				return nil, fmt.Errorf("binding %d is nil or has nil buffer in *WGPUBufferBinding", i)
+			}
+			bBuf = v.Buffer
+			offset = v.Offset
+			size = v.Size
+		default:
+			return nil, fmt.Errorf("binding %d has invalid type %T", i, b)
+		}
 
 		entries[i] = wgpu.BindGroupEntry{
 			Binding: uint32(i),
-			Buffer:  b,
+			Buffer:  bBuf,
+			Offset:  offset,
 			Size:    size,
 		}
 	}

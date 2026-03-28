@@ -9,7 +9,6 @@ import "fmt"
 // ShaderDenseBackwardDX calculates gradInput = gradOutput * weights
 // dx = dy * W^T  => dx[b, i] = sum_o dy[b, o] * W[o, i]
 func ShaderDenseBackwardDX(tileSize int) string {
-	ts2 := tileSize * tileSize
 	return fmt.Sprintf(`
 struct Params {
     batchSize: u32,
@@ -17,65 +16,28 @@ struct Params {
     outputSize: u32,
     tileSize: u32,
 };
-
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
 @group(0) @binding(2) var<storage, read> weights: array<f32>;
 @group(0) @binding(3) var<storage, read_write> gradInput: array<f32>;
 
-var<workgroup> dyTile: array<f32, %d>;
-var<workgroup> wTile: array<f32, %d>;
-
-@compute @workgroup_size(%d, %d, 1)
-fn main(
-    @builtin(global_invocation_id) global_id: vec3<u32>,
-    @builtin(local_invocation_id) local_id: vec3<u32>,
-    @builtin(workgroup_id) wg_id: vec3<u32>
-) {
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(workgroup_id) wg_id: vec3<u32>) {
     let i = global_id.x;
-    let b = global_id.y;
-    let tx = local_id.x;
-    let ty = local_id.y;
-
+    let b = wg_id.y;
+    if (i >= params.inputSize || b >= params.batchSize) { return; }
     var sum: f32 = 0.0;
-    let numTiles = (params.outputSize + params.tileSize - 1) / params.tileSize;
-
-    for (var t: u32 = 0u; t < numTiles; t++) {
-        // Load dy[b, o] and W[o, i] into shared memory
-        let o_idx = t * params.tileSize + tx;
-        if (b < params.batchSize && o_idx < params.outputSize) {
-            dyTile[ty * params.tileSize + tx] = gradOutput[b * params.outputSize + o_idx];
-        } else {
-            dyTile[ty * params.tileSize + tx] = 0.0;
-        }
-
-        let w_o_idx = t * params.tileSize + ty;
-        if (i < params.inputSize && w_o_idx < params.outputSize) {
-            wTile[ty * params.tileSize + tx] = weights[w_o_idx * params.inputSize + i];
-        } else {
-            wTile[ty * params.tileSize + tx] = 0.0;
-        }
-
-        workgroupBarrier();
-
-        for (var k: u32 = 0u; k < params.tileSize; k++) {
-            sum += dyTile[ty * params.tileSize + k] * wTile[k * params.tileSize + tx];
-        }
-
-        workgroupBarrier();
+    for (var o: u32 = 0u; o < params.outputSize; o++) {
+        sum += gradOutput[b * params.outputSize + o] * weights[o * params.inputSize + i];
     }
-
-    if (b < params.batchSize && i < params.inputSize) {
-        gradInput[b * params.inputSize + i] = sum;
-    }
+    gradInput[b * params.inputSize + i] = sum;
 }
-`, ts2, ts2, tileSize, tileSize)
+`, tileSize)
 }
 
 // ShaderDenseBackwardDW calculates gradWeights = gradOutput^T * input
 // dw = dy^T * x => dw[o, i] = sum_b dy[b, o] * x[b, i]
 func ShaderDenseBackwardDW(tileSize int) string {
-	ts2 := tileSize * tileSize
 	return fmt.Sprintf(`
 struct Params {
     batchSize: u32,
@@ -83,58 +45,158 @@ struct Params {
     outputSize: u32,
     tileSize: u32,
 };
-
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
 @group(0) @binding(2) var<storage, read> input: array<f32>;
 @group(0) @binding(3) var<storage, read_write> gradWeights: array<f32>;
 
-var<workgroup> dyTile: array<f32, %d>;
-var<workgroup> xTile: array<f32, %d>;
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(workgroup_id) wg_id: vec3<u32>) {
+    let i = global_id.x;
+    let o = wg_id.y;
+    if (i >= params.inputSize || o >= params.outputSize) { return; }
+    var sum: f32 = 0.0;
+    for (var b: u32 = 0u; b < params.batchSize; b++) {
+        sum += gradOutput[b * params.outputSize + o] * input[b * params.inputSize + i];
+    }
+    gradWeights[o * params.inputSize + i] += sum;
+}
+`, tileSize)
+}
 
-@compute @workgroup_size(%d, %d, 1)
+func ShaderTiledDenseBackwardDX(tileSize int) string {
+	return fmt.Sprintf(`
+struct DenseScaleParams {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    activation: u32,
+    scale: f32,
+    p1: u32, p2: u32, p3: u32, p4: u32, p5: u32, p6: u32, p7: u32,
+};
+@group(0) @binding(0) var<uniform> params: DenseScaleParams;
+@group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
+@group(0) @binding(2) var<storage, read> weights: array<f32>;
+
+@group(0) @binding(3) var<storage, read_write> gradInput: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
+
+var<workgroup> gCache: array<f32, %d>;
+
+` + wgslActivateDerivative + `
+
+@compute @workgroup_size(%d, 1, 1)
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
-    @builtin(local_invocation_id) local_id: vec3<u32>,
-    @builtin(workgroup_id) wg_id: vec3<u32>
+    @builtin(local_invocation_id)  local_id:  vec3<u32>,
+    @builtin(workgroup_id)         wg_id:      vec3<u32>
 ) {
     let i = global_id.x;
-    let o = global_id.y;
-    let tx = local_id.x;
-    let ty = local_id.y;
+    let b = wg_id.y;
+    let tid = local_id.x;
+    let tileSize: u32 = %du;
+
+    if (i >= params.inputSize || b >= params.batchSize) { return; }
 
     var sum: f32 = 0.0;
-    let numTiles = (params.batchSize + params.tileSize - 1) / params.tileSize;
+    let base_go = b * params.outputSize;
 
-    for (var t: u32 = 0u; t < numTiles; t++) {
-        let b_idx = t * params.tileSize + tx;
-        if (o < params.outputSize && b_idx < params.batchSize) {
-            dyTile[ty * params.tileSize + tx] = gradOutput[b_idx * params.outputSize + o];
+    // DX = GO * W^T  => sum_o GO[o] * W[o,i]
+    // Threads in WG share the same input 'i' BUT GO[o] can be shared across different 'i'.
+    // If we compute multiple 'i' per WG, we can cache GO[o].
+
+    for (var oTile: u32 = 0u; oTile < params.outputSize; oTile += tileSize) {
+        // Load GO tile into shared memory (GO[o] * activateDerivative(preAct[o]))
+        let oIdx = oTile + tid;
+        if (oIdx < params.outputSize) {
+            let idx = base_go + oIdx;
+            gCache[tid] = gradOutput[idx] * activateDerivative(preAct[idx], params.activation);
         } else {
-            dyTile[ty * params.tileSize + tx] = 0.0;
+            gCache[tid] = 0.0;
         }
-
-        let bx_idx = t * params.tileSize + ty;
-        if (i < params.inputSize && bx_idx < params.batchSize) {
-            xTile[ty * params.tileSize + tx] = input[bx_idx * params.inputSize + i];
-        } else {
-            xTile[ty * params.tileSize + tx] = 0.0;
-        }
-
+        
         workgroupBarrier();
-
-        for (var k: u32 = 0u; k < params.tileSize; k++) {
-            sum += dyTile[ty * params.tileSize + k] * xTile[k * params.tileSize + tx];
+        
+        let limit = min(tileSize, params.outputSize - oTile);
+        for (var o: u32 = 0u; o < limit; o++) {
+            // Weights is [outputSize, inputSize] => W[oTile + o, i]
+            sum += gCache[o] * weights[(oTile + o) * params.inputSize + i];
         }
-
+        
         workgroupBarrier();
     }
-
-    if (o < params.outputSize && i < params.inputSize) {
-        gradWeights[o * params.inputSize + i] += sum;
-    }
+    
+    gradInput[b * params.inputSize + i] = sum;
 }
-`, ts2, ts2, tileSize, tileSize)
+`, tileSize, tileSize, tileSize)
+}
+
+func ShaderTiledDenseBackwardDW(tileSize int) string {
+	return fmt.Sprintf(`
+struct DenseScaleParams {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    activation: u32,
+    scale: f32,
+    p1: u32, p2: u32, p3: u32, p4: u32, p5: u32, p6: u32, p7: u32,
+};
+@group(0) @binding(0) var<uniform> params: DenseScaleParams;
+@group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
+@group(0) @binding(2) var<storage, read> input: array<f32>;
+
+@group(0) @binding(3) var<storage, read_write> gradWeights: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
+
+var<workgroup> inCache: array<f32, %d>;
+
+` + wgslActivateDerivative + `
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id)  local_id:  vec3<u32>,
+    @builtin(workgroup_id)         wg_id:      vec3<u32>
+) {
+    let i = global_id.x; // input
+    let o = global_id.y; // output
+    let tid = local_id.x;
+    let tileSize: u32 = %du;
+
+    if (i >= params.inputSize || o >= params.outputSize) { return; }
+
+    var sum: f32 = 0.0;
+
+    // DW = GO^T * IN => sum_b GO[b, o] * IN[b, i]
+    // Threads in WG share output 'o', different 'i'.
+    // We can't easily cache GO[b,o] across different 'i' because it's only one 'o'.
+    // But we can cache inputs across batches.
+
+    for (var bTile: u32 = 0u; bTile < params.batchSize; bTile += tileSize) {
+        // Load input tile for this 'i' across batches? No, tid is 'i'.
+        // Load input[bTile + tid, i]? No.
+        // Let's cache GO[b, o] across batches.
+        let bIdx = bTile + tid;
+        if (bIdx < params.batchSize) {
+            let outIdx = bIdx * params.outputSize + o;
+            inCache[tid] = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
+        } else {
+            inCache[tid] = 0.0;
+        }
+        
+        workgroupBarrier();
+        
+        let limit = min(tileSize, params.batchSize - bTile);
+        for (var b: u32 = 0u; b < limit; b++) {
+            sum += inCache[b] * input[(bTile + b) * params.inputSize + i];
+        }
+        
+        workgroupBarrier();
+    }
+    
+    gradWeights[o * params.inputSize + i] += sum;
+}
+`, tileSize, tileSize, tileSize)
 }
 
 const ShaderRMSNormBackward = `
@@ -332,8 +394,9 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
 @group(0) @binding(2) var<storage, read> weights: array<f32>;
-@group(0) @binding(3) var<storage, read> preAct: array<f32>;
-@group(0) @binding(4) var<storage, read_write> gradInput: array<f32>;
+
+@group(0) @binding(3) var<storage, read_write> gradInput: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -381,8 +444,9 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
 @group(0) @binding(2) var<storage, read> input: array<f32>;
-@group(0) @binding(3) var<storage, read> preAct: array<f32>;
-@group(0) @binding(4) var<storage, read_write> gradWeights: array<f32>;
+
+@group(0) @binding(3) var<storage, read_write> gradWeights: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -429,8 +493,9 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
 @group(0) @binding(2) var<storage, read> weights: array<f32>;
-@group(0) @binding(3) var<storage, read> preAct: array<f32>;
-@group(0) @binding(4) var<storage, read_write> gradInput: array<f32>;
+
+@group(0) @binding(3) var<storage, read_write> gradInput: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -487,8 +552,9 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
 @group(0) @binding(2) var<storage, read> input: array<f32>;
-@group(0) @binding(3) var<storage, read> preAct: array<f32>;
-@group(0) @binding(4) var<storage, read_write> gradWeights: array<f32>;
+
+@group(0) @binding(3) var<storage, read_write> gradWeights: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -543,8 +609,9 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
 @group(0) @binding(2) var<storage, read> weights: array<f32>;
-@group(0) @binding(3) var<storage, read> preAct: array<f32>;
-@group(0) @binding(4) var<storage, read_write> gradInput: array<f32>;
+
+@group(0) @binding(3) var<storage, read_write> gradInput: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -572,14 +639,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                     let vd = i32(id) + i32(params.padding) - i32(kd);
                     let vh = i32(ih) + i32(params.padding) - i32(kh);
                     let vw = i32(iw) + i32(params.padding) - i32(kw);
-                    if (vd >= 0 && vd % i32(params.stride) == 0 && 
-                        vh >= 0 && vh % i32(params.stride) == 0 && 
+                    if (vd >= 0 && vd % i32(params.stride) == 0 &&
+                        vh >= 0 && vh % i32(params.stride) == 0 &&
                         vw >= 0 && vw % i32(params.stride) == 0) {
                         let od = u32(vd / i32(params.stride));
                         let oh = u32(vh / i32(params.stride));
                         let ow = u32(vw / i32(params.stride));
                         if (od < params.outD && oh < params.outH && ow < params.outW) {
-                            let outIdx = (((b * params.filters + f) * params.outD + od) * params.outH + oh) * params.outW + ow;
+                            let outIdx = ((b * params.filters + f) * params.outD + od) * params.outH * params.outW + oh * params.outW + ow;
                             let dy = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
                             let kWIdx = (((f * params.inC + ic) * params.kSize + kd) * params.kSize + kh) * params.kSize + kw;
                             sum += dy * weights[kWIdx];
@@ -612,8 +679,9 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> gradOutput: array<f32>;
 @group(0) @binding(2) var<storage, read> input: array<f32>;
-@group(0) @binding(3) var<storage, read> preAct: array<f32>;
-@group(0) @binding(4) var<storage, read_write> gradWeights: array<f32>;
+
+@group(0) @binding(3) var<storage, read_write> gradWeights: array<f32>;
+@group(0) @binding(4) var<storage, read> preAct: array<f32>;
 
 ` + wgslActivateDerivative + `
 
@@ -644,7 +712,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                     if (id >= 0 && id < i32(params.inD) &&
                         ih >= 0 && ih < i32(params.inH) &&
                         iw >= 0 && iw < i32(params.inW)) {
-                        let outIdx = (((b * params.filters + f) * params.outD + od) * params.outH + oh) * params.outW + ow;
+                        let outIdx = ((b * params.filters + f) * params.outD + od) * params.outH * params.outW + oh * params.outW + ow;
                         let dy = gradOutput[outIdx] * activateDerivative(preAct[outIdx], params.activation);
                         let inIdx = (((b * params.inC + ic) * params.inD + u32(id)) * params.inH + u32(ih)) * params.inW + u32(iw);
                         sum += dy * input[inIdx];
@@ -834,6 +902,286 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     output[tid] = res;
 }
 `
+
+// ShaderTiledRNNBackwardDX computes gradInput = gPre @ wIH^T for a single RNN step.
+// hCurr (binding 3) holds the post-tanh output; tanh' = 1 - hCurr^2.
+// Thread grid: ((inputSize+tileSize-1)/tileSize, batchSize, 1).
+func ShaderTiledRNNBackwardDX(tileSize int) string {
+	return fmt.Sprintf(`
+struct RNNParams {
+    batchSize:  u32,
+    inputSize:  u32,
+    hiddenSize: u32,
+    padding:    u32,
+};
+@group(0) @binding(0) var<uniform>             params:     RNNParams;
+@group(0) @binding(1) var<storage, read>       gradOutput: array<f32>; // [batchSize, hiddenSize]
+@group(0) @binding(2) var<storage, read>       wIH:        array<f32>; // [hiddenSize, inputSize]
+@group(0) @binding(3) var<storage, read>       hCurr:      array<f32>; // [batchSize, hiddenSize] post-tanh
+@group(0) @binding(4) var<storage, read_write> gradInput:  array<f32>; // [batchSize, inputSize]
+
+var<workgroup> shGPre: array<f32, %d>;
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id)  local_id:  vec3<u32>,
+    @builtin(workgroup_id)         wg_id:     vec3<u32>,
+) {
+    let i   = global_id.x;
+    let b   = wg_id.y;
+    let tid = local_id.x;
+    let H   = params.hiddenSize;
+    let I   = params.inputSize;
+    let TS: u32 = %du;
+
+    var grad: f32 = 0.0;
+
+    for (var hTile: u32 = 0u; hTile < H; hTile += TS) {
+        let h = hTile + tid;
+        if (h < H) {
+            let hc = hCurr[b * H + h];
+            shGPre[tid] = gradOutput[b * H + h] * (1.0 - hc * hc);
+        } else {
+            shGPre[tid] = 0.0;
+        }
+        workgroupBarrier();
+
+        if (i < I) {
+            let limit = min(TS, H - hTile);
+            for (var k: u32 = 0u; k < limit; k++) {
+                grad += wIH[(hTile + k) * I + i] * shGPre[k];
+            }
+        }
+        workgroupBarrier();
+    }
+
+    if (i < I) {
+        gradInput[b * I + i] = grad;
+    }
+}
+`, tileSize, tileSize, tileSize)
+}
+
+// ShaderTiledRNNBackwardDW computes gradWeights for a single RNN step.
+// Layout: gradWeights = [gradWIH (H×I), gradWHH (H×H), gradBias (H)].
+// Thread grid: ((hiddenSize+tileSize-1)/tileSize, 1, 1).
+func ShaderTiledRNNBackwardDW(tileSize int) string {
+	return fmt.Sprintf(`
+struct RNNParams {
+    batchSize:  u32,
+    inputSize:  u32,
+    hiddenSize: u32,
+    padding:    u32,
+};
+@group(0) @binding(0) var<uniform>             params:      RNNParams;
+@group(0) @binding(1) var<storage, read>       gradOutput:  array<f32>; // [batchSize, hiddenSize]
+@group(0) @binding(2) var<storage, read>       input:       array<f32>; // [batchSize, inputSize]
+@group(0) @binding(3) var<storage, read>       hCurr:       array<f32>; // [batchSize, hiddenSize] post-tanh
+@group(0) @binding(4) var<storage, read>       hPrev:       array<f32>; // [batchSize, hiddenSize]
+@group(0) @binding(5) var<storage, read_write> gradWeights: array<f32>; // [ihSize + hhSize + hiddenSize]
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let h = global_id.x;
+    if (h >= params.hiddenSize) { return; }
+
+    let H      = params.hiddenSize;
+    let I      = params.inputSize;
+    let ihSize = H * I;
+    let hhSize = H * H;
+
+    var biasGrad: f32 = 0.0;
+
+    for (var b: u32 = 0u; b < params.batchSize; b++) {
+        let hc   = hCurr[b * H + h];
+        let gPre = gradOutput[b * H + h] * (1.0 - hc * hc);
+        biasGrad += gPre;
+
+        for (var i: u32 = 0u; i < I; i++) {
+            gradWeights[h * I + i] += gPre * input[b * I + i];
+        }
+        for (var hp: u32 = 0u; hp < H; hp++) {
+            gradWeights[ihSize + h * H + hp] += gPre * hPrev[b * H + hp];
+        }
+    }
+    gradWeights[ihSize + hhSize + h] += biasGrad;
+}
+`, tileSize)
+}
+
+// ShaderTiledLSTMBackwardDX computes gradInput for a single LSTM step.
+// preAct holds [iS, fS, gS, oS, cC] per (b, h) — 5*hiddenSize floats per batch item.
+// cPrev is assumed 0 (single step), so dfP = 0 and only diP/dgP/doP are non-zero.
+// Thread grid: ((inputSize+tileSize-1)/tileSize, batchSize, 1).
+func ShaderTiledLSTMBackwardDX(tileSize int) string {
+	return fmt.Sprintf(`
+struct LSTMParams {
+    batchSize:  u32,
+    inputSize:  u32,
+    hiddenSize: u32,
+    padding:    u32,
+};
+@group(0) @binding(0) var<uniform>             params:    LSTMParams;
+@group(0) @binding(1) var<storage, read>       gradOutput: array<f32>; // [batchSize, hiddenSize]
+@group(0) @binding(2) var<storage, read>       weights:    array<f32>; // [wI,wF,wG,wO] (4*gateSize)
+@group(0) @binding(3) var<storage, read>       preAct:     array<f32>; // [batchSize, 5*hiddenSize]
+@group(0) @binding(4) var<storage, read_write> gradInput:  array<f32>; // [batchSize, inputSize]
+
+var<workgroup> shDI: array<f32, %d>;
+var<workgroup> shDG: array<f32, %d>;
+var<workgroup> shDO: array<f32, %d>;
+
+fn lstm_sigmoid(x: f32) -> f32 { return 1.0 / (1.0 + exp(-x)); }
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id)  local_id:  vec3<u32>,
+    @builtin(workgroup_id)         wg_id:     vec3<u32>,
+) {
+    let i   = global_id.x;
+    let b   = wg_id.y;
+    let tid = local_id.x;
+    let H   = params.hiddenSize;
+    let I   = params.inputSize;
+    let TS: u32 = %du;
+
+    let ihSize   = H * I;
+    let hhSize   = H * H;
+    let gateSize = ihSize + hhSize + H;
+
+    var grad: f32 = 0.0;
+
+    for (var hTile: u32 = 0u; hTile < H; hTile += TS) {
+        let h = hTile + tid;
+        if (h < H) {
+            let pIdx = b * 5u * H;
+            let iS = preAct[pIdx + h];
+            let gS = preAct[pIdx + 2u * H + h];
+            let oS = preAct[pIdx + 3u * H + h];
+            let cC = preAct[pIdx + 4u * H + h];
+
+            let iG = lstm_sigmoid(iS);
+            let gG = tanh(gS);
+            let oG = lstm_sigmoid(oS);
+            let cT = tanh(cC);
+
+            let dh = gradOutput[b * H + h];
+            let dc = dh * oG * (1.0 - cT * cT);
+
+            shDI[tid] = dc * gG * iG * (1.0 - iG);
+            shDG[tid] = dc * iG * (1.0 - gG * gG);
+            shDO[tid] = dh * cT * oG * (1.0 - oG);
+        } else {
+            shDI[tid] = 0.0;
+            shDG[tid] = 0.0;
+            shDO[tid] = 0.0;
+        }
+        workgroupBarrier();
+
+        if (i < I) {
+            let limit = min(TS, H - hTile);
+            for (var k: u32 = 0u; k < limit; k++) {
+                let hh = hTile + k;
+                grad += weights[hh * I + i]                 * shDI[k]
+                      + weights[2u * gateSize + hh * I + i] * shDG[k]
+                      + weights[3u * gateSize + hh * I + i] * shDO[k];
+            }
+        }
+        workgroupBarrier();
+    }
+
+    if (i < I) {
+        gradInput[b * I + i] = grad;
+    }
+}
+`, tileSize, tileSize, tileSize, tileSize, tileSize)
+}
+
+// ShaderTiledLSTMBackwardDW computes weight gradients for a single LSTM step.
+// Weight layout: [wI gateSize, wF gateSize, wG gateSize, wO gateSize],
+// gateSize = hiddenSize*inputSize + hiddenSize*hiddenSize + hiddenSize.
+// Thread grid: ((hiddenSize+tileSize-1)/tileSize, 1, 1).
+func ShaderTiledLSTMBackwardDW(tileSize int) string {
+	return fmt.Sprintf(`
+struct LSTMParams {
+    batchSize:  u32,
+    inputSize:  u32,
+    hiddenSize: u32,
+    padding:    u32,
+};
+@group(0) @binding(0) var<uniform>             params:      LSTMParams;
+@group(0) @binding(1) var<storage, read>       gradOutput:  array<f32>; // [batchSize, hiddenSize]
+@group(0) @binding(2) var<storage, read>       input:       array<f32>; // [batchSize, inputSize]
+@group(0) @binding(3) var<storage, read>       preAct:      array<f32>; // [batchSize, 5*hiddenSize]
+@group(0) @binding(4) var<storage, read>       hPrev:       array<f32>; // [batchSize, hiddenSize]
+@group(0) @binding(5) var<storage, read_write> gradWeights: array<f32>;
+
+fn lstm_sigmoid_dw(x: f32) -> f32 { return 1.0 / (1.0 + exp(-x)); }
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let h = global_id.x;
+    if (h >= params.hiddenSize) { return; }
+
+    let H        = params.hiddenSize;
+    let I        = params.inputSize;
+    let ihSize   = H * I;
+    let hhSize   = H * H;
+    let gateSize = ihSize + hhSize + H;
+
+    var gBI: f32 = 0.0;
+    var gBF: f32 = 0.0;
+    var gBG: f32 = 0.0;
+    var gBO: f32 = 0.0;
+
+    for (var b: u32 = 0u; b < params.batchSize; b++) {
+        let pIdx = b * 5u * H;
+        let iS = preAct[pIdx + h];
+        let fS = preAct[pIdx + H + h];
+        let gS = preAct[pIdx + 2u * H + h];
+        let oS = preAct[pIdx + 3u * H + h];
+        let cC = preAct[pIdx + 4u * H + h];
+
+        let iG = lstm_sigmoid_dw(iS);
+        let fG = lstm_sigmoid_dw(fS);
+        let gG = tanh(gS);
+        let oG = lstm_sigmoid_dw(oS);
+        let cT = tanh(cC);
+
+        let dh = gradOutput[b * H + h];
+        let dc = dh * oG * (1.0 - cT * cT);
+        // cPrev = 0 for single-step, so dfP = 0
+        let diP = dc * gG * iG * (1.0 - iG);
+        let dfP = 0.0;
+        let dgP = dc * iG * (1.0 - gG * gG);
+        let doP = dh * cT * oG * (1.0 - oG);
+
+        gBI += diP; gBF += dfP; gBG += dgP; gBO += doP;
+
+        for (var i: u32 = 0u; i < I; i++) {
+            let x = input[b * I + i];
+            gradWeights[h * I + i]                         += diP * x;
+            gradWeights[gateSize + h * I + i]              += dfP * x;
+            gradWeights[2u * gateSize + h * I + i]         += dgP * x;
+            gradWeights[3u * gateSize + h * I + i]         += doP * x;
+        }
+        for (var hp: u32 = 0u; hp < H; hp++) {
+            let hv = hPrev[b * H + hp];
+            gradWeights[ihSize + h * H + hp]                         += diP * hv;
+            gradWeights[gateSize + ihSize + h * H + hp]              += dfP * hv;
+            gradWeights[2u * gateSize + ihSize + h * H + hp]         += dgP * hv;
+            gradWeights[3u * gateSize + ihSize + h * H + hp]         += doP * hv;
+        }
+    }
+    gradWeights[ihSize + hhSize + h]                         += gBI;
+    gradWeights[gateSize + ihSize + hhSize + h]              += gBF;
+    gradWeights[2u * gateSize + ihSize + hhSize + h]         += gBG;
+    gradWeights[3u * gateSize + ihSize + hhSize + h]         += gBO;
+}
+`, tileSize)
+}
 
 const ShaderActivationBackward = `
 struct Params {

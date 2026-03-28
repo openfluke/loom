@@ -54,6 +54,98 @@ typedef struct {
 	int GridCols;
 } LoomNetworkBlueprint;
 
+typedef struct {
+	uint32_t BatchSize;
+	uint32_t InC;
+	uint32_t InL;
+	uint32_t OutC;
+	uint32_t OutL;
+	uint32_t KSize;
+	uint32_t Stride;
+	uint32_t Padding;
+	float Scale;
+	uint32_t _Pad[7];
+} LoomCNN1ScaleParams;
+
+typedef struct {
+	uint32_t BatchSize;
+	uint32_t InC, InH, InW;
+	uint32_t OutC, OutH, OutW;
+	uint32_t KH, KW;
+	uint32_t StrideH, StrideW;
+	uint32_t PadH, PadW;
+	float Scale;
+	uint32_t _Pad[1];
+} LoomCNN2ScaleParams;
+
+typedef struct {
+	uint32_t BatchSize;
+	uint32_t InC, InD, InH, InW;
+	uint32_t OutC, OutD, OutH, OutW;
+	uint32_t KD, KH, KW;
+	uint32_t SD, SH, SW;
+	uint32_t PD, PH, PW;
+	float Scale;
+	uint32_t _Pad[1];
+} LoomCNN3ScaleParams;
+
+typedef struct {
+	uint32_t BatchSize;
+	uint32_t InputSize;
+	uint32_t OutputSize;
+	uint32_t TileSize;
+	float Scale;
+	uint32_t Activation;
+} LoomDenseScaleParams;
+
+typedef struct {
+	uint32_t BatchSize;
+	uint32_t InC;
+	uint32_t InL;
+	uint32_t Filters;
+	uint32_t OutL;
+	uint32_t KSize;
+	uint32_t Stride;
+	uint32_t Padding;
+	uint32_t Activation;
+	uint32_t _Pad[7];
+} LoomCNN1Bwd1DParams;
+
+typedef struct {
+	uint32_t BatchSize;
+	uint32_t InC, InH, InW;
+	uint32_t Filters;
+	uint32_t OutH, OutW;
+	uint32_t KSize;
+	uint32_t Stride;
+	uint32_t Padding;
+	uint32_t Activation;
+	uint32_t _Pad[3];
+} LoomCNN2Bwd2DParams;
+
+typedef struct {
+	uint32_t BatchSize;
+	uint32_t InC, InD, InH, InW;
+	uint32_t Filters;
+	uint32_t OutD, OutH, OutW;
+	uint32_t KD, KH, KW;
+	uint32_t SD, SH, SW;
+	uint32_t PD, PH, PW;
+	uint32_t Activation;
+	uint32_t Pad;
+} LoomCNN3Backward3DParams;
+
+typedef struct {
+	void* Buffer;
+	uint64_t Offset;
+	uint64_t Size;
+} LoomBufferBinding;
+
+typedef struct {
+	uint64_t HeaderSize;
+} LoomTensorMetaHeader;
+
+
 */
 import "C"
 
@@ -156,4 +248,20 @@ var (
 	_ poly.WGPUApplyGradientsParams
 	_ poly.WGPUActivationParams
 	_ poly.WGPULossParams
+	_ poly.TensorMetaHeader
+	_ poly.WGPUCNN3Backward3DParams
+	_ poly.WGPUCNN1Bwd1DParams
+	_ poly.WGPUCNN2Bwd2DParams
+	_ poly.WGPUCNN1ScaleParams
+	_ poly.WGPUCNN2ScaleParams
+	_ poly.WGPUCNN3ScaleParams
+	_ poly.WGPUDenseScaleParams
+	_ poly.WGPUBufferBinding
+	_ = poly.MetacognitionForwardPolymorphic[float32]
+	_ = poly.MetacognitionBackwardPolymorphic[float32]
+	_ = poly.SwiGLUForwardWGPU[float32]
+	_ = poly.SwiGLUBackwardWGPU[float32]
+	_ = poly.MHAForwardTiledParallel[float32]
+	_ = poly.SyncWeightsFromGPU
+	_ = poly.ShaderTiledSwiGLUActCache
 )

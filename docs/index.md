@@ -1,6 +1,6 @@
-# Loom / poly Documentation Index
+# Loom / poly Documentation Index (v0.75.0)
 
-This directory contains comprehensive documentation for the `poly/` package — the **M-POLY-VTD** (Multi-numerical POLYmorphic Volumetric Tiled-tensor Dispatcher) engine that powers the Loom neural framework.
+This directory contains comprehensive documentation for the `poly/` package — the **M-POLY-VTD** (Multi-numerical POLYmorphic Volumetric Tiled-tensor Dispatcher) engine that powers the Loom neural framework. Current implementation progress: **78.8% (104/132 features)**.
 
 ---
 

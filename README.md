@@ -54,15 +54,15 @@ Loom provides bit-exact reproducibility across:
 ## 📊 Versioning & Roadmap
 Loom uses a mathematical versioning system derived from a strictly verified checklist of 130 industry-scale features.
 
-### **Current Version: 0.74.0 — Complete**
-- **Completion Ratio**: 74.6% (97 / 130 features verified — Polyglot Bridge Complete)
-- **Status**: **0.74.0 "Polyglot Bridge" is fully shipped.** The full polyglot runtime is now live across Go, TypeScript/Node.js, Browser (WASM/WebGPU), Python (`welvet`), C#, Java, and Dart. FP4 acceleration is native on both CPU and GPU.
+### **Current Version: 0.75.0 — CURRENT**
+- **Completion Ratio**: 78.8% (104 / 132 features verified — Multi-Core Symphony Complete)
+- **Status**: **0.75.0 "Multi-Core Symphony" is officially current.** Unified **SC/MC Tiling** is live across all 21 types, breaking the memory bandwidth wall on consumer hardware. The **Systolic 3D Grid** has been stabilized to prevent uninitialized memory issues, and 100% C-ABI parity is achieved for Python and TypeScript.
     - > [!NOTE]
-    - > **GPU Backward Training**: Full end-to-end GPU training is live. Dense, RMSNorm, CNN 1D/2D/3D all run forward + backward + weight updates in a **single GPU command buffer submission** via the `BeginFrame`/`FlushFrame` pattern. Measured speedups on real workloads: **17x–65x** vs CPU.
+    - > **Numerical Tiling**: Introduces specialized Single-Core (SC) and Multi-Core (MC) profiles, optimizing register pressure vs. high-bandwidth L1/L2 cache throughput.
 - **Milestone achieved**:
-    - **v0.74.0 "Polyglot Bridge"** ✅ — TypeScript/WASM verified, Python `welvet` published to PyPI, 0.000000% divergence across all bindings.
-- **Next Target — v0.8.0 "Edge-First"**: Wiring SwiGLU/MHA/Embedding into `DispatchBackwardLayer`; specialized Edge-First orchestration (Thermal-Awareness, UMA, Command Buffer Graphing) for mobile and wearable deployment.
-- **Next Steps**: SwiGLU/MHA GPU backward wiring; Edge-First hardware scheduling.
+    - **v0.75.0 "Multi-Core Symphony"** ✅ — Tiling logic unrolled across the entire dispatcher; stabilized volumetric hopping; 100% functional parity for `welvet` SDKs.
+- **Next Target — v0.8.0 "Edge-First"**: Specialized Edge-First orchestration (Thermal-Awareness, UMA, Command Buffer Graphing) for mobile and wearable deployment.
+- **Next Steps**: Command Graph Buffering; Thermal-Aware hardware scheduling.
 
 For a detailed breakdown of the roadmap and version calculation, see [poly/README.md](./poly/README.md#📊-true-version-calculation).
 

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>welvet — TypeScript Wrapper Parity Audit</title>
+    <style>
+        :root {
+            --bg: #0a0a0c;
+            --panel: rgba(255, 255, 255, 0.03);
+            --accent: #00f2ff;
+            --accent-glow: rgba(0, 242, 255, 0.3);
+            --text: #e0e0e6;
+            --dim: #888891;
+            --border: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', -apple-system, system-ui, sans-serif;
+            margin: 0;
+            padding: 40px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 40px;
+        }
+
+        .category-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 24px;
+        }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            backdrop-filter: blur(10px);
+        }
+
+        .status-pill {
+            padding: 4px 10px;
+            border-radius: 100px;
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 700;
+        }
+
+        .status-PASS { background: rgba(0, 255, 136, 0.1); color: #00ff88; }
+        .status-MISSING { background: rgba(255, 68, 68, 0.1); color: #ff4444; }
+        .status-INDIRECT { background: rgba(255, 170, 0, 0.1); color: #ffaa00; }
+
+        .terminal {
+            background: #000;
+            border-radius: 8px;
+            padding: 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: #00ff88;
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #111;
+            margin-bottom: 24px;
+        }
+
+        ul { list-style: none; padding: 0; margin: 0; }
+        li {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            font-size: 13px;
+        }
+
+        h2 { font-size: 18px; margin-top: 0; display: flex; align-items: center; gap: 10px; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div>
+            <h1>TypeScript Wrapper Parity Audit</h1>
+            <p>Verification of 1:1 functional parity between <code style="color:var(--accent)">@openfluke/welvet</code> and <code style="color:var(--accent)">loom-core</code>.</p>
+        </div>
+        <div id="coverage-stats" style="text-align: right;">
+            <div style="font-size: 32px; font-weight: 800; color: var(--accent);">0%</div>
+            <div style="font-size: 12px; color: var(--dim);">Global Parity Induction</div>
+        </div>
+    </div>
+
+    <div class="terminal" id="audit-log">
+        [5:32:01 pm] Initializing welvet-core auditor...
+    </div>
+
+    <div class="category-grid" id="audit-grid">
+        <!-- Categories will be injected here -->
+    </div>
+
+    <!-- Dependencies -->
+    <script src="/dist/wasm_exec.js"></script>
+    <script type="module">
+        import welvet from '/dist/index.js';
+        
+        // Define log function for check_ts.js
+        window.log = (msg, color) => {
+            const el = document.getElementById('audit-log');
+            const time = new Date().toLocaleTimeString();
+            el.innerHTML += `<div><span style="color:#555">[${time}]</span> <span style="color:${color || '#00ff88'}">${msg}</span></div>`;
+            el.scrollTop = el.scrollHeight;
+        };
+
+        async function run() {
+            try {
+                // 1. Initialize TypeScript Wrapper
+                await welvet.init();
+                log("WASM Runtime Active. Signal acquired.", "#00ff9d");
+
+                // 2. Fetch expected API blueprint
+                const blueprint = await fetch('../expected_api.json').then(r => r.json());
+                log(`Blueprint loaded. ${Object.keys(blueprint).length} categories mapped.`, "#00d4ff");
+
+                // 3. Run Audit Logic (from check_ts.js)
+                const results = await window.runTSParityAudit(welvet, blueprint);
+                
+                // 4. Render Results
+                renderResults(results);
+
+            } catch(e) {
+                log("Audit FATAL: " + e.message, "#ff3e3e");
+                console.error(e);
+            }
+        }
+
+        function renderResults(results) {
+            const grid = document.getElementById('audit-grid');
+            const stats = document.getElementById('coverage-stats');
+            
+            const categories = {};
+            let passedCount = 0;
+
+            results.forEach(r => {
+                if (!categories[r.category]) categories[r.category] = [];
+                categories[r.category].push(r);
+                if (r.status === "PASS" || r.status === "INDIRECT") passedCount++;
+            });
+
+            const coverage = (passedCount / results.length) * 100;
+            stats.querySelector('div').innerText = coverage.toFixed(1) + "%";
+
+            Object.entries(categories).forEach(([name, items]) => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                
+                const passed = items.filter(i => i.status === "PASS" || i.status === "INDIRECT").length;
+                const total = items.length;
+                
+                card.innerHTML = `
+                    <h2>
+                        <span>${name}</span>
+                        <span style="font-size:12px; font-weight:400; color:var(--dim)">${passed}/${total}</span>
+                    </h2>
+                    <ul>
+                        ${items.map(i => `
+                            <li>
+                                <span>${i.name}</span>
+                                <span class="status-pill status-${i.status}">${i.status}</span>
+                            </li>
+                        `).join('')}
+                    </ul>
+                `;
+                grid.appendChild(card);
+            });
+
+            log(`Audit Complete. Coverage: ${coverage.toFixed(1)}% | Items: ${results.length}`, "#00f2ff");
+        }
+
+        // Import the audit logic
+        const script = document.createElement('script');
+        script.src = 'check_ts.js';
+        script.onload = run;
+        document.body.appendChild(script);
+
+    </script>
+</body>
+</html>

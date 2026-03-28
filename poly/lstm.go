@@ -2,6 +2,8 @@ package poly
 
 import (
 	"math"
+	"runtime"
+	"sync"
 )
 
 // LSTMForwardPolymorphic performs a forward pass through a polymorphic LSTM layer.
@@ -629,7 +631,7 @@ func LSTMBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inpu
 // LSTMForwardTiled implements a tiled (blocked) LSTM forward pass for cache efficiency.
 func LSTMForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	batchSize, inputSize, hiddenSize, seqLength := input.Shape[0], layer.InputHeight, layer.OutputHeight, layer.SeqLength
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 32 }
 
 	preAct = NewTensor[T](batchSize, seqLength, 5*hiddenSize) 
@@ -733,7 +735,7 @@ func LSTMForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preA
 // LSTMBackwardTiled implements a tiled (blocked) LSTM backward pass.
 func LSTMBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
 	batchSize, inputSize, hiddenSize, seqLength := input.Shape[0], layer.InputHeight, layer.OutputHeight, layer.SeqLength
-	tileSize := layer.TileSize
+	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 { tileSize = 32 }
 
 	gradInput = NewTensor[T](batchSize, seqLength, inputSize)
@@ -835,6 +837,282 @@ func LSTMBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, pre
 				}
 			}
 			gradH, gradC = nextGradH, nextGradC
+		}
+	}
+
+	return gradInput, gradWeights
+}
+
+// lstmForwardTiledParallel parallelises LSTMForwardTiled over the batch dimension.
+// Time steps within each batch item remain sequential (cell-state dependency).
+func lstmForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	batchSize, inputSize, hiddenSize, seqLength := input.Shape[0], layer.InputHeight, layer.OutputHeight, layer.SeqLength
+	tileSize := layer.GetCPUTileSize(layer.DType)
+	if tileSize <= 0 {
+		tileSize = 32
+	}
+
+	preAct = NewTensor[T](batchSize, seqLength, 5*hiddenSize)
+	postAct = NewTensor[T](batchSize, seqLength, hiddenSize)
+
+	scale := layer.WeightStore.Scale
+	if scale == 0 {
+		scale = 1.0
+	}
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+
+	ihSize, hhSize, bSize := hiddenSize*inputSize, hiddenSize*hiddenSize, hiddenSize
+	gateSize := ihSize + hhSize + bSize
+	wI := wData[0:gateSize]
+	wF := wData[gateSize : 2*gateSize]
+	wG := wData[2*gateSize : 3*gateSize]
+	wO := wData[3*gateSize : 4*gateSize]
+
+	numCPUs := runtime.NumCPU()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, numCPUs)
+
+	for b := 0; b < batchSize; b++ {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(b int) {
+			defer func() { <-sem; wg.Done() }()
+			hPrev := make([]float32, hiddenSize)
+			cPrev := make([]float32, hiddenSize)
+
+			for t := 0; t < seqLength; t++ {
+				itBase := b*seqLength*inputSize + t*inputSize
+				pIdxBase := b*seqLength*5*hiddenSize + t*5*hiddenSize
+
+				for hTile := 0; hTile < hiddenSize; hTile += tileSize {
+					hEnd := hTile + tileSize
+					if hEnd > hiddenSize {
+						hEnd = hiddenSize
+					}
+					for h := hTile; h < hEnd; h++ {
+						preAct.Data[pIdxBase+h] = T(SimulatePrecision(wI[ihSize+hhSize+h], layer.DType, scale))
+						preAct.Data[pIdxBase+hiddenSize+h] = T(SimulatePrecision(wF[ihSize+hhSize+h], layer.DType, scale))
+						preAct.Data[pIdxBase+2*hiddenSize+h] = T(SimulatePrecision(wG[ihSize+hhSize+h], layer.DType, scale))
+						preAct.Data[pIdxBase+3*hiddenSize+h] = T(SimulatePrecision(wO[ihSize+hhSize+h], layer.DType, scale))
+					}
+					for iTile := 0; iTile < inputSize; iTile += tileSize {
+						iEnd := iTile + tileSize
+						if iEnd > inputSize {
+							iEnd = inputSize
+						}
+						for h := hTile; h < hEnd; h++ {
+							hOff := h * inputSize
+							iSum, fSum, gSum, oSum := float32(0), float32(0), float32(0), float32(0)
+							for i := iTile; i < iEnd; i++ {
+								x := float32(input.Data[itBase+i])
+								iSum += x * SimulatePrecision(wI[hOff+i], layer.DType, scale)
+								fSum += x * SimulatePrecision(wF[hOff+i], layer.DType, scale)
+								gSum += x * SimulatePrecision(wG[hOff+i], layer.DType, scale)
+								oSum += x * SimulatePrecision(wO[hOff+i], layer.DType, scale)
+							}
+							preAct.Data[pIdxBase+h] += T(iSum)
+							preAct.Data[pIdxBase+hiddenSize+h] += T(fSum)
+							preAct.Data[pIdxBase+2*hiddenSize+h] += T(gSum)
+							preAct.Data[pIdxBase+3*hiddenSize+h] += T(oSum)
+						}
+					}
+					for hpTile := 0; hpTile < hiddenSize; hpTile += tileSize {
+						hpEnd := hpTile + tileSize
+						if hpEnd > hiddenSize {
+							hpEnd = hiddenSize
+						}
+						for h := hTile; h < hEnd; h++ {
+							hOff := ihSize + h*hiddenSize
+							iSum, fSum, gSum, oSum := float32(0), float32(0), float32(0), float32(0)
+							for hp := hpTile; hp < hpEnd; hp++ {
+								hv := hPrev[hp]
+								iSum += hv * SimulatePrecision(wI[hOff+hp], layer.DType, scale)
+								fSum += hv * SimulatePrecision(wF[hOff+hp], layer.DType, scale)
+								gSum += hv * SimulatePrecision(wG[hOff+hp], layer.DType, scale)
+								oSum += hv * SimulatePrecision(wO[hOff+hp], layer.DType, scale)
+							}
+							preAct.Data[pIdxBase+h] += T(iSum)
+							preAct.Data[pIdxBase+hiddenSize+h] += T(fSum)
+							preAct.Data[pIdxBase+2*hiddenSize+h] += T(gSum)
+							preAct.Data[pIdxBase+3*hiddenSize+h] += T(oSum)
+						}
+					}
+				}
+
+				for h := 0; h < hiddenSize; h++ {
+					iS := float32(preAct.Data[pIdxBase+h])
+					fS := float32(preAct.Data[pIdxBase+hiddenSize+h])
+					gS := float32(preAct.Data[pIdxBase+2*hiddenSize+h])
+					oS := float32(preAct.Data[pIdxBase+3*hiddenSize+h])
+					iG := 1.0 / (1.0 + float32(math.Exp(-float64(iS))))
+					fG := 1.0 / (1.0 + float32(math.Exp(-float64(fS))))
+					gG := float32(math.Tanh(float64(gS)))
+					oG := 1.0 / (1.0 + float32(math.Exp(-float64(oS))))
+					cC := fG*cPrev[h] + iG*gG
+					hC := oG * float32(math.Tanh(float64(cC)))
+					postAct.Data[b*seqLength*hiddenSize+t*hiddenSize+h] = T(hC)
+					preAct.Data[pIdxBase+4*hiddenSize+h] = T(cC)
+					hPrev[h], cPrev[h] = hC, cC
+				}
+			}
+		}(b)
+	}
+	wg.Wait()
+	return preAct, postAct
+}
+
+// lstmBackwardTiledParallel computes the LSTM backward pass in parallel over batches.
+// Each goroutine has its own localGradW buffer; after WaitGroup, buffers are merged.
+// gradInput[b,...] is unique per batch — written directly.
+func lstmBackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	batchSize, inputSize, hiddenSize, seqLength := input.Shape[0], layer.InputHeight, layer.OutputHeight, layer.SeqLength
+	tileSize := layer.GetCPUTileSize(layer.DType)
+	if tileSize <= 0 {
+		tileSize = 32
+	}
+
+	gradInput = NewTensor[T](batchSize, seqLength, inputSize)
+	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
+
+	ihSize, hhSize, bSize := hiddenSize*inputSize, hiddenSize*hiddenSize, hiddenSize
+	gateSize := ihSize + hhSize + bSize
+
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	scale := layer.WeightStore.Scale
+	if scale == 0 {
+		scale = 1.0
+	}
+	wI, wF, wG, wO := wData[0:gateSize], wData[gateSize:2*gateSize], wData[2*gateSize:3*gateSize], wData[3*gateSize:4*gateSize]
+
+	numCPUs := runtime.NumCPU()
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, numCPUs)
+
+	localGradWSlices := make([][]T, batchSize)
+	for b := 0; b < batchSize; b++ {
+		localGradWSlices[b] = make([]T, len(layer.WeightStore.Master))
+	}
+
+	for b := 0; b < batchSize; b++ {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(b int) {
+			defer func() { <-sem; wg.Done() }()
+			localGW := localGradWSlices[b]
+			gradH, gradC := make([]float32, hiddenSize), make([]float32, hiddenSize)
+
+			for t := seqLength - 1; t >= 0; t-- {
+				nextGradH, nextGradC := make([]float32, hiddenSize), make([]float32, hiddenSize)
+				pIdx := b*seqLength*5*hiddenSize + t*5*hiddenSize
+				itBase := b*seqLength*inputSize + t*inputSize
+
+				deltas := make([]float32, 4*hiddenSize)
+				for h := 0; h < hiddenSize; h++ {
+					dh := gradH[h] + float32(gradOutput.Data[b*seqLength*hiddenSize+t*hiddenSize+h])
+					iS := float32(preAct.Data[pIdx+h])
+					fS := float32(preAct.Data[pIdx+hiddenSize+h])
+					gS := float32(preAct.Data[pIdx+2*hiddenSize+h])
+					oS := float32(preAct.Data[pIdx+3*hiddenSize+h])
+					cC := float32(preAct.Data[pIdx+4*hiddenSize+h])
+					iG := 1.0 / (1.0 + float32(math.Exp(-float64(iS))))
+					fG := 1.0 / (1.0 + float32(math.Exp(-float64(fS))))
+					oG := 1.0 / (1.0 + float32(math.Exp(-float64(oS))))
+					gG := float32(math.Tanh(float64(gS)))
+					cT := float32(math.Tanh(float64(cC)))
+
+					cP := float32(0)
+					if t > 0 {
+						cP = float32(preAct.Data[pIdx-5*hiddenSize+4*hiddenSize+h])
+					}
+					dc := gradC[h] + dh*oG*(1.0-cT*cT)
+
+					deltas[h] = dc * gG * iG * (1.0 - iG)
+					deltas[hiddenSize+h] = dc * cP * fG * (1.0 - fG)
+					deltas[2*hiddenSize+h] = dc * iG * (1.0 - gG*gG)
+					deltas[3*hiddenSize+h] = dh * cT * oG * (1.0 - oG)
+
+					nextGradC[h] = dc * fG
+					localGW[ihSize+hhSize+h] += T(deltas[h])
+					localGW[gateSize+ihSize+hhSize+h] += T(deltas[hiddenSize+h])
+					localGW[2*gateSize+ihSize+hhSize+h] += T(deltas[2*hiddenSize+h])
+					localGW[3*gateSize+ihSize+hhSize+h] += T(deltas[3*hiddenSize+h])
+				}
+
+				for hTile := 0; hTile < hiddenSize; hTile += tileSize {
+					hEnd := hTile + tileSize
+					if hEnd > hiddenSize {
+						hEnd = hiddenSize
+					}
+
+					for iTile := 0; iTile < inputSize; iTile += tileSize {
+						iEnd := iTile + tileSize
+						if iEnd > inputSize {
+							iEnd = inputSize
+						}
+						for h := hTile; h < hEnd; h++ {
+							di, df, dg, do := deltas[h], deltas[hiddenSize+h], deltas[2*hiddenSize+h], deltas[3*hiddenSize+h]
+							hOff := h * inputSize
+							for i := iTile; i < iEnd; i++ {
+								x := float32(input.Data[itBase+i])
+								localGW[hOff+i] += T(di * x)
+								localGW[gateSize+hOff+i] += T(df * x)
+								localGW[2*gateSize+hOff+i] += T(dg * x)
+								localGW[3*gateSize+hOff+i] += T(do * x)
+
+								gradInput.Data[itBase+i] += T(di*SimulatePrecision(wI[hOff+i], layer.DType, scale) +
+									df*SimulatePrecision(wF[hOff+i], layer.DType, scale) +
+									dg*SimulatePrecision(wG[hOff+i], layer.DType, scale) +
+									do*SimulatePrecision(wO[hOff+i], layer.DType, scale))
+							}
+						}
+					}
+
+					for hpTile := 0; hpTile < hiddenSize; hpTile += tileSize {
+						hpEnd := hpTile + tileSize
+						if hpEnd > hiddenSize {
+							hpEnd = hiddenSize
+						}
+						for h := hTile; h < hEnd; h++ {
+							di, df, dg, do := deltas[h], deltas[hiddenSize+h], deltas[2*hiddenSize+h], deltas[3*hiddenSize+h]
+							hOff := ihSize + h*hiddenSize
+							for hp := hpTile; hp < hpEnd; hp++ {
+								hvP := float32(0)
+								if t > 0 {
+									pP := pIdx - 5*hiddenSize
+									oGP := 1.0 / (1.0 + float32(math.Exp(-float64(float32(preAct.Data[pP+3*hiddenSize+hp])))))
+									hvP = oGP * float32(math.Tanh(float64(float32(preAct.Data[pP+4*hiddenSize+hp]))))
+								}
+								localGW[hOff+hp] += T(di * hvP)
+								localGW[gateSize+hOff+hp] += T(df * hvP)
+								localGW[2*gateSize+hOff+hp] += T(dg * hvP)
+								localGW[3*gateSize+hOff+hp] += T(do * hvP)
+
+								nextGradH[hp] += di*SimulatePrecision(wI[hOff+hp], layer.DType, scale) +
+									df*SimulatePrecision(wF[hOff+hp], layer.DType, scale) +
+									dg*SimulatePrecision(wG[hOff+hp], layer.DType, scale) +
+									do*SimulatePrecision(wO[hOff+hp], layer.DType, scale)
+							}
+						}
+					}
+				}
+				gradH, gradC = nextGradH, nextGradC
+			}
+		}(b)
+	}
+	wg.Wait()
+
+	// Merge local gradient buffers
+	for b := 0; b < batchSize; b++ {
+		for i, v := range localGradWSlices[b] {
+			gradWeights.Data[i] += v
 		}
 	}
 

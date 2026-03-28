@@ -8,6 +8,8 @@ from .utils import (
     Activation,
     # High-level OOP API (recommended)
     Network,
+    Transformer,
+    Population,
     SystolicState,
     TargetPropState,
     Tokenizer,
@@ -128,7 +130,7 @@ from .utils import (
     free_neat_population,
 )
 
-__version__ = "0.74.0"
+__version__ = "0.75.0"
 
 __all__ = [
     # Version
@@ -139,6 +141,8 @@ __all__ = [
     "Activation",
     # High-level OOP
     "Network",
+    "Transformer",
+    "Population",
     "SystolicState",
     "TargetPropState",
     "Tokenizer",

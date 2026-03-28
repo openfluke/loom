@@ -12,7 +12,10 @@ func SequentialForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tens
 
 	for i := range layer.SequentialLayers {
 		sub := &layer.SequentialLayers[i]
-		
+		if sub.IsDisabled {
+			continue
+		}
+
 		target := sub
 		if layer.UseTiling {
 			target.UseTiling = true

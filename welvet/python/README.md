@@ -27,17 +27,17 @@ Supported platforms: **Windows** (x86-64, ARM64), **Linux** (x86-64, ARM64, ARM,
 import welvet
 from welvet import Network, LayerType, DType
 
-# Build a 3-layer dense MLP
+# Build a 3-layer dense MLP in the first grid cell
 net = Network({
     "id": "my_net",
     "depth": 1, "rows": 1, "cols": 1, "layers_per_cell": 3,
     "layers": [
-        {"type": "dense", "input_height": 128, "output_height": 256,
-         "activation": "relu", "dtype": "float32"},
-        {"type": "dense", "input_height": 256, "output_height": 256,
-         "activation": "relu", "dtype": "float32"},
-        {"type": "dense", "input_height": 256, "output_height": 10,
-         "activation": "sigmoid", "dtype": "float32"},
+        {"z": 0, "y": 0, "x": 0, "l": 0, "type": "dense", 
+         "input_height": 128, "output_height": 256, "activation": "relu"},
+        {"z": 0, "y": 0, "x": 0, "l": 1, "type": "dense", 
+         "input_height": 256, "output_height": 256, "activation": "relu"},
+        {"z": 0, "y": 0, "x": 0, "l": 2, "type": "dense", 
+         "input_height": 256, "output_height": 10,  "activation": "sigmoid"},
     ]
 })
 
@@ -101,6 +101,11 @@ output = welvet.forward_wgpu(net._handle, inputs)
 net.free()
 ```
 
+### Numerical Tiling (SC vs MC)
+V0.75.0 introduces specialized tiling profiles to maximize throughput:
+- **SC (Single-Core)**: Optimized for Edge/WASM/Small NPUs.
+- **MC (Multi-Core)**: Optimized for high-bandwidth L1/L2 caches (Ryzen, RTX, M4).
+
 GPU backward training is live for Dense, RMSNorm, CNN 1D/2D/3D — **17x–65x** speedup over CPU on real workloads.
 
 ---
@@ -136,11 +141,14 @@ from welvet import (
     build_network, free_network,
 )
 
-seed = build_network({
+# Create a seed network
+seed = Network({
     "id": "seed", "depth": 1, "rows": 1, "cols": 1, "layers_per_cell": 2,
     "layers": [
-        {"type": "dense", "input_height": 32, "output_height": 32, "dtype": "float32"},
-        {"type": "dense", "input_height": 32, "output_height": 1,  "dtype": "float32"},
+        {"z": 0, "y": 0, "x": 0, "l": 0, "type": "dense", 
+         "input_height": 32, "output_height": 32},
+        {"z": 0, "y": 0, "x": 0, "l": 1, "type": "dense", 
+         "input_height": 32, "output_height": 1},
     ]
 })
 
@@ -148,20 +156,15 @@ cfg = default_neat_config(32)
 pop = new_neat_population(seed, size=16, config=cfg)
 
 for gen in range(20):
-    n = neat_population_size(pop)
-    fitnesses = []
-    for i in range(n):
-        h = neat_population_get_network(pop, i)
-        fitnesses.append(my_fitness_fn(h))
-        free_network(h)
-    neat_population_evolve(pop, fitnesses)
-    print(neat_population_summary(pop, gen))
+    fitnesses = [my_fitness_fn(pop.get_network(i)) for i in range(pop.size())]
+    pop.evolve(fitnesses)
+    print(pop.summary(gen))
 
-best = neat_population_best(pop)
-print(f"Best fitness: {neat_population_best_fitness(pop):.6f}")
-free_network(best)
-free_neat_population(pop)
-free_network(seed)
+best = pop.best()
+print(f"Best fitness: {pop.best_fitness():.6f}")
+best.free()
+pop.free()
+seed.free()
 ```
 
 ---

@@ -50,7 +50,9 @@ type TargetPropState[T Numeric] struct {
 	BackwardTargets []*Tensor[T]
 
 	// Chain Rule storage
-	Gradients []*Tensor[float32]
+	Gradients       []*Tensor[float32]
+	WeightGradients []*Tensor[float32]
+	WeightVel       [][]float32 // Momentum buffers for weights
 
 	// Diagnostics
 	LinkBudgets []float32
@@ -71,6 +73,8 @@ func NewTargetPropState[T Numeric](n *VolumetricNetwork, config *TargetPropConfi
 		PreActs:         make([]*Tensor[T], total+1),
 		BackwardTargets: make([]*Tensor[T], total+1),
 		Gradients:       make([]*Tensor[float32], total+1),
+		WeightGradients: make([]*Tensor[float32], total+1),
+		WeightVel:       make([][]float32, total+1),
 		LinkBudgets:     make([]float32, total),
 		Gaps:            make([]float32, total),
 		Config:          config,
@@ -85,6 +89,11 @@ func TargetPropForward[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], i
 	current := input
 	for i := range n.Layers {
 		l := &n.Layers[i]
+		if l.IsDisabled {
+			s.PreActs[i+1] = current
+			s.ForwardActs[i+1] = current
+			continue
+		}
 		pre, post := DispatchLayer(l, current, nil)
 		s.PreActs[i+1] = pre
 		s.ForwardActs[i+1] = post
@@ -121,6 +130,14 @@ func TargetPropBackwardChainRule[T Numeric](n *VolumetricNetwork, s *TargetPropS
 	currentGrad := grad
 	for i := s.TotalLayers - 1; i >= 0; i-- {
 		l := &n.Layers[i]
+		if l.IsDisabled {
+			s.Gradients[i] = currentGrad
+			if i+1 < len(s.BackwardTargets) {
+				s.BackwardTargets[i] = s.BackwardTargets[i+1]
+			}
+			continue
+		}
+		
 		input := s.ForwardActs[i]
 		preAct := s.PreActs[i+1]
 		if preAct == nil {
@@ -130,9 +147,12 @@ func TargetPropBackwardChainRule[T Numeric](n *VolumetricNetwork, s *TargetPropS
 			continue
 		}
 
-		gIn, _ := DispatchLayerBackward(l, ConvertTensor[float32, T](currentGrad), input, nil, preAct)
+		gIn, gW := DispatchLayerBackward(l, ConvertTensor[float32, T](currentGrad), input, nil, preAct)
 		f32GradIn := ConvertTensor[T, float32](gIn)
 		s.Gradients[i] = f32GradIn
+		if gW != nil {
+			s.WeightGradients[i] = ConvertTensor[T, float32](gW)
+		}
 		currentGrad = f32GradIn
 
 		// Target = Actual + Grad * Scale
@@ -153,6 +173,12 @@ func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetProp
 
 	for i := s.TotalLayers - 1; i >= 0; i-- {
 		l := &n.Layers[i]
+		if l.IsDisabled {
+			if i+1 < len(s.BackwardTargets) {
+				s.BackwardTargets[i] = s.BackwardTargets[i+1]
+			}
+			continue
+		}
 
 		// Mesh-Aware: The target for this layer's output might have been
 		// propagated from a layer further down the grid.
@@ -413,13 +439,35 @@ func applyChainRuleGradients[T Numeric](n *VolumetricNetwork, s *TargetPropState
 		layerRate := lr * (0.5 + budget*0.5)
 
 		l := &n.Layers[i]
-		grad := s.Gradients[i+1] // Grad of the output of this layer
-		if grad == nil {
+		if l.IsDisabled || l.WeightStore == nil {
+			continue
+		}
+		
+		gW := s.WeightGradients[i] // Use the captured WEIGHT gradient!
+		if gW == nil {
 			continue
 		}
 
-		// 3. APPLY SCALED RATE
-		ApplyRecursiveGradients(l, grad, layerRate)
+		// Apply Momentum
+		mom := s.Config.Momentum
+		if s.WeightVel[i] == nil || len(s.WeightVel[i]) != len(gW.Data) {
+			s.WeightVel[i] = make([]float32, len(gW.Data))
+		}
+		
+		for j := range gW.Data {
+			// Legacy rule: vel = mom * vel + (1-mom) * delta
+			// Where delta = layerRate * trueGrad
+			delta := layerRate * gW.Data[j]
+			s.WeightVel[i][j] = mom*s.WeightVel[i][j] + (1-mom)*delta
+			// Store back modified gradient, we divide by layerRate so ApplyGradients scales it later,
+			// or we just pass it and pass lr=1.0 ?
+			// Wait, ApplyRecursiveGradients accepts lr. If we want it to add s.WeightVel[i][j], 
+			// and it does ws.Master -= lr * grad, we pass grad = -s.WeightVel[i][j] and lr = 1.0
+			gW.Data[j] = -s.WeightVel[i][j]
+		}
+
+		// 3. APPLY SCALED RATE (Negative flipped above to become addition!)
+		ApplyRecursiveGradients(l, gW, 1.0)
 	}
 }
 
@@ -428,6 +476,11 @@ func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPro
 	for i := 0; i < s.TotalLayers; i++ {
 		// 1. LINK BUDGET GATING
 		budget := s.LinkBudgets[i]
+		
+		l := &n.Layers[i]
+		if l.IsDisabled || l.WeightStore == nil {
+			continue
+		}
 
 		// If the signal is completely destroyed here, don't update!
 		// (You might want to add IgnoreThreshold to your TargetPropConfig)
@@ -439,7 +492,6 @@ func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPro
 		// Good signal = higher learning rate. Bad signal = cautious learning rate.
 		layerRate := lr * (0.5 + budget*0.5) // Adjust based on your preferred scaling
 
-		l := &n.Layers[i]
 		input := s.ForwardActs[i]
 		actual := s.ForwardActs[i+1]
 		target := s.BackwardTargets[i+1]
@@ -458,14 +510,29 @@ func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPro
 		switch l.Type {
 		case LayerDense:
 			weights := l.WeightStore.Master
+			
+			// Initialize completely flat layer velocity buffer if missing
+			velSize := (inSize * outSize) + outSize
+			if s.WeightVel[i] == nil || len(s.WeightVel[i]) != velSize {
+				s.WeightVel[i] = make([]float32, velSize)
+			}
+			mom := s.Config.Momentum
+
 			for out := 0; out < outSize && out < len(gap); out++ {
 				for in := 0; in < inSize && in < len(input.Data); in++ {
 					wIdx := in*outSize + out
 					if wIdx < len(weights) {
-						// 3. USE THE LAYER RATE HERE
 						delta := layerRate * float32(input.Data[in]) * gap[out]
-						weights[wIdx] += delta
+						s.WeightVel[i][wIdx] = mom*s.WeightVel[i][wIdx] + (1-mom)*delta
+						weights[wIdx] += s.WeightVel[i][wIdx]
 					}
+				}
+				// 3. UPDATE BIASES
+				bIdx := (inSize * outSize) + out
+				if bIdx < len(weights) {
+					delta := layerRate * gap[out]
+					s.WeightVel[i][bIdx] = mom*s.WeightVel[i][bIdx] + (1-mom)*delta
+					weights[bIdx] += s.WeightVel[i][bIdx]
 				}
 			}
 		case LayerRNN:

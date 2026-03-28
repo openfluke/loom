@@ -239,6 +239,19 @@ The double buffer swap (`copy(s.LayerData, s.NextBuffer)`) happens after all lay
 
 This is the "clock cycle accuracy" mentioned in the README.
 
+## V0.75.0 Stability & Guarding
+The Systolic Engine was fundamentally stabilized in v0.75.0 to support sparse volumetric grids without runtime panics.
+
+### 1. Volumetric Coordinate Guarding
+In previous versions, a misconfigured grid cell could lead to a `nil pointer dereference`. In v0.75.0, the dispatcher implements strict guarding:
+- **`IsDisabled` Flag**: Every grid cell now defaults to "Disabled". They must be explicitly enabled during network construction via the `poly.VolumetricLayer` configuration.
+- **Nil-Safety**: The `DispatchLayer` and `SystolicForward` loops check these flags before execution, ensuring that uninitialized memory in sparse 3D regions does not cause a crash.
+
+### 2. Explicit Coordinate Hopping
+Stability is further guaranteed by the enforcement of 3D volumetric coordinates (`z, y, x, l`). 
+- **Deterministic Routing**: Every connection, whether a standard sequence or a remote `IsRemoteLink`, is resolved to a specific 3D coordinate. 
+- **Grid Consistency**: This ensures that even in massively parallel tiled modes, the signal wavefront remains spatially consistent and bit-perfect across all 21 numerical types.
+
 ---
 
 ## When to Use the Systolic Engine

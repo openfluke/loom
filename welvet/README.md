@@ -4,16 +4,17 @@
 
 ## 📂 Structure
 - **[`cabi/`](./cabi/)**: The core C-ABI bridge (Go). This generates the shared libraries (`.dll`, `.so`, `.dylib`) used by other language bindings.
-- **[Future] `python/`**: Native Python bindings via ctypes/welvet.
-- **[Future] `csharp/`**: .NET bindings for ultra-deterministic AI in Unity/Godot.
-- **[Future] `typescript/`**: Node.js and WASM extensions.
+- **[`cabi/`](./cabi/)**: The core C-ABI bridge (Go). This generates the shared libraries (`.dll`, `.so`, `.dylib`) used by all language bindings.
+- **[`python/`](./python/)**: Native Python SDK (`welvet`). High-level OOP wrappers for Transformers, Populations, and Volumetric Networks.
+- **[`typescript/`](./typescript/)**: Isomorphic TypeScript/Node.js SDK (`@openfluke/welvet`) with WebGPU and WASM support.
 
-## 🛠️ C-ABI Features
-The new C-ABI bridge exposes the advanced mechanics of the Loom engine:
-- **Handle-Based Management**: Scalable management of `VolumetricNetwork` and `SystolicState` instances.
-- **Systolic Mesh Controls**: Precise, clock-cycle accurate control over neural mesh propagation.
+## 🛠️ C-ABI Features (v0.75.0)
+The C-ABI bridge now achieves **100% Functional Parity** (345+ features) with the Loom engine:
+- **Transformer Support**: Full mapping for `TokensToTensor`, `ForwardFull`, and `KV-Cache` management.
+- **NEAT Evolution**: Direct access to population-scale genetic mutation and evolutionary `Evolve` cycles.
+- **Systolic Mesh Controls**: Precise, clock-cycle accurate control over neural mesh propagation with 3D coordinate guarding.
 - **Neural Target Propagation**: Direct access to gap-bridging Hebbian learning.
-- **DNA Engine**: Exported topological signatures for model comparison.
+- **DNA Engine**: Exported topological signatures for model comparison and splicing.
 
 ## 🚀 Building
 To build the shared library:

@@ -1,7 +1,7 @@
 /**
  * welvet — Type Definitions for the M-POLY-VTD AI Engine
  *
- * Wraps the Loom v0.73.0 WASM module which supports 21 numerical types,
+ * Wraps the Loom v0.75.0 WASM module which supports 21 numerical types,
  * systolic grid propagation, target propagation, and WebGPU acceleration.
  */
 
@@ -233,6 +233,39 @@ export interface TargetPropState {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Transformer
+// ──────────────────────────────────────────────────────────────────────────────
+
+export interface Transformer {
+  /** Internal handle ID. */
+  _id: number;
+  /**
+   * Run a full prefill/inference pass.
+   * @param tokens Array of token IDs
+   * @returns Predicted logit tensor as Float32Array
+   */
+  forwardFull(tokens: number[] | Uint32Array): Float32Array;
+  /**
+   * Run inference using WebGPU acceleration.
+   * @param tokens Array of token IDs
+   * @returns Predicted logit tensor as Float32Array
+   */
+  forwardTokenIDsWGPU(tokens: number[] | Uint32Array): Promise<Float32Array>;
+  /**
+   * High-level prefill on GPU.
+   * @param tokens Array of token IDs
+   */
+  forwardWGPU(tokens: number[] | Uint32Array): Promise<void>;
+  /**
+   * Convert tokens to a tensor representation using the embedding layer.
+   * @param tokens Array of token IDs
+   */
+  tokensToTensor(tokens: number[] | Uint32Array): Float32Array;
+  /** Release resources. */
+  free(): void;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Network
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -283,6 +316,9 @@ export interface Network {
    * Extract the network's full blueprint as a JSON string.
    * @param modelID Optional model identifier
    */
+  extractNetworkBlueprint(modelID?: string): string;
+
+  /** Alias for extractNetworkBlueprint */
   extractBlueprint(modelID?: string): string;
 
   /** Total number of layers in the network. */
@@ -356,6 +392,32 @@ export interface Network {
 
   /** Release resources (no-op in WASM, included for API parity). */
   free(): void;
+
+  /**
+   * Low-level polymorphic forward pass.
+   * @param input Input tensor data
+   */
+  forwardPolymorphic(input: Float32Array | number[]): Float32Array;
+
+  /**
+   * Get an individual layer wrapper.
+   * @param index 0-based layer index
+   */
+  getLayer(index: number): Layer;
+}
+
+export interface Layer {
+  /** Internal handle ID. */
+  _id: number;
+  /**
+   * Dispatch a forward pass through this layer only.
+   * @param input Input tensor
+   */
+  dispatch(input: Float32Array | number[]): Float32Array;
+  /** Sync weights to GPU. */
+  syncToGPU(): Promise<void>;
+  /** Release resources. */
+  free(): void;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -398,4 +460,18 @@ declare global {
 
   /** Create a NEAT population from a seed network. */
   function createLoomNEATPopulation(seedID: number, size: number, cfgJSON: string): NEATPopulation;
+
+  /** Create a Transformer from a network and weights. */
+  function createLoomTransformer(
+    networkID: number,
+    embeddings: Float32Array | number[],
+    lmHead: Float32Array | number[],
+    finalNorm: Float32Array | number[]
+  ): Transformer;
+
+  /** Get the internal parity symbol list from Go. */
+  function getLoomInternalParity(): string[];
+
+  /** Build a network from a JSON string. */
+  function BuildNetworkFromJSON(json: string): Network;
 }

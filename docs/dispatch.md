@@ -149,6 +149,13 @@ for zTile := 0; zTile < Depth; zTile += 4 {
 
 This is the CPU-side analogue of the GPU workgroup tile strategy. The intent is to improve data locality: all layers in a 4×4×4 spatial neighborhood execute together, keeping their weight data warm in L2/L3 cache.
 
+### SC (Single-Core) vs MC (Multi-Core) Tiling
+In v0.75.0, the tiling strategy is split into two specialized profiles for hardware optimization:
+- **SC Tiling**: Minimizes register pressure for low-cache environments (Edge/WASM).
+- **MC Tiling**: Maximizes SIMD throughput for high-bandwidth architectures (Ryzen/Apple Silicon).
+
+The tile size is auto-detected from the hardware limits during initialization and stored in `WGPUContext.GPUTileSize` (for GPU) or `VolumetricLayer.TileSize` (for CPU).
+
 ---
 
 ## VolumetricLayer: The Coordinate Record

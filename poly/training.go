@@ -7,14 +7,49 @@ import (
 	"github.com/openfluke/webgpu/wgpu"
 )
 
+// TrainingMode selects which execution path is used for forward and backward passes.
+type TrainingMode int
+
+const (
+	TrainingModeCPUNormal TrainingMode = iota // serial CPU, no tiling
+	TrainingModeCPUSC                         // CPU tiling, single-core
+	TrainingModeCPUMC                         // CPU tiling, multi-core parallel
+	TrainingModeGPUNormal                     // GPU global-memory path
+	TrainingModeGPUSC                         // GPU tiled SC (workgroup 64)
+	TrainingModeGPUMC                         // GPU tiled MC (workgroup 256)
+)
+
+func (m TrainingMode) String() string {
+	switch m {
+	case TrainingModeCPUNormal:
+		return "CPU-Normal"
+	case TrainingModeCPUSC:
+		return "CPU-SC-Tiled"
+	case TrainingModeCPUMC:
+		return "CPU-MC-Tiled"
+	case TrainingModeGPUNormal:
+		return "GPU-Normal"
+	case TrainingModeGPUSC:
+		return "GPU-SC-Tiled"
+	case TrainingModeGPUMC:
+		return "GPU-MC-Tiled"
+	default:
+		return "Unknown"
+	}
+}
+
+// IsGPU reports whether the mode requires GPU execution.
+func (m TrainingMode) IsGPU() bool { return m >= TrainingModeGPUNormal }
+
 // TrainingConfig holds configuration for training in the Volumetric Grid.
 type TrainingConfig struct {
 	Epochs       int
 	LearningRate float32
-	LossType     string  // "mse" or "cross_entropy"
-	GradientClip float32 // Max gradient norm (0 = no clipping)
+	LossType     string       // "mse" or "cross_entropy"
+	GradientClip float32      // Max gradient norm (0 = no clipping)
 	Verbose      bool
-	UseGPU       bool
+	UseGPU       bool         // Deprecated: use Mode instead
+	Mode         TrainingMode // Execution path; overrides UseGPU when non-zero
 	DeviceID     int
 	TrackPerf    bool
 }
@@ -43,23 +78,99 @@ func DefaultTrainingConfig() *TrainingConfig {
 	}
 }
 
+// resolveMode returns the effective TrainingMode, honouring legacy UseGPU flag.
+func resolveMode(config *TrainingConfig) TrainingMode {
+	if config.Mode != 0 {
+		return config.Mode
+	}
+	if config.UseGPU {
+		return TrainingModeGPUNormal
+	}
+	return TrainingModeCPUNormal
+}
+
+// configureNetworkForMode sets tiling/GPU flags on all layers and syncs state.
+func configureNetworkForMode(n *VolumetricNetwork, mode TrainingMode) error {
+	switch mode {
+	case TrainingModeCPUNormal:
+		for i := range n.Layers {
+			n.Layers[i].UseTiling = false
+			n.Layers[i].EnableMultiCoreTiling = false
+		}
+		n.SyncToCPU()
+	case TrainingModeCPUSC:
+		for i := range n.Layers {
+			n.Layers[i].UseTiling = true
+			n.Layers[i].EnableMultiCoreTiling = false
+		}
+		n.SyncToCPU()
+	case TrainingModeCPUMC:
+		n.EnableMultiCoreTiling = true
+		for i := range n.Layers {
+			n.Layers[i].UseTiling = true
+			n.Layers[i].EnableMultiCoreTiling = true
+		}
+		n.SyncToCPU()
+	case TrainingModeGPUNormal, TrainingModeGPUSC, TrainingModeGPUMC:
+		if n.GPUContext == nil {
+			if err := n.InitWGPU(); err != nil {
+				return fmt.Errorf("failed to initialize GPU: %w", err)
+			}
+		}
+		// Reset bind group cache so new weight buffers get fresh bind groups.
+		// Stale cached bind groups (keyed by old buffer pointers) can cause
+		// DispatchApplyGradients to write to a previous network's weight buffer
+		// instead of this network's, leaving weights unchanged after training.
+		n.GPUContext.ResetCache()
+		if err := n.SyncToGPU(); err != nil {
+			return fmt.Errorf("failed to sync weights to GPU: %w", err)
+		}
+	}
+	return nil
+}
+
+// SyncWeightsFromGPU reads GPU float32 weight buffers back into each layer's
+// WeightStore.Master. Call this after GPU training before serializing.
+func SyncWeightsFromGPU(n *VolumetricNetwork) error {
+	ctx := n.GPUContext
+	if ctx == nil {
+		return fmt.Errorf("no GPU context")
+	}
+	for i := range n.Layers {
+		l := &n.Layers[i]
+		if l.WeightStore == nil {
+			continue
+		}
+		wBuf, ok := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		if !ok || wBuf == nil {
+			continue
+		}
+		data, err := ctx.ReadBuffer(wBuf)
+		if err != nil {
+			return fmt.Errorf("layer %d: %w", i, err)
+		}
+		if len(data) != len(l.WeightStore.Master) {
+			return fmt.Errorf("layer %d: weight size mismatch GPU=%d CPU=%d", i, len(data), len(l.WeightStore.Master))
+		}
+		copy(l.WeightStore.Master, data)
+		// Clear stale Versions and GPU cache tags (other than the FP32 buffer we just read)
+		l.WeightStore.Versions = make(map[DType]any)
+	}
+	return nil
+}
+
 // Train executes the training loop on a VolumetricNetwork.
 func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *TrainingConfig) (*TrainingResult, error) {
 	if config == nil {
 		config = DefaultTrainingConfig()
 	}
 
-	if config.UseGPU && n.GPUContext == nil {
-		if err := n.InitWGPU(); err != nil {
-			return nil, fmt.Errorf("failed to initialize GPU: %w", err)
-		}
+	mode := resolveMode(config)
+	if err := configureNetworkForMode(n, mode); err != nil {
+		return nil, err
 	}
 
-	if config.UseGPU {
-		if err := n.SyncToGPU(); err != nil {
-			return nil, fmt.Errorf("failed to sync weights to GPU: %w", err)
-		}
-	}
+	// GPU tile sizes are now per-layer per-dtype; passed via mode to trainBatchGPU.
 
 	result := &TrainingResult{
 		LossHistory: make([]float64, 0, config.Epochs),
@@ -72,24 +183,22 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 	for epoch := 0; epoch < config.Epochs; epoch++ {
 		epochStart := time.Now()
 		epochLoss := 0.0
-		
+
 		for _, batch := range batches {
-			if config.UseGPU {
-				loss, err := trainBatchWGPU(n, batch, config)
+			if mode.IsGPU() {
+				loss, err := trainBatchGPU(n, batch, config, mode)
 				if err != nil {
 					return nil, err
 				}
 				epochLoss += loss
 			} else {
-				// CPU implementation (existing)
-				loss := trainBatchCPU(n, batch, config)
-				epochLoss += loss
+				epochLoss += trainBatchCPU(n, batch, config)
 			}
 		}
 
 		epochDuration := time.Since(epochStart)
 		avgLoss := epochLoss / float64(numBatches)
-		
+
 		result.LossHistory = append(result.LossHistory, avgLoss)
 		result.EpochTimes = append(result.EpochTimes, epochDuration)
 
@@ -98,13 +207,13 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 			avgEpochTime := elapsed / time.Duration(epoch+1)
 			remainingEpochs := config.Epochs - (epoch + 1)
 			eta := avgEpochTime * time.Duration(remainingEpochs)
-			
+
 			samplesPerSec := 0.0
 			if elapsed > 0 {
-				samplesPerSec = float64(int64(epoch+1) * int64(numBatches)) / elapsed.Seconds()
+				samplesPerSec = float64(int64(epoch+1)*int64(numBatches)) / elapsed.Seconds()
 			}
 
-			fmt.Printf("Epoch %d/%d - Loss: %.6f | Time: %v | Samples/s: %.2f | ETA: %v\n", 
+			fmt.Printf("Epoch %d/%d - Loss: %.6f | Time: %v | Samples/s: %.2f | ETA: %v\n",
 				epoch+1, config.Epochs, avgLoss, epochDuration, samplesPerSec, eta.Round(time.Second))
 		}
 	}
@@ -147,7 +256,10 @@ func trainBatchCPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 	return lossVal
 }
 
-func trainBatchWGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], config *TrainingConfig) (float64, error) {
+// trainBatchGPU runs one training batch on the GPU.
+// mode == TrainingModeGPUNormal → global-memory dispatch.
+// mode == TrainingModeGPUSC/MC  → tiled dispatch; tile size is read per-layer from l.GetGPUSCTileSize / GetGPUMCTileSize.
+func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], config *TrainingConfig, mode TrainingMode) (float64, error) {
 	ctx := n.GPUContext
 	if ctx == nil {
 		return 0, fmt.Errorf("GPU context is nil")
@@ -203,6 +315,12 @@ func trainBatchWGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], con
 			outSize = d * h * w * l.Filters
 		} else if l.Type == LayerCNN1 {
 			outSize = l.OutputHeight * l.Filters
+		} else if l.Type == LayerMultiHeadAttention {
+			sl := l.SeqLength
+			if sl <= 0 {
+				sl = 1
+			}
+			outSize = sl * l.DModel
 		}
 		if outSize == 0 {
 			outSize = l.InputHeight
@@ -214,9 +332,42 @@ func trainBatchWGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], con
 			return 0, fmt.Errorf("failed to get preBuf for layer %d", i)
 		}
 
-		if err := ctx.DispatchForwardLayer(l, batchSize, curBuf, preBuf); err != nil {
+		var fwdErr error
+		layerTileSize := 0
+		if mode == TrainingModeGPUSC {
+			layerTileSize = l.GetGPUSCTileSize(l.DType)
+		} else if mode == TrainingModeGPUMC {
+			layerTileSize = l.GetGPUMCTileSize(l.DType)
+		}
+		scale := float32(1.0)
+		var wBuf *wgpu.Buffer
+		if l.WeightStore != nil {
+			if l.WeightStore.Scale != 0 {
+				scale = l.WeightStore.Scale
+			}
+			wBuf, _ = l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		}
+		if layerTileSize > 0 && l.Type == LayerCNN1 {
+			kernelVol := l.InputChannels * l.KernelSize
+			fwdErr = ctx.DispatchCNN1Tiled(layerTileSize, kernelVol, batchSize,
+				l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight,
+				l.KernelSize, l.Stride, l.Padding,
+				scale, curBuf, wBuf, preBuf)
+		} else if layerTileSize > 0 && l.Type == LayerCNN3 {
+			kernelVol := l.InputChannels * l.KernelSize * l.KernelSize * l.KernelSize
+			fwdErr = ctx.DispatchCNN3Tiled(layerTileSize, kernelVol, batchSize,
+				l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth,
+				l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth,
+				l.KernelSize, l.KernelSize, l.KernelSize,
+				l.Stride, l.Stride, l.Stride,
+				l.Padding, l.Padding, l.Padding,
+				scale, curBuf, wBuf, preBuf)
+		} else {
+			fwdErr = ctx.DispatchForwardLayer(l, batchSize, curBuf, preBuf)
+		}
+		if fwdErr != nil {
 			ctx.FlushFrame()
-			return 0, err
+			return 0, fwdErr
 		}
 
 		if l.Activation != ActivationLinear {
@@ -277,6 +428,12 @@ func trainBatchWGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], con
 			inSize = d * h * w * l.InputChannels
 		} else if l.Type == LayerCNN1 {
 			inSize = l.InputHeight * l.InputChannels
+		} else if l.Type == LayerMultiHeadAttention {
+			sl := l.SeqLength
+			if sl <= 0 {
+				sl = 1
+			}
+			inSize = sl * l.DModel
 		}
 		if inSize == 0 {
 			inSize = l.OutputHeight
@@ -299,6 +456,12 @@ func trainBatchWGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], con
 			outSize = d * h * w * l.Filters
 		} else if l.Type == LayerCNN1 {
 			outSize = l.OutputHeight * l.Filters
+		} else if l.Type == LayerMultiHeadAttention {
+			sl := l.SeqLength
+			if sl <= 0 {
+				sl = 1
+			}
+			outSize = sl * l.DModel
 		}
 		if outSize == 0 {
 			outSize = l.InputHeight
@@ -310,13 +473,17 @@ func trainBatchWGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], con
 			return 0, fmt.Errorf("failed to get dxBuf for layer %d", i)
 		}
 
-		wSize := len(l.WeightStore.Master)
+		wSize := 1
+		if l.WeightStore != nil {
+			wSize = len(l.WeightStore.Master)
+			if wSize <= 0 { wSize = 1 }
+		}
 		dwBuf := ctx.GetActivationBuffer(fmt.Sprintf("dw_%d", i), uint64(wSize*4), wgpu.BufferUsageStorage)
 		if dwBuf == nil {
 			ctx.FlushFrame()
 			return 0, fmt.Errorf("failed to get dwBuf for layer %d", i)
 		}
-		// Zero DW buffer before accumulation (WriteBuffer is a queue-level op, safe inside BeginFrame)
+		// Zero DW buffer before accumulation
 		ctx.Queue.WriteBuffer(dwBuf, 0, make([]byte, wSize*4))
 
 		var gradPreBuf *wgpu.Buffer
@@ -334,9 +501,55 @@ func trainBatchWGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], con
 			gradPreBuf = curGradBuf
 		}
 
-		if err := ctx.DispatchBackwardLayer(l, batchSize, gradPreBuf, histInBuf[i], histPreBuf[i], dxBuf, dwBuf); err != nil {
+		bwdTileSize := 0
+		if mode == TrainingModeGPUSC {
+			bwdTileSize = l.GetGPUSCTileSize(l.DType)
+		} else if mode == TrainingModeGPUMC {
+			bwdTileSize = l.GetGPUMCTileSize(l.DType)
+		}
+		var bwdWBuf *wgpu.Buffer
+		if l.WeightStore != nil {
+			bwdWBuf, _ = l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		}
+		var bwdErr error
+		if bwdTileSize > 0 && l.Type == LayerCNN1 {
+			kernelVol := l.InputChannels * l.KernelSize
+			if err := ctx.DispatchCNN1TiledBackwardDX(bwdTileSize, kernelVol, batchSize,
+				l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight,
+				l.KernelSize, l.Stride, l.Padding,
+				l.Activation, gradPreBuf, bwdWBuf, histPreBuf[i], dxBuf); err != nil {
+				ctx.FlushFrame()
+				return 0, err
+			}
+			bwdErr = ctx.DispatchCNN1TiledBackwardDW(bwdTileSize, batchSize,
+				l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight,
+				l.KernelSize, l.Stride, l.Padding,
+				l.Activation, gradPreBuf, histInBuf[i], histPreBuf[i], dwBuf)
+		} else if bwdTileSize > 0 && l.Type == LayerCNN3 {
+			kernelVol := l.InputChannels * l.KernelSize * l.KernelSize * l.KernelSize
+			if err := ctx.DispatchCNN3TiledBackwardDX(bwdTileSize, kernelVol, batchSize,
+				l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth,
+				l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth,
+				l.KernelSize, l.KernelSize, l.KernelSize,
+				l.Stride, l.Stride, l.Stride,
+				l.Padding, l.Padding, l.Padding,
+				l.Activation, gradPreBuf, bwdWBuf, histPreBuf[i], dxBuf); err != nil {
+				ctx.FlushFrame()
+				return 0, err
+			}
+			bwdErr = ctx.DispatchCNN3TiledBackwardDW(bwdTileSize, batchSize,
+				l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth,
+				l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth,
+				l.KernelSize, l.KernelSize, l.KernelSize,
+				l.Stride, l.Stride, l.Stride,
+				l.Padding, l.Padding, l.Padding,
+				l.Activation, gradPreBuf, histInBuf[i], histPreBuf[i], dwBuf)
+		} else {
+			bwdErr = ctx.DispatchBackwardLayer(l, batchSize, gradPreBuf, histInBuf[i], histPreBuf[i], dxBuf, dwBuf)
+		}
+		if bwdErr != nil {
 			ctx.FlushFrame()
-			return 0, err
+			return 0, bwdErr
 		}
 
 		if l.WeightStore != nil {
@@ -345,6 +558,13 @@ func trainBatchWGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], con
 				if err := ctx.DispatchApplyGradients(wSize, config.LearningRate, wBuf, dwBuf); err != nil {
 					ctx.FlushFrame()
 					return 0, err
+				}
+				// SwiGLU and MHA store their weights in SPLIT GPU buffers (gate/up/down for SwiGLU,
+				// Q/K/V/O for MHA) that are separate from the master buffer that ApplyGradients just
+				// updated. Propagate the updated master sub-ranges back to the split buffers so the
+				// NEXT epoch's forward pass reads the updated weights.
+				if ctx.ActiveEncoder != nil {
+					ctx.propagateSplitWeights(l, wBuf)
 				}
 			}
 		}
@@ -402,6 +622,7 @@ func ComputeLossGradient[T Numeric](output, target *Tensor[T], lossType string) 
 	}
 	return grad
 }
+
 // ApplyRecursiveGradients traverses the layer hierarchy and updates weights in all nested WeightStores.
 func ApplyRecursiveGradients(layer *VolumetricLayer, gradWeights *Tensor[float32], lr float32) {
 	if layer == nil || gradWeights == nil {
@@ -411,6 +632,12 @@ func ApplyRecursiveGradients(layer *VolumetricLayer, gradWeights *Tensor[float32
 	// 1. Update local weights if they exist
 	if layer.WeightStore != nil {
 		layer.WeightStore.ApplyGradients(gradWeights, lr)
+		// Re-quantize after gradient update so the next epoch's forward pass reads
+		// the correct quantized values instead of falling back to float32 Master with
+		// scale applied incorrectly (which causes loss to spike for integer dtypes).
+		if layer.DType != DTypeFloat32 {
+			layer.WeightStore.Morph(layer.DType)
+		}
 	}
 
 	// 2. Recursively update Parallel branches

@@ -241,27 +241,19 @@ From the README benchmark table:
 
 ---
 
-## The Tiling Strategy
+The project uses **Numerical Tiling** to map 3D volumetric layers to GPU workgroups.
 
-Each layer's GPU shader uses **register-level tiling**: a portion of the weight matrix is loaded into workgroup shared memory, threads compute a partial dot product, then the next tile is loaded. This keeps data in ultra-fast SRAM and avoids redundant global memory reads.
+### SC (Single-Core) vs MC (Multi-Core) Profiles
+Loom v0.75.0 formally differentiates between these two hardware-specific tiling strategies:
 
-```
-Dense 8×8 Tile:
+- **SC (Single-Core) Tiling**: Optimized for low-cache environments (Edge, WASM, small NPUs). It prioritizes **minimized register pressure** over raw SIMD parallelism. 
+    - *Typical Workgroup*: 4x4 or 8x8.
+    - *Outcome*: Avoids spilling registers to global memory, which is critical on low-bandwidth integrated GPUs.
+- **MC (Multi-Core) Tiling**: Optimized for high-bandwidth L1/L2 caches and large register files (Ryzen, Apple M-series, Nvidia RTX).
+    - *Typical Workgroup*: 16x16, 32x32, or fused 64-thread tiles.
+    - *Outcome*: Maximum throughput via unrolling and SIMD lane utilization, achieving the **80% reduction** in bandwidth bottlenecks for low-bit types (FP4, INT4).
 
-  Workgroup: 8 threads × 8 threads = 64 invocations
-
-  For tile t:
-  ┌─────────────────────────────────────┐
-  │  Load dy[batch, o_tile] into SRAM  │
-  │  Load W[o_tile, input] into SRAM   │
-  │  workgroupBarrier()                 │
-  │  Compute partial sums               │
-  │  workgroupBarrier()                 │
-  └─────────────────────────────────────┘
-  Accumulate across all tiles → dx[b, i]
-```
-
-The tile size is auto-detected from `MaxComputeWorkgroupStorageSize` and `MaxComputeInvocationsPerWorkgroup` at device init time, then stored in `WGPUContext.GPUTileSize`.
+The profile is automatically selected or forced via `WGPUContext.GPUTileSize`.
 
 ---
 

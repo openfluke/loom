@@ -39,6 +39,10 @@ var networkMu sync.RWMutex
 var tokenizers = make(map[int64]*poly.Tokenizer)
 var tokenizerNextID int64 = 1
 
+var tensors = make(map[int64]interface{}) // interface{} to handle poly.Tensor[float32], etc.
+var tensorNextID int64 = 1
+
+
 // Helper: Error to C String
 func errJSON(msg string) *C.char {
 	return C.CString(fmt.Sprintf(`{"error": "%s"}`, msg))
@@ -60,10 +64,8 @@ func getSystolicContainer(handle int64) (*systolicContainer, bool) {
 	return s, ok
 }
 
-var (
-	transformers      = make(map[int64]interface{}) // Using interface{} to handle multiple numeric types
-	transfomrerNextID int64 = 1
-)
+var transformers = make(map[int64]interface{})
+var transformerNextID int64 = 1
 
 func getTransformer(handle int64) (interface{}, bool) {
 	networkMu.RLock()
@@ -71,6 +73,15 @@ func getTransformer(handle int64) (interface{}, bool) {
 	tr, ok := transformers[handle]
 	return tr, ok
 }
+
+func getTensor(handle int64) (interface{}, bool) {
+	networkMu.RLock()
+	defer networkMu.RUnlock()
+	t, ok := tensors[handle]
+	return t, ok
+}
+
+
 
 var neatPopulations = make(map[int64]*poly.NEATPopulation)
 var neatPopNextID int64 = 1

@@ -46,6 +46,8 @@ func DispatchLayer[T Numeric](layer *VolumetricLayer, input, skip *Tensor[T]) (p
 		return ParallelForwardPolymorphic(layer, input)
 	case LayerSequential:
 		return SequentialForwardPolymorphic(layer, input)
+	case LayerMetacognition:
+		return MetacognitionForwardPolymorphic(layer, input)
 	default:
 		return DenseForwardPolymorphic(layer, input)
 	}

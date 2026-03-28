@@ -1,7 +1,7 @@
 //go:build js && wasm
 // +build js,wasm
 
-// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.73.0)
+// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.75.0)
 //
 // Exposes the poly.VolumetricNetwork API to JavaScript via WebAssembly.
 // Supports 21 numerical types, systolic propagation, target propagation,
@@ -35,8 +35,49 @@ var (
 	neatPopulations  = make(map[int64]*poly.NEATPopulation)
 	neatPopNextID    int64 = 1
 
+	tokenizers      = make(map[int64]*poly.Tokenizer)
+	tokenizerNextID int64 = 1
+
 	mu sync.RWMutex
+
+	transformers   = make(map[int64]*poly.Transformer[float32])
+	transformerNextID int64 = 1
+
+	layers         = make(map[int64]*poly.VolumetricLayer)
+	layerNextID    int64 = 1
 )
+
+func storeTransformer(t *poly.Transformer[float32]) int64 {
+	mu.Lock()
+	id := transformerNextID
+	transformerNextID++
+	transformers[id] = t
+	mu.Unlock()
+	return id
+}
+
+func getTransformer(id int64) (*poly.Transformer[float32], bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	t, ok := transformers[id]
+	return t, ok
+}
+
+func storeLayer(l *poly.VolumetricLayer) int64 {
+	mu.Lock()
+	id := layerNextID
+	layerNextID++
+	layers[id] = l
+	mu.Unlock()
+	return id
+}
+
+func getLayer(id int64) (*poly.VolumetricLayer, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	l, ok := layers[id]
+	return l, ok
+}
 
 func storeNetwork(n *poly.VolumetricNetwork) int64 {
 	mu.Lock()
@@ -102,6 +143,145 @@ func getNEATPopulation(id int64) (*poly.NEATPopulation, bool) {
 	return p, ok
 }
 
+func storeTokenizer(t *poly.Tokenizer) int64 {
+	mu.Lock()
+	id := tokenizerNextID
+	tokenizerNextID++
+	tokenizers[id] = t
+	mu.Unlock()
+	return id
+}
+
+func getTokenizer(id int64) (*poly.Tokenizer, bool) {
+	mu.RLock()
+	defer mu.RUnlock()
+	t, ok := tokenizers[id]
+	return t, ok
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Layer Wrapper
+// ──────────────────────────────────────────────────────────────────────────────
+
+func createLayerWrapper(l *poly.VolumetricLayer) js.Value {
+	obj := js.Global().Get("Object").New()
+	obj.Set("type", l.Type)
+	obj.Set("dtype", int(l.DType))
+	obj.Set("inputHeight", l.InputHeight)
+	obj.Set("outputHeight", l.OutputHeight)
+
+	obj.Set("dispatch", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return errObj("Expected input tensor data")
+		}
+		data := readFloat32Array(args[0])
+		t := poly.NewTensorFromSlice(data, 1, len(data))
+		_, post := poly.DispatchLayer(l, t, nil)
+		if post == nil {
+			return js.Global().Get("Float32Array").New(0)
+		}
+		return jsFloat32Array(post.Data)
+	}))
+
+	obj.Set("syncToGPU", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		go l.SyncToGPU()
+		return okObj()
+	}))
+
+	obj.Set("syncToCPU", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		l.SyncToCPU()
+		return okObj()
+	}))
+
+	return obj
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Transformer Wrapper
+// ──────────────────────────────────────────────────────────────────────────────
+
+func createTransformerWrapper(tr *poly.Transformer[float32]) js.Value {
+	id := storeTransformer(tr)
+	obj := js.Global().Get("Object").New()
+	obj.Set("_id", float64(id))
+
+	obj.Set("forwardWGPU", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return errObj("Expected input data")
+		}
+		data := readFloat32Array(args[0])
+		t := poly.NewTensorFromSlice(data, 1, len(data))
+		out, err := tr.ForwardWGPU(t)
+		if err != nil {
+			return errObj(err.Error())
+		}
+		return jsFloat32Array(out.Data)
+	}))
+
+	obj.Set("forwardFull", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return errObj("Expected input data")
+		}
+		jsVal := args[0]
+
+		var emb *poly.Tensor[float32]
+
+		// Detect input type
+		if jsVal.Type() == js.TypeObject && jsVal.Get("constructor").Get("name").String() == "Float32Array" {
+			// Pre-calculated Embeddings
+			data := readFloat32Array(jsVal)
+			emb = poly.NewTensorFromSlice(data, 1, len(data))
+		} else {
+			// Token IDs
+			tokens := readUint32Array(jsVal)
+			emb = tr.TokensToTensor(tokens)
+		}
+
+		out := tr.ForwardFull(emb)
+		if out == nil {
+			return js.Global().Get("Float32Array").New(0)
+		}
+		return jsFloat32Array(out.Data)
+	}))
+
+	obj.Set("tokensToTensor", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return errObj("Expected tokens")
+		}
+		jsArr := args[0]
+		lenArr := jsArr.Get("length").Int()
+		tokens := make([]uint32, lenArr)
+		for i := 0; i < lenArr; i++ {
+			tokens[i] = uint32(jsArr.Index(i).Int())
+		}
+		t := tr.TokensToTensor(tokens)
+		return jsFloat32Array(t.Data)
+	}))
+
+	obj.Set("generate", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		// Simplified generate for WASM
+		return errObj("Generate not yet fully implemented in WASM bridge - use forward loops")
+	}))
+
+	obj.Set("syncToGPU", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		handler := js.FuncOf(func(this js.Value, pArgs []js.Value) interface{} {
+			resolve := pArgs[0]
+			reject := pArgs[1]
+			go func() {
+				if err := tr.SyncToGPU(); err != nil {
+					reject.Invoke(err.Error())
+					return
+				}
+				resolve.Invoke(okObj())
+			}()
+			return nil
+		})
+		return js.Global().Get("Promise").New(handler)
+	}))
+
+	return obj
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // JS ↔ Go Helpers
 // ──────────────────────────────────────────────────────────────────────────────
@@ -131,6 +311,15 @@ func readFloat32Array(jsVal js.Value) []float32 {
 	out := make([]float32, length)
 	for i := 0; i < length; i++ {
 		out[i] = float32(jsVal.Index(i).Float())
+	}
+	return out
+}
+
+func readUint32Array(jsVal js.Value) []uint32 {
+	length := jsVal.Get("length").Int()
+	out := make([]uint32, length)
+	for i := 0; i < length; i++ {
+		out[i] = uint32(jsVal.Index(i).Int())
 	}
 	return out
 }
@@ -268,7 +457,56 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 		return nil
 	}))
 
+	return obj
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tokenizer Wrapper
+// ──────────────────────────────────────────────────────────────────────────────
+
+func createTokenizerWrapper(t *poly.Tokenizer) js.Value {
+	id := storeTokenizer(t)
+	obj := js.Global().Get("Object").New()
+	obj.Set("_id", float64(id))
+
+	obj.Set("encode", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return nil
+		}
+		text := args[0].String()
+		addSpecial := true
+		if len(args) > 1 {
+			addSpecial = args[1].Bool()
+		}
+		tokens := t.Encode(text, addSpecial)
+		arr := js.Global().Get("Uint32Array").New(len(tokens))
+		for i, v := range tokens {
+			arr.SetIndex(i, float64(v))
+		}
+		return arr
+	}))
+
+	obj.Set("decode", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return ""
+		}
+		jsArr := args[0]
+		lenArr := jsArr.Get("length").Int()
+		tokens := make([]uint32, lenArr)
+		for i := 0; i < lenArr; i++ {
+			tokens[i] = uint32(jsArr.Index(i).Int())
+		}
+		skipSpecial := false
+		if len(args) > 1 {
+			skipSpecial = args[1].Bool()
+		}
+		return t.Decode(tokens, skipSpecial)
+	}))
+
 	obj.Set("free", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		mu.Lock()
+		delete(tokenizers, id)
+		mu.Unlock()
 		return nil
 	}))
 
@@ -284,18 +522,108 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 	obj := js.Global().Get("Object").New()
 	obj.Set("_id", float64(id))
 
-	// sequentialForward(Float32Array | number[]) -> Float32Array
+	// sequentialForward(Float32Array | number[]) -> {data: Float32Array, ms: number}
 	obj.Set("sequentialForward", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		if len(args) < 1 {
-			return "Expected input data"
+			return errObj("Expected input data")
 		}
 		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, 1, len(data)) // shape: [batchSize=1, features]
-		out, _, _ := poly.ForwardPolymorphic(n, t)
+		t := poly.NewTensorFromSlice(data, 1, len(data))
+
+		var out *poly.Tensor[float32]
+		// ForwardPolymorphic handles n.UseTiling internally
+		out, _, _ = poly.ForwardPolymorphic(n, t)
+
 		if out == nil {
 			return js.Global().Get("Float32Array").New(0)
 		}
+
 		return jsFloat32Array(out.Data)
+	}))
+
+	// getLayer(idx) -> Layer JS object
+	obj.Set("getLayer", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return nil
+		}
+		idx := args[0].Int()
+		if idx < 0 || idx >= len(n.Layers) {
+			return nil
+		}
+		return createLayerWrapper(&n.Layers[idx])
+	}))
+
+	// isGPU() -> bool
+	obj.Set("isGPU", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		return n.UseGPU
+	}))
+
+	// enableTiling(tileSize int)
+	obj.Set("enableTiling", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		n.UseTiling = true
+		for i := range n.Layers {
+			n.Layers[i].UseTiling = true
+			if len(args) > 0 {
+				n.Layers[i].TileSize = args[0].Int()
+			} else {
+				n.Layers[i].TileSize = 32
+			}
+		}
+		return nil
+	}))
+
+	// disableTiling()
+	obj.Set("disableTiling", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		n.UseTiling = false
+		for i := range n.Layers {
+			n.Layers[i].UseTiling = false
+		}
+		return nil
+	}))
+
+	// getLayerWeights(layerIdx) -> Float32Array
+	obj.Set("getLayerWeights", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return nil
+		}
+		idx := args[0].Int()
+		if idx < 0 || idx >= len(n.Layers) {
+			return nil
+		}
+		l := &n.Layers[idx]
+		if l.WeightStore == nil {
+			return nil
+		}
+		return jsFloat32Array(l.WeightStore.Master)
+	}))
+
+	// setLayerWeights(layerIdx, Float32Array)
+	obj.Set("setLayerWeights", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 2 {
+			return "Expected index and data"
+		}
+		idx := args[0].Int()
+		data := readFloat32Array(args[1])
+		if idx < 0 || idx >= len(n.Layers) {
+			return "Index out of range"
+		}
+		l := &n.Layers[idx]
+		if l.WeightStore == nil {
+			return "Layer has no weights"
+		}
+		copy(l.WeightStore.Master, data)
+		return nil
+	}))
+
+	// saveSafetensors() -> Uint8Array
+	obj.Set("saveSafetensors", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		data, err := poly.SaveSafetensorsToBytes(n)
+		if err != nil {
+			return errObj(err.Error())
+		}
+		arr := js.Global().Get("Uint8Array").New(len(data))
+		js.CopyBytesToJS(arr, data)
+		return arr
 	}))
 
 	// getInfo() -> JSON string
@@ -528,10 +856,24 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 		return createTargetPropStateWrapper(n, s)
 	}))
 
-	// free() - no-op in WASM (GC handles it), but provided for API compatibility
-	obj.Set("free", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		return nil
+	// extractDNA() -> JSON string
+	obj.Set("extractDNA", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		dna := poly.ExtractDNA(n)
+		b, _ := json.Marshal(dna)
+		return string(b)
 	}))
+
+	// extractNetworkBlueprint(modelID?) -> JSON string
+	obj.Set("extractNetworkBlueprint", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		id := "network_extract"
+		if len(args) > 0 { id = args[0].String() }
+		bp := poly.ExtractNetworkBlueprint(n, id)
+		b, _ := json.Marshal(bp)
+		return string(b)
+	}))
+
+	// alias for extractNetworkBlueprint
+	obj.Set("ExtractNetworkBlueprint", obj.Get("extractNetworkBlueprint"))
 
 	return obj
 }
@@ -715,6 +1057,16 @@ func createLoomNEATPopulationFn(this js.Value, args []js.Value) interface{} {
 	return createNEATPopulationWrapper(pop)
 }
 
+// getLoomInternalParity() -> string[]
+func getLoomInternalParityFn(this js.Value, args []js.Value) interface{} {
+	// totalParityItems is defined in parity_data.go (auto-generated)
+	arr := js.Global().Get("Array").New(len(totalParityItems))
+	for i, p := range totalParityItems {
+		arr.SetIndex(i, p)
+	}
+	return arr
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // WebGPU Setup Helper
 // ──────────────────────────────────────────────────────────────────────────────
@@ -788,7 +1140,7 @@ func setupWebGPUFn(this js.Value, args []js.Value) interface{} {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func main() {
-	fmt.Println("welvet WASM — M-POLY-VTD Engine (Loom v0.74.0) initialized")
+	fmt.Println("welvet WASM — M-POLY-VTD Engine (Loom v0.75.0) initialized")
 
 	js.Global().Set("createLoomNetwork", js.FuncOf(createLoomNetworkFn))
 	js.Global().Set("loadLoomNetwork", js.FuncOf(loadLoomNetworkFn))
@@ -798,6 +1150,106 @@ func main() {
 	js.Global().Set("defaultSpliceConfig", js.FuncOf(defaultSpliceConfigFn))
 	js.Global().Set("defaultNEATConfig", js.FuncOf(defaultNEATConfigFn))
 	js.Global().Set("createLoomNEATPopulation", js.FuncOf(createLoomNEATPopulationFn))
+	js.Global().Set("getLoomInternalParity", js.FuncOf(getLoomInternalParityFn))
+
+	// Transformer Factory
+	js.Global().Set("createLoomTransformer", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 4 {
+			return errObj("Expected (networkID, embeddings, lmHead, finalNorm)")
+		}
+		netID := int64(args[0].Int())
+		net, ok := getNetwork(netID)
+		if !ok {
+			return errObj("Invalid network ID")
+		}
+		embeds := readFloat32Array(args[1])
+		lmHead := readFloat32Array(args[2])
+		fNorm := readFloat32Array(args[3])
+		
+		tr := poly.NewTransformer[float32](net, embeds, lmHead, fNorm, poly.Template{})
+		return createTransformerWrapper(tr)
+	}))
+
+	// Global Polymorphic Functions
+	js.Global().Set("ForwardPolymorphic", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 2 { return nil }
+		netID := int64(args[0].Int())
+		net, _ := getNetwork(netID)
+		data := readFloat32Array(args[1])
+		t := poly.NewTensorFromSlice(data, 1, len(data))
+		out, _, _ := poly.ForwardPolymorphic(net, t)
+		return jsFloat32Array(out.Data)
+	}))
+
+	js.Global().Set("DispatchLayer", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		// This one is tricky as it needs a Layer pointer
+		return errObj("Use layer.dispatch() instead")
+	}))
+
+	js.Global().Set("SaveSafetensors", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 { return nil }
+		netID := int64(args[0].Int())
+		net, _ := getNetwork(netID)
+		data, _ := poly.SaveSafetensorsToBytes(net)
+		arr := js.Global().Get("Uint8Array").New(len(data))
+		js.CopyBytesToJS(arr, data)
+		return arr
+	}))
+
+	js.Global().Set("LoadUniversal", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 { return nil }
+		path := args[0].String()
+		n, err := poly.LoadUniversal(path)
+		if err != nil { return errObj(err.Error()) }
+		return createNetworkWrapper(n)
+	}))
+
+	js.Global().Set("DispatchLayer", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 2 { return nil }
+		layerID := int64(args[0].Int())
+		l, ok := getLayer(layerID)
+		if !ok { return errObj("Invalid layer ID") }
+		data := readFloat32Array(args[1])
+		t := poly.NewTensorFromSlice(data, 1, len(data))
+		_, post := poly.DispatchLayer(l, t, nil)
+		return jsFloat32Array(post.Data)
+	}))
+
+	js.Global().Set("ExtractNetworkBlueprint", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 { return nil }
+		netID := int64(args[0].Int())
+		net, _ := getNetwork(netID)
+		bp := poly.ExtractNetworkBlueprint(net, "model-0")
+		b, _ := json.Marshal(bp)
+		return string(b)
+	}))
+
+	js.Global().Set("ExtractDNA", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 { return nil }
+		netID := int64(args[0].Int())
+		net, _ := getNetwork(netID)
+		dna := poly.ExtractDNA(net)
+		b, _ := json.Marshal(dna)
+		return string(b)
+	}))
+	
+	js.Global().Set("BuildNetworkFromJSON", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 { return nil }
+		n, err := poly.BuildNetworkFromJSON([]byte(args[0].String()))
+		if err != nil { return errObj(err.Error()) }
+		return createNetworkWrapper(n)
+	}))
+
+	js.Global().Set("loadLoomTokenizer", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return "Expected JSON vocabulary"
+		}
+		tok, err := poly.NewTokenizerFromJSON([]byte(args[0].String()))
+		if err != nil {
+			return errObj(err.Error())
+		}
+		return createTokenizerWrapper(tok)
+	}))
 
 	fmt.Println("Exposed globals:")
 	fmt.Println("  createLoomNetwork(jsonConfig)          - Build network from JSON")
