@@ -1,7 +1,7 @@
 //go:build js && wasm
 // +build js,wasm
 
-// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.73.0)
+// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.75.0)
 //
 // Exposes the poly.VolumetricNetwork API to JavaScript via WebAssembly.
 // Supports 21 numerical types, systolic propagation, target propagation,
@@ -1140,7 +1140,7 @@ func setupWebGPUFn(this js.Value, args []js.Value) interface{} {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func main() {
-	fmt.Println("welvet WASM — M-POLY-VTD Engine (Loom v0.74.0) initialized")
+	fmt.Println("welvet WASM — M-POLY-VTD Engine (Loom v0.75.0) initialized")
 
 	js.Global().Set("createLoomNetwork", js.FuncOf(createLoomNetworkFn))
 	js.Global().Set("loadLoomNetwork", js.FuncOf(loadLoomNetworkFn))

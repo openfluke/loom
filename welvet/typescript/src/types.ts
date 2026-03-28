@@ -1,7 +1,7 @@
 /**
  * welvet — Type Definitions for the M-POLY-VTD AI Engine
  *
- * Wraps the Loom v0.73.0 WASM module which supports 21 numerical types,
+ * Wraps the Loom v0.75.0 WASM module which supports 21 numerical types,
  * systolic grid propagation, target propagation, and WebGPU acceleration.
  */
 

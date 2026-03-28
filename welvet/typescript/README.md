@@ -1,6 +1,6 @@
 # @openfluke/welvet
 
-**M-POLY-VTD AI Engine (Loom v0.74.0)** — Isomorphic TypeScript/WASM library for building, training, and evolving neural networks with 21 numerical types, WebGPU acceleration, and DNA-based evolution.
+**M-POLY-VTD AI Engine (Loom v0.75.0)** — Isomorphic TypeScript/WASM library for building, training, and evolving neural networks with 21 numerical types, WebGPU acceleration, and DNA-based evolution.
 
 [![npm version](https://img.shields.io/npm/v/@openfluke/welvet.svg)](https://www.npmjs.com/package/@openfluke/welvet)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -28,9 +28,9 @@ bun add @openfluke/welvet
 The engine initializes automatically after a single call to `init()`. It detects whether it's running in Node.js, Bun, or the Browser and loads the appropriate WASM environment.
 
 ```typescript
-import { init } from "@openfluke/welvet";
+import welvet from "@openfluke/welvet";
 
-await init(); // Just works™
+await welvet.init(); // Auto-detects Node.js/Browser and loads WASM
 ```
 
 > [!TIP]
@@ -39,18 +39,20 @@ await init(); // Just works™
 ### 2. Create a Network
 
 ```typescript
-import { createNetwork, DType } from "@openfluke/welvet";
+import welvet from "@openfluke/welvet";
 
-const net = createNetwork({
+// 1D sequential stack on the Volumetric Grid (cell 0,0,0)
+const net = welvet.createNetwork({
+  depth: 1, rows: 1, cols: 1, layers_per_cell: 2,
   layers: [
-    { type: "Dense", input_height: 784, output_height: 256, activation: "ReLU", dtype: DType.FLOAT32 },
-    { type: "Dense", input_height: 256, output_height: 10, activation: "Linear", dtype: DType.FLOAT16 }
+    { z: 0, y: 0, x: 0, l: 0, type: "Dense", input_height: 784, output_height: 256, activation: "ReLU" },
+    { z: 0, y: 0, x: 0, l: 1, type: "Dense", input_height: 256, output_height: 10, activation: "Linear" }
   ]
 });
 
 const input = new Float32Array(784).fill(0.5);
 const output = net.sequentialForward(input);
-console.log("Prediction:", output);
+console.log("Prediction:", output[0]); // Returns Float32Array
 ```
 
 ### 3. Training
@@ -66,17 +68,27 @@ const result = trainNetwork(net, batches, 10, 0.001);
 console.log("Final Loss:", result.final_loss);
 ```
 
-### 4. NEAT Evolution
+### 4. Transformer (LLM Context)
 
 ```typescript
-import { createNEATPopulation } from "@openfluke/welvet";
+// Create an MHA layer (Multi-Head Attention)
+const tnet = welvet.createNetwork({
+  layers: [{ z: 0, y: 0, x: 0, l: 0, type: "MHA", d_model: 64, num_heads: 4 }]
+});
 
-const population = createNEATPopulation(net, 100);
-const fitnesses = new Array(100).fill(0).map(() => Math.random());
+// Wrap in Transformer context with pre-loaded weights
+const model = welvet.createTransformer(tnet, embeds, lmHead, finalNorm);
+const logits = model.forwardFull([1, 2, 3, 4]); // Direct token prefill
+```
+
+### 5. NEAT Evolution
+
+```typescript
+const population = welvet.createNEATPopulation(net, 100);
+const fitnesses = new Array(100).fill(1.0);
 
 population.evolveWithFitnesses(fitnesses);
-const bestNet = population.best();
-console.log("Best Fitness:", population.bestFitness());
+console.log("Top Fitness:", population.bestFitness());
 ```
 
 ## Testing & Benchmarks
