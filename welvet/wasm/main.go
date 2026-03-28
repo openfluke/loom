@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"sync"
 	"syscall/js"
-	"time"
 
 	"github.com/openfluke/loom/poly"
 )
@@ -223,9 +222,22 @@ func createTransformerWrapper(tr *poly.Transformer[float32]) js.Value {
 		if len(args) < 1 {
 			return errObj("Expected input data")
 		}
-		data := readFloat32Array(args[0])
-		t := poly.NewTensorFromSlice(data, 1, len(data))
-		out := tr.ForwardFull(t)
+		jsVal := args[0]
+
+		var emb *poly.Tensor[float32]
+
+		// Detect input type
+		if jsVal.Type() == js.TypeObject && jsVal.Get("constructor").Get("name").String() == "Float32Array" {
+			// Pre-calculated Embeddings
+			data := readFloat32Array(jsVal)
+			emb = poly.NewTensorFromSlice(data, 1, len(data))
+		} else {
+			// Token IDs
+			tokens := readUint32Array(jsVal)
+			emb = tr.TokensToTensor(tokens)
+		}
+
+		out := tr.ForwardFull(emb)
 		if out == nil {
 			return js.Global().Get("Float32Array").New(0)
 		}
@@ -299,6 +311,15 @@ func readFloat32Array(jsVal js.Value) []float32 {
 	out := make([]float32, length)
 	for i := 0; i < length; i++ {
 		out[i] = float32(jsVal.Index(i).Float())
+	}
+	return out
+}
+
+func readUint32Array(jsVal js.Value) []uint32 {
+	length := jsVal.Get("length").Int()
+	out := make([]uint32, length)
+	for i := 0; i < length; i++ {
+		out[i] = uint32(jsVal.Index(i).Int())
 	}
 	return out
 }
@@ -510,21 +531,14 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 		t := poly.NewTensorFromSlice(data, 1, len(data))
 
 		var out *poly.Tensor[float32]
-		var dur time.Duration
-
 		// ForwardPolymorphic handles n.UseTiling internally
-		out, dur, _ = poly.ForwardPolymorphic(n, t)
+		out, _, _ = poly.ForwardPolymorphic(n, t)
 
-		res := js.Global().Get("Object").New()
 		if out == nil {
-			res.Set("data", js.Global().Get("Float32Array").New(0))
-			res.Set("ms", 0)
-			return res
+			return js.Global().Get("Float32Array").New(0)
 		}
 
-		res.Set("data", jsFloat32Array(out.Data))
-		res.Set("ms", float64(dur.Nanoseconds())/1e6)
-		return res
+		return jsFloat32Array(out.Data)
 	}))
 
 	// getLayer(idx) -> Layer JS object
@@ -842,10 +856,24 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 		return createTargetPropStateWrapper(n, s)
 	}))
 
-	// free() - no-op in WASM (GC handles it), but provided for API compatibility
-	obj.Set("free", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		return nil
+	// extractDNA() -> JSON string
+	obj.Set("extractDNA", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		dna := poly.ExtractDNA(n)
+		b, _ := json.Marshal(dna)
+		return string(b)
 	}))
+
+	// extractNetworkBlueprint(modelID?) -> JSON string
+	obj.Set("extractNetworkBlueprint", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		id := "network_extract"
+		if len(args) > 0 { id = args[0].String() }
+		bp := poly.ExtractNetworkBlueprint(n, id)
+		b, _ := json.Marshal(bp)
+		return string(b)
+	}))
+
+	// alias for extractNetworkBlueprint
+	obj.Set("ExtractNetworkBlueprint", obj.Get("extractNetworkBlueprint"))
 
 	return obj
 }

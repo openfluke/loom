@@ -30,8 +30,11 @@ import type {
   TrainingBatch,
   TrainingResult,
   DNACompareResult,
+  Transformer,
+  Layer,
 } from "./types.js";
 
+import { DType, LayerType, Activation } from "./types.js";
 import { loadLoomWASMBrowser } from "./loader.browser.js";
 
 // Re-export all types and constants
@@ -87,10 +90,17 @@ export function createNetwork(config: object | string): Network {
 }
 
 /**
+ * Build a network from a JSON string.
+ */
+export function buildNetworkFromJSON(json: string): Network {
+  return (globalThis as unknown as Record<string, (j: string) => Network>)["BuildNetworkFromJSON"](json) as unknown as Network;
+}
+
+/** Alias for buildNetworkFromJSON to match engine symbol */
+export const BuildNetworkFromJSON = buildNetworkFromJSON;
+
+/**
  * Load a pre-trained network from a SafeTensors file path.
- * (Node.js only — requires file system access)
- *
- * @param path Absolute or relative path to a .safetensors file
  */
 export function loadNetwork(path: string): Network {
   return loadLoomNetwork(path) as unknown as Network;
@@ -129,6 +139,22 @@ export function compareDNA(dnaA: string, dnaB: string): DNACompareResult {
  */
 export function defaultTargetPropConfig(): object {
   return JSON.parse(getDefaultTargetPropConfig());
+}
+
+/**
+ * Get the internal parity symbol list from Go.
+ * Used for audits and verification.
+ */
+export function getInternalParity(): string[] {
+  if (typeof getLoomInternalParity === "function") {
+    return getLoomInternalParity();
+  }
+  return [];
+}
+
+/** Global accessor for extractNetworkBlueprint (engine parity) */
+export function ExtractNetworkBlueprint(network: Network, modelID?: string): string {
+  return network.extractNetworkBlueprint(modelID);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -194,6 +220,30 @@ export function createNEATPopulation(
     ["createLoomNEATPopulation"](network._id, size, cfgJSON);
 }
 
+/**
+ * Create a Transformer wrapper.
+ * @param network Network to use as the base
+ * @param embeddings Float32Array of embedding weights
+ * @param lmHead Float32Array of LM head weights
+ * @param finalNorm Float32Array of final norm weights
+ */
+export function createTransformer(
+  network: Network,
+  embeddings: Float32Array | number[],
+  lmHead: Float32Array | number[],
+  finalNorm: Float32Array | number[]
+): Transformer {
+  return createLoomTransformer(network._id, embeddings, lmHead, finalNorm);
+}
+
+/** 
+ * Save a network to a SafeTensors byte array.
+ */
+export function saveNetwork(network: Network): Uint8Array {
+  // @ts-ignore
+  return network.saveSafetensors();
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Default export
 // ──────────────────────────────────────────────────────────────────────────────
@@ -202,23 +252,25 @@ export default {
   init,
   initBrowser,
   createNetwork,
+  buildNetworkFromJSON,
   loadNetwork,
+  saveNetwork,
   setupWebGPU,
   compareDNA,
   defaultTargetPropConfig,
+  getInternalParity,
   trainNetwork,
   getSpliceConfig,
   getNEATConfig,
   createNEATPopulation,
+  createTransformer,
+  // Parity aliases
+  BuildNetworkFromJSON,
+  ExtractNetworkBlueprint,
   // Re-export constants for convenience
-  DType: {
-    FLOAT64: 0, FLOAT32: 1, FLOAT16: 2, BFLOAT16: 3,
-    FP8_E4M3: 4, FP8_E5M2: 5,
-    INT64: 6, INT32: 7, INT16: 8, INT8: 9,
-    UINT64: 10, UINT32: 11, UINT16: 12, UINT8: 13,
-    INT4: 14, UINT4: 15, FP4: 16,
-    INT2: 17, UINT2: 18, TERNARY: 19, BINARY: 20,
-  },
+  DType,
+  LayerType,
+  Activation,
 };
 
 // Suppress unused import warnings for re-exported types
