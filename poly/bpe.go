@@ -68,6 +68,19 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		return nil, fmt.Errorf("failed to parse tokenizer JSON: %w", err)
 	}
 
+	return newTokenizerFromParsedJSON(tokJSON)
+}
+
+// NewTokenizerFromJSON creates a tokenizer from a JSON byte slice.
+func NewTokenizerFromJSON(data []byte) (*Tokenizer, error) {
+	var tokJSON TokenizerJSON
+	if err := json.Unmarshal(data, &tokJSON); err != nil {
+		return nil, fmt.Errorf("failed to parse tokenizer JSON: %w", err)
+	}
+	return newTokenizerFromParsedJSON(tokJSON)
+}
+
+func newTokenizerFromParsedJSON(tokJSON TokenizerJSON) (*Tokenizer, error) {
 	t := &Tokenizer{
 		Vocab:         tokJSON.Model.Vocab,
 		ReverseVocab:  make(map[int]string),

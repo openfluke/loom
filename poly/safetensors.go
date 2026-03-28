@@ -101,13 +101,51 @@ type TensorMetaHeader struct {
 	DataOffsets []int  `json:"data_offsets"`
 }
 
-// SaveSafetensors saves a map of tensors to a safetensors file
-func SaveSafetensors(filepath string, tensors map[string]TensorWithShape) error {
+// buildSafetensorsHeader is a shared helper to construct the header and calculate offsets.
 
+// SaveSafetensorsToBytes returns the safetensors file as a byte slice.
+func SaveSafetensorsToBytes(n *VolumetricNetwork) ([]byte, error) {
+	tensors := make(map[string]TensorWithShape)
+	for i, l := range n.Layers {
+		if l.WeightStore != nil {
+			name := fmt.Sprintf("layer_%d.weights", i)
+			tensors[name] = TensorWithShape{
+				Values: l.WeightStore.Master,
+				Shape:  []int{len(l.WeightStore.Master)},
+				DType:  "F32",
+			}
+		}
+	}
+
+	headerJSON, totalBytes, header, err := buildSafetensorsHeader(tensors)
+	if err != nil {
+		return nil, err
+	}
+
+	headerLen := uint64(len(headerJSON))
+	out := make([]byte, 8+headerLen+totalBytes)
+
+	binary.LittleEndian.PutUint64(out[0:8], headerLen)
+	copy(out[8:8+headerLen], headerJSON)
+
+	dataStart := 8 + headerLen
+	for name, info := range header {
+		t := tensors[name]
+		offset := dataStart + uint64(info.DataOffsets[0])
+		
+		// Only supporting F32 for now in this export
+		for j, v := range t.Values {
+			binary.LittleEndian.PutUint32(out[offset+uint64(j*4):offset+uint64(j*4+4)], math.Float32bits(v))
+		}
+	}
+
+	return out, nil
+}
+
+func buildSafetensorsHeader(tensors map[string]TensorWithShape) ([]byte, uint64, map[string]TensorMetaHeader, error) {
 	header := make(map[string]TensorMetaHeader)
 	var totalBytes uint64 = 0
 
-	// Order names for deterministic header
 	var names []string
 	for k := range tensors {
 		names = append(names, k)
@@ -119,14 +157,11 @@ func SaveSafetensors(filepath string, tensors map[string]TensorWithShape) error 
 		for _, dim := range t.Shape {
 			numElements *= dim
 		}
-		
+
 		var bytesPerElement int
 		switch t.DType {
 		case "F32", "I32", "U32": bytesPerElement = 4
 		case "F64", "I64", "U64": bytesPerElement = 8
-		case "F16", "BF16", "I16", "U16": bytesPerElement = 2
-		case "I8", "U8": bytesPerElement = 1
-		case "F4": bytesPerElement = (numElements + 1) / 2
 		default: bytesPerElement = 4
 		}
 
@@ -141,7 +176,17 @@ func SaveSafetensors(filepath string, tensors map[string]TensorWithShape) error 
 
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
-		return fmt.Errorf("failed to marshal header: %w", err)
+		return nil, 0, nil, fmt.Errorf("failed to marshal header: %w", err)
+	}
+
+	return headerJSON, totalBytes, header, nil
+}
+
+// SaveSafetensors saves a map of tensors to a safetensors file
+func SaveSafetensors(filepath string, tensors map[string]TensorWithShape) error {
+	headerJSON, totalBytes, header, err := buildSafetensorsHeader(tensors)
+	if err != nil {
+		return err
 	}
 
 	headerLen := uint64(len(headerJSON))
@@ -162,12 +207,18 @@ func SaveSafetensors(filepath string, tensors map[string]TensorWithShape) error 
 		return err
 	}
 
+	// We need deterministic order for the data section too
+	var names []string
+	for name := range header {
+		names = append(names, name)
+	}
+
 	for _, name := range names {
 		t := tensors[name]
 		if t.DType == "F32" {
 			dataBuf := make([]byte, len(t.Values)*4)
 			for i, v := range t.Values {
-				bits := *(*uint32)(unsafe.Pointer(&v))
+				bits := math.Float32bits(v)
 				binary.LittleEndian.PutUint32(dataBuf[i*4:], bits)
 			}
 			if _, err := f.Write(dataBuf); err != nil {
@@ -177,7 +228,7 @@ func SaveSafetensors(filepath string, tensors map[string]TensorWithShape) error 
 			return fmt.Errorf("only F32 saving supported currently")
 		}
 	}
-
+	_ = totalBytes // keep for compatibility if needed elsewhere
 	return nil
 }
 

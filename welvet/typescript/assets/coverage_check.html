@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loom WASM — 345-Item Parity Audit</title>
+    <style>
+        :root {
+            --bg: #050505;
+            --panel: #0f0f12;
+            --accent: #00d4ff;
+            --text: #e0e0e0;
+            --dim: #666;
+            --pass: #00ff9d;
+            --fail: #ff3e3e;
+            --warn: #ffcc00;
+            --indirect: #00d4ff;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            background: var(--bg); 
+            color: var(--text); 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; 
+            overflow-x: hidden;
+            line-height: 1.5;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; padding: 40px 20px; }
+
+        header { 
+            border-bottom: 1px solid #222; 
+            padding-bottom: 20px; 
+            margin-bottom: 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+
+        h1 { 
+            font-size: 24px; 
+            font-weight: 800; 
+            letter-spacing: -1px;
+            color: var(--accent);
+            text-transform: uppercase;
+        }
+
+        .stats { display: flex; gap: 30px; }
+        .stat-card { text-align: right; }
+        .stat-val { font-size: 32px; font-weight: 900; color: #fff; }
+        .stat-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+
+        .controls { margin-bottom: 30px; display: flex; gap: 10px; }
+        button {
+            background: #1a1a1f;
+            border: 1px solid #333;
+            color: #fff;
+            padding: 10px 20px;
+            font-family: inherit;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-radius: 4px;
+        }
+        button:hover { background: #2a2a2f; border-color: var(--accent); color: var(--accent); }
+        button:disabled { opacity: 0.3; cursor: not-allowed; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .category-card {
+            background: var(--panel);
+            border: 1px solid #1a1a1f;
+            border-radius: 8px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .category-title {
+            font-size: 14px;
+            font-weight: 800;
+            margin-bottom: 15px;
+            color: var(--dim);
+            border-bottom: 1px solid #222;
+            padding-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .item-list {
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            font-size: 11px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .item {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 8px;
+            border-radius: 3px;
+            background: rgba(255,255,255,0.02);
+        }
+
+        .status-tag {
+            font-weight: 700;
+            font-size: 9px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            text-transform: uppercase;
+        }
+
+        .PASS { color: var(--pass); background: rgba(0, 255, 157, 0.1); }
+        .FAIL { color: var(--fail); background: rgba(255, 62, 62, 0.1); }
+        .MISSING { color: var(--dim); background: rgba(255, 255, 255, 0.05); }
+        .INDIRECT { color: var(--indirect); background: rgba(0, 212, 255, 0.1); }
+
+        #terminal {
+            margin-top: 40px;
+            background: #000;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: #888;
+            height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
+
+        .glow {
+            text-shadow: 0 0 10px var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>Loom Engine — WASM Binary Audit</h1>
+                <p class="subtitle" style="font-size: 11px; color: var(--dim); margin-top: 5px;">M-POLY-VTD-0.75-STABLE | Parity Verification Suite</p>
+            </div>
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="stat-val" id="totalPass">0</div>
+                    <div class="stat-label">Functions Live</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-val" id="coverageVal">0%</div>
+                    <div class="stat-label">Global Coverage</div>
+                </div>
+            </div>
+        </header>
+
+        <div class="controls">
+            <button id="auditBtn" onclick="startAudit()">Initialize Engine Parity Engine</button>
+            <button onclick="clearLogs()" style="border: none; color: var(--dim);">Clear Logs</button>
+        </div>
+
+        <div id="grid" class="grid">
+            <!-- Dynamic Category Cards -->
+        </div>
+
+        <div id="terminal">Initializing Audit System... Ready for induction.</div>
+    </div>
+
+    <script src="wasm_exec.js"></script>
+    <script src="check.js"></script>
+    <script>
+        let wasmReady = false;
+        let expectedApi = null;
+
+        function log(msg, color = "#888") {
+            const t = document.getElementById('terminal');
+            const line = document.createElement('div');
+            line.style.color = color;
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            t.appendChild(line);
+            t.scrollTop = t.scrollHeight;
+        }
+
+        async function init() {
+            try {
+                log("Fetching expected_api.json...");
+                const res = await fetch('../expected_api.json');
+                expectedApi = await res.json();
+                log("Blueprint loaded. 345 core items mapped.");
+                
+                renderSkeleton();
+            } catch (e) {
+                log("Initialization Error: " + e.message, "#ff3e3e");
+            }
+        }
+
+        function renderSkeleton() {
+            const grid = document.getElementById('grid');
+            grid.innerHTML = '';
+            for (const [cat, items] of Object.entries(expectedApi)) {
+                const card = document.createElement('div');
+                card.className = 'category-card';
+                card.id = `cat-${cat}`;
+                card.innerHTML = `
+                    <div class="category-title">
+                        <span>${cat}</span>
+                        <span id="score-${cat}" style="color: var(--accent);">0/${items.length}</span>
+                    </div>
+                    <div class="item-list" id="list-${cat}">
+                        ${items.map(i => `
+                            <div class="item" id="item-${i.name}">
+                                <span>${i.name}</span>
+                                <span class="status-tag MISSING">PENDING</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+                grid.appendChild(card);
+            }
+        }
+
+        async function loadWASM() {
+            if (wasmReady) return;
+            log("Loading main.wasm binary...");
+            const go = new Go();
+            try {
+                const result = await WebAssembly.instantiateStreaming(fetch('main.wasm'), go.importObject);
+                go.run(result.instance);
+                await new Promise(r => setTimeout(r, 200));
+                wasmReady = true;
+                log("WASM Runtime Active. Signal acquired.", "#00ff9d");
+            } catch (e) {
+                log("Binary Load Failure: " + e.message, "#ff3e3e");
+            }
+        }
+
+        async function startAudit() {
+            document.getElementById('auditBtn').disabled = true;
+            await loadWASM();
+            if (!wasmReady) return;
+
+            log("Starting multi-stage parity induction...");
+            const results = await window.runParityAudit(null, expectedApi);
+            
+            let totalPass = 0;
+            let totalCount = 0;
+            const catScores = {};
+
+            for (const res of results) {
+                totalCount++;
+                if (res.status === 'PASS' || res.status === 'INDIRECT') totalPass++;
+                
+                if (!catScores[res.category]) catScores[res.category] = { pass: 0, total: 0 };
+                catScores[res.category].total++;
+                if (res.status === 'PASS' || res.status === 'INDIRECT') catScores[res.category].pass++;
+
+                const el = document.getElementById(`item-${res.name}`);
+                if (el) {
+                    const tag = el.querySelector('.status-tag');
+                    tag.className = `status-tag ${res.status}`;
+                    tag.textContent = res.status;
+                }
+            }
+
+            // Update scores
+            for (const [cat, score] of Object.entries(catScores)) {
+                document.getElementById(`score-${cat}`).textContent = `${score.pass}/${score.total}`;
+            }
+
+            document.getElementById('totalPass').textContent = totalPass;
+            const coverage = ((totalPass / totalCount) * 100).toFixed(1);
+            document.getElementById('coverageVal').textContent = `${coverage}%`;
+            
+            if (parseFloat(coverage) >= 90) {
+                document.getElementById('coverageVal').className = 'stat-val glow';
+            }
+
+            log(`Audit Complete. Coverage: ${coverage}% | Checks: ${totalCount}`, "#00ff9d");
+            document.getElementById('auditBtn').disabled = false;
+        }
+
+        function clearLogs() {
+            document.getElementById('terminal').innerHTML = '';
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>

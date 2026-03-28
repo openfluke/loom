@@ -1,0 +1,1390 @@
+{
+  "ACCELERATION": [
+    {
+      "name": "WGPUCNN1ScaleParams",
+      "type": "Struct"
+    },
+    {
+      "name": "ShaderTiledCNN1",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchCNN1Scaled",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN1Tiled",
+      "type": "Method"
+    },
+    {
+      "name": "CNN1GPUTileSizes",
+      "type": "Func"
+    },
+    {
+      "name": "ForwardTokenIDsWGPU",
+      "type": "Method"
+    },
+    {
+      "name": "ForwardWGPU",
+      "type": "Method"
+    },
+    {
+      "name": "SyncToGPU",
+      "type": "Method"
+    },
+    {
+      "name": "SyncToCPU",
+      "type": "Method"
+    },
+    {
+      "name": "DestroyWGPU",
+      "type": "Method"
+    },
+    {
+      "name": "SyncAllToGPU",
+      "type": "Method"
+    },
+    {
+      "name": "SyncToGPU",
+      "type": "Method"
+    },
+    {
+      "name": "SyncToCPU",
+      "type": "Method"
+    },
+    {
+      "name": "ShaderDenseBackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderDenseBackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledDenseBackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledDenseBackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledRNNBackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledRNNBackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledLSTMBackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledLSTMBackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "WGPUCNN2Bwd2DParams",
+      "type": "Struct"
+    },
+    {
+      "name": "ShaderTiledCNN2BackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledCNN2BackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchCNN2TiledBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN2TiledBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "WGPUCNN1Bwd1DParams",
+      "type": "Struct"
+    },
+    {
+      "name": "ShaderTiledCNN1BackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledCNN1BackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchCNN1TiledBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN1TiledBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "WGPUContext",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUBufferBinding",
+      "type": "Struct"
+    },
+    {
+      "name": "InitWGPU",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchLayer",
+      "type": "Func"
+    },
+    {
+      "name": "WGPUDenseParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUApplyGradientsParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUMHAParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPURNNParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPULSTMParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUCNN1Params",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUCNN2Params",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUCNN3Params",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUCNN1BackwardParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUCNN2BackwardParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUCNN3BackwardParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUMHABackwardParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUActivationParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPULossParams",
+      "type": "Struct"
+    },
+    {
+      "name": "DispatchDenseQ4",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchAdd",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchDense",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchDenseBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchDenseBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchMHA",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchSwiGLUQ4",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchSwiGLU",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchSwiGLUWithActCache",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchSwiGLUBackward",
+      "type": "Method"
+    },
+    {
+      "name": "WGPURMSNormParams",
+      "type": "Struct"
+    },
+    {
+      "name": "DispatchRMSNorm",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchRMSNormBackward",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchEmbeddingBackward",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchResidualBackward",
+      "type": "Method"
+    },
+    {
+      "name": "WGPUKVParams",
+      "type": "Struct"
+    },
+    {
+      "name": "DispatchKVUpdate",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchResidual",
+      "type": "Method"
+    },
+    {
+      "name": "WGPURoPEParams",
+      "type": "Struct"
+    },
+    {
+      "name": "DispatchRoPE",
+      "type": "Method"
+    },
+    {
+      "name": "WGPUEmbeddingParams",
+      "type": "Struct"
+    },
+    {
+      "name": "DispatchEmbedding",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchRNNStep",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchLSTMStep",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchLSTMStepPreAct",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchRNNBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchRNNBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchLSTMBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchLSTMBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN1",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN2",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN3",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN1BackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN1BackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN2BackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN2BackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN3BackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN3BackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchMHABackward",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchApplyGradients",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchMSEGradPartialLoss",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchForwardLayer",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchBackwardLayer",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchActivation",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchActivationBackward",
+      "type": "Method"
+    },
+    {
+      "name": "IsGPU",
+      "type": "Method"
+    },
+    {
+      "name": "SyncWeightsFromGPU",
+      "type": "Func"
+    },
+    {
+      "name": "WGPUCNN2ScaleParams",
+      "type": "Struct"
+    },
+    {
+      "name": "ShaderTiledCNN2",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchCNN2Scaled",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN2Tiled",
+      "type": "Method"
+    },
+    {
+      "name": "CNN2GPUTileSizes",
+      "type": "Func"
+    },
+    {
+      "name": "CalculateOptimalGPUTileSizeFromLimits",
+      "type": "Func"
+    },
+    {
+      "name": "DenseGPUTileSizesFromContext",
+      "type": "Func"
+    },
+    {
+      "name": "SwiGLUGPUTileSizes",
+      "type": "Func"
+    },
+    {
+      "name": "MHAGPUTileSizes",
+      "type": "Func"
+    },
+    {
+      "name": "GetGPUSCTileSize",
+      "type": "Method"
+    },
+    {
+      "name": "GetGPUMCTileSize",
+      "type": "Method"
+    },
+    {
+      "name": "SyncToGPU",
+      "type": "Method"
+    },
+    {
+      "name": "WGPUCNN3Backward3DParams",
+      "type": "Struct"
+    },
+    {
+      "name": "ShaderTiledCNN3BackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledCNN3BackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchCNN3TiledBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN3TiledBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "WGPUCNN3ScaleParams",
+      "type": "Struct"
+    },
+    {
+      "name": "DispatchCNN3Scaled",
+      "type": "Method"
+    },
+    {
+      "name": "ShaderTiledCNN3",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchCNN3Tiled",
+      "type": "Method"
+    },
+    {
+      "name": "CNN3GPUTileSizes",
+      "type": "Func"
+    },
+    {
+      "name": "SwiGLUForwardWGPU",
+      "type": "Func"
+    },
+    {
+      "name": "SwiGLUBackwardWGPU",
+      "type": "Func"
+    },
+    {
+      "name": "WGPUDenseScaleParams",
+      "type": "Struct"
+    },
+    {
+      "name": "DispatchDenseScaled",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchDenseTiled",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchDenseBackwardDXTiled",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchDenseBackwardDWTiled",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchLayerBackward",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledDenseQ4",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledDenseN",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledDense",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledSwiGLUQ4",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledSwiGLUN",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledSwiGLUActCache",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledMHAN",
+      "type": "Func"
+    },
+    {
+      "name": "DenseGPUTileSizes",
+      "type": "Func"
+    }
+  ],
+  "CORE MECHANICS": [
+    {
+      "name": "ConvTransposed3DForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "ConvTransposed3DBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "LayerNormForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "LayerNormBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "RMSNormForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "RMSNormBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "RNNForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "RNNBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "RNNForwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "RNNBackwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "ForwardTokenIDsWGPU",
+      "type": "Method"
+    },
+    {
+      "name": "ForwardWGPU",
+      "type": "Method"
+    },
+    {
+      "name": "InitLayerNormCell",
+      "type": "Method"
+    },
+    {
+      "name": "SwiGLUForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "SwiGLUBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "SwiGLUForwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "SwiGLUBackwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "CNN3ForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "CNN3BackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "CNN3ForwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "CNN3BackwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "CNN3BackwardTiledParallel",
+      "type": "Func"
+    },
+    {
+      "name": "ParallelForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "ParallelBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "PersistenceLayerSpec",
+      "type": "Struct"
+    },
+    {
+      "name": "ConvTransposed2DForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "ConvTransposed2DBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "LayerType",
+      "type": "Struct"
+    },
+    {
+      "name": "Tensor",
+      "type": "Struct"
+    },
+    {
+      "name": "NewTensor",
+      "type": "Func"
+    },
+    {
+      "name": "NewTensorFromSlice",
+      "type": "Func"
+    },
+    {
+      "name": "ConvertTensor",
+      "type": "Func"
+    },
+    {
+      "name": "VolumetricNetwork",
+      "type": "Struct"
+    },
+    {
+      "name": "VolumetricLayer",
+      "type": "Struct"
+    },
+    {
+      "name": "NewVolumetricNetwork",
+      "type": "Func"
+    },
+    {
+      "name": "GetLayer",
+      "type": "Method"
+    },
+    {
+      "name": "MorphLayer",
+      "type": "Func"
+    },
+    {
+      "name": "SequentialForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "SequentialBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderDenseBackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderDenseBackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledDenseBackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledDenseBackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledRNNBackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledRNNBackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledLSTMBackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledLSTMBackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledCNN2BackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledCNN2BackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchCNN2TiledBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN2TiledBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "ShaderTiledCNN1BackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledCNN1BackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchCNN1TiledBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN1TiledBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchLayer",
+      "type": "Func"
+    },
+    {
+      "name": "ForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "TargetPropForward",
+      "type": "Func"
+    },
+    {
+      "name": "TargetPropBackward",
+      "type": "Func"
+    },
+    {
+      "name": "TargetPropBackwardChainRule",
+      "type": "Func"
+    },
+    {
+      "name": "TargetPropBackwardTargetProp",
+      "type": "Func"
+    },
+    {
+      "name": "WGPUCNN1BackwardParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUCNN2BackwardParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUCNN3BackwardParams",
+      "type": "Struct"
+    },
+    {
+      "name": "WGPUMHABackwardParams",
+      "type": "Struct"
+    },
+    {
+      "name": "DispatchDenseBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchDenseBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchSwiGLUBackward",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchRMSNormBackward",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchEmbeddingBackward",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchResidualBackward",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchRNNBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchRNNBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchLSTMBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchLSTMBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN1BackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN1BackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN2BackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN2BackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN3BackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN3BackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchMHABackward",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchForwardLayer",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchBackwardLayer",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchActivationBackward",
+      "type": "Method"
+    },
+    {
+      "name": "ConvTransposed1DForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "ConvTransposed1DBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "LSTMForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "LSTMBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "LSTMForwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "LSTMBackwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "LayerSpec",
+      "type": "Struct"
+    },
+    {
+      "name": "ParseLayerType",
+      "type": "Func"
+    },
+    {
+      "name": "CNN1ForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "CNN1BackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "CNN1ForwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "CNN1BackwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "CNN1BackwardTiledParallel",
+      "type": "Func"
+    },
+    {
+      "name": "CNN2ForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "CNN2BackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "CNN2ForwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "CNN2BackwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "CNN2BackwardTiledParallel",
+      "type": "Func"
+    },
+    {
+      "name": "LayerTelemetry",
+      "type": "Struct"
+    },
+    {
+      "name": "ExtractLayerTelemetry",
+      "type": "Func"
+    },
+    {
+      "name": "TensorMeta",
+      "type": "Struct"
+    },
+    {
+      "name": "LayerArchetype",
+      "type": "Struct"
+    },
+    {
+      "name": "TokensToTensor",
+      "type": "Method"
+    },
+    {
+      "name": "ForwardFull",
+      "type": "Method"
+    },
+    {
+      "name": "MetacognitionForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "MetacognitionBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "SafetensorsHeader",
+      "type": "Struct"
+    },
+    {
+      "name": "TensorInfo",
+      "type": "Struct"
+    },
+    {
+      "name": "TensorWithShape",
+      "type": "Struct"
+    },
+    {
+      "name": "LoadSafetensors",
+      "type": "Func"
+    },
+    {
+      "name": "LoadSafetensorsFromBytes",
+      "type": "Func"
+    },
+    {
+      "name": "TensorMetaHeader",
+      "type": "Struct"
+    },
+    {
+      "name": "SaveSafetensors",
+      "type": "Func"
+    },
+    {
+      "name": "LoadSafetensorsWithShapes",
+      "type": "Func"
+    },
+    {
+      "name": "LayerSignature",
+      "type": "Struct"
+    },
+    {
+      "name": "KMeansForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "KMeansBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "SystolicState",
+      "type": "Struct"
+    },
+    {
+      "name": "NewSystolicState",
+      "type": "Func"
+    },
+    {
+      "name": "SystolicForward",
+      "type": "Func"
+    },
+    {
+      "name": "SystolicBackward",
+      "type": "Func"
+    },
+    {
+      "name": "SystolicApplyTargetProp",
+      "type": "Func"
+    },
+    {
+      "name": "WGPUCNN3Backward3DParams",
+      "type": "Struct"
+    },
+    {
+      "name": "ShaderTiledCNN3BackwardDX",
+      "type": "Func"
+    },
+    {
+      "name": "ShaderTiledCNN3BackwardDW",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchCNN3TiledBackwardDX",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchCNN3TiledBackwardDW",
+      "type": "Method"
+    },
+    {
+      "name": "ResidualForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "ResidualBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "ResidualForwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "ResidualBackwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "SwiGLUForwardWGPU",
+      "type": "Func"
+    },
+    {
+      "name": "SwiGLUBackwardWGPU",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchDenseBackwardDXTiled",
+      "type": "Method"
+    },
+    {
+      "name": "DispatchDenseBackwardDWTiled",
+      "type": "Method"
+    },
+    {
+      "name": "MHAForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "MHABackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "MHAForwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "MHAForwardTiledParallel",
+      "type": "Func"
+    },
+    {
+      "name": "EmbeddingForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "EmbeddingBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "EmbeddingForwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "EmbeddingBackwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "DispatchLayerBackward",
+      "type": "Func"
+    },
+    {
+      "name": "BackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "PolyLayerEvent",
+      "type": "Struct"
+    },
+    {
+      "name": "LayerStats",
+      "type": "Struct"
+    },
+    {
+      "name": "ComputeLayerStats",
+      "type": "Func"
+    },
+    {
+      "name": "OnForward",
+      "type": "Method"
+    },
+    {
+      "name": "OnBackward",
+      "type": "Method"
+    },
+    {
+      "name": "OnForward",
+      "type": "Method"
+    },
+    {
+      "name": "OnBackward",
+      "type": "Method"
+    },
+    {
+      "name": "OnForward",
+      "type": "Method"
+    },
+    {
+      "name": "OnBackward",
+      "type": "Method"
+    },
+    {
+      "name": "SoftmaxForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "SoftmaxBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "SoftmaxBackward",
+      "type": "Func"
+    },
+    {
+      "name": "DenseForwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "DenseBackwardPolymorphic",
+      "type": "Func"
+    },
+    {
+      "name": "DenseForwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "DenseBackwardTiled",
+      "type": "Func"
+    },
+    {
+      "name": "DetectedTensor",
+      "type": "Struct"
+    },
+    {
+      "name": "GroupRelatedTensors",
+      "type": "Func"
+    },
+    {
+      "name": "ReconstructSwiGLULayer",
+      "type": "Func"
+    },
+    {
+      "name": "ReconstructRMSNormLayer",
+      "type": "Func"
+    },
+    {
+      "name": "ReconstructMHALayer",
+      "type": "Func"
+    },
+    {
+      "name": "ReconstructCNNLayer",
+      "type": "Func"
+    },
+    {
+      "name": "ReconstructLayerNormLayer",
+      "type": "Func"
+    }
+  ],
+  "IO/UTIL": [
+    {
+      "name": "BuildNetworkFromJSON",
+      "type": "Func"
+    },
+    {
+      "name": "ExtractNetworkBlueprint",
+      "type": "Func"
+    },
+    {
+      "name": "ExtractLayerTelemetry",
+      "type": "Func"
+    },
+    {
+      "name": "LoadUniversal",
+      "type": "Func"
+    },
+    {
+      "name": "LoadUniversalDetailed",
+      "type": "Func"
+    },
+    {
+      "name": "Tokenizer",
+      "type": "Struct"
+    },
+    {
+      "name": "PreTokenizer",
+      "type": "Struct"
+    },
+    {
+      "name": "TokenizerJSON",
+      "type": "Struct"
+    },
+    {
+      "name": "LoadTokenizer",
+      "type": "Func"
+    },
+    {
+      "name": "SafetensorsHeader",
+      "type": "Struct"
+    },
+    {
+      "name": "LoadSafetensors",
+      "type": "Func"
+    },
+    {
+      "name": "LoadSafetensorsFromBytes",
+      "type": "Func"
+    },
+    {
+      "name": "SaveSafetensors",
+      "type": "Func"
+    },
+    {
+      "name": "LoadSafetensorsWithShapes",
+      "type": "Func"
+    },
+    {
+      "name": "ExtractDNA",
+      "type": "Func"
+    },
+    {
+      "name": "LoadWithPrefixes",
+      "type": "Func"
+    },
+    {
+      "name": "GetMethodsJSON",
+      "type": "Method"
+    }
+  ],
+  "LEARNING/DNA": [
+    {
+      "name": "TargetPropConfig",
+      "type": "Struct"
+    },
+    {
+      "name": "DefaultTargetPropConfig",
+      "type": "Func"
+    },
+    {
+      "name": "TargetPropState",
+      "type": "Struct"
+    },
+    {
+      "name": "NewTargetPropState",
+      "type": "Func"
+    },
+    {
+      "name": "TargetPropForward",
+      "type": "Func"
+    },
+    {
+      "name": "TargetPropBackward",
+      "type": "Func"
+    },
+    {
+      "name": "TargetPropBackwardChainRule",
+      "type": "Func"
+    },
+    {
+      "name": "TargetPropBackwardTargetProp",
+      "type": "Func"
+    },
+    {
+      "name": "ApplyTargetPropGaps",
+      "type": "Func"
+    },
+    {
+      "name": "WGPUApplyGradientsParams",
+      "type": "Struct"
+    },
+    {
+      "name": "DispatchApplyGradients",
+      "type": "Method"
+    },
+    {
+      "name": "ComputeLossGradient",
+      "type": "Func"
+    },
+    {
+      "name": "ApplyRecursiveGradients",
+      "type": "Func"
+    },
+    {
+      "name": "NetworkDNA",
+      "type": "Struct"
+    },
+    {
+      "name": "ExtractDNA",
+      "type": "Func"
+    },
+    {
+      "name": "CompareNetworks",
+      "type": "Func"
+    },
+    {
+      "name": "SystolicApplyTargetProp",
+      "type": "Func"
+    },
+    {
+      "name": "SpliceDNA",
+      "type": "Func"
+    },
+    {
+      "name": "SpliceDNAWithReport",
+      "type": "Func"
+    },
+    {
+      "name": "PolyGradientObserver",
+      "type": "Struct"
+    },
+    {
+      "name": "ApplyGradients",
+      "type": "Method"
+    }
+  ]
+}
