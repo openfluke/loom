@@ -225,7 +225,7 @@ func (t *Transformer[T]) Generate(
 		nextToken := SampleTopK(logits, opts.TopK, opts.Temperature, opts.Deterministic)
 		
 		tokens = append(tokens, uint32(nextToken))
-		stream.Push(tokens, opts.Silent)
+		stream.Push(tokens, opts.Silent, opts.StreamCallback)
 		generatedCount++
 
 		if t.isEOS(nextToken, opts.EOSTokens) || (opts.UseKVCache && stream.HasNewUserTurn(tokens)) {
