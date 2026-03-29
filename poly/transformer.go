@@ -2,6 +2,7 @@ package poly
 
 import (
 	"fmt"
+	"math"
 	"runtime"
 	"sync"
 	"time"
@@ -56,12 +57,12 @@ func NewTransformer[T Numeric](network *VolumetricNetwork, embeddings, lmHead, f
 
 	if finalNorm != nil {
 		tr.finalNormLayer = &VolumetricLayer{
-			Network:     network,
-			Type:        LayerRMSNorm,
-			InputHeight: hiddenSize,
+			Network:      network,
+			Type:         LayerRMSNorm,
+			InputHeight:  hiddenSize,
 			OutputHeight: hiddenSize,
-			DType:       DTypeFloat32,
-			WeightStore: NewWeightStore(len(finalNorm)),
+			DType:        DTypeFloat32,
+			WeightStore:  NewWeightStore(len(finalNorm)),
 		}
 		copy(tr.finalNormLayer.WeightStore.Master, finalNorm)
 	}
@@ -206,7 +207,7 @@ func (t *Transformer[T]) Generate(
 		}
 	}
 	prefillElapsed := time.Since(prefillStart)
-	
+
 	metrics := GenMetrics{
 		PrefillTime:   prefillElapsed,
 		PrefillTokens: len(tokens),
@@ -221,14 +222,17 @@ func (t *Transformer[T]) Generate(
 
 	for i := 0; i < opts.MaxTokens; i++ {
 		t.applyRepetitionPenalty(logits, tokens, opts)
+		t.applyBannedTokenMask(logits, opts)
+		t.applyConsecutiveRepeatMask(logits, tokens, opts)
+		t.applyNoRepeatNGramMask(logits, tokens, opts)
 
 		nextToken := SampleTopK(logits, opts.TopK, opts.Temperature, opts.Deterministic)
-		
+
 		tokens = append(tokens, uint32(nextToken))
 		stream.Push(tokens, opts.Silent, opts.StreamCallback)
 		generatedCount++
 
-		if t.isEOS(nextToken, opts.EOSTokens) || (opts.UseKVCache && stream.HasNewUserTurn(tokens)) {
+		if (generatedCount >= opts.MinTokens && t.isEOS(nextToken, opts.EOSTokens)) || (opts.UseKVCache && stream.HasNewUserTurn(tokens)) {
 			break
 		}
 
@@ -263,7 +267,7 @@ func (t *Transformer[T]) Generate(
 	decodeElapsed := time.Since(decodeStart)
 	metrics.DecodeTime = decodeElapsed
 	metrics.GeneratedTokens = generatedCount
-	
+
 	ramBytes := t.Network.CalculateTotalMemory()
 	vramBytes := t.Network.GetVRAMUsage()
 	metrics.RAMUsageMB = float64(ramBytes) / (1024 * 1024)
@@ -338,48 +342,48 @@ func (t *Transformer[T]) ForwardFull(input *Tensor[T]) *Tensor[T] {
 		}
 		fmt.Printf("⚠️  GPU Full Forward Failed: %v (Falling back to CPU)\n", err)
 	}
-	
+
 	current := input
 	numBlocks := len(t.Network.Layers) / 4
-	
+
 	for b := 0; b < numBlocks; b++ {
 		// Block index
 		base := b * 4
-		
+
 		// 1. Attention path
 		residual := current.Clone()
-		
+
 		// Norm 1
 		lNorm1 := &t.Network.Layers[base+0]
 		_, current = RMSNormForwardPolymorphic(lNorm1, current)
-		
+
 		// MHA
 		lMHA := &t.Network.Layers[base+1]
 		_, current = MHAForwardPolymorphic(lMHA, current)
-		
+
 		// Add
 		current.Add(residual)
-		
+
 		// 2. MLP path
 		residual = current.Clone()
-		
+
 		// Norm 2
 		lNorm2 := &t.Network.Layers[base+2]
 		_, current = RMSNormForwardPolymorphic(lNorm2, current)
-		
+
 		// SwiGLU
 		lMLP := &t.Network.Layers[base+3]
 		_, current = SwiGLUForwardPolymorphic(lMLP, current)
-		
+
 		// Add
 		current.Add(residual)
 	}
-	
+
 	// Final Norm
 	if t.finalNormLayer != nil {
 		_, current = RMSNormForwardPolymorphic(t.finalNormLayer, current)
 	}
-	
+
 	return current
 }
 
@@ -458,4 +462,71 @@ func (t *Transformer[T]) isEOS(token int, eosTokens []int) bool {
 		}
 	}
 	return false
+}
+
+func (t *Transformer[T]) applyBannedTokenMask(logits []float32, opts GenOptions) {
+	if len(logits) == 0 || len(opts.BannedTokens) == 0 {
+		return
+	}
+	eosSet := make(map[int]struct{}, len(opts.EOSTokens))
+	for _, eos := range opts.EOSTokens {
+		eosSet[eos] = struct{}{}
+	}
+	for _, tok := range opts.BannedTokens {
+		if tok < 0 || tok >= len(logits) {
+			continue
+		}
+		// Never ban EOS, even if it appears in a broad special-token mask.
+		if _, isEOS := eosSet[tok]; isEOS {
+			continue
+		}
+		logits[tok] = -math.MaxFloat32
+	}
+}
+
+func (t *Transformer[T]) applyConsecutiveRepeatMask(logits []float32, tokens []uint32, opts GenOptions) {
+	if len(logits) == 0 || opts.MaxConsecutiveRepeats <= 0 || len(tokens) < opts.MaxConsecutiveRepeats {
+		return
+	}
+	last := tokens[len(tokens)-1]
+	repeats := 1
+	for i := len(tokens) - 2; i >= 0; i-- {
+		if tokens[i] != last {
+			break
+		}
+		repeats++
+	}
+	if repeats < opts.MaxConsecutiveRepeats {
+		return
+	}
+	if int(last) >= 0 && int(last) < len(logits) {
+		logits[last] = -math.MaxFloat32
+	}
+}
+
+func (t *Transformer[T]) applyNoRepeatNGramMask(logits []float32, tokens []uint32, opts GenOptions) {
+	n := opts.NoRepeatNGram
+	if n <= 1 || len(logits) == 0 || len(tokens) < n-1 {
+		return
+	}
+
+	prefixStart := len(tokens) - (n - 1)
+	prefix := tokens[prefixStart:]
+
+	for i := 0; i+n-1 < len(tokens); i++ {
+		match := true
+		for j := 0; j < n-1; j++ {
+			if tokens[i+j] != prefix[j] {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		next := tokens[i+n-1]
+		if int(next) >= 0 && int(next) < len(logits) {
+			logits[next] = -math.MaxFloat32
+		}
+	}
 }

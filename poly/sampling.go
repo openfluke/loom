@@ -10,16 +10,20 @@ import (
 
 // GenOptions defines the generation parameters
 type GenOptions struct {
-	MaxTokens         int
-	Temperature       float32
-	TopK              int
-	Deterministic     bool
-	UseKVCache        bool
-	RepetitionPenalty float32
-	RepetitionWindow  int
-	EOSTokens         []int
-	Silent            bool
-	StreamCallback    func(string)
+	MaxTokens             int
+	MinTokens             int
+	Temperature           float32
+	TopK                  int
+	Deterministic         bool
+	UseKVCache            bool
+	RepetitionPenalty     float32
+	RepetitionWindow      int
+	MaxConsecutiveRepeats int
+	NoRepeatNGram         int
+	EOSTokens             []int
+	BannedTokens          []int
+	Silent                bool
+	StreamCallback        func(string)
 }
 
 // SampleTopK performs top-K sampling with temperature and optional determinism
