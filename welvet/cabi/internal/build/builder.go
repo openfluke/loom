@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -36,28 +38,20 @@ func (p Platform) Ext() string {
 	}
 }
 
-// allPlatforms is the canonical full target list.
+// allPlatforms is the canonical full target list (64-bit only; no iOS simulator slices).
 var allPlatforms = []Platform{
 	// ── Desktop / Server ──────────────────────────────────────────────────────
 	{GOOS: "linux", GOARCH: "amd64", DirName: "linux_amd64", BuildMode: "c-shared"},
 	{GOOS: "linux", GOARCH: "arm64", DirName: "linux_arm64", BuildMode: "c-shared"},
-	{GOOS: "linux", GOARCH: "arm", GOARM: "7", DirName: "linux_armv7", BuildMode: "c-shared"},
-	{GOOS: "linux", GOARCH: "386", DirName: "linux_x86", BuildMode: "c-shared"},
 	{GOOS: "darwin", GOARCH: "amd64", DirName: "macos_amd64", BuildMode: "c-shared"},
 	{GOOS: "darwin", GOARCH: "arm64", DirName: "macos_arm64", BuildMode: "c-shared"},
 	{GOOS: "windows", GOARCH: "amd64", DirName: "windows_amd64", BuildMode: "c-shared"},
 	{GOOS: "windows", GOARCH: "arm64", DirName: "windows_arm64", BuildMode: "c-shared"},
-	{GOOS: "windows", GOARCH: "386", DirName: "windows_x86", BuildMode: "c-shared"},
-	// ── Android ───────────────────────────────────────────────────────────────
+	// ── Android (64-bit) ───────────────────────────────────────────────────────
 	{GOOS: "android", GOARCH: "arm64", DirName: "android_arm64", BuildMode: "c-shared"},
-	{GOOS: "android", GOARCH: "arm", GOARM: "7", DirName: "android_armv7", BuildMode: "c-shared"},
 	{GOOS: "android", GOARCH: "amd64", DirName: "android_x86_64", BuildMode: "c-shared"},
-	{GOOS: "android", GOARCH: "386", DirName: "android_x86", BuildMode: "c-shared"},
-	// ── iOS (static archives) ─────────────────────────────────────────────────
-	// DirName encodes device vs simulator so buildIOS picks the right SDK.
+	// ── iOS device (static archive) ─────────────────────────────────────────────
 	{GOOS: "ios", GOARCH: "arm64", DirName: "ios_arm64", BuildMode: "c-archive"},
-	{GOOS: "ios", GOARCH: "amd64", DirName: "ios_sim_amd64", BuildMode: "c-archive"},
-	{GOOS: "ios", GOARCH: "arm64", DirName: "ios_sim_arm64", BuildMode: "c-archive"},
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -66,7 +60,7 @@ var allPlatforms = []Platform{
 
 func main() {
 	targetOS := flag.String("os", runtime.GOOS, "Target OS: windows|linux|darwin|android|ios|all")
-	targetArch := flag.String("arch", runtime.GOARCH, "Target arch: amd64|arm64|arm|386|armv7|universal")
+	targetArch := flag.String("arch", runtime.GOARCH, "Target arch: amd64|arm64|universal|xcframework")
 	outDir := flag.String("out", "dist", "Output directory")
 	clean := flag.Bool("clean", false, "Remove output directory before building")
 	test := flag.Bool("test", false, "Run C verification after building (native targets only)")
@@ -195,13 +189,8 @@ func buildLucyInto(p Platform, outPath, cc string) error {
 // ──────────────────────────────────────────────────────────────────────────────
 
 func selectPlatforms(goos, arch string) []Platform {
-	// iOS simulator shorthands
 	if goos == "ios" {
 		switch arch {
-		case "sim_arm64":
-			return []Platform{{GOOS: "ios", GOARCH: "arm64", DirName: "ios_sim_arm64", BuildMode: "c-archive"}}
-		case "sim_amd64", "sim_x86_64":
-			return []Platform{{GOOS: "ios", GOARCH: "amd64", DirName: "ios_sim_amd64", BuildMode: "c-archive"}}
 		case "xcframework", "universal":
 			return nil // handled at call site
 		case "arm64", "":
@@ -215,20 +204,12 @@ func selectPlatforms(goos, arch string) []Platform {
 		arch = "amd64"
 	case "aarch64":
 		arch = "arm64"
-	case "armv7":
-		arch = "arm"
-	case "x86":
-		arch = "386"
 	case "universal", "xcframework":
 		return nil // handled at call site
 	}
 
 	for _, p := range allPlatforms {
-		goarm := ""
-		if arch == "arm" {
-			goarm = "7"
-		}
-		if p.GOOS == goos && p.GOARCH == arch && p.GOARM == goarm {
+		if p.GOOS == goos && p.GOARCH == arch && p.GOARM == "" {
 			return []Platform{p}
 		}
 	}
@@ -365,6 +346,16 @@ func compileVerify(p Platform, outPath string, cc string) {
 	fmt.Printf("  ✓  %s\n", verifyExe)
 }
 
+// firstPathCC returns the first name found on PATH (full path), or "".
+func firstPathCC(names ...string) string {
+	for _, n := range names {
+		if p, err := exec.LookPath(n); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
 // crossCC returns the C compiler (and any required flags) needed to
 // cross-compile for p.  Returns "" to use the default CC in the environment.
 // NOTE: the returned string may contain spaces (e.g. "clang -arch x86_64");
@@ -376,16 +367,22 @@ func crossCC(p Platform) string {
 	switch p.GOOS {
 	case "linux":
 		switch p.GOARCH {
+		case "amd64":
+			if host == "linux" && hostArch == "amd64" {
+				return ""
+			}
+			if cc := firstPathCC("x86_64-linux-gnu-gcc", "x86_64-unknown-linux-gnu-gcc"); cc != "" {
+				return cc
+			}
+			return "x86_64-linux-gnu-gcc"
 		case "arm64":
-			if host != "linux" || hostArch != "arm64" {
-				return "aarch64-linux-gnu-gcc"
+			if host == "linux" && hostArch == "arm64" {
+				return ""
 			}
-		case "arm":
-			return "arm-linux-gnueabihf-gcc"
-		case "386":
-			if host != "linux" || hostArch != "386" {
-				return "i686-linux-gnu-gcc"
+			if cc := firstPathCC("aarch64-linux-gnu-gcc", "aarch64-unknown-linux-gnu-gcc"); cc != "" {
+				return cc
 			}
+			return "aarch64-linux-gnu-gcc"
 		}
 	case "darwin":
 		// On Apple Silicon building for Intel (or vice-versa), Xcode's clang
@@ -400,10 +397,18 @@ func crossCC(p Platform) string {
 	case "windows":
 		switch p.GOARCH {
 		case "amd64":
+			if cc := firstPathCC("x86_64-w64-mingw32-gcc"); cc != "" {
+				return cc
+			}
 			return "x86_64-w64-mingw32-gcc"
-		case "386":
-			return "i686-w64-mingw32-gcc"
 		case "arm64":
+			// Homebrew mingw-w64 only ships x86_64 + i686 GCC; Windows/arm64 often uses llvm-mingw clang.
+			if cc := firstPathCC(
+				"aarch64-w64-mingw32-gcc",
+				"aarch64-w64-mingw32-clang",
+			); cc != "" {
+				return cc
+			}
 			return "aarch64-w64-mingw32-gcc"
 		}
 	case "android":
@@ -427,18 +432,121 @@ func splitCC(cc string) (string, []string) {
 
 const androidAPILevel = "21"
 
-func androidCC(p Platform) string {
-	ndkPath := os.Getenv("ANDROID_NDK_HOME")
-	if ndkPath == "" {
-		ndkPath = os.Getenv("NDK_HOME")
+func isValidNDKRoot(dir string) bool {
+	if dir == "" {
+		return false
 	}
+	st, err := os.Stat(filepath.Join(dir, "toolchains", "llvm", "prebuilt"))
+	return err == nil && st.IsDir()
+}
+
+// resolveAndroidNDKRoot finds an NDK install: explicit env, then
+// ANDROID_HOME / ANDROID_SDK_ROOT (ndk/<ver>, ndk-bundle), default SDK dirs per OS, Homebrew.
+func resolveAndroidNDKRoot() string {
+	for _, key := range []string{"ANDROID_NDK_HOME", "NDK_HOME", "ANDROID_NDK_ROOT"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" && isValidNDKRoot(v) {
+			return v
+		}
+	}
+	seen := map[string]struct{}{}
+	sdkRoots := []string{
+		strings.TrimSpace(os.Getenv("ANDROID_HOME")),
+		strings.TrimSpace(os.Getenv("ANDROID_SDK_ROOT")),
+	}
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		switch runtime.GOOS {
+		case "darwin":
+			sdkRoots = append(sdkRoots, filepath.Join(h, "Library", "Android", "sdk"))
+		case "windows":
+			sdkRoots = append(sdkRoots, filepath.Join(h, "AppData", "Local", "Android", "sdk"))
+		default: // linux, freebsd, …
+			sdkRoots = append(sdkRoots, filepath.Join(h, "Android", "sdk"))
+		}
+	}
+	for _, root := range sdkRoots {
+		if root == "" {
+			continue
+		}
+		root = filepath.Clean(root)
+		if _, dup := seen[root]; dup {
+			continue
+		}
+		seen[root] = struct{}{}
+		if isValidNDKRoot(filepath.Join(root, "ndk-bundle")) {
+			return filepath.Join(root, "ndk-bundle")
+		}
+		ndks, _ := filepath.Glob(filepath.Join(root, "ndk", "*"))
+		if best := newestValidNDKDir(ndks); best != "" {
+			return best
+		}
+	}
+	homebrew := strings.TrimSpace(os.Getenv("HOMEBREW_PREFIX"))
+	candidates := []string{
+		"/opt/homebrew/share/android-ndk",
+		"/usr/local/share/android-ndk",
+	}
+	if homebrew != "" {
+		candidates = append(candidates,
+			filepath.Join(homebrew, "share", "android-ndk"),
+			filepath.Join(homebrew, "opt", "android-ndk"),
+		)
+	}
+	for _, p := range candidates {
+		if isValidNDKRoot(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+func newestValidNDKDir(paths []string) string {
+	var good []string
+	for _, p := range paths {
+		if isValidNDKRoot(p) {
+			good = append(good, p)
+		}
+	}
+	if len(good) == 0 {
+		return ""
+	}
+	sort.Slice(good, func(i, j int) bool {
+		return compareNDKVersion(filepath.Base(good[i]), filepath.Base(good[j])) > 0
+	})
+	return good[0]
+}
+
+func compareNDKVersion(a, b string) int {
+	pa := strings.Split(a, ".")
+	pb := strings.Split(b, ".")
+	n := len(pa)
+	if len(pb) > n {
+		n = len(pb)
+	}
+	for i := 0; i < n; i++ {
+		var na, nb int
+		if i < len(pa) {
+			na, _ = strconv.Atoi(strings.TrimLeft(pa[i], "v"))
+		}
+		if i < len(pb) {
+			nb, _ = strconv.Atoi(strings.TrimLeft(pb[i], "v"))
+		}
+		if na != nb {
+			return na - nb
+		}
+	}
+	return strings.Compare(a, b)
+}
+
+func androidCC(p Platform) string {
+	ndkPath := resolveAndroidNDKRoot()
 	if ndkPath == "" {
-		fmt.Println("  ⚠  ANDROID_NDK_HOME not set — skipping Android CC")
+		fmt.Println("  ⚠  Android NDK not found (set ANDROID_NDK_HOME or install NDK under ANDROID_HOME/ndk/<ver>)")
 		return ""
 	}
 
 	prebuilt := ndkPrebuilt(ndkPath)
 	if prebuilt == "" {
+		fmt.Printf("  ⚠  NDK has no llvm prebuilt for this host under %s\n", ndkPath)
 		return ""
 	}
 
@@ -462,18 +570,34 @@ func androidCC(p Platform) string {
 }
 
 func ndkPrebuilt(ndkPath string) string {
-	candidates := []string{
-		"linux-x86_64",
-		"darwin-arm64",
-		"darwin-x86_64",
-		"windows-x86_64",
+	prebuiltDir := filepath.Join(ndkPath, "toolchains", "llvm", "prebuilt")
+	ents, err := os.ReadDir(prebuiltDir)
+	if err != nil {
+		return ""
 	}
-	for _, c := range candidates {
-		if _, err := os.Stat(filepath.Join(ndkPath, "toolchains", "llvm", "prebuilt", c)); err == nil {
-			return c
+	names := make([]string, 0, len(ents))
+	for _, e := range ents {
+		if e.IsDir() {
+			names = append(names, e.Name())
 		}
 	}
-	return ""
+	if len(names) == 0 {
+		return ""
+	}
+	// Prefer a stable order for common hosts; otherwise use any available prebuilt.
+	preferred := []string{
+		"darwin-arm64", "darwin-x86_64",
+		"linux-aarch64", "linux-x86_64",
+		"windows-x86_64",
+	}
+	for _, want := range preferred {
+		for _, got := range names {
+			if got == want {
+				return got
+			}
+		}
+	}
+	return names[0]
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -487,13 +611,8 @@ func buildIOS(p Platform, outBase string) error {
 
 	fmt.Printf("\n--- Building %s ---\n", p.DirName)
 
-	// Determine SDK and clang arch
+	// Device-only (iphoneos); simulator slices are not part of this matrix.
 	sdk := "iphoneos"
-	isSimARM := strings.Contains(p.DirName, "sim")
-	if isSimARM || p.GOARCH == "amd64" {
-		sdk = "iphonesimulator"
-	}
-
 	clangArch := p.GOARCH
 	if clangArch == "amd64" {
 		clangArch = "x86_64"
@@ -508,13 +627,9 @@ func buildIOS(p Platform, outBase string) error {
 		return fmt.Errorf("xcrun clang: %w", err)
 	}
 
-	minFlag := "-mios-version-min=13.0"
-	if sdk == "iphonesimulator" {
-		minFlag = "-mios-simulator-version-min=13.0"
-	}
-
+	clangTarget := clangArch + "-apple-ios13.0"
 	cc := strings.TrimSpace(clangBin) + " -isysroot " + strings.TrimSpace(sdkPath) +
-		" " + minFlag + " -arch " + clangArch
+		" -target " + clangTarget
 
 	outPath := filepath.Join(outBase, p.DirName)
 	if err := os.MkdirAll(outPath, 0755); err != nil {
@@ -557,68 +672,27 @@ func buildXCFramework(outBase string) error {
 	}
 	fmt.Println("\n--- Building ios_xcframework ---")
 
-	// Auto-build any missing iOS slices
-	iosSlices := []Platform{
-		{GOOS: "ios", GOARCH: "arm64", DirName: "ios_arm64", BuildMode: "c-archive"},
-		{GOOS: "ios", GOARCH: "amd64", DirName: "ios_sim_amd64", BuildMode: "c-archive"},
-		{GOOS: "ios", GOARCH: "arm64", DirName: "ios_sim_arm64", BuildMode: "c-archive"},
-	}
-	for _, p := range iosSlices {
-		lib := filepath.Join(outBase, p.DirName, "welvet.a")
-		if _, err := os.Stat(lib); err != nil {
-			if err2 := buildIOS(p, outBase); err2 != nil {
-				fmt.Printf("  ⚠  could not build %s: %v (continuing)\n", p.DirName, err2)
-			}
+	device := Platform{GOOS: "ios", GOARCH: "arm64", DirName: "ios_arm64", BuildMode: "c-archive"}
+	deviceLib := filepath.Join(outBase, device.DirName, "welvet.a")
+	if _, err := os.Stat(deviceLib); err != nil {
+		if err2 := buildIOS(device, outBase); err2 != nil {
+			return fmt.Errorf("ios_arm64: %w", err2)
 		}
 	}
 
-	deviceLib := filepath.Join(outBase, "ios_arm64", "welvet.a")
-	simAMDLib := filepath.Join(outBase, "ios_sim_amd64", "welvet.a")
-	simARMLib := filepath.Join(outBase, "ios_sim_arm64", "welvet.a")
 	deviceHeaders := filepath.Join(outBase, "ios_arm64")
 	xcfOut := filepath.Join(outBase, "ios_xcframework", "Welvet.xcframework")
-
-	os.MkdirAll(filepath.Dir(xcfOut), 0755)
-	os.RemoveAll(xcfOut)
-
-	// Create fat simulator lib if both sim slices exist
-	simLib := ""
-	simHeaders := ""
-	hasFatSim := false
-	if _, err := os.Stat(simARMLib); err == nil {
-		if _, err := os.Stat(simAMDLib); err == nil {
-			fatPath := filepath.Join(outBase, "ios_xcframework", "sim_fat", "welvet.a")
-			os.MkdirAll(filepath.Dir(fatPath), 0755)
-			if err := run("lipo", "-create", simAMDLib, simARMLib, "-output", fatPath); err == nil {
-				// copy header
-				hSrc := filepath.Join(outBase, "ios_sim_arm64", "welvet.h")
-				hDst := filepath.Join(filepath.Dir(fatPath), "welvet.h")
-				copyFile(hSrc, hDst)
-				simLib = fatPath
-				simHeaders = filepath.Dir(fatPath)
-				hasFatSim = true
-			}
-		}
-		if !hasFatSim {
-			simLib = simARMLib
-			simHeaders = filepath.Join(outBase, "ios_sim_arm64")
-		}
-	} else if _, err := os.Stat(simAMDLib); err == nil {
-		simLib = simAMDLib
-		simHeaders = filepath.Join(outBase, "ios_sim_amd64")
-	}
 
 	if _, err := os.Stat(deviceLib); err != nil {
 		return fmt.Errorf("device library not found: %s", deviceLib)
 	}
-	if simLib == "" {
-		return fmt.Errorf("no simulator library found")
-	}
+
+	os.MkdirAll(filepath.Dir(xcfOut), 0755)
+	os.RemoveAll(xcfOut)
 
 	args := []string{
 		"-create-xcframework",
 		"-library", deviceLib, "-headers", deviceHeaders,
-		"-library", simLib, "-headers", simHeaders,
 		"-output", xcfOut,
 	}
 	if err := run("xcodebuild", args...); err != nil {
@@ -745,15 +819,25 @@ func printSummary(successes, failures []string) {
 			fmt.Printf("   ✗ %s\n", f)
 		}
 		fmt.Println()
-		fmt.Println("💡 Missing cross-compilers — install with:")
-		fmt.Println("   Linux/WSL:")
-		fmt.Println("     sudo apt install gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf \\")
-		fmt.Println("       gcc-i686-linux-gnu mingw-w64 gcc-mingw-w64-aarch64")
-		fmt.Println("     sudo apt install android-ndk   (or set ANDROID_NDK_HOME manually)")
-		fmt.Println("   macOS:")
-		fmt.Println("     brew install mingw-w64 aarch64-unknown-linux-gnu")
-		fmt.Println("     brew install --cask android-ndk")
-		fmt.Println("     export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk")
+		fmt.Println("💡 Missing cross-compilers / NDK — install or set:")
+		switch runtime.GOOS {
+		case "darwin":
+			fmt.Println("   Linux amd64 + arm64 (cross from macOS):")
+			fmt.Println("     brew tap messense/macos-cross-toolchains")
+			fmt.Println("     brew install x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu")
+			fmt.Println("     # adds x86_64-linux-gnu-gcc and aarch64-linux-gnu-gcc to PATH")
+			fmt.Println("   Windows amd64:")
+			fmt.Println("     brew install mingw-w64")
+			fmt.Println("   Windows arm64 (mingw-w64 formula has no aarch64 GCC — use llvm-mingw):")
+			fmt.Println("     https://github.com/mstorsjo/llvm-mingw/releases")
+			fmt.Println("     Download *-macos-* (or *-macos-universal-*), unpack, export PATH=\"$PATH:/path/to/llvm-mingw/bin\"")
+			fmt.Println("     (needs aarch64-w64-mingw32-clang on PATH; CGO uses it as CC)")
+		default:
+			fmt.Println("   Debian/Ubuntu cross packages:")
+			fmt.Println("     sudo apt install gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu \\")
+			fmt.Println("       mingw-w64 gcc-mingw-w64-aarch64")
+		}
+		fmt.Println("   Android (Studio): export ANDROID_HOME=…  # builder uses newest $ANDROID_HOME/ndk/<ver> if unset")
 	}
 
 	fmt.Println()

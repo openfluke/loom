@@ -1,34 +1,76 @@
 #!/usr/bin/env bash
 # welvet C-ABI build script — Linux / macOS
 #
-# Usage:
+# Usage (64-bit targets only; iOS simulator slices are not built):
 #   ./build_unix.sh                          # native platform + arch
 #   ./build_unix.sh all                      # every target
 #   ./build_unix.sh linux amd64
 #   ./build_unix.sh linux arm64
-#   ./build_unix.sh linux armv7
-#   ./build_unix.sh linux x86
 #   ./build_unix.sh darwin amd64
 #   ./build_unix.sh darwin arm64
 #   ./build_unix.sh darwin universal         # fat binary (macOS only)
 #   ./build_unix.sh windows amd64
 #   ./build_unix.sh windows arm64
-#   ./build_unix.sh windows x86
-#   ./build_unix.sh android arm64            # requires ANDROID_NDK_HOME
-#   ./build_unix.sh android armv7
+#   ./build_unix.sh android arm64            # NDK: ANDROID_HOME/ndk or ANDROID_NDK_HOME
 #   ./build_unix.sh android x86_64
-#   ./build_unix.sh android x86
-#   ./build_unix.sh ios arm64                # device  (macOS only)
-#   ./build_unix.sh ios sim_amd64            # x86_64 simulator
-#   ./build_unix.sh ios sim_arm64            # ARM64 simulator (M1+)
-#   ./build_unix.sh ios xcframework          # full XCFramework (macOS only)
+#   ./build_unix.sh ios arm64                # device (macOS only)
+#   ./build_unix.sh ios xcframework          # device-only XCFramework (macOS only)
 #
 # Options:
 #   --clean    Remove dist/ before building
 #   --test     Run C verification after build (native only)
+#
+# Environment (optional — the Go builder also discovers these at runtime):
+#   ANDROID_NDK_HOME   Explicit NDK root (must contain toolchains/llvm/prebuilt/)
+#   ANDROID_HOME / ANDROID_SDK_ROOT
+#                      If ANDROID_NDK_HOME is unset, newest $ROOT/ndk/<version> is used
+#   HOMEBREW_PREFIX    Used with Homebrew android-ndk layout under share/android-ndk
+#
+# Cross-compiling to Linux / Windows/arm64 from macOS (install once):
+#   brew tap messense/macos-cross-toolchains
+#   brew install x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+#   brew install mingw-w64
+#   # Windows/arm64: Homebrew mingw-w64 has no aarch64 GCC — add llvm-mingw bin/ to PATH, e.g.:
+#   #   https://github.com/mstorsjo/llvm-mingw/releases (macOS universal tarball)
 
 set -e
 cd "$(dirname "$0")"
+
+# Export ANDROID_NDK_HOME when Android Studio installed the NDK but only ANDROID_HOME is set.
+if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+  _sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
+  if [ -d "$_sdk/ndk" ]; then
+    _pick=""
+    for _name in $(ls -1 "$_sdk/ndk" 2>/dev/null | LC_ALL=C sort -V); do
+      _d="$_sdk/ndk/$_name"
+      [ -d "$_d/toolchains/llvm/prebuilt" ] || continue
+      _pick="$_d"
+    done
+    if [ -n "$_pick" ]; then
+      export ANDROID_NDK_HOME="$_pick"
+    fi
+  fi
+fi
+if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -d "$HOME/Library/Android/sdk/ndk-bundle/toolchains/llvm/prebuilt" ]; then
+  export ANDROID_NDK_HOME="$HOME/Library/Android/sdk/ndk-bundle"
+fi
+for _root in "/opt/homebrew/share/android-ndk" "/usr/local/share/android-ndk"; do
+  if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -d "$_root/toolchains/llvm/prebuilt" ]; then
+    export ANDROID_NDK_HOME="$_root"
+    break
+  fi
+done
+if [ -z "${ANDROID_NDK_HOME:-}" ] && command -v brew >/dev/null 2>&1; then
+  _bp="$(brew --prefix android-ndk 2>/dev/null || true)"
+  if [ -n "$_bp" ]; then
+    for _try in "$_bp/share/android-ndk" "$_bp"; do
+      if [ -d "$_try/toolchains/llvm/prebuilt" ]; then
+        export ANDROID_NDK_HOME="$_try"
+        break
+      fi
+    done
+  fi
+fi
 
 TARGET_OS=""
 TARGET_ARCH=""
@@ -41,7 +83,7 @@ for arg in "$@"; do
     all)     TARGET_OS="all" ;;
     linux|darwin|windows|android|ios)
       TARGET_OS="$arg" ;;
-    amd64|arm64|arm|386|armv7|x86|x86_64|universal|xcframework|sim_amd64|sim_arm64)
+    amd64|arm64|x86_64|universal|xcframework)
       TARGET_ARCH="$arg" ;;
     *)
       echo "Unknown argument: $arg"
@@ -64,9 +106,7 @@ if [ -z "$TARGET_ARCH" ] && [ "$TARGET_OS" != "all" ]; then
   case "$(uname -m)" in
     x86_64|amd64)  TARGET_ARCH="amd64"  ;;
     aarch64|arm64) TARGET_ARCH="arm64"  ;;
-    armv7l)        TARGET_ARCH="armv7"  ;;
-    i686|i386)     TARGET_ARCH="386"    ;;
-    *) echo "Cannot auto-detect arch"; exit 1 ;;
+    *) echo "Cannot auto-detect 64-bit arch from: $(uname -m)"; exit 1 ;;
   esac
 fi
 

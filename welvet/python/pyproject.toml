@@ -45,19 +45,14 @@ where = ["src"]
 welvet = [
   "linux_amd64/*.so",
   "linux_arm64/*.so",
-  "linux_arm/*.so",
-  "linux_386/*.so",
   "macos_amd64/*.dylib",
   "macos_arm64/*.dylib",
   "macos_universal/*.dylib",
   "windows_amd64/*.dll",
   "windows_arm64/*.dll",
-  "windows_386/*.dll",
   "android_arm64/*.so",
   "android_x86_64/*.so",
-  "ios_arm64/*.dylib",
-  "ios_sim_amd64/*.dylib",
-  "ios_sim_arm64/*.dylib",
+  "ios_arm64/*",
   "ios_xcframework/**/*",
 ]
 

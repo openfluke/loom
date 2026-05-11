@@ -24,15 +24,17 @@ def _lib_path() -> Path:
     plat = sys.platform
     arch = platform.machine().lower()
 
+    if arch in ("armv7l", "i686", "i386", "armv6l"):
+        raise RuntimeError(
+            f"32-bit CPU ({arch}) is not supported; welvet ships 64-bit binaries only."
+        )
+
     # Map Python machine names to Go GOARCH names (used by the builder)
     arch_map = {
         "x86_64": "amd64",
-        "amd64":  "amd64",
+        "amd64": "amd64",
         "aarch64": "arm64",
-        "arm64":   "arm64",
-        "armv7l":  "arm",
-        "i686":    "386",
-        "i386":    "386",
+        "arm64": "arm64",
     }
     arch_key = arch_map.get(arch, arch)
 
