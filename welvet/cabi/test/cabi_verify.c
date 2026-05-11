@@ -23,8 +23,8 @@ const char* symbols[] = {
     "FreeLoomString",
     "LoomApplyGradients",
     "LoomApplyRecursiveGradients",
-    "LoomApplyTargetProp",
-    "LoomApplyTargetPropGaps",
+    "LoomApplyTween",
+    "LoomApplyTweenGaps",
     "LoomBuildNetworkFromJSON",
     "LoomCalculateOptimalGPUTileSizeFromLimits",
     // CNN forward/backward (tiled + untiled)
@@ -67,10 +67,10 @@ const char* symbols[] = {
     "LoomConvTransposed3DForward",
     // Network lifecycle
     "LoomCreateNetwork",
-    "LoomCreateSystolicState",
-    "LoomCreateTargetPropState",
+    "LoomCreateStepState",
+    "LoomCreateTweenState",
     "LoomCreateTransformer",
-    "LoomDefaultTargetPropConfig",
+    "LoomDefaultTweenConfig",
     // Dense
     "LoomDenseBackward",
     "LoomDenseForward",
@@ -132,7 +132,7 @@ const char* symbols[] = {
     "LoomForwardWGPU",
     // Free / lifecycle
     "LoomFreeNetwork",
-    "LoomFreeSystolicState",
+    "LoomFreeStepState",
     "LoomFreeTokenizer",
     // Introspection
     "LoomGetLayerSpec",
@@ -183,7 +183,7 @@ const char* symbols[] = {
     "LoomRNNBackwardTiled",
     "LoomRNNForward",
     "LoomRNNForwardTiled",
-    // Sequential / systolic / target prop
+    // Sequential / step mesh / tween
     "LoomSequentialForward",
     "LoomSetInput",
     // Softmax
@@ -197,14 +197,14 @@ const char* symbols[] = {
     // GPU sync
     "LoomSyncToCPU",
     "LoomSyncToGPU",
-    // Systolic
-    "LoomSystolicBackward",
-    "LoomSystolicStep",
+    // Step mesh
+    "LoomStepBackward",
+    "LoomStep",
     // Target propagation
-    "LoomTargetPropBackward",
-    "LoomTargetPropBackwardChainRule",
-    "LoomTargetPropBackwardTargetProp",
-    "LoomTargetPropForward",
+    "LoomTweenBackward",
+    "LoomTweenBackwardChainRule",
+    "LoomTweenBackwardLayerwise",
+    "LoomTweenForward",
     // Tokenizer
     "LoomTokenize",
 };

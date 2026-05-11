@@ -4,7 +4,7 @@
 // welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.75.0)
 //
 // Exposes the poly.VolumetricNetwork API to JavaScript via WebAssembly.
-// Supports 21 numerical types, systolic propagation, target propagation,
+// Supports 21 numerical types, step mesh propagation, target propagation,
 // weight morphing, and WebGPU acceleration.
 
 package main
@@ -26,11 +26,11 @@ var (
 	networks      = make(map[int64]*poly.VolumetricNetwork)
 	networkNextID int64 = 1
 
-	systolicStates  = make(map[int64]*poly.SystolicState[float32])
-	systolicNextID  int64 = 1
+	stepStates  = make(map[int64]*poly.StepState[float32])
+	stepNextID  int64 = 1
 
-	targetPropStates = make(map[int64]*poly.TargetPropState[float32])
-	targetPropNextID int64 = 1
+	tweenStates = make(map[int64]*poly.TweenState[float32])
+	tweenNextID int64 = 1
 
 	neatPopulations  = make(map[int64]*poly.NEATPopulation)
 	neatPopNextID    int64 = 1
@@ -95,35 +95,35 @@ func getNetwork(id int64) (*poly.VolumetricNetwork, bool) {
 	return n, ok
 }
 
-func storeSystolicState(s *poly.SystolicState[float32]) int64 {
+func storeStepState(s *poly.StepState[float32]) int64 {
 	mu.Lock()
-	id := systolicNextID
-	systolicNextID++
-	systolicStates[id] = s
+	id := stepNextID
+	stepNextID++
+	stepStates[id] = s
 	mu.Unlock()
 	return id
 }
 
-func getSystolicState(id int64) (*poly.SystolicState[float32], bool) {
+func getStepState(id int64) (*poly.StepState[float32], bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	s, ok := systolicStates[id]
+	s, ok := stepStates[id]
 	return s, ok
 }
 
-func storeTargetPropState(s *poly.TargetPropState[float32]) int64 {
+func storeTweenState(s *poly.TweenState[float32]) int64 {
 	mu.Lock()
-	id := targetPropNextID
-	targetPropNextID++
-	targetPropStates[id] = s
+	id := tweenNextID
+	tweenNextID++
+	tweenStates[id] = s
 	mu.Unlock()
 	return id
 }
 
-func getTargetPropState(id int64) (*poly.TargetPropState[float32], bool) {
+func getTweenState(id int64) (*poly.TweenState[float32], bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	s, ok := targetPropStates[id]
+	s, ok := tweenStates[id]
 	return s, ok
 }
 
@@ -325,10 +325,10 @@ func readUint32Array(jsVal js.Value) []uint32 {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// SystolicState Wrapper
+// StepState wrapper
 // ──────────────────────────────────────────────────────────────────────────────
 
-func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState[float32]) js.Value {
+func createStepStateWrapper(n *poly.VolumetricNetwork, s *poly.StepState[float32]) js.Value {
 	obj := js.Global().Get("Object").New()
 
 	obj.Set("setInput", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
@@ -343,7 +343,7 @@ func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState
 
 	obj.Set("step", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		capture := len(args) > 0 && args[0].Bool()
-		dur := poly.SystolicForward(n, s, capture)
+		dur := poly.StepForward(n, s, capture)
 		return float64(dur.Nanoseconds()) / 1e6 // ms
 	}))
 
@@ -376,7 +376,7 @@ func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState
 		}
 		data := readFloat32Array(args[0])
 		t := poly.NewTensorFromSlice(data, 1, len(data))
-		gradIn, _, err := poly.SystolicBackward(n, s, t)
+		gradIn, _, err := poly.StepBackward(n, s, t)
 		if err != nil {
 			return errObj(err.Error())
 		}
@@ -386,14 +386,14 @@ func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState
 		return jsFloat32Array(gradIn.Data)
 	}))
 
-	obj.Set("applyTargetProp", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	obj.Set("applyTween", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		if len(args) < 2 {
 			return "Expected target data and learning rate"
 		}
 		data := readFloat32Array(args[0])
 		lr := float32(args[1].Float())
 		t := poly.NewTensorFromSlice(data, 1, len(data))
-		poly.SystolicApplyTargetProp(n, s, t, lr)
+		poly.StepApplyTween(n, s, t, lr)
 		return nil
 	}))
 
@@ -409,10 +409,10 @@ func createSystolicStateWrapper(n *poly.VolumetricNetwork, s *poly.SystolicState
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// TargetPropState Wrapper
+// TweenState wrapper
 // ──────────────────────────────────────────────────────────────────────────────
 
-func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropState[float32]) js.Value {
+func createTweenStateWrapper(n *poly.VolumetricNetwork, s *poly.TweenState[float32]) js.Value {
 	obj := js.Global().Get("Object").New()
 
 	obj.Set("forward", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
@@ -421,7 +421,7 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 		}
 		data := readFloat32Array(args[0])
 		t := poly.NewTensorFromSlice(data, 1, len(data))
-		out := poly.TargetPropForward(n, s, t)
+		out := poly.TweenForward(n, s, t)
 		if out == nil {
 			return js.Global().Get("Float32Array").New(0)
 		}
@@ -434,7 +434,7 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 		}
 		data := readFloat32Array(args[0])
 		t := poly.NewTensorFromSlice(data, 1, len(data))
-		poly.TargetPropBackward(n, s, t)
+		poly.TweenBackward(n, s, t)
 		return nil
 	}))
 
@@ -444,7 +444,7 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 		}
 		data := readFloat32Array(args[0])
 		t := poly.NewTensorFromSlice(data, 1, len(data))
-		poly.TargetPropBackwardChainRule(n, s, t)
+		poly.TweenBackwardChainRule(n, s, t)
 		return nil
 	}))
 
@@ -453,7 +453,7 @@ func createTargetPropStateWrapper(n *poly.VolumetricNetwork, s *poly.TargetPropS
 		if len(args) > 0 {
 			lr = float32(args[0].Float())
 		}
-		poly.ApplyTargetPropGaps(n, s, lr)
+		poly.ApplyTweenGaps(n, s, lr)
 		return nil
 	}))
 
@@ -840,20 +840,20 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 		return string(b)
 	}))
 
-	// createSystolicState() -> SystolicState wrapper object
-	obj.Set("createSystolicState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		s := poly.NewSystolicState[float32](n)
-		return createSystolicStateWrapper(n, s)
+	// createStepState() -> StepState wrapper object
+	obj.Set("createStepState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		s := poly.NewStepState[float32](n)
+		return createStepStateWrapper(n, s)
 	}))
 
-	// createTargetPropState(useChainRule?) -> TargetPropState wrapper object
-	obj.Set("createTargetPropState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		cfg := poly.DefaultTargetPropConfig()
+	// createTweenState(useChainRule?) -> TweenState wrapper object
+	obj.Set("createTweenState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		cfg := poly.DefaultTweenConfig()
 		if len(args) > 0 {
 			cfg.UseChainRule = args[0].Bool()
 		}
-		s := poly.NewTargetPropState[float32](n, cfg)
-		return createTargetPropStateWrapper(n, s)
+		s := poly.NewTweenState[float32](n, cfg)
+		return createTweenStateWrapper(n, s)
 	}))
 
 	// extractDNA() -> JSON string
@@ -1002,9 +1002,9 @@ func compareDNAFn(this js.Value, args []js.Value) interface{} {
 	return string(b)
 }
 
-// getDefaultTargetPropConfig() -> JSON config
-func getDefaultTargetPropConfigFn(this js.Value, args []js.Value) interface{} {
-	cfg := poly.DefaultTargetPropConfig()
+// getDefaultTweenConfig() -> JSON config
+func getDefaultTweenConfigFn(this js.Value, args []js.Value) interface{} {
+	cfg := poly.DefaultTweenConfig()
 	b, _ := json.Marshal(cfg)
 	return string(b)
 }
@@ -1146,7 +1146,7 @@ func main() {
 	js.Global().Set("loadLoomNetwork", js.FuncOf(loadLoomNetworkFn))
 	js.Global().Set("setupWebGPU", js.FuncOf(setupWebGPUFn))
 	js.Global().Set("compareLoomDNA", js.FuncOf(compareDNAFn))
-	js.Global().Set("getDefaultTargetPropConfig", js.FuncOf(getDefaultTargetPropConfigFn))
+	js.Global().Set("getDefaultTweenConfig", js.FuncOf(getDefaultTweenConfigFn))
 	js.Global().Set("defaultSpliceConfig", js.FuncOf(defaultSpliceConfigFn))
 	js.Global().Set("defaultNEATConfig", js.FuncOf(defaultNEATConfigFn))
 	js.Global().Set("createLoomNEATPopulation", js.FuncOf(createLoomNEATPopulationFn))
@@ -1256,15 +1256,15 @@ func main() {
 	fmt.Println("  loadLoomNetwork(path)                  - Load from SafeTensors")
 	fmt.Println("  setupWebGPU()                          - Init WebGPU (Promise)")
 	fmt.Println("  compareLoomDNA(dnaA, dnaB)             - Compare network DNA")
-	fmt.Println("  getDefaultTargetPropConfig(n)          - Default TP config JSON")
+	fmt.Println("  getDefaultTweenConfig()                - Default tween config JSON")
 	fmt.Println("  defaultSpliceConfig()                  - Default splice config JSON")
 	fmt.Println("  defaultNEATConfig(dModel)              - Default NEAT config JSON")
 	fmt.Println("  createLoomNEATPopulation(id, size, cfg)- Create NEAT population")
 	fmt.Println("")
 	fmt.Println("Network methods:")
 	fmt.Println("  .sequentialForward(Float32Array)       - Full forward pass")
-	fmt.Println("  .createSystolicState()                 - Stepping API")
-	fmt.Println("  .createTargetPropState(chainRule)      - Target propagation")
+	fmt.Println("  .createStepState()                 - Stepping API")
+	fmt.Println("  .createTweenState(chainRule)           - Tween (target propagation)")
 	fmt.Println("  .morphLayer(idx, dtype)                - Switch numerical type")
 	fmt.Println("  .initGPU()  .syncToGPU()               - WebGPU acceleration")
 	fmt.Println("  .extractDNA()  .extractBlueprint()")

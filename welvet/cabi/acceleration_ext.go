@@ -71,7 +71,7 @@ func getWGPUContext(networkHandle int64) (*poly.WGPUContext, bool) {
 
 // Helper: get wgpu.Buffer from handle
 func getBuffer(handle int64) (*wgpu.Buffer, bool) {
-	c, ok := getSystolicContainer(handle)
+	c, ok := getStepContainer(handle)
 	if !ok {
 		return nil, false
 	}
@@ -916,7 +916,7 @@ func LoomForwardWGPU(transformerHandle C.longlong, inputHandle C.longlong) *C.ch
 	if !ok {
 		return errJSON("invalid transformer handle")
 	}
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok {
 		return errJSON("invalid input handle")
 	}

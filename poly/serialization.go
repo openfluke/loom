@@ -58,9 +58,22 @@ type LayerSpec struct {
 	ParallelBranches []LayerSpec `json:"parallel_branches,omitempty"`
 	CombineMode      string      `json:"combine_mode,omitempty"`
 	SequentialLayers []LayerSpec `json:"sequential_layers,omitempty"`
+	IsRemoteLink     bool        `json:"is_remote_link,omitempty"`
+	TargetZ          int         `json:"target_z,omitempty"`
+	TargetY          int         `json:"target_y,omitempty"`
+	TargetX          int         `json:"target_x,omitempty"`
+	TargetL          int         `json:"target_l,omitempty"`
 
 	UseTiling bool `json:"use_tiling,omitempty"`
 	TileSize  int  `json:"tile_size,omitempty"`
+
+	SoftmaxType     SoftmaxType `json:"softmax_type,omitempty"`
+	Temperature     float64     `json:"temperature,omitempty"`
+	SoftmaxRows     int         `json:"softmax_rows,omitempty"`
+	SoftmaxCols     int         `json:"softmax_cols,omitempty"`
+	EntmaxAlpha     float64     `json:"entmax_alpha,omitempty"`
+	Mask            []bool      `json:"mask,omitempty"`
+	HierarchyLevels []int       `json:"hierarchy_levels,omitempty"`
 }
 
 // BuildNetworkFromJSON creates a VolumetricNetwork from a JSON string.
@@ -114,6 +127,11 @@ func applyLayerSpec(l *VolumetricLayer, ls LayerSpec) error {
 	l.KMeansOutputMode = ls.OutputMode
 
 	l.CombineMode = ls.CombineMode
+	l.IsRemoteLink = ls.IsRemoteLink
+	l.TargetZ = ls.TargetZ
+	l.TargetY = ls.TargetY
+	l.TargetX = ls.TargetX
+	l.TargetL = ls.TargetL
 
 	// Recursive Parallel
 	if len(ls.ParallelBranches) > 0 {
@@ -139,6 +157,14 @@ func applyLayerSpec(l *VolumetricLayer, ls LayerSpec) error {
 
 	l.UseTiling = ls.UseTiling
 	l.TileSize = ls.TileSize
+
+	l.SoftmaxType = ls.SoftmaxType
+	l.Temperature = ls.Temperature
+	l.SoftmaxRows = ls.SoftmaxRows
+	l.SoftmaxCols = ls.SoftmaxCols
+	l.EntmaxAlpha = ls.EntmaxAlpha
+	l.Mask = ls.Mask
+	l.HierarchyLevels = ls.HierarchyLevels
 
 	// Dynamic weight initialization if possible
 	initializeWeights(l)

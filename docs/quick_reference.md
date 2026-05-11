@@ -243,34 +243,34 @@ l.TargetZ, l.TargetY, l.TargetX, l.TargetL = 0, 0, 0, 0
 
 ---
 
-## Systolic (Continuous) Operation
+## Step mesh (continuous) Operation
 
 ```go
-state := poly.NewSystolicState[float32](network)
+state := poly.NewStepState[float32](network)
 state.SetInput(inputTensor)
 
 for tick := 0; tick < 1000; tick++ {
-    poly.SystolicForward(network, state, false)  // false = no history
+    poly.StepForward(network, state, false)  // false = no history
     // read current output from state.LayerData[lastLayerIdx]
 }
 
 // Online learning (no history required)
-poly.SystolicApplyTargetProp(network, state, targetTensor, 0.001)
+poly.StepApplyTween(network, state, targetTensor, 0.001)
 ```
 
 ---
 
-## Systolic with BPTT (Training)
+## Step mesh with BPTT (training)
 
 ```go
-state := poly.NewSystolicState[float32](network)
+state := poly.NewStepState[float32](network)
 state.SetInput(inputTensor)
 
 for tick := 0; tick < numSteps; tick++ {
-    poly.SystolicForward(network, state, true)  // true = capture history
+    poly.StepForward(network, state, true)  // true = capture history
 }
 
-gradIn, layerGrads, err := poly.SystolicBackward(network, state, gradOutput)
+gradIn, layerGrads, err := poly.StepBackward(network, state, gradOutput)
 poly.ApplyRecursiveGradients[float32](network, layerGrads, lr)
 ```
 
@@ -310,6 +310,12 @@ network.GPUContext = ctx
 for i := range network.Layers {
     network.Layers[i].SyncToGPU()
 }
+
+// Fill per-dtype maps: CPUTileSizes (CPU) + GPUSCTileSizes / GPUMCTileSizes (GPU).
+// GPU inference: EnableMultiCoreTiling false → SC, true → MC (wgpu_forward reads Network.*).
+// CPU polymorphic code uses GetCPUTileSize only — no separate SC/MC layer maps.
+network.EnableMultiCoreTiling = true
+network.RefreshRuntimeTileSizes()
 
 // GPU batch training
 config := poly.TrainingConfig{UseGPU: true, LearningRate: 0.001, Epochs: 100}
@@ -394,19 +400,21 @@ layerType, err  := poly.ParseLayerType("Dense")   // → LayerDense
 
 ---
 
-## TargetProp (Layer-Local Learning)
+## Tween (Layer-Local Learning)
+
+Same idea as neural target propagation in the literature; we call it **tween** in code and informal docs (`tween.go`).
 
 ```go
-tpConfig := poly.TargetPropConfig{
-    UseChainRule: true,  // false = gap-based (for systolic meshes)
+tweenConfig := poly.TweenConfig{
+    UseChainRule: true,  // false = gap-based (for step meshes)
     LearningRate: 0.01,
 }
-tpState := poly.NewTargetPropState[float32](network)
+tweenState := poly.NewTweenState[float32](network)
 
 // Forward + backward + weight update in one call
-poly.TargetPropForward[float32](network, tpState, input)
-poly.TargetPropBackward[float32](network, tpState, globalTarget)
-poly.ApplyTargetPropGaps[float32](network, tpState, 0.01)
+poly.TweenForward[float32](network, tweenState, input)
+poly.TweenBackward[float32](network, tweenState, globalTarget)
+poly.ApplyTweenGaps[float32](network, tweenState, 0.01)
 ```
 
 ---

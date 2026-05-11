@@ -48,8 +48,8 @@ The framework provides an **Idempotent Serialization Tunnel** designed for extre
 *   **Bit-Perfect Identity**: Verified across **378/378 permutations** (18 Layers x 21 DTypes) with **0.000000% mathematical divergence**. 
 *   **Idempotency Verified**: Serializing a reloaded model produces a byte-for-byte identical JSON to the original.
 
-### VI. Neural Target Propagation (TargetProp)
-A bidirectional learning alternative to traditional backpropagation that bridges the gap beTargetProp actual activations and idealized targets.
+### VI. Tween (neural target propagation)
+A bidirectional learning alternative to traditional backpropagation that bridges the gap between actual activations and idealized targets. **Tween** is our code name; papers often say *target propagation* or *difference target propagation*.
 *   **True Target Estimation**: Heuristically estimates what a layer *should* have produced by aggregating importance signals through weights (high-fidelity support for **RNN/LSTM** weight mappings).
 *   **Gap-Based Learning**: Updates weights using a Hebbian-style `delta = learningRate * input * gap` logic, bypassing the chain rule for localized, non-differentiable optimization.
 *   **Mesh Fidelity (Link Budgets)**: Accurately calculates info-preservation (Cosine Similarity) across the mesh.
@@ -100,8 +100,8 @@ Loom v0.75.0 introduces **Numerical Tiling Profiles** to handle the disparate me
 *   **SC (Single-Core) Tiling**: Optimized for low-cache, single-thread environments (WASM, small Edge NPUs). Minimizes register pressure by using smaller tiles (e.g., 4x4 or 8x8).
 *   **MC (Multi-Core) Tiling**: Designed for high-bandwidth L1/L2 caches (Ryzen, Apple M4, GTX/RTX). Maximizes throughput via data-level parallelism (SIMD) and larger tiles (e.g., 16x16 or 32x32), achieving an **80% reduction** in the memory bandwidth bottleneck.
 
-### V. Systolic Grid Stability
-The **Systolic Engine** has been fundamentally stabilized in v0.75.0:
+### V. Step Mesh Stability
+The **step mesh engine** has been fundamentally stabilized in v0.75.0:
 *   **Volumetric Coordinate Guarding**: Fixed nil-pointer panics in sparse grids by implementing explicit `IsDisabled` flags for uninitialized cells.
 *   **Coordinate-Based Hopping**: Data flow is now strictly governed by 3D volumetric coordinates (`z, y, x, l`), ensuring stable "Neural Mesh" propagation even in complex recursive skip-connections.
 *   **Deterministic Wavefront**: The double-buffering logic was refined to guarantee that the signal wavefront remains bit-perfect across all 21 numerical types.
@@ -198,17 +198,17 @@ M-POLY-VTD is a **"Bedrock Edition"** neural engine. Unlike standard frameworks 
 **Decision**: Replacing 1D sequential stacks with a 3D coordinate-based grid (`Depth`, `Row`, `Col`).
 *   **Rationale**: Standard 1D stacks are a bottleneck. The 3D grid maps directly to **GPU workgroup tiles**. It also enables "Spatial Hopping"—recursive feedback loops that mimic biological neural firing. By treating the network as a mesh, we unlock non-linear data flows (Parallel Expert Gating, Skip-Connections) that are impossible in sequential pipelines.
 
-### 4. Systolic Grid Propagation (Neural Mesh)
-Unlike the standard sequential flow, the **Systolic Engine** treats the 3D grid as a cycle-accurate discrete-time mesh.
+### 4. Step Mesh Propagation (Neural Mesh)
+Unlike the standard sequential flow, the **step mesh engine** treats the 3D grid as a cycle-accurate discrete-time mesh.
 
 - **Neural Clock**: Every coordinate fires simultaneously in a single "pulse" or clock cycle.
 - **Double Buffering**: Prevents race conditions, ensuring a stable wave of data through space-time.
 - **Spatial Feedback**: Remote links can hop signals backwards in coordinates, creating dynamic recurrence (RNN-like behavior) across the 3D mesh.
 - **BPTT (Backpropagation Through Time)**: Gradients are unrolled through clock cycles and spatial junctions, allowing the grid to learn complex temporal patterns.
-- **Dynamic Learning Bridge**: Supports `poly.SystolicApplyTargetProp` for localized, gap-based learning that updates the mesh in real-time based on temporal performance. o_O
+- **Dynamic Learning Bridge**: Supports `poly.StepApplyTween` for localized, gap-based learning that updates the mesh in real-time based on temporal performance. o_O
 
 > [!TIP]
-> Use `poly.SystolicForward` and `poly.SystolicApplyTargetProp` when you need a "living network" that evolves and learns over time rather than a static pipeline. o_O
+> Use `poly.StepForward` and `poly.StepApplyTween` when you need a "living network" that evolves and learns over time rather than a static pipeline. o_O
 
 ### 5. Recursive Neural Trees (`Tensor.Nested`)
 **Decision**: Implementing a recursive `Nested` field in the `Tensor` struct.
@@ -221,6 +221,12 @@ Unlike the standard sequential flow, the **Systolic Engine** treats the 3D grid 
 ### 7. The "Simulation vs. Throughput" Strategy
 **Decision**: Supporting types the CPU doesn't natively have (like FP4, 2-bit, 1-bit).
 *   **Rationale**: We are building the **Logic Bedrock** first. On CPU, these incur a "Simulation Tax," but on GPU they become **Native Bit-Packed Payloads**, which is where the 10x performance leap occurs.
+
+### 8. Donate compute — `donate_compute_*.go` (TCP)
+**Canonical documentation** lives in [`../docs/donate_compute.md`](../docs/donate_compute.md) (wire format, modes, client/server API, security). This package only implements the protocol; inference/prompt handling is **stub** until wired to the real engine.
+
+### 9. TANHI — `tanhi.go` (UDP telemetry)
+**Canonical documentation** lives in [`../docs/tanhi.md`](../docs/tanhi.md) (JSON-line UDP protocol, SoulGlitch HUD, defaults port **17481**, Welvet `tanhi_ext.go`). Sparse, non-blocking layer events during forward/backward and GPU transformer hooks.
 
 ---
 
@@ -326,7 +332,7 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Dynamic Scale Calibration (Row-wise quantization)
 - [ ] Gradient Checkpointing (recompute activations to reduce peak VRAM)
 - [x] Post-Training Quantization (PTQ) weight conversion passes
-- [ ] Truncated BPTT (windowed gradient unroll for systolic long-sequence training)
+- [ ] Truncated BPTT (windowed gradient unroll for step-mesh long-sequence training)
 
 ### 1.6 GPU Backward Pass Completion
 - [x] Real-valued Automatic Differentiation
@@ -526,7 +532,7 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 ### **Completion Ratio: 78.8%**
 
 ## **Version 0.75.0 — CURRENT**
-*(Status: **v0.75.0 "Multi-Core Symphony" is officially current.** Milestone reached: Unified SC/MC Tiling across all 21 types, stabilized 3D Systolic grid propagation, and 100% C-ABI parity for Python/TS. Currently transitioning to **v0.8.0 "Edge-First Orchestration"**.)*
+*(Status: **v0.75.0 "Multi-Core Symphony" is officially current.** Milestone reached: Unified SC/MC Tiling across all 21 types, stabilized 3D step mesh propagation, and 100% C-ABI parity for Python/TS. Currently transitioning to **v0.8.0 "Edge-First Orchestration"**.)*
 
 ## **v0.8.0 Roadmap — "Edge-First Orchestration"**
 *(Status: **In Research.** Focus moves to thermal-throttling aware scheduling and unified memory pinning for Apple Silicon and Snapdragon NPUs.)*

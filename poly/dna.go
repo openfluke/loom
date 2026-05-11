@@ -17,14 +17,14 @@ type LayerSignature struct {
 	Z, Y, X, L int
 	Type       LayerType
 	DType      DType
-	Weights    []float32 // Normalized, precision-simulated weights
+	Weights    []float32 // L2-normalized, scale-applied master weights
 }
 
 // NetworkDNA is the complete genetic blueprint of a VolumetricNetwork.
 type NetworkDNA []LayerSignature
 
 // ExtractDNA generates the topological signatures for all layers in a network.
-// It uses SimulatePrecision to ensure that comparison reflects the actual numerical behavior.
+// Comparison reflects actual numerical behavior at each layer's configured DType.
 //
 // All 19 layer types are handled:
 //   - Weighted layers (Dense, RNN, LSTM, MHA, CNN*, ConvTransposed*, SwiGLU,
@@ -96,7 +96,11 @@ func extractLayerSignature(l VolumetricLayer) []float32 {
 			}
 			simulated := make([]float32, len(l.WeightStore.Master))
 			for i, w := range l.WeightStore.Master {
-				simulated[i] = SimulatePrecision(w, l.DType, scale)
+				if scale != 1.0 {
+					simulated[i] = w * scale
+				} else {
+					simulated[i] = w
+				}
 			}
 			return Normalize(simulated)
 		}

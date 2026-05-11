@@ -37,9 +37,9 @@ func main() {
 	fmt.Println("----------------------------------------------------------------------")
 	
 	categories := map[string][]string{
-		"CORE MECHANICS": {"VolumetricNetwork", "Forward", "Backward", "Systolic", "Layer", "Tensor"},
+		"CORE MECHANICS": {"VolumetricNetwork", "Forward", "Backward", "Step", "Layer", "Tensor"},
 		"ACCELERATION":   {"WGPU", "GPU", "Sync", "Dispatch", "Shader"},
-		"LEARNING/DNA":   {"TargetProp", "DNA", "Compare", "Refit", "Gradient"},
+		"LEARNING/DNA":   {"Tween", "DNA", "Compare", "Refit", "Gradient"},
 		"IO/UTIL":        {"JSON", "Safetensors", "Load", "Extract", "Tokenizer"},
 	}
 
@@ -93,7 +93,7 @@ func main() {
 		fmt.Printf("TOTAL API COVERAGE: %d/%d (%.1f%%)\n", globalCovered, globalTotal, float64(globalCovered)/float64(globalTotal)*100)
 	}
 	fmt.Println("\nNOTE: 0% coverage in 'ACCELERATION' is often GOOD. High-level bridges should")
-	fmt.Println("abstract away GPU dispatches into simple calls like 'LoomSystolicStep'.")
+	fmt.Println("abstract away GPU dispatches into simple calls like 'LoomStep'.")
 	fmt.Println("======================================================================")
 }
 

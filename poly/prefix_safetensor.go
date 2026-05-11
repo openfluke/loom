@@ -106,24 +106,44 @@ func LoadWithPrefixes(net *VolumetricNetwork, tensors map[string][]float32) erro
 			slot = 0
 		} else if strings.Contains(k, "self_attn") || strings.Contains(k, "attn") {
 			slot = 1
-			if strings.Contains(k, "q_proj") { subRole = "q" }
-			if strings.Contains(k, "k_proj") { subRole = "k" }
-			if strings.Contains(k, "v_proj") { subRole = "v" }
-			if strings.Contains(k, "o_proj") { subRole = "o" }
+			if strings.Contains(k, "q_proj") {
+				subRole = "q"
+			}
+			if strings.Contains(k, "k_proj") {
+				subRole = "k"
+			}
+			if strings.Contains(k, "v_proj") {
+				subRole = "v"
+			}
+			if strings.Contains(k, "o_proj") {
+				subRole = "o"
+			}
+			if strings.Contains(k, "q_norm") {
+				subRole = "qn"
+			}
+			if strings.Contains(k, "k_norm") {
+				subRole = "kn"
+			}
 		} else if strings.Contains(k, "post_attention_layernorm") || strings.Contains(k, "ln_2") {
 			slot = 2
 		} else if strings.Contains(k, "mlp") {
 			slot = 3
-			if strings.Contains(k, "gate_proj") || strings.Contains(k, "w1") { subRole = "g" }
-			if strings.Contains(k, "up_proj") || strings.Contains(k, "w3") { subRole = "u" }
-			if strings.Contains(k, "down_proj") || strings.Contains(k, "w2") { subRole = "d" }
+			if strings.Contains(k, "gate_proj") || strings.Contains(k, "w1") {
+				subRole = "g"
+			}
+			if strings.Contains(k, "up_proj") || strings.Contains(k, "w3") {
+				subRole = "u"
+			}
+			if strings.Contains(k, "down_proj") || strings.Contains(k, "w2") {
+				subRole = "d"
+			}
 		}
 
 		if slot == -1 {
 			continue
 		}
 
-		layer := net.GetLayer(0, 0, 0, layerIdx*4 + slot)
+		layer := net.GetLayer(0, 0, 0, layerIdx*4+slot)
 		if layer == nil {
 			continue
 		}
@@ -144,30 +164,55 @@ func copyWeights(layer *VolumetricLayer, role string, data []float32) {
 	if layer.WeightStore == nil {
 		return
 	}
-	
+
 	dModel := layer.DModel
-	if dModel == 0 { dModel = layer.InputHeight }
+	if dModel == 0 {
+		dModel = layer.InputHeight
+	}
+	qDim := layer.QueryDim
+	if qDim == 0 {
+		if layer.NumHeads > 0 && layer.HeadDim > 0 {
+			qDim = layer.NumHeads * layer.HeadDim
+		} else {
+			qDim = dModel
+		}
+	}
 	kvDim := layer.NumKVHeads * layer.HeadDim
-	if kvDim == 0 { kvDim = dModel }
+	if kvDim == 0 {
+		kvDim = dModel
+	}
 	intermediateSize := layer.OutputHeight
 
 	offset := -1
 	switch layer.Type {
 	case LayerMultiHeadAttention:
 		switch role {
-		case "q": offset = 0
-		case "k": offset = dModel * dModel
-		case "v": offset = dModel * (dModel + kvDim)
-		case "o": offset = dModel * (dModel + 2 * kvDim)
+		case "q":
+			offset = 0
+		case "k":
+			offset = qDim * dModel
+		case "v":
+			offset = qDim*dModel + kvDim*dModel
+		case "o":
+			offset = qDim*dModel + 2*kvDim*dModel
+		case "qn":
+			layer.QNormWeight = append([]float32(nil), data...)
+		case "kn":
+			layer.KNormWeight = append([]float32(nil), data...)
 		}
 	case LayerSwiGLU:
 		switch role {
-		case "g": offset = 0
-		case "u": offset = dModel * intermediateSize
-		case "d": offset = 2 * dModel * intermediateSize
+		case "g":
+			offset = 0
+		case "u":
+			offset = dModel * intermediateSize
+		case "d":
+			offset = 2 * dModel * intermediateSize
 		}
 	case LayerRMSNorm:
-		if role == "w" { offset = 0 }
+		if role == "w" {
+			offset = 0
+		}
 	}
 
 	if offset != -1 && offset+len(data) <= len(layer.WeightStore.Master) {

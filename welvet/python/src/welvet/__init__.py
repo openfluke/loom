@@ -10,8 +10,8 @@ from .utils import (
     Network,
     Transformer,
     Population,
-    SystolicState,
-    TargetPropState,
+    StepState,
+    TweenState,
     Tokenizer,
     # Network lifecycle
     build_network,
@@ -23,10 +23,10 @@ from .utils import (
     get_available_methods,
     # Inference
     sequential_forward,
-    create_systolic_state,
-    free_systolic_state,
+    create_step_state,
+    free_step_state,
     set_input,
-    systolic_step,
+    mesh_step,
     get_output,
     # GPU inference
     init_wgpu,
@@ -80,17 +80,18 @@ from .utils import (
     dispatch_activation,
     dispatch_activation_backward,
     # Training
-    systolic_backward,
+    mesh_backward,
     compute_loss_gradient,
     apply_gradients,
     apply_recursive_gradients,
-    apply_target_prop,
-    # Target propagation
-    create_target_prop_state,
-    target_prop_forward,
-    target_prop_backward,
-    target_prop_backward_chain_rule,
-    get_default_target_prop_config,
+    apply_tween,
+    # Tween (neural target propagation)
+    create_tween_state,
+    tween_forward,
+    tween_backward,
+    tween_backward_chain_rule,
+    tween_backward_layerwise,
+    get_default_tween_config,
     # Weight morphing (M-POLY-VTD)
     morph_layer,
     # SafeTensors / model I/O
@@ -143,8 +144,8 @@ __all__ = [
     "Network",
     "Transformer",
     "Population",
-    "SystolicState",
-    "TargetPropState",
+    "StepState",
+    "TweenState",
     "Tokenizer",
     # Network lifecycle
     "build_network",
@@ -156,10 +157,10 @@ __all__ = [
     "get_available_methods",
     # Inference
     "sequential_forward",
-    "create_systolic_state",
-    "free_systolic_state",
+    "create_step_state",
+    "free_step_state",
     "set_input",
-    "systolic_step",
+    "mesh_step",
     "get_output",
     # GPU inference
     "init_wgpu",
@@ -212,17 +213,18 @@ __all__ = [
     "dispatch_activation",
     "dispatch_activation_backward",
     # Training
-    "systolic_backward",
+    "mesh_backward",
     "compute_loss_gradient",
     "apply_gradients",
     "apply_recursive_gradients",
-    "apply_target_prop",
-    # Target propagation
-    "create_target_prop_state",
-    "target_prop_forward",
-    "target_prop_backward",
-    "target_prop_backward_chain_rule",
-    "get_default_target_prop_config",
+    "apply_tween",
+    # Tween
+    "create_tween_state",
+    "tween_forward",
+    "tween_backward",
+    "tween_backward_chain_rule",
+    "tween_backward_layerwise",
+    "get_default_tween_config",
     # Weight morphing
     "morph_layer",
     # SafeTensors

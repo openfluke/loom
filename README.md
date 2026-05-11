@@ -32,9 +32,9 @@ Loom is a **"Bedrock Edition"** neural engine. Unlike standard frameworks that b
 ## 🚀 The Technical Pillars (Final Form)
 The project has transitioned to the **Multi-numerical POLYmorphic Volumetric Tiled-tensor Dispatcher (M-POLY-VTD)** core.
 
-- **Systolic Neural Mesh**: A living mesh architecture with clock-cycle accurate updates and temporal feedback loops that simulate biological neural firing.
+- **Step neural mesh**: A living mesh architecture with clock-cycle accurate updates and temporal feedback loops that simulate biological neural firing.
 - **DNA Engine**: A hierarchical spatial correlation system that extracts topological "signatures" of models, enabling high-fidelity comparison and "Logic Shift" detection in 3D space.
-- **Neural Target Propagation (TargetProp)**: A robust alternative to backpropagation that uses localized, gap-based Hebbian learning to bridge the difference beTargetProp actual and idealized activations.
+- **Tween (neural target propagation)**: A robust alternative to backpropagation that uses localized, gap-based Hebbian learning to bridge the difference between actual and idealized activations. We call it **tween** in code (`tween.go`); papers often use *target propagation* or related names.
 - **Bit-Packed Persistence**: An idempotent serialization tunnel that achieves up to **98.4% compression**, allowing extreme model sizes to fit in consumer RAM/VRAM.
 
 ## 📂 Project Structure
@@ -42,7 +42,7 @@ The project has transitioned to the **Multi-numerical POLYmorphic Volumetric Til
 - **[`legacy/`](./legacy/)**: Historical codebase and previous iterations of Loom.
 
 ## 🛠️ Getting Started
-For technical deep-dives into M-POLY-VTD, refer to the documentation and benchmarks within the [`poly/`](./poly/) core. 
+For technical deep-dives into M-POLY-VTD, refer to the **[`docs/`](./docs/)** index ([`docs/index.md`](./docs/index.md)) and benchmarks within the [`poly/`](./poly/) core. Topics include deployment, GPU, layers — plus **donate compute** (LAN TCP, [`docs/donate_compute.md`](./docs/donate_compute.md)) and **TANHI** UDP layer telemetry for the SoulGlitch HUD ([`docs/tanhi.md`](./docs/tanhi.md)).
 
 Loom provides bit-exact reproducibility across:
 - **Go** (Native)
@@ -56,7 +56,7 @@ Loom uses a mathematical versioning system derived from a strictly verified chec
 
 ### **Current Version: 0.75.0 — CURRENT**
 - **Completion Ratio**: 78.8% (104 / 132 features verified — Multi-Core Symphony Complete)
-- **Status**: **0.75.0 "Multi-Core Symphony" is officially current.** Unified **SC/MC Tiling** is live across all 21 types, breaking the memory bandwidth wall on consumer hardware. The **Systolic 3D Grid** has been stabilized to prevent uninitialized memory issues, and 100% C-ABI parity is achieved for Python and TypeScript.
+- **Status**: **0.75.0 "Multi-Core Symphony" is officially current.** Unified **SC/MC Tiling** is live across all 21 types, breaking the memory bandwidth wall on consumer hardware. The **step mesh 3D grid** has been stabilized to prevent uninitialized memory issues, and 100% C-ABI parity is achieved for Python and TypeScript.
     - > [!NOTE]
     - > **Numerical Tiling**: Introduces specialized Single-Core (SC) and Multi-Core (MC) profiles, optimizing register pressure vs. high-bandwidth L1/L2 cache throughput.
 - **Milestone achieved**:

@@ -35,9 +35,9 @@ func LoomCreateGPUBuffer(networkHandle C.longlong, sizeBytes C.longlong) C.longl
 	}
 
 	networkMu.Lock()
-	id := systolicNextID
-	systolicNextID++
-	systolicStates[id] = &systolicContainer{State: buf, DType: poly.DTypeFloat32}
+	id := stepNextID
+	stepNextID++
+	stepStates[id] = &stepContainer{State: buf, DType: poly.DTypeFloat32}
 	networkMu.Unlock()
 	return C.longlong(id)
 }
@@ -45,9 +45,9 @@ func LoomCreateGPUBuffer(networkHandle C.longlong, sizeBytes C.longlong) C.longl
 //export LoomFreeGPUBuffer
 func LoomFreeGPUBuffer(bufHandle C.longlong) {
 	networkMu.Lock()
-	c, ok := systolicStates[int64(bufHandle)]
+	c, ok := stepStates[int64(bufHandle)]
 	if ok {
-		delete(systolicStates, int64(bufHandle))
+		delete(stepStates, int64(bufHandle))
 	}
 	networkMu.Unlock()
 	if ok {
@@ -580,7 +580,7 @@ func LoomDispatchApplyGradients(networkHandle C.longlong, size C.int, lr C.float
 	if !ok {
 		return errJSON("invalid grad buffer handle")
 	}
-	if err := n.GPUContext.DispatchApplyGradients(int(size), float32(lr), wt, grad); err != nil {
+	if err := n.GPUContext.DispatchApplyGradients(int(size), float32(lr), 0.0, wt, grad); err != nil {
 		return errJSON(err.Error())
 	}
 	return C.CString(`{"status": "ok"}`)
@@ -953,8 +953,8 @@ var (
 	_ = poly.RNNBackwardTiled[float32]
 	_ = poly.LSTMBackwardTiled[float32]
 	_ = poly.CNN1BackwardTiledParallel[float32]
-	_ = poly.CNN2BackwardTiledParallel[float32]
-	_ = poly.CNN3BackwardTiledParallel[float32]
+	// _ = poly.CNN2BackwardTiledParallel[float32]
+	// _ = poly.CNN3BackwardTiledParallel[float32]
 	_ = poly.DenseBackwardTiled[float32]
 	_ = poly.ShaderTiledDenseBackwardDX
 	_ = poly.ShaderTiledDenseBackwardDW

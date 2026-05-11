@@ -149,6 +149,7 @@ Dense (INT4 / Q4_0):
 
 MHA (FP32):
     Splits into Q/K/V/O weight buffers at internal DType codes 200/201/202/203.
+    Also uploads optional q_norm/k_norm buffers at 204/205 when present.
 
 MHA (INT4):
     syncQuantizedMHA: quantizes each of Q/K/V/O separately.
@@ -215,45 +216,65 @@ weights[i] -= lr × dw[i]
 
 ---
 
-## GPU Support Matrix
+## GPU support: layer × `DType` (one table)
 
-From the README benchmark table:
+Scope: **`VolumetricLayer.SyncToGPU`** + **`(*WGPUContext).DispatchForwardLayer`** in `poly.go` / `wgpu_kernels.go`. Symbol **`T`** means **`Transformer.ForwardTokenIDsWGPU`** / **`wgpu_forward.go`** (LLM inference) for that layer+dtype, not generic batch dispatch. Activations are **`f32`** WGSL; **`DTypeFloat64`** is coerced to the **`Float32`** weight-buffer path in the `hasSpecialPath` / morph block (see `SyncToGPU`).
 
-```
-┌─────────────────┬────────────────┬────────────────┬──────────────┐
-│ Layer           │ Forward (GPU)  │ Backward (GPU) │ Determinism  │
-├─────────────────┼────────────────┼────────────────┼──────────────┤
-│ Dense           │ REAL           │ EXACT          │ SLIGHTLY OFF │
-│ RNN Cell        │ REAL           │ —              │ EXACT        │
-│ LSTM Cell       │ REAL           │ —              │ EXACT        │
-│ CNN 1D          │ REAL           │ EXACT          │ EXACT        │
-│ CNN 2D          │ REAL           │ EXACT          │ EXACT        │
-│ CNN 3D          │ REAL           │ EXACT          │ EXACT        │
-│ Embedding       │ REAL           │ EXACT (DW)     │ EXACT        │
-│ RMSNorm         │ REAL           │ EXACT          │ INDUSTRY ✅  │
-│ MHA (Attn)      │ REAL           │ pending        │ BROKEN ❌    │
-│ SwiGLU (MLP)    │ REAL           │ not wired      │ BROKEN ❌    │
-│ Residual Add    │ REAL           │ —              │ BROKEN ❌    │
-└─────────────────┴────────────────┴────────────────┴──────────────┘
-```
+| Symbol | Meaning |
+|:------:|---------|
+| **Y** | **Generic GPU forward OK**: `SyncToGPU` does not skip the `MorphToFloat32ForGPU` upload **or** uses a matching native path (`DispatchDenseQ4` for **Dense+Int4** only; **CNN1** packed when `isCNN1NativeGPUQuantDType`). |
+| **T** | **Transformer path only** (`wgpu_forward.go`): QKV/O use **`DispatchDenseQ4`** / **`DispatchDenseI8`**; SwiGLU gate/up may use **`DispatchSwiGLUQ4`**. **Not** correct for generic **`DispatchForwardLayer`** on that dtype (quantized buffers + **`DispatchDense`** / **`DispatchSwiGLUWithActCache`** mismatch). |
+| **–** | **Not supported** after vanilla `SyncToGPU` + generic `DispatchForwardLayer` (skipped morph with no valid weight buffer, or packed weights fed to an **`f32`** matmul / SwiGLU shader). |
+| **·** | **DType N/A** (no weight tensor for that layer). |
 
-"BROKEN" means the GPU forward result diverges from the CPU reference — these are known bugs. Full end-to-end GPU training is verified for Dense, CNN 1D/2D/3D, and RMSNorm.
+**Dense:** only **`DTypeInt4`** selects **`DispatchDenseQ4`**. Wider dtypes (**2–13, 15–20** except **14**) hit **`hasSpecialPath`** with no quant branch → morph skipped → **–**. Eight-bit dtypes on Dense get **`syncQuantizedDenseI8`** but **`DispatchDenseTiled`** expects **`f32`** layout → **–**. **`ensureGPUFloat32Weights`** (training) can still attach **`GPUWeights[Float32]`** so matmul runs on the **FP32 master** regardless of `l.DType` (not reflected as **Y** here).
+
+| ID | `DType` | Dense | RMSNorm | CNN1 | CNN2 | CNN3 | RNN | LSTM | Embedding | Softmax | MHA | SwiGLU | Residual |
+|---:|---------|:-----:|:-------:|:----:|:----:|:----:|:---:|:----:|:---------:|:-------:|:---:|:------:|:--------:|
+| 0 | Float64 | Y | Y | Y | Y | Y | Y | Y | Y | · | Y | Y | · |
+| 1 | Float32 | Y | Y | Y | Y | Y | Y | Y | Y | · | Y | Y | · |
+| 2 | Float16 | – | Y | Y | Y | Y | Y | Y | Y | · | Y | Y | · |
+| 3 | BFloat16 | – | Y | Y | Y | Y | Y | Y | Y | · | Y | Y | · |
+| 4 | FP8 E4M3 | – | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+| 5 | FP8 E5M2 | – | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+| 6 | Int64 | – | Y | Y | Y | Y | Y | Y | Y | · | Y | Y | · |
+| 7 | Int32 | – | Y | Y | Y | Y | Y | Y | Y | · | Y | Y | · |
+| 8 | Int16 | – | Y | Y | Y | Y | Y | Y | Y | · | Y | Y | · |
+| 9 | Int8 | – | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+| 10 | Uint64 | – | Y | Y | Y | Y | Y | Y | Y | · | Y | Y | · |
+| 11 | Uint32 | – | Y | Y | Y | Y | Y | Y | Y | · | Y | Y | · |
+| 12 | Uint16 | – | Y | Y | Y | Y | Y | Y | Y | · | Y | Y | · |
+| 13 | Uint8 | – | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+| 14 | Int4 | Y | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+| 15 | Uint4 | – | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+| 16 | FP4 | – | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+| 17 | Int2 | – | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+| 18 | Uint2 | – | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+| 19 | Ternary | – | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+| 20 | Binary | – | Y | Y | Y | Y | Y | Y | Y | · | T | T | · |
+
+**CNN1 column:** **Y** = either **`DispatchCNN1Packed`** (dtype in `isCNN1NativeGPUQuantDType`: Int8, Int4, Int2, FP4, Ternary, Binary, FP8×2, Uint8, Uint4, Uint2, Float16, BFloat16, Int16) or **`DispatchCNN1`** on **`MorphToFloat32ForGPU`** otherwise.
+
+**Not in this table:** `LayerLayerNorm`, `LayerConvTransposed*`, `LayerKMeans`, `LayerParallel`, `LayerSequential`, `LayerMetacognition` (no `DispatchForwardLayer` arm). See [numerical_types.md](numerical_types.md) for the **`DType`** enum and **`WeightStore`**.
+
+**GPU training:** `gpuTrainingNeedsCPUFallback` in `training.go` forces a **CPU** optimizer step when the net includes **MHA**, **SwiGLU**, **Dense+Int4**, or **RNN/LSTM** with **Int8/Int4**.
 
 ---
 
 The project uses **Numerical Tiling** to map 3D volumetric layers to GPU workgroups.
 
-### SC (Single-Core) vs MC (Multi-Core) Profiles
-Loom v0.75.0 formally differentiates between these two hardware-specific tiling strategies:
+### SC (single-workgroup) vs MC (multi-workgroup) profiles
 
-- **SC (Single-Core) Tiling**: Optimized for low-cache environments (Edge, WASM, small NPUs). It prioritizes **minimized register pressure** over raw SIMD parallelism. 
-    - *Typical Workgroup*: 4x4 or 8x8.
-    - *Outcome*: Avoids spilling registers to global memory, which is critical on low-bandwidth integrated GPUs.
-- **MC (Multi-Core) Tiling**: Optimized for high-bandwidth L1/L2 caches and large register files (Ryzen, Apple M-series, Nvidia RTX).
-    - *Typical Workgroup*: 16x16, 32x32, or fused 64-thread tiles.
-    - *Outcome*: Maximum throughput via unrolling and SIMD lane utilization, achieving the **80% reduction** in bandwidth bottlenecks for low-bit types (FP4, INT4).
+Loom differentiates two dispatch profiles for GPU kernels (attention, dense, SwiGLU, CNN, etc.):
 
-The profile is automatically selected or forced via `WGPUContext.GPUTileSize`.
+- **SC**: Smaller workgroups / tiles — lower register pressure, friendlier to tight limits (edge GPUs, WASM).
+- **MC**: Larger tiles where limits allow — higher throughput on desktop-class GPUs.
+
+At **inference**, transformer-style forwards (`wgpu_forward.go`) choose per-layer tile sizes with `layer.GetGPUSCTileSize(dtype)` vs `layer.GetGPUMCTileSize(dtype)` according to **`VolumetricNetwork.EnableMultiCoreTiling`** (with the same field mirrored on layers when set). That is the primary switch — not `GPUTileSize` alone.
+
+`WGPUContext.GPUTileSize` is still the device-tuned baseline derived from `CalculateOptimalGPUTileSizeFromLimits` and feeds into how SC/MC maps are built in `refreshRuntimeGPUTileSizes`. **GPU training** may ignore the network flag and pick SC vs MC directly via `TrainingModeGPUSC` / `TrainingModeGPUMC` (`training.go`).
+
+**CPU:** poly does **not** expose SC vs MC as two tile maps on the CPU side — layers use **`CPUTileSizes` / `GetCPUTileSize` only**. See the **“GPU: two tile maps…”** and **“CPU: one tile map…”** subsections in [dispatch.md](dispatch.md).
 
 ---
 
@@ -265,7 +286,8 @@ The profile is automatically selected or forced via `WGPUContext.GPUTileSize`.
 2. `BeginFrame()` — all subsequent ops recorded into one encoder
 3. For each transformer block (4 layers: RMSNorm → MHA → RMSNorm → SwiGLU):
    - Dispatch `DispatchRMSNorm`
-   - Dispatch Q/K/V projections separately
+   - Dispatch Q/K/V projections separately (supports expanded QueryDim)
+   - Optional Q/K RMSNorm using q_norm/k_norm buffers
    - Dispatch RoPE rotation
    - Dispatch attention score + softmax
    - Dispatch output projection
@@ -275,3 +297,13 @@ The profile is automatically selected or forced via `WGPUContext.GPUTileSize`.
 6. Read back only the logits (one small buffer)
 
 This path achieves the "260+ tokens/s prefill on M4" figure mentioned in the README.
+
+### Qwen / Expanded-Query Notes
+
+Loom's GPU path now supports architectures where `query_dim != d_model` (for example Qwen3-0.6B with `head_dim=128`, `num_heads=16`, `query_dim=2048`, `d_model=1024`).
+
+Key implementation details:
+- MHA shader workgroup width scales with `head_dim` (not hardcoded to 64).
+- Q projection and attention output buffers use `query_dim`.
+- O projection uses `input=query_dim`, `output=d_model`.
+- RMSNorm epsilon is propagated from checkpoint config (`rms_norm_eps`) for parity with CPU.

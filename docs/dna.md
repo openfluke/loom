@@ -15,10 +15,10 @@ Standard weight comparison breaks across precisions — you can't directly compa
 - Structural changes (different layer order, different grid positions) are detectable as **logic shifts**
 
 ```
-Raw FP32 weights  ──►  SimulatePrecision  ──►  Normalize  ──►  unit vector
-       │                  (dtype, scale)        (L2 norm)         "DNA strand"
+Raw FP32 weights  ──►  scale (× ws.Scale)  ──►  Normalize  ──►  unit vector
+       │                                         (L2 norm)         "DNA strand"
        │
-       └── FP4 weights ──►  SimulatePrecision  ──►  Normalize  ──►  same direction ≈ 1.0 similarity
+       └── FP4 weights ──►  scale (× ws.Scale)  ──►  Normalize  ──►  same direction ≈ 1.0 similarity
 ```
 
 ---
@@ -31,7 +31,7 @@ type LayerSignature struct {
     Z, Y, X, L int       // 3D grid coordinates
     Type        LayerType
     DType       DType
-    Weights     []float32 // L2-normalized, precision-simulated weights
+    Weights     []float32 // L2-normalized, scale-applied master weights
 }
 
 // The complete genetic blueprint of a network
@@ -79,7 +79,7 @@ Iterates every layer in the network, calls `extractLayerSignature(l)`, and wraps
  weights  branches
     │         │
     ▼         ▼
-SimulatePrecision  Normalize(concat)
+scale(×ws.Scale)   Normalize(concat)
     │
     ▼
  Normalize
@@ -96,12 +96,16 @@ scale := l.WeightStore.Scale
 if scale == 0 { scale = 1.0 }
 simulated := make([]float32, len(l.WeightStore.Master))
 for i, w := range l.WeightStore.Master {
-    simulated[i] = SimulatePrecision(w, l.DType, scale)
+    if scale != 1.0 {
+        simulated[i] = w * scale
+    } else {
+        simulated[i] = w
+    }
 }
 return Normalize(simulated)
 ```
 
-`SimulatePrecision` clips and quantizes each weight to what it would actually be at the layer's active DType. This means the DNA of an INT8 Dense layer and an FP32 Dense layer with the same trained weights will be nearly identical.
+Applying the layer's scale factor before normalizing means the DNA of an INT8 Dense layer and an FP32 Dense layer with the same trained weights will be nearly identical — both normalize to the same unit direction.
 
 ### Structural containers (Parallel, Sequential) — recursive extraction
 
@@ -289,7 +293,7 @@ Logic shifts appear when:
   │   recurse into branches      │       │   recurse into branches      │
   │   concat + Normalize         │       │   concat + Normalize         │
   │ Weighted:                    │       │ Weighted:                    │
-  │   SimulatePrecision(w, dtype)│       │   SimulatePrecision(w, dtype)│
+  │   scale(w × ws.Scale)        │       │   scale(w × ws.Scale)        │
   │   Normalize(simulated)       │       │   Normalize(simulated)       │
   │ Weightless:                  │       │ Weightless:                  │
   │   {1.0}                      │       │   {1.0}                      │

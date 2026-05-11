@@ -13,8 +13,8 @@ import (
 	"github.com/openfluke/loom/poly"
 )
 
-//export LoomCreateSystolicState
-func LoomCreateSystolicState(networkHandle C.longlong, dtype C.int) C.longlong {
+//export LoomCreateStepState
+func LoomCreateStepState(networkHandle C.longlong, dtype C.int) C.longlong {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return -1 }
 
@@ -23,49 +23,49 @@ func LoomCreateSystolicState(networkHandle C.longlong, dtype C.int) C.longlong {
 
 	switch dt {
 	case poly.DTypeFloat64:
-		state = poly.NewSystolicState[float64](n)
+		state = poly.NewStepState[float64](n)
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		state = poly.NewSystolicState[float32](n)
+		state = poly.NewStepState[float32](n)
 	case poly.DTypeInt64:
-		state = poly.NewSystolicState[int64](n)
+		state = poly.NewStepState[int64](n)
 	case poly.DTypeInt32:
-		state = poly.NewSystolicState[int32](n)
+		state = poly.NewStepState[int32](n)
 	case poly.DTypeInt16:
-		state = poly.NewSystolicState[int16](n)
+		state = poly.NewStepState[int16](n)
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		state = poly.NewSystolicState[int8](n)
+		state = poly.NewStepState[int8](n)
 	case poly.DTypeUint64:
-		state = poly.NewSystolicState[uint64](n)
+		state = poly.NewStepState[uint64](n)
 	case poly.DTypeUint32:
-		state = poly.NewSystolicState[uint32](n)
+		state = poly.NewStepState[uint32](n)
 	case poly.DTypeUint16:
-		state = poly.NewSystolicState[uint16](n)
+		state = poly.NewStepState[uint16](n)
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		state = poly.NewSystolicState[uint8](n)
+		state = poly.NewStepState[uint8](n)
 	default:
-		state = poly.NewSystolicState[float32](n)
+		state = poly.NewStepState[float32](n)
 		dt = poly.DTypeFloat32
 	}
 
 	networkMu.Lock()
-	id := systolicNextID
-	systolicNextID++
-	systolicStates[id] = &systolicContainer{State: state, DType: dt}
+	id := stepNextID
+	stepNextID++
+	stepStates[id] = &stepContainer{State: state, DType: dt}
 	networkMu.Unlock()
 
 	return C.longlong(id)
 }
 
-//export LoomFreeSystolicState
-func LoomFreeSystolicState(handle C.longlong) {
+//export LoomFreeStepState
+func LoomFreeStepState(handle C.longlong) {
 	networkMu.Lock()
-	delete(systolicStates, int64(handle))
+	delete(stepStates, int64(handle))
 	networkMu.Unlock()
 }
 
 //export LoomSetInput
 func LoomSetInput(stateHandle C.longlong, data *C.float, length C.int) {
-	c, ok := getSystolicContainer(int64(stateHandle))
+	c, ok := getStepContainer(int64(stateHandle))
 	if !ok { return }
 
 	ptr := unsafe.Pointer(data)
@@ -74,94 +74,94 @@ func LoomSetInput(stateHandle C.longlong, data *C.float, length C.int) {
 	l := int(length)
 	switch c.DType {
 	case poly.DTypeFloat64:
-		st := c.State.(*poly.SystolicState[float64])
+		st := c.State.(*poly.StepState[float64])
 		f := make([]float64, l)
 		for i, v := range slice { f[i] = float64(v) }
 		st.SetInput(poly.NewTensorFromSlice(f, 1, l))
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		st := c.State.(*poly.SystolicState[float32])
+		st := c.State.(*poly.StepState[float32])
 		ts := make([]float32, l)
 		copy(ts, slice)
 		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeInt64:
-		st := c.State.(*poly.SystolicState[int64])
+		st := c.State.(*poly.StepState[int64])
 		ts := make([]int64, l)
 		for i, v := range slice { ts[i] = int64(v) }
 		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeInt32:
-		st := c.State.(*poly.SystolicState[int32])
+		st := c.State.(*poly.StepState[int32])
 		ts := make([]int32, l)
 		for i, v := range slice { ts[i] = int32(v) }
 		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeInt16:
-		st := c.State.(*poly.SystolicState[int16])
+		st := c.State.(*poly.StepState[int16])
 		ts := make([]int16, l)
 		for i, v := range slice { ts[i] = int16(v) }
 		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		st := c.State.(*poly.SystolicState[int8])
+		st := c.State.(*poly.StepState[int8])
 		ts := make([]int8, l)
 		for i, v := range slice { ts[i] = int8(v) }
 		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeUint64:
-		st := c.State.(*poly.SystolicState[uint64])
+		st := c.State.(*poly.StepState[uint64])
 		ts := make([]uint64, l)
 		for i, v := range slice { ts[i] = uint64(v) }
 		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeUint32:
-		st := c.State.(*poly.SystolicState[uint32])
+		st := c.State.(*poly.StepState[uint32])
 		ts := make([]uint32, l)
 		for i, v := range slice { ts[i] = uint32(v) }
 		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeUint16:
-		st := c.State.(*poly.SystolicState[uint16])
+		st := c.State.(*poly.StepState[uint16])
 		ts := make([]uint16, l)
 		for i, v := range slice { ts[i] = uint16(v) }
 		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		st := c.State.(*poly.SystolicState[uint8])
+		st := c.State.(*poly.StepState[uint8])
 		ts := make([]uint8, l)
 		for i, v := range slice { ts[i] = uint8(v) }
 		st.SetInput(poly.NewTensorFromSlice(ts, 1, l))
 	}
 }
 
-//export LoomSystolicStep
-func LoomSystolicStep(networkHandle C.longlong, stateHandle C.longlong, captureHistory C.int) C.longlong {
+//export LoomStep
+func LoomStep(networkHandle C.longlong, stateHandle C.longlong, captureHistory C.int) C.longlong {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return -1 }
-	c, ok := getSystolicContainer(int64(stateHandle))
+	c, ok := getStepContainer(int64(stateHandle))
 	if !ok { return -1 }
 
 	var duration int64
 	switch c.DType {
 	case poly.DTypeFloat64:
-		duration = poly.SystolicForward(n, c.State.(*poly.SystolicState[float64]), captureHistory != 0).Nanoseconds()
+		duration = poly.StepForward(n, c.State.(*poly.StepState[float64]), captureHistory != 0).Nanoseconds()
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		duration = poly.SystolicForward(n, c.State.(*poly.SystolicState[float32]), captureHistory != 0).Nanoseconds()
+		duration = poly.StepForward(n, c.State.(*poly.StepState[float32]), captureHistory != 0).Nanoseconds()
 	case poly.DTypeInt64:
-		duration = poly.SystolicForward(n, c.State.(*poly.SystolicState[int64]), captureHistory != 0).Nanoseconds()
+		duration = poly.StepForward(n, c.State.(*poly.StepState[int64]), captureHistory != 0).Nanoseconds()
 	case poly.DTypeInt32:
-		duration = poly.SystolicForward(n, c.State.(*poly.SystolicState[int32]), captureHistory != 0).Nanoseconds()
+		duration = poly.StepForward(n, c.State.(*poly.StepState[int32]), captureHistory != 0).Nanoseconds()
 	case poly.DTypeInt16:
-		duration = poly.SystolicForward(n, c.State.(*poly.SystolicState[int16]), captureHistory != 0).Nanoseconds()
+		duration = poly.StepForward(n, c.State.(*poly.StepState[int16]), captureHistory != 0).Nanoseconds()
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		duration = poly.SystolicForward(n, c.State.(*poly.SystolicState[int8]), captureHistory != 0).Nanoseconds()
+		duration = poly.StepForward(n, c.State.(*poly.StepState[int8]), captureHistory != 0).Nanoseconds()
 	case poly.DTypeUint64:
-		duration = poly.SystolicForward(n, c.State.(*poly.SystolicState[uint64]), captureHistory != 0).Nanoseconds()
+		duration = poly.StepForward(n, c.State.(*poly.StepState[uint64]), captureHistory != 0).Nanoseconds()
 	case poly.DTypeUint32:
-		duration = poly.SystolicForward(n, c.State.(*poly.SystolicState[uint32]), captureHistory != 0).Nanoseconds()
+		duration = poly.StepForward(n, c.State.(*poly.StepState[uint32]), captureHistory != 0).Nanoseconds()
 	case poly.DTypeUint16:
-		duration = poly.SystolicForward(n, c.State.(*poly.SystolicState[uint16]), captureHistory != 0).Nanoseconds()
+		duration = poly.StepForward(n, c.State.(*poly.StepState[uint16]), captureHistory != 0).Nanoseconds()
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		duration = poly.SystolicForward(n, c.State.(*poly.SystolicState[uint8]), captureHistory != 0).Nanoseconds()
+		duration = poly.StepForward(n, c.State.(*poly.StepState[uint8]), captureHistory != 0).Nanoseconds()
 	}
 	return C.longlong(duration)
 }
 
 //export LoomGetOutput
 func LoomGetOutput(stateHandle C.longlong, layerIdx C.int) *C.char {
-	c, ok := getSystolicContainer(int64(stateHandle))
+	c, ok := getStepContainer(int64(stateHandle))
 	if !ok { return errJSON("invalid state handle") }
 
 	networkMu.RLock()
@@ -174,52 +174,52 @@ func LoomGetOutput(stateHandle C.longlong, layerIdx C.int) *C.char {
 
 	switch c.DType {
 	case poly.DTypeFloat64:
-		s := c.State.(*poly.SystolicState[float64])
+		s := c.State.(*poly.StepState[float64])
 		if int(layerIdx) < 0 || int(layerIdx) >= len(s.LayerData) { return errJSON("oob") }
 		if s.LayerData[layerIdx] == nil { return errJSON("no output") }
 		return marshalOutput(s.LayerData[layerIdx].Data)
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		s := c.State.(*poly.SystolicState[float32])
+		s := c.State.(*poly.StepState[float32])
 		if int(layerIdx) < 0 || int(layerIdx) >= len(s.LayerData) { return errJSON("oob") }
 		if s.LayerData[layerIdx] == nil { return errJSON("no output") }
 		return marshalOutput(s.LayerData[layerIdx].Data)
 	case poly.DTypeInt64:
-		s := c.State.(*poly.SystolicState[int64])
+		s := c.State.(*poly.StepState[int64])
 		if int(layerIdx) < 0 || int(layerIdx) >= len(s.LayerData) { return errJSON("oob") }
 		if s.LayerData[layerIdx] == nil { return errJSON("no output") }
 		return marshalOutput(s.LayerData[layerIdx].Data)
 	case poly.DTypeInt32:
-		s := c.State.(*poly.SystolicState[int32])
+		s := c.State.(*poly.StepState[int32])
 		if int(layerIdx) < 0 || int(layerIdx) >= len(s.LayerData) { return errJSON("oob") }
 		if s.LayerData[layerIdx] == nil { return errJSON("no output") }
 		return marshalOutput(s.LayerData[layerIdx].Data)
 	case poly.DTypeInt16:
-		s := c.State.(*poly.SystolicState[int16])
+		s := c.State.(*poly.StepState[int16])
 		if int(layerIdx) < 0 || int(layerIdx) >= len(s.LayerData) { return errJSON("oob") }
 		if s.LayerData[layerIdx] == nil { return errJSON("no output") }
 		return marshalOutput(s.LayerData[layerIdx].Data)
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		s := c.State.(*poly.SystolicState[int8])
+		s := c.State.(*poly.StepState[int8])
 		if int(layerIdx) < 0 || int(layerIdx) >= len(s.LayerData) { return errJSON("oob") }
 		if s.LayerData[layerIdx] == nil { return errJSON("no output") }
 		return marshalOutput(s.LayerData[layerIdx].Data)
 	case poly.DTypeUint64:
-		s := c.State.(*poly.SystolicState[uint64])
+		s := c.State.(*poly.StepState[uint64])
 		if int(layerIdx) < 0 || int(layerIdx) >= len(s.LayerData) { return errJSON("oob") }
 		if s.LayerData[layerIdx] == nil { return errJSON("no output") }
 		return marshalOutput(s.LayerData[layerIdx].Data)
 	case poly.DTypeUint32:
-		s := c.State.(*poly.SystolicState[uint32])
+		s := c.State.(*poly.StepState[uint32])
 		if int(layerIdx) < 0 || int(layerIdx) >= len(s.LayerData) { return errJSON("oob") }
 		if s.LayerData[layerIdx] == nil { return errJSON("no output") }
 		return marshalOutput(s.LayerData[layerIdx].Data)
 	case poly.DTypeUint16:
-		s := c.State.(*poly.SystolicState[uint16])
+		s := c.State.(*poly.StepState[uint16])
 		if int(layerIdx) < 0 || int(layerIdx) >= len(s.LayerData) { return errJSON("oob") }
 		if s.LayerData[layerIdx] == nil { return errJSON("no output") }
 		return marshalOutput(s.LayerData[layerIdx].Data)
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		s := c.State.(*poly.SystolicState[uint8])
+		s := c.State.(*poly.StepState[uint8])
 		if int(layerIdx) < 0 || int(layerIdx) >= len(s.LayerData) { return errJSON("oob") }
 		if s.LayerData[layerIdx] == nil { return errJSON("no output") }
 		return marshalOutput(s.LayerData[layerIdx].Data)

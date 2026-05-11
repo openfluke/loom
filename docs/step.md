@@ -1,14 +1,14 @@
-# The Systolic Grid Engine
+# The step mesh engine
 
-This document covers the `SystolicState`, `SystolicForward`, `SystolicBackward`, and `SystolicApplyTargetProp` functions that implement a clock-cycle-accurate discrete-time neural mesh.
+This document covers the `StepState`, `StepForward`, `StepBackward`, and `StepApplyTween` functions that implement a clock-cycle-accurate discrete-time neural mesh.
 
 ---
 
-## What Is the Systolic Grid?
+## What is the step mesh?
 
 Standard `ForwardPolymorphic` runs the entire network in one sequential sweep — input enters at coordinate (0,0,0,0) and the final output exits at the last coordinate. This is a **one-shot** pass.
 
-The **Systolic Engine** treats the 3D grid as a living mesh. Each "tick" of the neural clock fires every layer simultaneously. Each layer reads from the previous tick's output buffers and writes to a new set of output buffers. After all layers have fired, the buffers swap. This is classical **double buffering** applied to neural computation.
+The **Step mesh engine** treats the 3D grid as a living mesh. Each "tick" of the neural clock fires every layer simultaneously. Each layer reads from the previous tick's output buffers and writes to a new set of output buffers. After all layers have fired, the buffers swap. This is classical **double buffering** applied to neural computation.
 
 ```
 Standard ForwardPolymorphic:
@@ -17,7 +17,7 @@ Standard ForwardPolymorphic:
   (one complete pass per call)
 
 
-Systolic Grid (one clock cycle):
+Step mesh (one clock cycle):
 
   Tick N:                        Tick N+1:
   ┌──────┬──────┬──────┐          ┌──────┬──────┬──────┐
@@ -32,10 +32,10 @@ The key insight: **every layer in the grid has the opportunity to update its out
 
 ---
 
-## SystolicState
+## StepState
 
 ```go
-type SystolicState[T Numeric] struct {
+type StepState[T Numeric] struct {
     LayerData  []*Tensor[T]     // current output of every layer
     NextBuffer []*Tensor[T]     // write target for the current tick
 
@@ -45,7 +45,7 @@ type SystolicState[T Numeric] struct {
     StepCount uint64
     mu        sync.RWMutex
 
-    tpState   *TargetPropState[T]  // optional TargetProp bridge
+    TweenState *TweenState[T] // optional tween bridge (neural target propagation)
     lastInput *Tensor[T]
 }
 ```
@@ -55,16 +55,16 @@ type SystolicState[T Numeric] struct {
 Create with:
 
 ```go
-state := poly.NewSystolicState[float32](network)
+state := poly.NewStepState[float32](network)
 state.SetInput(inputTensor)  // loads input into LayerData[0]
 ```
 
 ---
 
-## SystolicForward: One Clock Cycle
+## StepForward: One Clock Cycle
 
 ```go
-elapsed := poly.SystolicForward(network, state, captureHistory bool)
+elapsed := poly.StepForward(network, state, captureHistory bool)
 ```
 
 Each call advances the mesh by exactly one discrete time step. All layers execute during this one call.
@@ -131,13 +131,13 @@ After tick N:
   HistoryPre[N][idx] = preAct that layer idx produced
 ```
 
-This history is the foundation for `SystolicBackward` (BPTT) and is required before calling `SystolicBackward`. It consumes memory proportional to `Steps × Layers × FeatureSize` — use only when training.
+This history is the foundation for `StepBackward` (BPTT) and is required before calling `StepBackward`. It consumes memory proportional to `Steps × Layers × FeatureSize` — use only when training.
 
 ---
 
-## Spatial Feedback (Remote Links in Systolic Mode)
+## Spatial Feedback (Remote Links in step mesh mode)
 
-The systolic engine is where `IsRemoteLink` reaches its full potential. Because `s.LayerData[tIdx]` is always the **previous tick's** output (not the current tick's), a remote link to an earlier coordinate creates genuine recurrence:
+The step mesh engine is where `IsRemoteLink` reaches its full potential. Because `s.LayerData[tIdx]` is always the **previous tick's** output (not the current tick's), a remote link to an earlier coordinate creates genuine recurrence:
 
 ```
 Tick N-1:
@@ -167,13 +167,13 @@ This is the discrete-time equivalent of an RNN hidden state.
 
 ---
 
-## SystolicBackward: BPTT Through the Mesh
+## StepBackward: BPTT Through the Mesh
 
 ```go
-gradIn, layerGradients, err := poly.SystolicBackward(network, state, gradOutput)
+gradIn, layerGradients, err := poly.StepBackward(network, state, gradOutput)
 ```
 
-This implements **Backpropagation Through Time (BPTT)** across the systolic history. It walks backwards through both time steps and spatial coordinates.
+This implements **Backpropagation Through Time (BPTT)** across the step mesh history. It walks backwards through both time steps and spatial coordinates.
 
 ### Algorithm
 
@@ -211,19 +211,19 @@ This correctly routes gradients through the spatial topology — remote links re
 
 ---
 
-## SystolicApplyTargetProp
+## StepApplyTween
 
 ```go
-poly.SystolicApplyTargetProp(network, state, globalTarget, lr)
+poly.StepApplyTween(network, state, globalTarget, lr)
 ```
 
-Bridges the systolic mesh with the `TargetProp` machinery. At each call:
+Bridges the step mesh mesh with the `Tween` machinery. At each call:
 
-1. If `state.tpState == nil`, create a new `TargetPropState` with `UseChainRule = false` (gap-based learning — appropriate for the continuous-time mesh)
+1. If `state.TweenState == nil`, create a new `TweenState` with `UseChainRule = false` (gap-based learning — appropriate for the continuous-time mesh)
 2. Copy current `LayerData` into `tpState.ForwardActs` (the mesh's current "what is" state)
-3. Call `TargetPropBackward(n, tpState, globalTarget)` to compute what each layer *should* produce
+3. Call `TweenBackward(n, tpState, globalTarget)` to compute what each layer *should* produce
 4. `CalculateLinkBudgets()` — measure cosine similarity between actual and target at each node
-5. `ApplyTargetPropGaps(n, tpState, lr)` — update weights using the gap signal, gated by link budgets
+5. `ApplyTweenGaps(n, tpState, lr)` — update weights using the gap signal, gated by link budgets
 
 This enables **online, asynchronous learning** on a live mesh — you can inject a global target at any time and the weights update locally at each node based on their current output gap.
 
@@ -240,12 +240,12 @@ The double buffer swap (`copy(s.LayerData, s.NextBuffer)`) happens after all lay
 This is the "clock cycle accuracy" mentioned in the README.
 
 ## V0.75.0 Stability & Guarding
-The Systolic Engine was fundamentally stabilized in v0.75.0 to support sparse volumetric grids without runtime panics.
+The Step mesh engine was fundamentally stabilized in v0.75.0 to support sparse volumetric grids without runtime panics.
 
 ### 1. Volumetric Coordinate Guarding
 In previous versions, a misconfigured grid cell could lead to a `nil pointer dereference`. In v0.75.0, the dispatcher implements strict guarding:
 - **`IsDisabled` Flag**: Every grid cell now defaults to "Disabled". They must be explicitly enabled during network construction via the `poly.VolumetricLayer` configuration.
-- **Nil-Safety**: The `DispatchLayer` and `SystolicForward` loops check these flags before execution, ensuring that uninitialized memory in sparse 3D regions does not cause a crash.
+- **Nil-Safety**: The `DispatchLayer` and `StepForward` loops check these flags before execution, ensuring that uninitialized memory in sparse 3D regions does not cause a crash.
 
 ### 2. Explicit Coordinate Hopping
 Stability is further guaranteed by the enforcement of 3D volumetric coordinates (`z, y, x, l`). 
@@ -254,9 +254,9 @@ Stability is further guaranteed by the enforcement of 3D volumetric coordinates 
 
 ---
 
-## When to Use the Systolic Engine
+## When to Use the Step mesh engine
 
-Use `SystolicForward` / `SystolicApplyTargetProp` when you need:
+Use `StepForward` / `StepApplyTween` when you need:
 
 - **Continuous operation**: the network runs indefinitely, processing new inputs each tick
 - **Spatial feedback**: remote links that create mesh-level recurrence
@@ -266,8 +266,8 @@ Use `SystolicForward` / `SystolicApplyTargetProp` when you need:
 Use `ForwardPolymorphic` / `BackwardPolymorphic` when you need:
 
 - **Batch training**: multiple training examples per weight update
-- **GPU acceleration**: the GPU path uses `trainBatchWGPU`, not the systolic engine
+- **GPU acceleration**: the GPU path uses `trainBatchWGPU`, not the step mesh engine
 - **Deterministic single-pass inference**: no history overhead
 
 > [!TIP]
-> The README's phrase "use `SystolicForward` and `SystolicApplyTargetProp` when you need a living network that evolves and learns over time rather than a static pipeline" captures this distinction perfectly.
+> The README's phrase "use `StepForward` and `StepApplyTween` when you need a living network that evolves and learns over time rather than a static pipeline" captures this distinction perfectly.

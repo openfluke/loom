@@ -244,6 +244,17 @@ func EvaluateNetworkPolymorphic[T Numeric](n *VolumetricNetwork, inputs []*Tenso
 	return metrics, nil
 }
 
+// EvaluateCategorical evaluates categorical performance across lists of expected and actual labels.
+func EvaluateCategorical(expected []int, actual []int) *DeviationMetrics {
+	dm := NewDeviationMetrics()
+	for i := range expected {
+		res := EvaluatePrediction(i, float64(expected[i]), float64(actual[i]))
+		dm.UpdateMetrics(res)
+	}
+	dm.ComputeFinalMetrics()
+	return dm
+}
+
 // ============================================================================
 // Adaptation Tracker (Polymorphic)
 // ============================================================================

@@ -10,19 +10,21 @@ This directory contains comprehensive documentation for the `poly/` package — 
 |:-----|:------------|
 | [overview.md](overview.md) | Big-picture architecture: the 3D grid, six design pillars, key types |
 | [deployment.md](deployment.md) | **Polyglot Ecosystem**: NPM deployment, TypeScript SDK, WASM bridge, and Browser/Node usage |
-| [numerical_types.md](numerical_types.md) | All 21 DTypes, the `Numeric` generic constraint, `WeightStore` lifecycle, `SimulatePrecision`, Q4_0, and compression ratios |
+| [donate_compute.md](donate_compute.md) | **Donate compute**: LAN TCP protocol (`donate_compute_*.go`), framed JSON, model push vs local LM, client/server API |
+| [tanhi.md](tanhi.md) | **TANHI**: UDP JSON-line layer telemetry (`poly/tanhi.go`), SoulGlitch HUD, env/C-ABI, wire format |
+| [numerical_types.md](numerical_types.md) | All 21 DTypes, the `Numeric` generic constraint, `WeightStore` lifecycle, `MorphToFloat32ForGPU` PTQ simulation, Q4_0, and compression ratios |
 | [layers.md](layers.md) | Every layer type (Dense, CNN, RNN, MHA, SwiGLU, RMSNorm, Residual, Softmax, Parallel, Sequential, and more) with ASCII data-flow diagrams |
 | [dispatch.md](dispatch.md) | `DispatchLayer` routing, the 3D grid traversal, tiled parallel execution, `IsRemoteLink` spatial hopping, and the GPU dispatch path |
-| [training.md](training.md) | CPU and GPU training pipelines, loss functions, gradient flow, `TargetProp` (chain-rule and gap-based modes), link budgets |
+| [training.md](training.md) | CPU and GPU training pipelines, loss functions, gradient flow, tween / neural target propagation (chain-rule and gap-based modes), link budgets |
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
-| [systolic.md](systolic.md) | The systolic grid engine: `SystolicState`, one-clock-cycle forward, spatial feedback via remote links, BPTT, online learning |
+| [step.md](step.md) | The step mesh engine: `StepState`, one-clock-cycle forward, spatial feedback via remote links, BPTT, online learning |
 | [dna.md](dna.md) | Topological network fingerprinting: `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection, recursive extraction for all 19 layer types |
 | [evolution.md](evolution.md) | DNA Splice / Genetic Crossover and NEAT-style Topology Evolution: `SpliceDNA`, `NEATMutate`, `NEATPopulation`, all 3 crossover modes, all 6 mutation types |
 | [softmax.md](softmax.md) | All 10 softmax variants: Standard, Temperature, Gumbel, Masked, Sparse, Entmax, Grid, Hierarchical, Adaptive, Mixture |
 | [serialization.md](serialization.md) | Full save/load (`SerializeNetwork`/`DeserializeNetwork`), bit-packing formats, idempotency guarantee, SafeTensors support |
 | [parallel_sequential.md](parallel_sequential.md) | `LayerParallel` (5 combine modes, activation tree), `LayerSequential` (step containers, skip gradients), nesting patterns |
 | [quantization.md](quantization.md) | PTQ pipeline, `WeightStore` versioning, `Morph`/`Unpack`, `Q4_0Block` block quantization, calibration, accuracy trade-offs |
-| [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, full transformer block assembly, `Transformer[T]` generation type |
+| [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, Qwen-style expanded-query + Q/K norm support, `Transformer[T]` generation type; CPU vs GPU tiling behavior |
 | [quick_reference.md](quick_reference.md) | Concise copy-paste snippets for all common operations |
 
 ---
@@ -31,6 +33,10 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **New to the codebase?** Read [overview.md](overview.md) first for the architecture picture, then [layers.md](layers.md) to see what layer types are available.
 **Deploying to Web or JS?** Read [deployment.md](deployment.md).
+
+**Sharing inference over LAN (donor node / TCP)?** Read [donate_compute.md](donate_compute.md).
+
+**Visualizing layer-by-layer execution (UDP → SoulGlitch TANHI)?** Read [tanhi.md](tanhi.md).
 
 **Want to train a model?** Read [training.md](training.md) and [dispatch.md](dispatch.md).
 
@@ -63,8 +69,8 @@ poly/
 ├── softmax.go           All 10 softmax variants
 ├── parallel.go          ParallelForwardPolymorphic, 5 combine modes
 ├── sequential.go        SequentialForwardPolymorphic, step containers
-├── target_prop.go       TargetPropState, TargetPropBackward, ApplyTargetPropGaps
-├── systolic.go          SystolicState, SystolicForward, SystolicBackward
+├── tween.go       TweenState, TweenBackward, ApplyTweenGaps
+├── step.go              StepState, StepForward, StepBackward
 ├── dna.go               ExtractDNA, CompareNetworks, LogicShift, recursive all-19-type extraction
 ├── evolution.go         SpliceDNA, SpliceDNAWithReport, NEATMutate, NEATPopulation
 ├── quantization.go      Q4_0Block, QuantizeQ4_0, DequantizeQ4_0
@@ -76,5 +82,7 @@ poly/
 ├── wgpu_backward_shaders.go  WGSL shader strings for dense backward
 ├── safetensors.go       SafeTensors format reader
 ├── prefix_safetensor.go Weight name prefix stripping
+├── donate_compute_*.go  LAN TCP donate-compute protocol (see donate_compute.md)
+├── tanhi.go             UDP TANHI telemetry (see tanhi.md)
 └── universal_loader.go  Auto-detecting checkpoint loader
 ```

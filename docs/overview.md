@@ -5,7 +5,7 @@
 M-POLY-VTD is a neural inference and training engine built from first principles in Go. It treats a neural network not as a sequential stack of layers, but as a **spatial 3D grid** where each cell can hold any layer type, and every layer can morph its numerical precision on demand.
 
 > [!NOTE]
-> Current version: **0.75.0 (Multi-Core Symphony)**. The core engine is stabilized with 100% C-ABI parity. **Numerical Tiling (SC/MC)** is live across all 21 DTypes, and the **Systolic 3D Grid** has been hardened with coordinate guarding to prevent runtime panics.
+> Current version: **0.75.0 (Multi-Core Symphony)**. The core engine is stabilized with 100% C-ABI parity. **Numerical Tiling (SC/MC)** is live across all 21 DTypes, and the **step mesh 3D grid** has been hardened with coordinate guarding to prevent runtime panics.
 
 ---
 
@@ -41,11 +41,11 @@ M-POLY-VTD is a neural inference and training engine built from first principles
 │              ┌─────────────────┼──────────────────────┐                     │
 │              ▼                 ▼                      ▼                     │
 │  ┌───────────────┐  ┌──────────────────┐  ┌───────────────────────────┐    │
-│  │  CPU Backend  │  │  Systolic Engine │  │  WebGPU Backend (WGPU)    │    │
+│  │  CPU Backend  │  │  Step mesh engine │  │  WebGPU Backend (WGPU)    │    │
 │  │               │  │                  │  │                           │    │
-│  │ ForwardPoly-  │  │ SystolicForward  │  │ BeginFrame / FlushFrame   │    │
-│  │ morphic[T]    │  │ SystolicBackward │  │ DispatchForwardLayer      │    │
-│  │               │  │ TargetProp       │  │ DispatchBackwardLayer     │    │
+│  │ ForwardPoly-  │  │ StepForward  │  │ BeginFrame / FlushFrame   │    │
+│  │ morphic[T]    │  │ StepBackward │  │ DispatchForwardLayer      │    │
+│  │               │  │ Tween (NTP) │  │ DispatchBackwardLayer     │    │
 │  │ All 21 DTypes │  │                  │  │ WGSL compute shaders      │    │
 │  └───────────────┘  └──────────────────┘  └───────────────────────────┘    │
 │                                                                             │
@@ -114,7 +114,7 @@ Data flows through the grid in reading order: Z outer loop, then Y, then X, then
 
 #### Remote Links (Spatial Hopping)
 
-Any layer can set `IsRemoteLink = true` and point to any other coordinate via `TargetZ / TargetY / TargetX / TargetL`. When the Systolic engine fires that layer, it reads input from the *target* coordinate's output buffer instead of the preceding layer. This enables biological-style feedback loops anywhere in the grid.
+Any layer can set `IsRemoteLink = true` and point to any other coordinate via `TargetZ / TargetY / TargetX / TargetL`. When the step mesh engine fires that layer, it reads input from the *target* coordinate's output buffer instead of the preceding layer. This enables biological-style feedback loops anywhere in the grid.
 
 ```
 Normal flow:          Remote link (skip connection):
@@ -137,9 +137,11 @@ func DispatchLayer[T Numeric](layer *VolumetricLayer, input, skip *Tensor[T]) (p
 
 There are 19 `LayerType` values routed here. An unknown type falls through to `DenseForwardPolymorphic`.
 
-### V. The Systolic Grid Engine
+**Numerical tiling** is orthogonal to volumetric traversal: `ForwardPolymorphic` can walk the grid in spatial tiles or sequentially (`network.UseTiling`). **CPU** layers use a **single** tile map (`CPUTileSizes`). **GPU** layers carry **two** maps (`GPUSCTileSizes`, `GPUMCTileSizes`); **`EnableMultiCoreTiling`** on `VolumetricNetwork` selects MC vs SC dispatch (see [dispatch.md](./dispatch.md) and [gpu.md](./gpu.md)).
 
-Unlike `ForwardPolymorphic`, which executes the entire network per input in one pass, `SystolicForward` fires **all layers simultaneously** every clock cycle. Each layer reads from the previous cycle's output buffer (`LayerData`) and writes to `NextBuffer`. After all layers have fired, the buffers are swapped. This double-buffering pattern is race-condition-free and supports parallel tile dispatch via goroutines.
+### V. The Step Mesh Engine
+
+Unlike `ForwardPolymorphic`, which executes the entire network per input in one pass, `StepForward` fires **all layers simultaneously** every clock cycle. Each layer reads from the previous cycle's output buffer (`LayerData`) and writes to `NextBuffer`. After all layers have fired, the buffers are swapped. This double-buffering pattern is race-condition-free and supports parallel tile dispatch via goroutines.
 
 ### VI. The DNA Engine
 
@@ -158,7 +160,7 @@ Unlike `ForwardPolymorphic`, which executes the entire network per input in one 
 | `DType` | `poly.go` | 21-value enum for numerical types |
 | `LayerType` | `poly.go` | 19-value enum for layer kinds |
 | `WGPUContext` | `wgpu_context.go` | GPU device, queue, pipeline cache |
-| `SystolicState[T]` | `systolic.go` | Double-buffered temporal mesh state |
+| `StepState[T]` | `step.go` | Double-buffered temporal mesh state |
 | `NetworkDNA` | `dna.go` | `[]LayerSignature` topological blueprint |
 | `TrainingConfig` | `training.go` | Epochs, LR, loss type, GPU flag |
 
@@ -206,7 +208,7 @@ End-to-end GPU training (20 epochs):
 - [numerical_types.md](./numerical_types.md) — DType system, WeightStore, Metamorphosis
 - [layers.md](./layers.md) — Every layer type in detail
 - [dispatch.md](./dispatch.md) — The dispatcher pattern and 3D coordinates
-- [training.md](./training.md) — Forward/backward, optimizers, TargetProp
+- [training.md](./training.md) — Forward/backward, optimizers, Tween
 - [gpu.md](./gpu.md) — WebGPU backend and BeginFrame/FlushFrame pattern
-- [systolic.md](./systolic.md) — The Systolic Grid Engine
+- [step.md](./step.md) — The step mesh engine
 - [quick_reference.md](./quick_reference.md) — Common code snippets

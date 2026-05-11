@@ -34,9 +34,17 @@ for %%A in (%*) do (
     if "%%A"=="android_x86_64" set TARGET=android_x86_64
     if "%%A"=="android_x86"    set TARGET=android_x86
     if "%%A"=="all"            set TARGET=all
-    if "%%A"=="--clean"        set EXTRA_FLAGS=%EXTRA_FLAGS% -clean
+    if "%%A"=="--clean"        set DO_CLEAN=1
     if "%%A"=="--test"         set EXTRA_FLAGS=%EXTRA_FLAGS% -test
 )
+
+:: ── Pre-build Cleanup ────────────────────────────────────────────────────────
+
+if "%DO_CLEAN%"=="1" (
+    echo Cleaning dist...
+    if exist dist rmdir /s /q dist
+)
+mkdir dist 2>nul
 
 :: ── Dispatch ──────────────────────────────────────────────────────────────────
 
@@ -116,21 +124,6 @@ echo.
 :: Mirror everything to Python source
 echo Mirroring to Python source...
 xcopy /s /i /y dist ..\..\..\python\src\welvet
-echo.
-
-:: Mirror Android .so files to Flutter jniLibs (native/android)
-set FLUTTER_NATIVE=..\..\..\..\..\soulglitch\native\android
-echo Mirroring Android .so to Flutter jniLibs...
-if exist dist\android_arm64\welvet.so (
-    if not exist "%FLUTTER_NATIVE%\arm64-v8a" mkdir "%FLUTTER_NATIVE%\arm64-v8a"
-    copy /y dist\android_arm64\welvet.so "%FLUTTER_NATIVE%\arm64-v8a\libwelvet.so"
-    echo   arm64-v8a ^> libwelvet.so
-)
-if exist dist\android_x86_64\welvet.so (
-    if not exist "%FLUTTER_NATIVE%\x86_64" mkdir "%FLUTTER_NATIVE%\x86_64"
-    copy /y dist\android_x86_64\welvet.so "%FLUTTER_NATIVE%\x86_64\libwelvet.so"
-    echo   x86_64    ^> libwelvet.so
-)
 echo.
 
 endlocal

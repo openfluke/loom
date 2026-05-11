@@ -8,7 +8,7 @@ import { loadLoomWASM } from "../src/loader.js";
 const EXPECTED_SYMBOLS = [
   'createLoomNetwork', 'loadLoomNetwork',
   'compareLoomDNA',
-  'getDefaultTargetPropConfig', 'defaultSpliceConfig', 'defaultNEATConfig',
+  'getDefaultTweenConfig', 'defaultSpliceConfig', 'defaultNEATConfig',
   'createLoomNEATPopulation',
   'setupWebGPU',
 ];
@@ -16,7 +16,7 @@ const EXPECTED_SYMBOLS = [
 const EXPECTED_NET_METHODS = [
   'sequentialForward', 'extractDNA', 'extractBlueprint', 'getLayerCount',
   'getLayerSpec', 'morphLayer', 'spliceDNA', 'neatMutate',
-  'createSystolicState', 'createTargetPropState', 'initGPU', 'syncToGPU',
+  'createStepState', 'createTweenState', 'initGPU', 'syncToGPU',
   'syncToCPU', 'train', 'free', '_id',
 ];
 

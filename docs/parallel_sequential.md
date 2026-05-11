@@ -263,7 +263,7 @@ if layer.UseTiling {
 }
 ```
 
-This means you can set tiling on the top-level Sequential layer and all its sub-layers inherit it automatically.
+This means you can set tiling on the top-level Sequential layer and all its sub-layers inherit `UseTiling` and `TileSize` automatically. **`EnableMultiCoreTiling` is not propagated here** — it lives on `VolumetricNetwork` (and may be copied onto layers for training). **GPU** SC vs MC is chosen from **`Network.EnableMultiCoreTiling`** plus `GPUSCTileSizes` / `GPUMCTileSizes` after `RefreshRuntimeTileSizes()`. **CPU** sub-layers use **`GetCPUTileSize`** only (one map per layer, not SC/MC pair); see [dispatch.md](dispatch.md).
 
 ---
 

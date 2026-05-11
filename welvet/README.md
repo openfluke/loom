@@ -12,7 +12,7 @@
 The C-ABI bridge now achieves **100% Functional Parity** (345+ features) with the Loom engine:
 - **Transformer Support**: Full mapping for `TokensToTensor`, `ForwardFull`, and `KV-Cache` management.
 - **NEAT Evolution**: Direct access to population-scale genetic mutation and evolutionary `Evolve` cycles.
-- **Systolic Mesh Controls**: Precise, clock-cycle accurate control over neural mesh propagation with 3D coordinate guarding.
+- **Step mesh controls**: Precise, clock-cycle accurate control over neural mesh propagation with 3D coordinate guarding.
 - **Neural Target Propagation**: Direct access to gap-bridging Hebbian learning.
 - **DNA Engine**: Exported topological signatures for model comparison and splicing.
 
@@ -22,4 +22,4 @@ To build the shared library:
 go build -o welvet/cabi/welvet.dll -buildmode=c-shared welvet/cabi/main.go
 ```
 
-*Welvet: Bridging the gap beTargetProp bit-level performance and polyglot flexibility.*
+*Welvet: Bridging the gap between bit-level performance and polyglot flexibility.*

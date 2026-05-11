@@ -2,6 +2,11 @@
 
 This document covers `LayerMultiHeadAttention` (MHA), how RoPE positional encoding is applied, Grouped-Query Attention (GQA) and Multi-Query Attention (MQA), the KV cache, SwiGLU and RMSNorm layers, full transformer block assembly inside `VolumetricNetwork`, and the `Transformer[T]` high-level generation type.
 
+It also documents the Qwen-style attention path now supported in Loom:
+- expanded query dimension (`QueryDim`) where `num_heads * head_dim != d_model`
+- per-head Q/K RMSNorm (`q_norm` / `k_norm`)
+- config-driven RMSNorm epsilon (`rms_norm_eps`) parity across CPU and GPU.
+
 ---
 
 ## LayerMultiHeadAttention
@@ -16,28 +21,34 @@ layer.DModel     = 512   // model dimension (embedding size)
 layer.NumHeads   = 8     // query heads
 layer.NumKVHeads = 8     // key/value heads (set < NumHeads for GQA/MQA)
 layer.HeadDim    = 64    // dimensions per head (DModel / NumHeads)
+layer.QueryDim   = 512   // optional; defaults to DModel when unset
 layer.MaxSeqLen  = 2048  // maximum sequence length (KV cache size)
 layer.RoPEFreqBase = 10000.0  // RoPE theta; 0 = no positional encoding
+layer.RMSNormEps = 1e-6  // used by RMSNorm layers
 ```
+
+For Qwen-style checkpoints, `head_dim` may be explicitly specified in config and `QueryDim` should be set to:
+`QueryDim = NumHeads * HeadDim`.
 
 ### Weight Layout
 
 All four projection matrices and their bias vectors are stored contiguously in `WeightStore.Master`:
 
 ```
-Offset 0                  dModel × dModel         Q weight matrix
-Offset dModel²            dModel × kvDim          K weight matrix
-Offset dModel² + dModel×kvDim    dModel × kvDim   V weight matrix
-Offset dModel² + 2×dModel×kvDim  dModel × dModel  O weight matrix
+Offset 0                  queryDim × dModel       Q weight matrix
+Offset queryDim×dModel    kvDim × dModel          K weight matrix
+Offset queryDim×dModel + kvDim×dModel             V weight matrix
+Offset queryDim×dModel + 2×kvDim×dModel           dModel × queryDim  O weight matrix
 
 After all weight matrices:
-  + dModel   bytes  Q bias vector
+  + queryDim bytes  Q bias vector
   + kvDim    bytes  K bias vector
   + kvDim    bytes  V bias vector
   + dModel   bytes  O bias vector
 
-Total: dModel² + 2×dModel×kvDim + dModel² + dModel + 2×kvDim + dModel
-     = 2×dModel² + 2×dModel×kvDim + 2×dModel + 2×kvDim weights
+Total:
+  queryDim×dModel + 2×kvDim×dModel + dModel×queryDim
+  + queryDim + 2×kvDim + dModel
 ```
 
 Where `kvDim = NumKVHeads × HeadDim`.
@@ -62,10 +73,16 @@ For each token position s:
   K[s, i] = bias_K[i] + Σⱼ input[s, j] × W_K[i, j]
   V[s, i] = bias_V[i] + Σⱼ input[s, j] × W_V[i, j]
 
-Q shape: [seqLen, dModel]     (numHeads × headDim)
+Q shape: [seqLen, queryDim]   (numHeads × headDim)
 K shape: [seqLen, kvDim]      (numKVHeads × headDim)
 V shape: [seqLen, kvDim]
 ```
+
+### 1.5 Q/K Norm (Qwen-style)
+
+If `model.layers.N.self_attn.q_norm.weight` and `k_norm.weight` are present, Loom applies per-head RMSNorm to projected Q and K before RoPE/attention scoring.
+
+This path is active in both CPU and GPU forward implementations.
 
 ### 2. RoPE: Rotary Positional Encoding
 
@@ -186,11 +203,13 @@ O[s, i] = bias_O[i] + Σⱼ attnOut[s, j] × W_O[i, j]
 
 ---
 
-## MHAForwardTiled
+## MHA, tiling flags, and where work actually happens
 
-When `layer.UseTiling = true`, `MHAForwardPolymorphic` delegates to `MHAForwardTiled`, which partitions the sequence dimension into tiles and uses goroutines for parallel attention computation. The tile size is set via `layer.TileSize`.
+On the **CPU polymorphic** path, `MHAForwardPolymorphic` uses the tiled entry when `layer.UseTiling && layer.TileSize > 0`, which calls `mhaForwardTiledGeneric`. That helper temporarily clears `UseTiling` and re-invokes the same reference attention implementation so dispatch does not recurse forever — so this is **not** a second numeric algorithm and does not spawn goroutines per head. Exported names `MHAForwardTiled` and `MHAForwardTiledParallel` are aliases of that same entry.
 
-`CalculateOptimalTileSize(headDim)` returns a tile size based on the head dimension — larger heads benefit from smaller tiles (more goroutines), smaller heads run faster without parallelism overhead.
+**Throughput-oriented tiling** (workgroup sizes, tiled matmul in shaders) lives on the **WebGPU** path in `wgpu_forward.go`: tile sizes come from `GetGPUSCTileSize` / `GetGPUMCTileSize` depending on **`VolumetricNetwork.EnableMultiCoreTiling`** — **`false` → SC**, **`true` → MC** (transformer forwards read the **network** field, not per-layer). `WGPUContext.GPUTileSize` and device limits feed `refreshRuntimeGPUTileSizes`. Call `RefreshRuntimeTileSizes()` after wiring the net: **`CPUTileSizes`** for CPU reference math (one map per layer), **`GPUSCTileSizes` / `GPUMCTileSizes`** for GPU. Training does this via `ConfigureNetworkForMode` (see `training.md`). **CPU polymorphic code does not use SC/MC as two maps** — only `GetCPUTileSize`.
+
+`CalculateOptimalTileSize(headDim)` is still the head-dimension–based helper used when populating CPU tile sizes for MHA during `refreshRuntimeCPUTileSizes`.
 
 ---
 
@@ -210,7 +229,7 @@ Key fields:
 layer.Type        = poly.LayerRMSNorm
 layer.InputHeight = 512   // must match OutputHeight
 layer.OutputHeight = 512
-layer.Epsilon     = 1e-6  // default; stored in layer config
+layer.RMSNormEps  = 1e-6  // default; overridable from checkpoint config
 ```
 
 Weight storage: one scale weight per hidden dimension (`len(Master) == OutputHeight`).
@@ -373,7 +392,7 @@ if &t.LMHead[0] == &t.Embeddings[0] {
 func (t *Transformer[T]) EnableTiling(tileSize int)
 ```
 
-Enables `UseTiling` and sets `TileSize` on all layers, including the final norm layer. If `tileSize <= 0`, `CalculateOptimalTileSize(headDim)` auto-selects the tile size.
+Sets `UseTiling` (and `TileSize` when `tileSize > 0`) on every layer in the grid plus the standalone final norm layer. It does **not** by itself rebuild per-dtype maps — after loading or constructing the network, call `t.Network.RefreshRuntimeTileSizes()` if you need `CPUTileSizes` / GPU SC–MC maps populated before inference or training (training entrypoints usually do this for you).
 
 ### Generate
 

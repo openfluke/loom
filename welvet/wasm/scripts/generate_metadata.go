@@ -26,9 +26,9 @@ func main() {
 	cabiExports := scanCABI(cabiPath)
 
 	categories := map[string][]string{
-		"CORE MECHANICS": {"VolumetricNetwork", "Forward", "Backward", "Systolic", "Layer", "Tensor"},
+		"CORE MECHANICS": {"VolumetricNetwork", "Forward", "Backward", "Step", "Layer", "Tensor"},
 		"ACCELERATION":   {"WGPU", "GPU", "Sync", "Dispatch", "Shader"},
-		"LEARNING/DNA":   {"TargetProp", "DNA", "Compare", "Refit", "Gradient"},
+		"LEARNING/DNA":   {"Tween", "DNA", "Compare", "Refit", "Gradient"},
 		"IO/UTIL":        {"JSON", "Safetensors", "Load", "Extract", "Tokenizer"},
 	}
 

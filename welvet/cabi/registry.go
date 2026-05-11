@@ -18,21 +18,21 @@ var networks = make(map[int64]*poly.VolumetricNetwork)
 var networkNextID int64 = 1
 
 // State containers for polymorphic types
-type systolicContainer struct {
+type stepContainer struct {
 	State interface{}
 	DType poly.DType
 }
 
-type targetPropContainer struct {
+type tweenContainer struct {
 	State interface{}
 	DType poly.DType
 }
 
-var systolicStates = make(map[int64]*systolicContainer)
-var systolicNextID int64 = 1
+var stepStates = make(map[int64]*stepContainer)
+var stepNextID int64 = 1
 
-var targetPropStates = make(map[int64]*targetPropContainer)
-var targetPropNextID int64 = 1
+var tweenStates = make(map[int64]*tweenContainer)
+var tweenNextID int64 = 1
 
 var networkMu sync.RWMutex
 
@@ -56,11 +56,11 @@ func getNetwork(handle int64) (*poly.VolumetricNetwork, bool) {
 	return n, ok
 }
 
-// Helper: Convert Handle to SystolicState Container
-func getSystolicContainer(handle int64) (*systolicContainer, bool) {
+// Helper: Convert Handle to StepState container
+func getStepContainer(handle int64) (*stepContainer, bool) {
 	networkMu.RLock()
 	defer networkMu.RUnlock()
-	s, ok := systolicStates[handle]
+	s, ok := stepStates[handle]
 	return s, ok
 }
 
@@ -93,10 +93,10 @@ func getNEATPopulation(handle int64) (*poly.NEATPopulation, bool) {
 	return p, ok
 }
 
-// Helper: Convert Handle to TargetPropState Container
-func getTargetPropContainer(handle int64) (*targetPropContainer, bool) {
+// Helper: Convert Handle to TweenState Container
+func getTweenContainer(handle int64) (*tweenContainer, bool) {
 	networkMu.RLock()
 	defer networkMu.RUnlock()
-	s, ok := targetPropStates[handle]
+	s, ok := tweenStates[handle]
 	return s, ok
 }

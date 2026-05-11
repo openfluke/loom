@@ -72,7 +72,7 @@ const EXPECTED_SYMBOLS = [
   // Inference / training
   'compareLoomDNA',
   // Config factories
-  'getDefaultTargetPropConfig', 'defaultSpliceConfig', 'defaultNEATConfig',
+  'getDefaultTweenConfig', 'defaultSpliceConfig', 'defaultNEATConfig',
   // Evolution
   'createLoomNEATPopulation',
   // WebGPU
@@ -83,7 +83,7 @@ const EXPECTED_SYMBOLS = [
 const EXPECTED_NET_METHODS = [
   'sequentialForward', 'extractDNA', 'extractBlueprint', 'getLayerCount',
   'getLayerSpec', 'morphLayer', 'spliceDNA', 'neatMutate',
-  'createSystolicState', 'createTargetPropState', 'initGPU', 'syncToGPU',
+  'createStepState', 'createTweenState', 'initGPU', 'syncToGPU',
   'syncToCPU', 'train', 'free', '_id',
 ];
 
@@ -284,9 +284,9 @@ async function runAll() {
     return summary.substring(0, 60);
   });
 
-  // getDefaultTargetPropConfig
-  smokeTest('getDefaultTargetPropConfig', () => {
-    const cfg = JSON.parse(window.getDefaultTargetPropConfig());
+  // getDefaultTweenConfig
+  smokeTest('getDefaultTweenConfig', () => {
+    const cfg = JSON.parse(window.getDefaultTweenConfig());
     return 'ok (keys=' + Object.keys(cfg).length + ')';
   });
 
@@ -314,10 +314,10 @@ async function runAll() {
     return result.status || result.error || 'ok';
   });
 
-  // createSystolicState
-  smokeTest('createSystolicState', () => {
+  // createStepState
+  smokeTest('createStepState', () => {
     const n = window.createLoomNetwork(DENSE_3L);
-    const s = n.createSystolicState();
+    const s = n.createStepState();
     const hasMethods = typeof s.step === 'function';
     n.free();
     return 'has step=' + hasMethods;

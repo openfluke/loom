@@ -5,6 +5,10 @@ func ParallelForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor
 	if len(layer.ParallelBranches) == 0 {
 		return input, input // Passthrough
 	}
+	batchSize := 1
+	if input != nil && len(input.Shape) > 0 && input.Shape[0] > 0 {
+		batchSize = input.Shape[0]
+	}
 
 	branchOutputs := make([]*Tensor[T], len(layer.ParallelBranches))
 	branchPreActs := make([]*Tensor[T], len(layer.ParallelBranches))
@@ -12,7 +16,7 @@ func ParallelForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor
 
 	for i := range layer.ParallelBranches {
 		branch := &layer.ParallelBranches[i]
-		
+
 		target := branch
 		if branch.IsRemoteLink && layer.Network != nil {
 			if remote := layer.Network.GetLayer(branch.TargetZ, branch.TargetY, branch.TargetX, branch.TargetL); remote != nil {
@@ -25,17 +29,21 @@ func ParallelForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor
 		branchOutputs[i] = bOut
 		branchPreActs[i] = bPre
 
+		outPerSample := len(bOut.Data)
+		if batchSize > 0 {
+			outPerSample = len(bOut.Data) / batchSize
+		}
 		if layer.CombineMode == "concat" || layer.CombineMode == "" || layer.CombineMode == "grid_scatter" {
-			totalOutputSize += len(bOut.Data)
+			totalOutputSize += outPerSample
 		} else {
 			if i == 0 {
-				totalOutputSize = len(bOut.Data)
+				totalOutputSize = outPerSample
 			}
 		}
 	}
 
 	// Combine logic
-	postAct = NewTensor[T](totalOutputSize)
+	postAct = NewTensor[T](batchSize, totalOutputSize)
 	switch layer.CombineMode {
 	case "add":
 		for _, out := range branchOutputs {
@@ -54,10 +62,17 @@ func ParallelForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor
 			postAct.Data[j] = T(float64(postAct.Data[j]) * invN)
 		}
 	case "concat", "grid_scatter", "":
-		offset := 0
-		for _, out := range branchOutputs {
-			copy(postAct.Data[offset:], out.Data)
-			offset += len(out.Data)
+		for b := 0; b < batchSize; b++ {
+			offset := b * totalOutputSize
+			for _, out := range branchOutputs {
+				per := len(out.Data)
+				if batchSize > 0 {
+					per = len(out.Data) / batchSize
+				}
+				srcStart := b * per
+				copy(postAct.Data[offset:offset+per], out.Data[srcStart:srcStart+per])
+				offset += per
+			}
 		}
 	case "filter":
 		// MoE style gating
@@ -69,7 +84,7 @@ func ParallelForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor
 				gateLogits[i] = float32(gateOut.Data[i])
 			}
 			gateWeights := Softmax(gateLogits)
-			
+
 			for i, out := range branchOutputs {
 				w := float64(gateWeights[i])
 				for j := range out.Data {
@@ -95,10 +110,14 @@ func ParallelBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, 
 	if len(layer.ParallelBranches) == 0 {
 		return gradOutput, nil
 	}
+	batchSize := 1
+	if input != nil && len(input.Shape) > 0 && input.Shape[0] > 0 {
+		batchSize = input.Shape[0]
+	}
 
-	gradInput = NewTensor[T](len(input.Data))
+	gradInput = NewTensor[T](input.Shape...)
 	branchGradWeights := make([]*Tensor[T], len(layer.ParallelBranches))
-	
+
 	switch layer.CombineMode {
 	case "add", "avg", "filter":
 		invN := 1.0
@@ -108,7 +127,7 @@ func ParallelBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, 
 
 		for i := range layer.ParallelBranches {
 			branch := &layer.ParallelBranches[i]
-			
+
 			target := branch
 			if branch.IsRemoteLink && layer.Network != nil {
 				if remote := layer.Network.GetLayer(branch.TargetZ, branch.TargetY, branch.TargetX, branch.TargetL); remote != nil {
@@ -129,12 +148,16 @@ func ParallelBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, 
 			if preAct != nil && i < len(preAct.Nested) {
 				bPre = preAct.Nested[i]
 			}
-			
+
 			gIn, gW := DispatchLayerBackward(target, scaledGrad, input, nil, bPre)
 			branchGradWeights[i] = gW
-			
+
 			if gIn != nil {
-				for j := range gradInput.Data {
+				limit := len(gradInput.Data)
+				if len(gIn.Data) < limit {
+					limit = len(gIn.Data)
+				}
+				for j := 0; j < limit; j++ {
 					gradInput.Data[j] += gIn.Data[j]
 				}
 			}
@@ -144,7 +167,7 @@ func ParallelBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, 
 		offset := 0
 		for i := range layer.ParallelBranches {
 			branch := &layer.ParallelBranches[i]
-			
+
 			target := branch
 			if branch.IsRemoteLink && layer.Network != nil {
 				if remote := layer.Network.GetLayer(branch.TargetZ, branch.TargetY, branch.TargetX, branch.TargetL); remote != nil {
@@ -156,19 +179,27 @@ func ParallelBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, 
 			size := 0
 			_, out := DispatchLayer(target, input, nil)
 			size = len(out.Data)
-			
-			branchGrad := NewTensorFromSlice(gradOutput.Data[offset:offset+size], size)
-			
+
+			perSample := size
+			if batchSize > 0 {
+				perSample = size / batchSize
+			}
+			branchGrad := NewTensorFromSlice(gradOutput.Data[offset:offset+size], batchSize, perSample)
+
 			var bPre *Tensor[T]
 			if preAct != nil && i < len(preAct.Nested) {
 				bPre = preAct.Nested[i]
 			}
-			
+
 			gIn, gW := DispatchLayerBackward(target, branchGrad, input, nil, bPre)
 			branchGradWeights[i] = gW
-			
+
 			if gIn != nil {
-				for j := range gradInput.Data {
+				limit := len(gradInput.Data)
+				if len(gIn.Data) < limit {
+					limit = len(gIn.Data)
+				}
+				for j := 0; j < limit; j++ {
 					gradInput.Data[j] += gIn.Data[j]
 				}
 			}

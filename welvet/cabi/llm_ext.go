@@ -8,8 +8,11 @@ import "C"
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 
@@ -34,6 +37,7 @@ type streamResult struct {
 type llmState struct {
 	tr            *poly.Transformer[float32]
 	tk            *poly.Tokenizer
+	execMu        sync.Mutex // Ensures generation requests are executed sequentially
 	eosTokens     []int
 	bannedTokens  []int
 	history       []poly.Turn
@@ -51,7 +55,31 @@ var (
 	llmStates   = make(map[int64]*llmState)
 	llmNextID   int64 = 1
 	llmMu       sync.Mutex
+
+	// gpuWorkerChan serialises all GPU operations onto a single OS thread,
+	// mirroring glitch.go where everything runs on the main goroutine.
+	gpuWorkerChan chan func()
+	gpuWorkerOnce sync.Once
 )
+
+// runOnGPUThread dispatches fn to a single goroutine locked to one OS thread.
+// This guarantees the same OS thread is used for every wgpu call, which
+// prevents the "Parent device is lost" panic that occurs when the device is
+// initialised on one thread but submitted from another.
+func runOnGPUThread(fn func()) {
+	gpuWorkerOnce.Do(func() {
+		gpuWorkerChan = make(chan func(), 16)
+		go func() {
+			runtime.LockOSThread()
+			for f := range gpuWorkerChan {
+				f()
+			}
+		}()
+	})
+	done := make(chan struct{})
+	gpuWorkerChan <- func() { fn(); close(done) }
+	<-done
+}
 
 // ─── LoomLLMListModels ────────────────────────────────────────────────────────
 
@@ -71,6 +99,20 @@ func LoomLLMListModels(hubDirC *C.char) *C.char {
 		}
 	}
 	data, _ := json.Marshal(models)
+	return C.CString(string(data))
+}
+
+// ─── LoomLLMListInstalledModels ───────────────────────────────────────────────
+// Returns JSON array of {"id":"org/model","snapshot_dir":"/abs/path"} for SoulGlitch.
+
+//export LoomLLMListInstalledModels
+func LoomLLMListInstalledModels(hubDirC *C.char) *C.char {
+	hubDir := C.GoString(hubDirC)
+	list, err := poly.HFListInstalledModels(hubDir)
+	if err != nil {
+		return C.CString(`[]`)
+	}
+	data, _ := json.Marshal(list)
 	return C.CString(string(data))
 }
 
@@ -103,64 +145,85 @@ func LoomCreateLLM(snapshotDirC *C.char, execMode C.int, precisionInt C.int, use
 		return -1
 	}
 
-	eosTokens := llmLoadEOS(config)
+	eosTokens := poly.EOSTokenIDsFromHFConfig(config)
 
 	// ── Load safetensors ──────────────────────────────────────────────────────
 	safetensorFiles, _ := filepath.Glob(filepath.Join(snapshotDir, "*.safetensors"))
 	if len(safetensorFiles) == 0 {
 		return -1
 	}
-	allTensors := make(map[string][]float32)
-	for _, f := range safetensorFiles {
-		t, err := poly.LoadSafetensors(f)
-		if err != nil {
-			continue
-		}
-		for k, v := range t {
-			allTensors[k] = v
-		}
-	}
-
-	// ── Map weights ───────────────────────────────────────────────────────────
+	// For Soulglitch GPU mounts, prefer lower-peak host RAM by loading blocks
+	// sequentially (Lucy parity).
+	sequentialGPULoad := int(useGPUInt) == 1
 	mapper := poly.NewPrefixWeightMapper()
-	embeddings, lmHead, finalNorm, _ := mapper.MapWeights(allTensors)
-
-	// ── Count layers ──────────────────────────────────────────────────────────
-	numLayers := 0
-	for k := range allTensors {
-		if strings.Contains(k, "layers.") {
-			parts := strings.Split(k, ".")
-			for i, p := range parts {
-				if p == "layers" && i+1 < len(parts) {
-					if idx, ok := parseInt(parts[i+1]); ok && idx+1 > numLayers {
-						numLayers = idx + 1
-					}
-				}
+	var embeddings, lmHead, finalNorm []float32
+	var allTensors map[string][]float32
+	if sequentialGPULoad {
+		globalTensors := make(map[string][]float32)
+		for _, f := range safetensorFiles {
+			part, err := poly.LoadSafetensorsSelective(f, poly.HFWeightIsGlobal)
+			if err != nil {
+				continue
+			}
+			for k, v := range part {
+				globalTensors[k] = v
 			}
 		}
+		embeddings, lmHead, finalNorm, _ = mapper.MapWeights(globalTensors)
+		embeddings, lmHead, finalNorm = poly.CloneMappedGlobalWeights(embeddings, lmHead, finalNorm)
+		globalTensors = nil
+		runtime.GC()
+		debug.FreeOSMemory()
+	} else {
+		allTensors = make(map[string][]float32)
+		for _, f := range safetensorFiles {
+			t, err := poly.LoadSafetensors(f)
+			if err != nil {
+				continue
+			}
+			for k, v := range t {
+				allTensors[k] = v
+			}
+		}
+		embeddings, lmHead, finalNorm, _ = mapper.MapWeights(allTensors)
+	}
+
+	numLayers := 0
+	if nl, ok := poly.HFConfigInt(config, "num_hidden_layers"); ok {
+		numLayers = nl
 	}
 	if numLayers == 0 {
-		if v, ok := config["num_hidden_layers"]; ok {
-			numLayers = int(v.(float64))
+		maxLi := poly.MaxHFWeightLayerIndexInSafetensorsFiles(safetensorFiles)
+		if maxLi >= 0 {
+			numLayers = maxLi + 1
 		}
 	}
 	if numLayers == 0 {
 		return -1
 	}
 
-	// ── Architecture params ───────────────────────────────────────────────────
-	numHeads := intCfg(config, "num_attention_heads", 1)
-	numKVHeads := intCfg(config, "num_key_value_heads", numHeads)
+	numHeads := poly.HFConfigIntDefault(config, "num_attention_heads", 1)
+	numKVHeads := numHeads
+	if v, ok := poly.HFConfigInt(config, "num_key_value_heads"); ok {
+		numKVHeads = v
+	}
 	hiddenSize := len(finalNorm)
 	if hiddenSize == 0 {
-		hiddenSize = intCfg(config, "hidden_size", 0)
+		hiddenSize = poly.HFConfigIntDefault(config, "hidden_size", 0)
 	}
 	if hiddenSize == 0 || numHeads == 0 {
 		return -1
 	}
 	headDim := hiddenSize / numHeads
-	intermediateSize := intCfg(config, "intermediate_size", hiddenSize*4)
-	ropeFreqBase := floatCfg(config, "rope_theta", 10000.0)
+	if v, ok := poly.HFConfigInt(config, "head_dim"); ok {
+		headDim = v
+	}
+	queryDim := numHeads * headDim
+	kvDim := numKVHeads * headDim
+
+	intermediateSize := poly.HFConfigIntDefault(config, "intermediate_size", hiddenSize*4)
+	rmsNormEps := poly.HFConfigFloat64Default(config, "rms_norm_eps", 1e-6)
+	ropeFreqBase := poly.HFConfigFloat64Default(config, "rope_theta", 10000.0)
 
 	// ── dtype ─────────────────────────────────────────────────────────────────
 	var dtype poly.DType
@@ -192,77 +255,134 @@ func LoomCreateLLM(snapshotDirC *C.char, execMode C.int, precisionInt C.int, use
 		dtype = poly.DTypeInt8
 	}
 
-	// ── Build network ─────────────────────────────────────────────────────────
 	net := poly.NewVolumetricNetwork(1, 1, 1, numLayers*4)
-	for b := 0; b < numLayers; b++ {
-		base := b * 4
-		mhaSize := (2*hiddenSize*hiddenSize) + (2*hiddenSize*(numKVHeads*headDim)) + (2*hiddenSize) + (2*(numKVHeads*headDim))
-		mlpSize := (3*hiddenSize*intermediateSize) + (2*intermediateSize) + hiddenSize
-
-		l0 := &net.Layers[base+0]
-		l0.Type = poly.LayerRMSNorm
-		l0.InputHeight = hiddenSize
-		l0.OutputHeight = hiddenSize
-		l0.WeightStore = poly.NewWeightStore(hiddenSize)
-
-		l1 := &net.Layers[base+1]
-		l1.Type = poly.LayerMultiHeadAttention
-		l1.DModel = hiddenSize
-		l1.NumHeads = numHeads
-		l1.NumKVHeads = numKVHeads
-		l1.HeadDim = headDim
-		l1.RoPEFreqBase = ropeFreqBase
-		l1.WeightStore = poly.NewWeightStore(mhaSize)
-
-		l2 := &net.Layers[base+2]
-		l2.Type = poly.LayerRMSNorm
-		l2.InputHeight = hiddenSize
-		l2.OutputHeight = hiddenSize
-		l2.WeightStore = poly.NewWeightStore(hiddenSize)
-
-		l3 := &net.Layers[base+3]
-		l3.Type = poly.LayerSwiGLU
-		l3.InputHeight = hiddenSize
-		l3.OutputHeight = intermediateSize
-		l3.WeightStore = poly.NewWeightStore(mlpSize)
+	poly.InitHFDecoderBlocks(net, poly.HFDecoderDims{
+		NumLayers:          numLayers,
+		HiddenSize:         hiddenSize,
+		NumHeads:           numHeads,
+		NumKVHeads:         numKVHeads,
+		HeadDim:            headDim,
+		QueryDim:           queryDim,
+		KVDim:              kvDim,
+		IntermediateSize:   intermediateSize,
+		RMSNormEps:         rmsNormEps,
+		RoPEFreqBase:       ropeFreqBase,
+	})
+	if !sequentialGPULoad {
+		poly.LoadWithPrefixes(net, allTensors)
+		poly.ReleaseTransientSafetensorMap(allTensors, embeddings, lmHead, finalNorm)
 	}
-	poly.LoadWithPrefixes(net, allTensors)
 
-	// ── Template ──────────────────────────────────────────────────────────────
 	modelName := ""
 	if v, ok := config["_name_or_path"]; ok {
 		if s, ok := v.(string); ok {
 			modelName = s
 		}
 	}
-	template := llmTemplateFor(modelName)
+	template := poly.TemplateForHFModelID(modelName)
 
 	// ── Transformer ───────────────────────────────────────────────────────────
 	tr := poly.NewTransformer[float32](net, embeddings, lmHead, finalNorm, template)
+	tr.SetRMSNormEps(rmsNormEps)
+	// Keep GPU KV-cache reservation bounded for app usage; transformer defaults
+	// layers to 2048 which can inflate VRAM on smaller models.
+	for i := range tr.Network.Layers {
+		tr.Network.Layers[i].MaxSeqLen = 512
+	}
 	if useTiling {
 		tr.EnableTiling(tileSize)
 	}
-	net.EnableMultiCoreTiling = multiCore
-
+	// Match loom/glitch applyGlitchTilingFlags: GPU uses MC tiles only when execMode==3; CPU uses tiled flag whenever tiling is on.
 	if useGPU {
-		if initErr := net.InitWGPU(); initErr == nil {
-			for i := range net.Layers {
-				if net.Layers[i].Type == poly.LayerRMSNorm {
-					net.Layers[i].DType = poly.DTypeFloat32
-				} else {
-					net.Layers[i].DType = dtype
-				}
-				net.Layers[i].SyncToGPU()
-			}
-			tr.SyncToGPU()
-			// Warmup
-			_, _ = tr.ForwardTokenIDsWGPU([]uint32{0}, nil, true, true)
-			tr.Reset()
-		}
+		tr.Network.EnableMultiCoreTiling = useTiling && multiCore
+	} else {
+		tr.Network.EnableMultiCoreTiling = useTiling
 	}
 
-	// ── Special token mask ────────────────────────────────────────────────────
-	banned := llmBuildBanned(tk, eosTokens)
+	if useGPU {
+		// Run ALL GPU setup on the dedicated GPU OS thread so the device is
+		// created and warmed-up on the same thread that will serve every
+		// subsequent inference call (mirrors glitch.go's main goroutine).
+		runOnGPUThread(func() {
+			poly.Alog("SOULGLITCH: Requesting GPU initialization for VolumetricNetwork...")
+			if sequentialGPULoad {
+				fmt.Printf("⏳ GPU init + block-wise weight upload (%d transformer blocks)...\n", numLayers)
+			} else {
+				fmt.Print("⏳ GPU Synchronization... ")
+			}
+			if err := tr.Network.InitWGPU(); err != nil {
+				fmt.Printf("❌ Failed: %v\n", err)
+				poly.Alog(fmt.Sprintf("SOULGLITCH: ❌ InitWGPU Failed: %v. Falling back to CPU.", err))
+			} else {
+				if sequentialGPULoad {
+					layerFiles := buildLayerShardIndex(safetensorFiles, numLayers)
+					for li := 0; li < numLayers; li++ {
+						layerMap := make(map[string][]float32)
+						for _, sf := range layerFiles[li] {
+							part, err := poly.LoadSafetensorsSelective(sf, func(k string) bool {
+								return poly.HFWeightMatchesLayer(k, li)
+							})
+							if err != nil {
+								continue
+							}
+							for k, v := range part {
+								layerMap[k] = v
+							}
+						}
+						poly.LoadWithPrefixes(net, layerMap)
+						layerMap = nil
+						if li == 0 || (li+1)%4 == 0 || li+1 == numLayers {
+							runtime.GC()
+							debug.FreeOSMemory()
+						}
+						base := li * 4
+						for j := 0; j < 4; j++ {
+							idx := base + j
+							layer := &tr.Network.Layers[idx]
+							if layer.Type == poly.LayerRMSNorm {
+								layer.DType = poly.DTypeFloat32
+							} else {
+								layer.DType = dtype
+							}
+							if err := layer.SyncToGPU(); err != nil {
+								fmt.Printf("❌ GPU sync block %d layer %d: %v\n", li, j, err)
+							}
+						}
+						for j := 0; j < 4; j++ {
+							(&tr.Network.Layers[base+j]).ReleaseInferenceHostWeights()
+						}
+					}
+				} else {
+					// Mirror glitch.go exactly: Iterate layers, set DType, SyncToGPU
+					for i := range tr.Network.Layers {
+						if tr.Network.Layers[i].Type == poly.LayerRMSNorm {
+							tr.Network.Layers[i].DType = poly.DTypeFloat32
+						} else {
+							tr.Network.Layers[i].DType = dtype
+						}
+						(&tr.Network.Layers[i]).SyncToGPU()
+					}
+				}
+				tr.SyncToGPU()
+
+				// Warmup pass to compile WGPU Shaders before first chat!
+				poly.Alog("SOULGLITCH: Performing GPU Warmup Pass...")
+				_, _ = tr.ForwardTokenIDsWGPU([]uint32{0}, nil, true, true)
+				tr.Reset()
+				tr.ReleaseInferenceHostWeights()
+				runtime.GC()
+				debug.FreeOSMemory()
+
+				fmt.Println("✅ Success!")
+				poly.Alog("SOULGLITCH: GPU Pipeline Ready.")
+			}
+		})
+	}
+	if !useGPU {
+		tr.SyncInferenceCPU()
+	}
+
+	banned := poly.TokenizerBannedSpecialExceptEOS(tk, eosTokens)
 
 	// ── Register ──────────────────────────────────────────────────────────────
 	state := &llmState{
@@ -280,6 +400,37 @@ func LoomCreateLLM(snapshotDirC *C.char, execMode C.int, precisionInt C.int, use
 	llmMu.Unlock()
 
 	return C.longlong(id)
+}
+
+func buildLayerShardIndex(safetensorFiles []string, numLayers int) [][]string {
+	layerFiles := make([][]string, numLayers)
+	if numLayers <= 0 {
+		return layerFiles
+	}
+	for _, sf := range safetensorFiles {
+		names, err := poly.SafetensorsTensorNames(sf)
+		if err != nil {
+			for li := 0; li < numLayers; li++ {
+				layerFiles[li] = append(layerFiles[li], sf)
+			}
+			continue
+		}
+		seen := make(map[int]struct{})
+		for _, n := range names {
+			if li, ok := poly.HFWeightLayerIndex(n); ok && li >= 0 && li < numLayers {
+				seen[li] = struct{}{}
+			}
+		}
+		for li := range seen {
+			layerFiles[li] = append(layerFiles[li], sf)
+		}
+	}
+	for li := 0; li < numLayers; li++ {
+		if len(layerFiles[li]) == 0 {
+			layerFiles[li] = append(layerFiles[li], safetensorFiles...)
+		}
+	}
+	return layerFiles
 }
 
 // ─── LoomLLMGenerate ─────────────────────────────────────────────────────────
@@ -315,9 +466,16 @@ func LoomLLMGenerate(handle C.longlong, systemPromptC *C.char, userMsgC *C.char,
 		temp = 0
 	}
 
+	// Use MinTokens=1 for short calls (≤8 tokens) to allow early EOS — mirrors
+	// glitch.go's voteOpts where MinTokens=1. For longer calls keep MinTokens=8.
+	minTok := 8
+	if maxTok <= 8 {
+		minTok = 1
+	}
+
 	opts := poly.GenOptions{
 		MaxTokens:             maxTok,
-		MinTokens:             8,
+		MinTokens:             minTok,
 		Temperature:           temp,
 		TopK:                  topK,
 		Deterministic:         state.deterministic,
@@ -333,7 +491,15 @@ func LoomLLMGenerate(handle C.longlong, systemPromptC *C.char, userMsgC *C.char,
 	encode := func(text string) []uint32 { return state.tk.Encode(text, false) }
 	decode := func(tokens []uint32) string { return state.tk.Decode(tokens, false) }
 
-	reply, metrics := state.tr.Generate(encode, decode, state.history, systemPrompt, userMsg, opts)
+	var reply string
+	var metrics poly.GenMetrics
+	if state.tr.Network.UseGPU {
+		runOnGPUThread(func() {
+			reply, metrics = state.tr.Generate(encode, decode, state.history, systemPrompt, userMsg, opts)
+		})
+	} else {
+		reply, metrics = state.tr.Generate(encode, decode, state.history, systemPrompt, userMsg, opts)
+	}
 	state.history = append(state.history, poly.Turn{User: userMsg, Assistant: reply})
 
 	result := map[string]interface{}{
@@ -384,9 +550,14 @@ func LoomLLMStartGenerate(handle C.longlong, systemPromptC *C.char, userMsgC *C.
 	state.pendingUser = userMsg
 	state.streamMu.Unlock()
 
+	minTokS := 8
+	if maxTok <= 8 {
+		minTokS = 1
+	}
+
 	opts := poly.GenOptions{
 		MaxTokens:             maxTok,
-		MinTokens:             8,
+		MinTokens:             minTokS,
 		Temperature:           temp,
 		TopK:                  topK,
 		Deterministic:         state.deterministic,
@@ -409,7 +580,18 @@ func LoomLLMStartGenerate(handle C.longlong, systemPromptC *C.char, userMsgC *C.
 	history := append([]poly.Turn{}, state.history...) // snapshot
 
 	go func() {
-		reply, metrics := state.tr.Generate(encode, decode, history, systemPrompt, userMsg, opts)
+		state.execMu.Lock()
+		defer state.execMu.Unlock()
+
+		var reply string
+		var metrics poly.GenMetrics
+		if state.tr.Network.UseGPU {
+			runOnGPUThread(func() {
+				reply, metrics = state.tr.Generate(encode, decode, history, systemPrompt, userMsg, opts)
+			})
+		} else {
+			reply, metrics = state.tr.Generate(encode, decode, history, systemPrompt, userMsg, opts)
+		}
 
 		state.streamMu.Lock()
 		state.streamDone = true
@@ -490,100 +672,3 @@ func LoomFreeLLM(handle C.longlong) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-func parseInt(s string) (int, bool) {
-	var n int
-	_, err := parseIntHelper(s, &n)
-	return n, err == nil
-}
-
-func parseIntHelper(s string, out *int) (int, error) {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, &parseErr{}
-		}
-		n = n*10 + int(c-'0')
-	}
-	*out = n
-	return n, nil
-}
-
-type parseErr struct{}
-
-func (e *parseErr) Error() string { return "parse error" }
-
-func intCfg(cfg map[string]interface{}, key string, def int) int {
-	if v, ok := cfg[key]; ok {
-		if f, ok := v.(float64); ok {
-			return int(f)
-		}
-	}
-	return def
-}
-
-func floatCfg(cfg map[string]interface{}, key string, def float64) float64 {
-	if v, ok := cfg[key]; ok {
-		if f, ok := v.(float64); ok {
-			return f
-		}
-	}
-	return def
-}
-
-func llmLoadEOS(config map[string]interface{}) []int {
-	var tokens []int
-	if eosID, ok := config["eos_token_id"]; ok {
-		switch v := eosID.(type) {
-		case float64:
-			tokens = append(tokens, int(v))
-		case []interface{}:
-			for _, item := range v {
-				if f, ok := item.(float64); ok {
-					tokens = append(tokens, int(f))
-				}
-			}
-		}
-	}
-	if len(tokens) == 0 {
-		return []int{2, 0}
-	}
-	return tokens
-}
-
-func llmBuildBanned(tk *poly.Tokenizer, eosTokens []int) []int {
-	if tk == nil {
-		return nil
-	}
-	eosSet := make(map[int]struct{}, len(eosTokens))
-	for _, t := range eosTokens {
-		eosSet[t] = struct{}{}
-	}
-	bannedSet := map[int]struct{}{}
-	for _, id := range tk.SpecialTokens {
-		if _, isEOS := eosSet[id]; isEOS {
-			continue
-		}
-		bannedSet[id] = struct{}{}
-	}
-	for token, id := range tk.AddedTokens {
-		if _, isEOS := eosSet[id]; isEOS {
-			continue
-		}
-		if _, isSpecial := tk.SpecialTokens[token]; isSpecial {
-			bannedSet[id] = struct{}{}
-		}
-	}
-	out := make([]int, 0, len(bannedSet))
-	for id := range bannedSet {
-		out = append(out, id)
-	}
-	return out
-}
-
-func llmTemplateFor(modelName string) poly.Template {
-	name := strings.ToLower(modelName)
-	if strings.Contains(name, "llama-3") || strings.Contains(name, "smollm3") {
-		return poly.Llama3
-	}
-	return poly.ChatML
-}

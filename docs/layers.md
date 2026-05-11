@@ -47,7 +47,9 @@ const (
 | `OutputHeight` | Number of output features |
 | `Activation` | One of ReLU, SiLU, GELU, Tanh, Sigmoid, Linear |
 | `DType` | Active numerical type |
-| `UseTiling` / `TileSize` | Enable register-tiled matmul |
+| `UseTiling` | Enables tiled fast paths where implemented (CPU block tiling, sequential propagation to sub-layers, etc.) |
+| `TileSize` | Legacy scalar fallback when per-dtype maps are empty; prefer **`CPUTileSizes`** on CPU and **`GPUSCTileSizes` / `GPUMCTileSizes`** on GPU after `RefreshRuntimeTileSizes()` |
+| `EnableMultiCoreTiling` | **GPU:** aligned with `VolumetricNetwork.EnableMultiCoreTiling`; transformer forwards use the network flag to choose **`GetGPUMCTileSize`** vs **`GetGPUSCTileSize`**. **CPU:** often set `true` with training loaders for parity; **does not** switch between two CPU tile maps (only `CPUTileSizes` exists) |
 
 **Weight layout:** `WeightStore.Master` is a flat `[OutputHeight × InputHeight]` row-major matrix. No bias is stored in the Master by default (the polymorphic engine absorbs bias via zero-biased initialization).
 

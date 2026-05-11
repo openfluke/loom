@@ -5,9 +5,13 @@ import (
 )
 
 /*
-NEURAL Target Propagation (Bidirectional Target Propagation)
---------------------------------------------------
-This technique bridges the gap beTargetProp the actual activations produced
+Tween — neural target propagation (informal name in this codebase)
+------------------------------------------------------------------
+In the literature this approach appears under names such as *target propagation*
+and *difference target propagation*. Here we call it **tween** in identifiers and
+casual documentation; see loom/docs for the precise terminology.
+
+This technique bridges the gap between the actual activations produced
 during the forward pass and the idealized targets needed for correct output.
 
 Key Concepts:
@@ -17,8 +21,8 @@ Key Concepts:
 - Link Budget: Measures the fidelity of signal preservation across the mesh.
 */
 
-// TargetPropConfig holds tunable parameters for Neural Target Propagation.
-type TargetPropConfig struct {
+// TweenConfig holds tunable parameters for Neural Target Propagation.
+type TweenConfig struct {
 	BatchSize        int
 	UseChainRule     bool    // If true, targets = Act + Grad * Scale
 	GradientScale    float32 // Scaling factor for chaining
@@ -30,9 +34,9 @@ type TargetPropConfig struct {
 	ActivationClamp float32
 }
 
-// DefaultTargetPropConfig returns standard settings for the TargetProp engine.
-func DefaultTargetPropConfig() *TargetPropConfig {
-	return &TargetPropConfig{
+// DefaultTweenConfig returns standard settings for the tween engine.
+func DefaultTweenConfig() *TweenConfig {
+	return &TweenConfig{
 		BatchSize:        1,
 		UseChainRule:     true,
 		GradientScale:    0.1,
@@ -43,8 +47,8 @@ func DefaultTargetPropConfig() *TargetPropConfig {
 	}
 }
 
-// TargetPropState tracks the bidirectional signal flow.
-type TargetPropState[T Numeric] struct {
+// TweenState tracks the bidirectional signal flow.
+type TweenState[T Numeric] struct {
 	ForwardActs     []*Tensor[T]
 	PreActs         []*Tensor[T] // Internal pre-activation states for weight-bearing layers
 	BackwardTargets []*Tensor[T]
@@ -58,17 +62,17 @@ type TargetPropState[T Numeric] struct {
 	LinkBudgets []float32
 	Gaps        []float32
 
-	Config      *TargetPropConfig
+	Config      *TweenConfig
 	TotalLayers int
 }
 
-// NewTargetPropState initializes a state for the given volumetric network.
-func NewTargetPropState[T Numeric](n *VolumetricNetwork, config *TargetPropConfig) *TargetPropState[T] {
+// NewTweenState initializes a state for the given volumetric network.
+func NewTweenState[T Numeric](n *VolumetricNetwork, config *TweenConfig) *TweenState[T] {
 	if config == nil {
-		config = DefaultTargetPropConfig()
+		config = DefaultTweenConfig()
 	}
 	total := len(n.Layers)
-	return &TargetPropState[T]{
+	return &TweenState[T]{
 		ForwardActs:     make([]*Tensor[T], total+1),
 		PreActs:         make([]*Tensor[T], total+1),
 		BackwardTargets: make([]*Tensor[T], total+1),
@@ -82,8 +86,8 @@ func NewTargetPropState[T Numeric](n *VolumetricNetwork, config *TargetPropConfi
 	}
 }
 
-// TargetPropForward executes a standard forward pass but captures ALL activations.
-func TargetPropForward[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], input *Tensor[T]) *Tensor[T] {
+// TweenForward executes a standard forward pass but captures ALL activations.
+func TweenForward[T Numeric](n *VolumetricNetwork, s *TweenState[T], input *Tensor[T]) *Tensor[T] {
 	s.ForwardActs[0] = input.Clone()
 
 	current := input
@@ -102,17 +106,17 @@ func TargetPropForward[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], i
 	return current
 }
 
-// TargetPropBackward generates targets or gradients from the output back to the input.
-func TargetPropBackward[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], target *Tensor[T]) {
+// TweenBackward generates targets or gradients from the output back to the input.
+func TweenBackward[T Numeric](n *VolumetricNetwork, s *TweenState[T], target *Tensor[T]) {
 	if s.Config.UseChainRule {
-		TargetPropBackwardChainRule(n, s, target)
+		TweenBackwardChainRule(n, s, target)
 	} else {
-		TargetPropBackwardTargetProp(n, s, target)
+		TweenBackwardLayerwise(n, s, target)
 	}
 }
 
-// TargetPropBackwardChainRule uses standard gradients to shift targets.
-func TargetPropBackwardChainRule[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], target *Tensor[T]) {
+// TweenBackwardChainRule uses standard gradients to shift targets.
+func TweenBackwardChainRule[T Numeric](n *VolumetricNetwork, s *TweenState[T], target *Tensor[T]) {
 	outputIdx := s.TotalLayers
 	actualOutput := s.ForwardActs[outputIdx]
 	if actualOutput == nil {
@@ -166,8 +170,8 @@ func TargetPropBackwardChainRule[T Numeric](n *VolumetricNetwork, s *TargetPropS
 	}
 }
 
-// TargetPropBackwardTargetProp uses true Target Propagation (without derivatives).
-func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], target *Tensor[T]) {
+// TweenBackwardLayerwise uses true Target Propagation (without derivatives).
+func TweenBackwardLayerwise[T Numeric](n *VolumetricNetwork, s *TweenState[T], target *Tensor[T]) {
 	outputIdx := s.TotalLayers
 	s.BackwardTargets[outputIdx] = target.Clone()
 
@@ -360,7 +364,7 @@ func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetProp
 						}
 						// Simplification: Not full SwiGLU inverse, just mapping down_proj inverse
 						if totalWeight > 0.01 {
-							// For actual SwiGLU in TargetProp, we'd need a more complex mapping
+							// For actual SwiGLU in tween, we'd need a more complex mapping
 							// matching the intermediate size. For now, pass activation.
 						}
 					}
@@ -389,7 +393,7 @@ func TargetPropBackwardTargetProp[T Numeric](n *VolumetricNetwork, s *TargetProp
 }
 
 // CalculateLinkBudgets diagnostic: Measures how much informaton is preserved (Cosine Similarity).
-func (s *TargetPropState[T]) CalculateLinkBudgets() {
+func (s *TweenState[T]) CalculateLinkBudgets() {
 	for i := 0; i < s.TotalLayers; i++ {
 		fwd := s.ForwardActs[i+1]
 		bwd := s.BackwardTargets[i+1]
@@ -417,17 +421,17 @@ func (s *TargetPropState[T]) CalculateLinkBudgets() {
 	}
 }
 
-// ApplyTargetPropGaps assigns weight updates based on configuration.
-func ApplyTargetPropGaps[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], lr float32) {
+// ApplyTweenGaps assigns weight updates based on configuration.
+func ApplyTweenGaps[T Numeric](n *VolumetricNetwork, s *TweenState[T], lr float32) {
 	if s.Config.UseChainRule {
 		applyChainRuleGradients(n, s, lr)
 	} else {
-		applyTargetPropGapsTargetProp(n, s, lr)
+		applyTweenGapsLayerwise(n, s, lr)
 	}
 }
 
 // applyChainRuleGradients recursively updates the model's weight stores using the captured gradients.
-func applyChainRuleGradients[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], lr float32) {
+func applyChainRuleGradients[T Numeric](n *VolumetricNetwork, s *TweenState[T], lr float32) {
 	for i := 0; i < s.TotalLayers; i++ {
 		// 1. MESH FIDELITY GATING
 		budget := s.LinkBudgets[i]
@@ -467,12 +471,12 @@ func applyChainRuleGradients[T Numeric](n *VolumetricNetwork, s *TargetPropState
 		}
 
 		// 3. APPLY SCALED RATE (Negative flipped above to become addition!)
-		ApplyRecursiveGradients(l, gW, 1.0)
+		ApplyRecursiveGradients(l, gW, 1.0, 0.0)
 	}
 }
 
-// applyTargetPropGapsTargetProp updates weights using the Local Error Signal (Target - Actual).
-func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPropState[T], lr float32) {
+// applyTweenGapsLayerwise updates weights using the Local Error Signal (Target - Actual).
+func applyTweenGapsLayerwise[T Numeric](n *VolumetricNetwork, s *TweenState[T], lr float32) {
 	for i := 0; i < s.TotalLayers; i++ {
 		// 1. LINK BUDGET GATING
 		budget := s.LinkBudgets[i]
@@ -483,7 +487,7 @@ func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPro
 		}
 
 		// If the signal is completely destroyed here, don't update!
-		// (You might want to add IgnoreThreshold to your TargetPropConfig)
+		// (You might want to add IgnoreThreshold to your TweenConfig)
 		if budget < 0.2 {
 			continue
 		}
@@ -608,7 +612,7 @@ func applyTargetPropGapsTargetProp[T Numeric](n *VolumetricNetwork, s *TargetPro
 				}
 			}
 		case LayerMultiHeadAttention:
-			// Simplified TargetProp Update for output projection
+			// Simplified tween update for output projection
 			weights := l.WeightStore.Master
 			seqLen := len(input.Data) / inSize // inSize here acts as dModel
 			for s := 0; s < seqLen; s++ {

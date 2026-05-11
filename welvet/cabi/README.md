@@ -1,6 +1,6 @@
 # Welvet C-ABI Bridge
 
-This directory contains the **C-ABI (Application Binary Interface)** for the Loom engine. It acts as the universal bridge beTargetProp the Go-based **M-POLY-VTD** core and all other programming languages.
+This directory contains the **C-ABI (Application Binary Interface)** for the Loom engine. It acts as the universal bridge between the Go-based **M-POLY-VTD** core and all other programming languages.
 
 ## 🛠️ The Build System
 The build system uses a **"Polyglot Builder"** architecture designed for cross-platform reliability.
@@ -21,6 +21,7 @@ The build system uses a **"Polyglot Builder"** architecture designed for cross-p
 - **Build for local OS**: Run the appropriate `.bat` or `.sh` script.
 - **Cross-compile everything**: `go run builder.go -os all` (requires appropriate cross-compilers in PATH).
 - **Clean builds**: Add the `-clean` flag to start from a fresh slate.
+- **macOS — C-shared `libwelvet`**: From this directory, run `./build_macos.sh`. This writes `dist/macos/libwelvet.dylib` and `dist/macos/libwelvet.h` (ignored by git). Rebuild after any C-ABI surface change. On Windows/Linux, use `go build -buildmode=c-shared` (or `internal/build/build_windows.bat`) and copy the resulting `.dll` / `.so` plus headers into your app’s native layout as needed.
 
 ---
 *Loom C-ABI: Bit-perfect performance, exposed to the world.*

@@ -1,6 +1,6 @@
 # Quantization: DType Conversion and PTQ Pipeline
 
-This document covers the Post-Training Quantization (PTQ) pipeline in `poly/`: how weights move from FP32 masters into lower-precision formats, the `WeightStore` versioning system, the `Q4_0Block` block-quantization format, and how `SimulatePrecision` approximates low-bit arithmetic on CPU.
+This document covers the Post-Training Quantization (PTQ) pipeline in `poly/`: how weights move from FP32 masters into lower-precision formats, the `WeightStore` versioning system, the `Q4_0Block` block-quantization format, and how `MorphToFloat32ForGPU` simulates low-bit arithmetic for GPU upload.
 
 ---
 
@@ -78,7 +78,7 @@ ws.Master ([]float32)
       │
       ├── dtype == Float64 → []float64: direct cast
       │
-      ├── dtype == Float16/BFloat16 → []float32: SimulatePrecision per element
+      ├── dtype == Float16/BFloat16 → []float32: round-trip quantize/dequantize per element
       │
       ├── dtype == Int8/Uint8/FP8* → []int8: v / ws.Scale, clamped to [-128, 127]
       │
@@ -127,47 +127,29 @@ ws.Versions[dtype]
 
 ---
 
-## SimulatePrecision: Quantization-Aware Arithmetic on CPU
+## MorphToFloat32ForGPU: PTQ Simulation for GPU Upload
 
 ```go
-func SimulatePrecision(v float32, dtype DType, scale float32) float32
+func (ws *WeightStore) MorphToFloat32ForGPU(dtype DType) []float32
 ```
 
-For types that have no native Go representation (Float16, BFloat16, FP8, FP4, Int4, Int2, Ternary, Binary), `SimulatePrecision` applies the quantization rounding and dequantization in one step. The CPU forward pass uses this during inference when a layer's `DType` is set to one of these types.
+For layers that don't have a dedicated packed GPU path (CNN1-3, RNN, LSTM, Embedding), this function produces a float32 buffer that represents the master weights after a quantize → dequantize round-trip at the target dtype. The GPU shader reads `array<f32>` and sees weights already "damaged" by quantization — inference-accurate without needing new shaders.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  How SimulatePrecision works for Int8 (scale = 0.01):               │
+│  How MorphToFloat32ForGPU works for Int8 (scale = 0.01):            │
 │                                                                      │
 │  Input: v = 0.437                                                    │
-│  Step 1: quantize   →  q = round(0.437 / 0.01) = 44                │
-│  Step 2: clamp      →  q = clamp(44, -128, 127) = 44               │
-│  Step 3: dequantize →  result = 44 * 0.01 = 0.44                   │
+│  Step 1: Morph to Int8  →  q = round(0.437 / 0.01) = 44            │
+│  Step 2: clamp          →  q = clamp(44, -128, 127) = 44            │
+│  Step 3: dequantize     →  result = 44 * 0.01 = 0.44               │
 │                                                                      │
 │  The rounding error is: |0.437 - 0.44| = 0.003                     │
 │  This error is what Int8 quantization "costs"                        │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-For Binary:
-```
-if v > 0: return +1.0
-else:     return -1.0
-```
-
-For Ternary:
-```
-threshold = scale * 0.5
-if |v| < threshold: return 0.0
-if v > 0:           return scale
-else:               return -scale
-```
-
-For FP8E4M3 / FP8E5M2:
-```
-The value is clamped to the FP8 representable range, then rounded to the
-nearest FP8 representable value by simulating the mantissa truncation.
-```
+Training always operates on the FP32 `Master` — `MorphToFloat32ForGPU` is only called at GPU upload time (`SyncToGPU`). This is PTQ, not QAT: the model is trained at full precision and precision loss is applied at inference time.
 
 ---
 
@@ -338,7 +320,7 @@ if weights == nil {
 }
 ```
 
-`GetActive` returns `Versions[dtype]` if it exists, otherwise `nil`. If the version is missing (e.g., after a gradient update), the forward pass falls back to `Master` and uses `SimulatePrecision` on each weight during the matrix multiply. This is slower but always correct.
+`GetActive` returns `Versions[dtype]` if it exists, otherwise `nil`. If the version is missing (e.g., after a gradient update), the forward pass falls back to `Master` and `Morph` regenerates the version on the next call. This lazy re-quantization is always correct.
 
 For the GPU path, `GetActive` for GPU dtypes reads from `GPUWeights[dtype]` via the shader's bind group. The CPU never sees these weights once they are on VRAM.
 

@@ -758,10 +758,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let kvHead = h / (params.numHeads / params.numKVHeads);
     
     // 1. Recompute scores and softmax for this query
-    var scores: array<f32, 512>; 
+    var scores: array<f32, 2048>; 
     var max_score: f32 = -1e9;
     
-    for (var s_k: u32 = 0u; s_k < params.seqLen; s_k++) {
+    let seqLen = params.seqLen;
+    if (seqLen > 2048u) { return; } // Safety limit
+
+    for (var s_k: u32 = 0u; s_k < seqLen; s_k++) {
         var dot: f32 = 0.0;
         for (var d: u32 = 0u; d < headDim; d++) {
             dot += Q[((b * params.numHeads + h) * params.seqLen + s_q) * headDim + d] * 
@@ -773,17 +776,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
     
     var exp_sum: f32 = 0.0;
-    for (var s_k: u32 = 0u; s_k < params.seqLen; s_k++) {
+    for (var s_k: u32 = 0u; s_k < seqLen; s_k++) {
         scores[s_k] = exp(scores[s_k] - max_score);
         exp_sum += scores[s_k];
     }
-    for (var s_k: u32 = 0u; s_k < params.seqLen; s_k++) {
+    for (var s_k: u32 = 0u; s_k < seqLen; s_k++) {
         scores[s_k] /= exp_sum;
     }
     
     // 2. Compute dScores / dV contributions
-    var d_softmax: array<f32, 512>;
-    for (var s_k: u32 = 0u; s_k < params.seqLen; s_k++) {
+    var d_softmax: array<f32, 2048>;
+    for (var s_k: u32 = 0u; s_k < seqLen; s_k++) {
         var ds: f32 = 0.0;
         for (var d: u32 = 0u; d < headDim; d++) {
             ds += gradOutput[((b * params.numHeads + h) * params.seqLen + s_q) * headDim + d] *
@@ -793,11 +796,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
     
     var sum_ds_s: f32 = 0.0;
-    for (var s_k: u32 = 0u; s_k < params.seqLen; s_k++) {
+    for (var s_k: u32 = 0u; s_k < seqLen; s_k++) {
         sum_ds_s += d_softmax[s_k] * scores[s_k];
     }
     
-    for (var s_k: u32 = 0u; s_k < params.seqLen; s_k++) {
+    for (var s_k: u32 = 0u; s_k < seqLen; s_k++) {
         let d_logit = (d_softmax[s_k] - sum_ds_s) * scores[s_k];
         
         for (var d: u32 = 0u; d < headDim; d++) {
@@ -805,7 +808,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             let k_off = ((b * params.numKVHeads + kvHead) * params.seqLen + s_k) * headDim + d;
             let v_off = ((b * params.numKVHeads + kvHead) * params.seqLen + s_k) * headDim + d;
             
+            // Note: Parallel MHA backward needs atomics for dK/dV or separate passes
             dQ[q_off] += d_logit * params.scale * K[k_off];
+            // Atomic operations are not supported for f32 in standard WGSL yet.
+            // Using direct += will cause race conditions between heads/queries.
+            // For bit-exact simulation on CPU, this shader is only a placeholder or 
+            // used in specific non-training scenarios.
             dK[k_off] += d_logit * params.scale * Q[q_off];
             dV[v_off] += scores[s_k] * gradOutput[q_off];
         }
@@ -859,10 +867,187 @@ fn main(
 }
 `
 
+// ShaderMultiHeadSoftmaxCEGradPartialLoss: three disjoint softmax+CE heads per row (Mark union: 4+17+20).
+// Each thread handles one batch row; writes dL/dlogit = (p-y)/B for logits in that row (B=batch).
+// partials[wg] = sum of (CE0+CE1+CE2) over batch rows handled by this workgroup (CPU divides by B for mean loss).
+const ShaderMultiHeadSoftmaxCEGradPartialLoss = `
+struct Params {
+    batch: u32,
+    row_width: u32,
+    h0: u32,
+    h1: u32,
+    h2: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read>       output:   array<f32>;
+@group(0) @binding(2) var<storage, read>       tgt:      array<f32>;
+@group(0) @binding(3) var<storage, read_write> gradient: array<f32>;
+@group(0) @binding(4) var<storage, read_write> partials: array<f32>;
+
+var<workgroup> shared_ce: array<f32, 256>;
+
+fn head_ce_grad(base: u32, C: u32, B: u32) -> f32 {
+    var ce: f32 = 0.0;
+    if (C == 0u) { return ce; }
+    var maxv: f32 = output[base];
+    for (var i: u32 = 1u; i < C; i++) {
+        maxv = max(maxv, output[base + i]);
+    }
+    var sume: f32 = 0.0;
+    for (var i: u32 = 0u; i < C; i++) {
+        sume += exp(output[base + i] - maxv);
+    }
+    let invB = 1.0 / f32(B);
+    for (var i: u32 = 0u; i < C; i++) {
+        let p = exp(output[base + i] - maxv) / sume;
+        let y = tgt[base + i];
+        ce -= y * log(p + 1e-7);
+        gradient[base + i] = (p - y) * invB;
+    }
+    return ce;
+}
+
+@compute @workgroup_size(256, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>,
+) {
+    let b = global_id.x;
+    let lid = local_id.x;
+    let B = params.batch;
+    let R = params.row_width;
+
+    var local_ce: f32 = 0.0;
+    if (b < B) {
+        let row0 = b * R;
+        let h0 = params.h0;
+        let h1 = params.h1;
+        let h2 = params.h2;
+        local_ce += head_ce_grad(row0, h0, B);
+        local_ce += head_ce_grad(row0 + h0, h1, B);
+        local_ce += head_ce_grad(row0 + h0 + h1, h2, B);
+    }
+
+    shared_ce[lid] = local_ce;
+    workgroupBarrier();
+
+    for (var s: u32 = 128u; s > 0u; s >>= 1u) {
+        if (lid < s) {
+            shared_ce[lid] += shared_ce[lid + s];
+        }
+        workgroupBarrier();
+    }
+
+    if (lid == 0u) {
+        partials[wg_id.x] = shared_ce[0];
+    }
+}
+`
+
+// ShaderMultiHeadSoftmaxCEGradPartialLossMasked: same as ShaderMultiHeadSoftmaxCEGradPartialLoss, but each batch row
+// has three mask scalars in head_mask[b*3+{0,1,2}] (active if value > 0.5). Inactive heads contribute 0 CE and get
+// zero dL/dlogit on that head's logit slice (matches CPU multiHeadMaskActive).
+const ShaderMultiHeadSoftmaxCEGradPartialLossMasked = `
+struct Params {
+    batch: u32,
+    row_width: u32,
+    h0: u32,
+    h1: u32,
+    h2: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read>       output:   array<f32>;
+@group(0) @binding(2) var<storage, read>       tgt:      array<f32>;
+@group(0) @binding(3) var<storage, read_write> gradient: array<f32>;
+@group(0) @binding(4) var<storage, read_write> partials: array<f32>;
+@group(0) @binding(5) var<storage, read>         head_mask: array<f32>;
+
+var<workgroup> shared_ce: array<f32, 256>;
+
+fn head_ce_grad_masked(base: u32, C: u32, B: u32, m: f32) -> f32 {
+    if (m < 0.5) {
+        if (C == 0u) { return 0.0; }
+        for (var i: u32 = 0u; i < C; i++) {
+            gradient[base + i] = 0.0;
+        }
+        return 0.0;
+    }
+    var ce: f32 = 0.0;
+    if (C == 0u) { return ce; }
+    var maxv: f32 = output[base];
+    for (var i: u32 = 1u; i < C; i++) {
+        maxv = max(maxv, output[base + i]);
+    }
+    var sume: f32 = 0.0;
+    for (var i: u32 = 0u; i < C; i++) {
+        sume += exp(output[base + i] - maxv);
+    }
+    let invB = 1.0 / f32(B);
+    for (var i: u32 = 0u; i < C; i++) {
+        let p = exp(output[base + i] - maxv) / sume;
+        let y = tgt[base + i];
+        ce -= y * log(p + 1e-7);
+        gradient[base + i] = (p - y) * invB;
+    }
+    return ce;
+}
+
+@compute @workgroup_size(256, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>,
+) {
+    let b = global_id.x;
+    let lid = local_id.x;
+    let B = params.batch;
+    let R = params.row_width;
+
+    var local_ce: f32 = 0.0;
+    if (b < B) {
+        let row0 = b * R;
+        let h0 = params.h0;
+        let h1 = params.h1;
+        let h2 = params.h2;
+        let m0 = head_mask[b * 3u + 0u];
+        let m1 = head_mask[b * 3u + 1u];
+        let m2 = head_mask[b * 3u + 2u];
+        local_ce += head_ce_grad_masked(row0, h0, B, m0);
+        local_ce += head_ce_grad_masked(row0 + h0, h1, B, m1);
+        local_ce += head_ce_grad_masked(row0 + h0 + h1, h2, B, m2);
+    }
+
+    shared_ce[lid] = local_ce;
+    workgroupBarrier();
+
+    for (var s: u32 = 128u; s > 0u; s >>= 1u) {
+        if (lid < s) {
+            shared_ce[lid] += shared_ce[lid + s];
+        }
+        workgroupBarrier();
+    }
+
+    if (lid == 0u) {
+        partials[wg_id.x] = shared_ce[0];
+    }
+}
+`
+
 const ShaderApplyGradients = `
 struct Params {
     size: u32,
     lr: f32,
+    clipVal: f32,
+    _pad: f32,
 };
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read_write> weights: array<f32>;
@@ -873,10 +1058,168 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let tid = global_id.x;
     if (tid >= params.size) { return; }
     
-    // Simple SGD: w = w - lr * g
-    weights[tid] -= params.lr * gradients[tid];
+    var g = gradients[tid];
+    if (params.clipVal > 0.0) {
+        g = clamp(g, -params.clipVal, params.clipVal);
+    }
+    weights[tid] -= params.lr * g;
 }
 `
+
+const ShaderQuantizeI8 = `
+struct Params {
+    size: u32,
+    scale: f32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read>  master: array<f32>;
+@group(0) @binding(2) var<storage, read_write> native: array<u32>; // packed i8
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let tid = global_id.x;
+    if (tid * 4u >= params.size) { return; }
+    
+    var packed: u32 = 0u;
+    for (var i: u32 = 0u; i < 4u; i++) {
+        let idx = tid * 4u + i;
+        if (idx < params.size) {
+            let val = master[idx] / params.scale;
+            let q = u32(clamp(f32(i32(round(val))), -128.0, 127.0) + 128.0);
+            packed |= (q & 0xFFu) << (i * 8u);
+        }
+    }
+    native[tid] = packed;
+}
+`
+
+const ShaderQuantizeI4 = `
+struct Params {
+    size: u32,
+    scale: f32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read>  master: array<f32>;
+@group(0) @binding(2) var<storage, read_write> native: array<u32>; // packed i4
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let tid = global_id.x;
+    if (tid * 8u >= params.size) { return; }
+    
+    var packed: u32 = 0u;
+    for (var i: u32 = 0u; i < 8u; i++) {
+        let idx = tid * 8u + i;
+        if (idx < params.size) {
+            let val = master[idx] / params.scale;
+            let q = u32(clamp(f32(i32(round(val))), -8.0, 7.0) + 8.0);
+            packed |= (q & 0xFu) << (i * 4u);
+        }
+    }
+    native[tid] = packed;
+}
+`
+
+const ShaderQuantizeFP4 = `
+struct Params {
+    size: u32,
+    scale: f32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read>  master: array<f32>;
+@group(0) @binding(2) var<storage, read_write> native: array<u32>; // packed fp4
+
+fn encodeFP4(v: f32) -> u32 {
+    var bestCode: u32 = 0u;
+    var bestDiff: f32 = abs(v);
+    let c0 = 0.0; if (abs(v - c0) < bestDiff) { bestDiff = abs(v - c0); bestCode = 0u; }
+    let c1 = 0.75; if (abs(v - c1) < bestDiff) { bestDiff = abs(v - c1); bestCode = 1u; }
+    let c2 = 1.0; if (abs(v - c2) < bestDiff) { bestDiff = abs(v - c2); bestCode = 2u; }
+    let c3 = 1.5; if (abs(v - c3) < bestDiff) { bestDiff = abs(v - c3); bestCode = 3u; }
+    let c4 = 2.0; if (abs(v - c4) < bestDiff) { bestDiff = abs(v - c4); bestCode = 4u; }
+    let c5 = 3.0; if (abs(v - c5) < bestDiff) { bestDiff = abs(v - c5); bestCode = 5u; }
+    let c8 = 0.0; if (abs(v - c8) < bestDiff) { bestDiff = abs(v - c8); bestCode = 8u; }
+    let c9 = -0.75; if (abs(v - c9) < bestDiff) { bestDiff = abs(v - c9); bestCode = 9u; }
+    let c10 = -1.0; if (abs(v - c10) < bestDiff) { bestDiff = abs(v - c10); bestCode = 10u; }
+    let c11 = -1.5; if (abs(v - c11) < bestDiff) { bestDiff = abs(v - c11); bestCode = 11u; }
+    let c12 = -2.0; if (abs(v - c12) < bestDiff) { bestDiff = abs(v - c12); bestCode = 12u; }
+    let c13 = -3.0; if (abs(v - c13) < bestDiff) { bestDiff = abs(v - c13); bestCode = 13u; }
+    return bestCode;
+}
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let tid = global_id.x;
+    if (tid * 8u >= params.size) { return; }
+    var packed: u32 = 0u;
+    for (var i: u32 = 0u; i < 8u; i++) {
+        let idx = tid * 8u + i;
+        if (idx < params.size) {
+            let code = encodeFP4(master[idx]);
+            packed |= (code & 0xFu) << (i * 4u);
+        }
+    }
+    native[tid] = packed;
+}
+`
+
+const ShaderQuantizeTernary = `
+struct Params {
+    size: u32,
+    scale: f32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read>  master: array<f32>;
+@group(0) @binding(2) var<storage, read_write> native: array<u32>; // packed ternary (2 bits)
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let tid = global_id.x;
+    if (tid * 16u >= params.size) { return; }
+    var packed: u32 = 0u;
+    for (var i: u32 = 0u; i < 16u; i++) {
+        let idx = tid * 16u + i;
+        if (idx < params.size) {
+            let val = master[idx] / params.scale;
+            var q = i32(round(val));
+            if (q < -1) { q = -1; }
+            if (q > 1) { q = 1; }
+            var code: u32 = 1u;
+            if (q < 0) { code = 0u; }
+            else if (q > 0) { code = 2u; }
+            packed |= (code & 0x3u) << (i * 2u);
+        }
+    }
+    native[tid] = packed;
+}
+`
+
+const ShaderQuantizeBinary = `
+struct Params {
+    size: u32,
+    scale: f32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read>  master: array<f32>;
+@group(0) @binding(2) var<storage, read_write> native: array<u32>; // packed binary (1 bit)
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let tid = global_id.x;
+    if (tid * 32u >= params.size) { return; }
+    var packed: u32 = 0u;
+    for (var i: u32 = 0u; i < 32u; i++) {
+        let idx = tid * 32u + i;
+        if (idx < params.size) {
+            if (master[idx] >= 0.0) {
+                packed |= (1u << i);
+            }
+        }
+    }
+    native[tid] = packed;
+}
+`
+
 
 const ShaderActivationForward = `
 struct Params {
@@ -1212,3 +1555,63 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     gradInput[tid] = g * d;
 }
 `
+
+const ShaderFillZero = `
+struct Params {
+    size: u32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read_write> data: array<f32>;
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    if (global_id.x >= params.size) { return; }
+    data[global_id.x] = 0.0;
+}
+`
+
+const ShaderCEGradPartialLoss = ` 
+struct Params {
+    size: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read>       output:   array<f32>;
+@group(0) @binding(2) var<storage, read>       tgt:      array<f32>;
+@group(0) @binding(3) var<storage, read_write> gradient: array<f32>;
+@group(0) @binding(4) var<storage, read_write> partials: array<f32>;
+
+var<workgroup> shared_ce: array<f32, 256>;
+
+@compute @workgroup_size(256, 1, 1)
+fn main(
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id)        wg_id:    vec3<u32>
+) {
+    let tid = local_id.x + wg_id.x * 256u;
+    let lid = local_id.x;
+    let N   = params.size;
+    let eps = 1e-10;
+
+    var local_ce: f32 = 0.0;
+    if (tid < N) {
+        let p = output[tid];
+        let y = tgt[tid];
+        gradient[tid] = -(y / (p + eps)) / f32(N);
+        local_ce      = -y * log(p + eps);
+    }
+    shared_ce[lid] = local_ce;
+    workgroupBarrier();
+
+    for (var s = 128u; s > 0u; s >>= 1u) {
+        if (lid < s) {
+            shared_ce[lid] += shared_ce[lid + s];
+        }
+        workgroupBarrier();
+    }
+
+    if (lid == 0u) {
+        partials[wg_id.x] = shared_ce[0] / f32(N);
+    }
+}
+` 

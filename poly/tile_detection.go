@@ -194,6 +194,70 @@ func CalculateOptimalCNN1TileSize(inChannels int, dtype DType) int {
 	return tileSize
 }
 
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// CalculateOptimalCNN1TileSizeForLayer derives a runtime CPU tile size from the
+// actual layer shape plus detected L1 cache, rather than only the input channel count.
+func CalculateOptimalCNN1TileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return CalculateOptimalCNN1TileSize(1, dtype)
+	}
+
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	target := int(float64(l1) * 0.75)
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+
+	inC := maxInt(1, l.InputChannels)
+	kSize := maxInt(1, l.KernelSize)
+	stride := maxInt(1, l.Stride)
+	padding := maxInt(0, l.Padding)
+	outLen := maxInt(1, l.OutputHeight)
+	filters := maxInt(1, l.Filters)
+
+	best := 4
+	for _, candidate := range []int{4, 8, 16, 32, 64, 128} {
+		outTile := minInt(candidate, outLen)
+		filterTile := minInt(candidate, filters)
+
+		inputSpan := (outTile-1)*stride + kSize + 2*padding
+		inputBytes := inputSpan * inC * 4
+		weightBytes := int(float64(filterTile*inC*kSize) * bytesPerWeight)
+		accumBytes := outTile * filterTile * 8
+		totalBytes := inputBytes + weightBytes + accumBytes
+
+		if totalBytes <= target {
+			best = candidate
+		}
+	}
+
+	if best < 4 {
+		best = 4
+	}
+	if best > outLen {
+		best = outLen
+	}
+	return best
+}
+
 // CalculateOptimalCNN2TileSize picks a TileSize that fits the 2D local neighborhood in L1.
 // Working set approx = (TileSize^2 * InChannels * bytesPerWeight) bytes.
 func CalculateOptimalCNN2TileSize(inChannels int, dtype DType) int {
@@ -408,7 +472,7 @@ func CalculateOptimalGPUTileSizeFromLimits(sharedMemBytes, maxInvocations uint32
 // DenseGPUTileSizesFromContext returns the SC and MC GPU tile sizes for Dense kernels.
 func DenseGPUTileSizesFromContext(ctx *WGPUContext, dtype DType) (scTile, mcTile int) {
 	// Dense matmuls are often bound by memory latency for small batches,
-	// and memory bandwidth for large ones. 
+	// and memory bandwidth for large ones.
 	// Smaller dtypes can support larger tiles.
 	bytes := cnn3DTypeBytesPerElement(dtype)
 	multiplier := 1.0
@@ -487,7 +551,7 @@ func SwiGLUGPUTileSizes(ctx *WGPUContext, dtype DType) (scTile, mcTile int) {
 func cnnGPUTileSizesFromContext(ctx *WGPUContext, dtype DType) (scTile, mcTile int) {
 	limits := ctx.Limits
 	bytes := cnn3DTypeBytesPerElement(dtype)
-	
+
 	// Factor in bandwidth/cache benefits of smaller types
 	multiplier := 1.0
 	if bytes < 4 {
@@ -519,17 +583,92 @@ func cnnGPUTileSizesFromContext(ctx *WGPUContext, dtype DType) (scTile, mcTile i
 	return sc, mc
 }
 
+// CNN1GPUTileSizesForLayer derives GPU SC/MC tile sizes from actual layer output
+// shape and adapter limits so the workgroup size matches the problem size better.
+func CNN1GPUTileSizesForLayer(ctx *WGPUContext, l *VolumetricLayer, dtype DType) (scTile, mcTile int) {
+	if ctx == nil || l == nil {
+		return 64, 128
+	}
+
+	maxInv := int(ctx.Limits.MaxComputeInvocationsPerWorkgroup)
+	if maxInv <= 0 {
+		maxInv = 256
+	}
+	outLen := maxInt(1, l.OutputHeight)
+	bytes := cnn3DTypeBytesPerElement(dtype)
+	multiplier := 1.0
+	if bytes < 4 {
+		multiplier = 4.0 / bytes
+	}
+	if multiplier > 4.0 {
+		multiplier = 4.0
+	}
+
+	scoreCandidate := func(candidate int, modeBias float64) float64 {
+		if candidate > maxInv {
+			return -1
+		}
+		usable := minInt(candidate, outLen)
+		waste := float64(candidate) / float64(maxInt(usable, 1))
+		score := float64(usable) / waste
+		if outLen >= candidate {
+			score *= multiplier
+		} else {
+			score *= math.Sqrt(multiplier)
+		}
+		if candidate > outLen*2 {
+			score *= 0.75
+		}
+		return score * modeBias
+	}
+
+	bestSC, bestSCScore := 32, -1.0
+	for _, candidate := range []int{32, 64, 128} {
+		score := scoreCandidate(candidate, 1.0)
+		if score > bestSCScore {
+			bestSC = candidate
+			bestSCScore = score
+		}
+	}
+
+	bestMC, bestMCScore := 64, -1.0
+	for _, candidate := range []int{64, 128, 256} {
+		score := scoreCandidate(candidate, 1.05)
+		if score > bestMCScore {
+			bestMC = candidate
+			bestMCScore = score
+		}
+	}
+
+	if bestSC > maxInv {
+		bestSC = maxInv
+	}
+	if bestMC > maxInv {
+		bestMC = maxInv
+	}
+	if bestSC < 32 {
+		bestSC = 32
+	}
+	if bestMC < 64 {
+		bestMC = 64
+	}
+	if bestMC < bestSC {
+		bestMC = bestSC
+	}
+	return bestSC, bestMC
+}
+
 // MHAGPUTileSizes returns SC and MC GPU tile sizes for MHA attention kernels.
 func MHAGPUTileSizes(ctx *WGPUContext, headDim int, dtype DType) (scTile, mcTile int) {
 	sharedMem := ctx.Limits.MaxComputeWorkgroupStorageSize
 	maxInv := ctx.Limits.MaxComputeInvocationsPerWorkgroup
-	
+
 	// MHA shaders use F32 in shared memory regardless of DType (after dequantization),
 	// but smaller types benefit from faster global-to-shared transfers.
 	// We use the base limit calculation but allow slightly larger tiles if DType is small.
 	scTile = CalculateOptimalGPUTileSizeFromLimits(sharedMem/2, maxInv, headDim)
 	mcTile = CalculateOptimalGPUTileSizeFromLimits(sharedMem, maxInv, headDim)
-	
+
 	bytes := cnn3DTypeBytesPerElement(dtype)
 	if bytes < 4 {
 		// Conservative boost for small types
@@ -538,10 +677,14 @@ func MHAGPUTileSizes(ctx *WGPUContext, headDim int, dtype DType) (scTile, mcTile
 	}
 
 	// Always align to 8 and cap at 128 for MHA
-	if scTile > 64 { scTile = 64 }
-	if mcTile > 128 { mcTile = 128 }
+	if scTile > 64 {
+		scTile = 64
+	}
+	if mcTile > 128 {
+		mcTile = 128
+	}
 
-	return (scTile/8)*8, (mcTile/8)*8
+	return (scTile / 8) * 8, (mcTile / 8) * 8
 }
 
 // =============================================================================
@@ -598,4 +741,85 @@ func (l *VolumetricLayer) GetGPUMCTileSize(dtype DType) int {
 		return mc
 	}
 	return 256
+}
+
+func (l *VolumetricLayer) refreshRuntimeCPUTileSizes() {
+	l.CPUTileSizes = make(map[DType]int, len(allDTypes))
+	for _, dtype := range allDTypes {
+		var ts int
+		switch l.Type {
+		case LayerCNN1:
+			ts = CalculateOptimalCNN1TileSizeForLayer(l, dtype)
+		case LayerCNN2:
+			ts = CalculateOptimalCNN2TileSize(l.InputChannels, dtype)
+		case LayerCNN3:
+			ts = CalculateOptimalCNN3TileSize(l.InputChannels, dtype)
+		case LayerMultiHeadAttention:
+			ts = CalculateOptimalTileSize(l.HeadDim, dtype)
+		case LayerSwiGLU:
+			ts = CalculateOptimalSwiGLUTileSize(l.InputHeight, dtype)
+		case LayerDense:
+			ts = CalculateOptimalDenseTileSize(l.InputHeight, dtype)
+		case LayerRNN:
+			ts = CalculateOptimalRNNTileSize(l.InputHeight, l.OutputHeight, dtype)
+		case LayerLSTM:
+			ts = CalculateOptimalLSTMTileSize(l.InputHeight, l.OutputHeight, dtype)
+		case LayerEmbedding:
+			ts = CalculateOptimalEmbeddingTileSize(l.EmbeddingDim, dtype)
+		case LayerResidual:
+			ts = CalculateOptimalResidualTileSize(dtype)
+		default:
+			ts = 8
+		}
+		l.CPUTileSizes[dtype] = ts
+	}
+	if l.TileSize <= 0 {
+		l.TileSize = l.GetCPUTileSize(l.DType)
+	}
+}
+
+func (l *VolumetricLayer) refreshRuntimeGPUTileSizes() {
+	if l.Network == nil || l.Network.GPUContext == nil {
+		return
+	}
+	l.GPUSCTileSizes = make(map[DType]int, len(allDTypes))
+	l.GPUMCTileSizes = make(map[DType]int, len(allDTypes))
+	for _, dtype := range allDTypes {
+		var sc, mc int
+		switch l.Type {
+		case LayerCNN1:
+			sc, mc = CNN1GPUTileSizesForLayer(l.Network.GPUContext, l, dtype)
+		case LayerMultiHeadAttention:
+			sc, mc = MHAGPUTileSizes(l.Network.GPUContext, l.HeadDim, dtype)
+		case LayerSwiGLU:
+			sc, mc = SwiGLUGPUTileSizes(l.Network.GPUContext, dtype)
+		default:
+			sc, mc = cnnGPUTileSizesFromContext(l.Network.GPUContext, dtype)
+		}
+		l.GPUSCTileSizes[dtype] = sc
+		l.GPUMCTileSizes[dtype] = mc
+	}
+}
+
+func (n *VolumetricNetwork) RefreshRuntimeTileSizes() {
+	var walk func(*VolumetricLayer)
+	walk = func(layer *VolumetricLayer) {
+		if layer == nil {
+			return
+		}
+		layer.refreshRuntimeCPUTileSizes()
+		layer.refreshRuntimeGPUTileSizes()
+		for i := range layer.ParallelBranches {
+			walk(&layer.ParallelBranches[i])
+		}
+		for i := range layer.SequentialLayers {
+			walk(&layer.SequentialLayers[i])
+		}
+		if layer.FilterGateConfig != nil {
+			walk(layer.FilterGateConfig)
+		}
+	}
+	for i := range n.Layers {
+		walk(&n.Layers[i])
+	}
 }

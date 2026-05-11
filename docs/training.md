@@ -1,6 +1,6 @@
 # Training: Forward Pass, Backward Pass, Optimizers, and Learning
 
-This document covers the full training pipeline: the forward and backward pass mechanics, loss computation, weight update strategies, gradient clipping, TargetProp, and the `VGStepBP` adaptive rate.
+This document covers the full training pipeline: the forward and backward pass mechanics, loss computation, weight update strategies, gradient clipping, Tween, and the `VGStepBP` adaptive rate.
 
 ---
 
@@ -26,6 +26,17 @@ type TrainingConfig struct {
 ```
 
 A `TrainingBatch[T]` pairs `Input *Tensor[T]` with `Target *Tensor[T]`. Multiple batches are provided as a slice — the loop iterates over batches for each epoch, averages the loss, and prints progress if `Verbose = true`.
+
+---
+
+## Runtime tiling (`ConfigureNetworkForMode`)
+
+Before the training loop runs, `Train` wires the network through `ConfigureNetworkForMode` (`training.go`), which aligns tiling flags with the selected `TrainingMode`:
+
+- **CPU modes** (`TrainingModeCPUNormal`, `TrainingModeCPUSC`, `TrainingModeCPUMC`): **all three are configured the same way** — `EnableMultiCoreTiling = true`, `RefreshRuntimeTileSizes()`, then `UseTiling` and `EnableMultiCoreTiling` on **every** layer. The CPU forward (`executeBatchCPU`) does **not** branch on `TrainingMode`; poly has **one** CPU tile map per layer (`CPUTileSizes`), not separate SC/MC maps. The SC/MC names in the enum are for labeling and benchmarks, not a second tile-size profile on CPU today.
+- **GPU modes** (`TrainingModeGPUNormal`, `TrainingModeGPUSC`, `TrainingModeGPUMC`): initializes WebGPU if needed, `RefreshRuntimeTileSizes()`, resets the bind-group cache, `SyncToGPU()`, and ensures FP32 master buffers exist for backward. **`trainBatchWGPU`** uses **`TrainingModeGPUSC`** vs **`TrainingModeGPUMC`** to select **`GetGPUSCTileSize`** vs **`GetGPUMCTileSize`** per layer; **`GPUNormal`** uses untiled or generic dispatch per layer type.
+
+For **interactive inference** (no explicit training mode), toggling **`VolumetricNetwork.EnableMultiCoreTiling`** chooses GPU SC vs MC tile maps (`wgpu_forward.go`), the same underlying maps training uses.
 
 ---
 
@@ -151,9 +162,11 @@ The GPU MSE gradient shader (`DispatchMSEGradPartialLoss`) computes both the gra
 
 ---
 
-## TargetProp: Alternative to Backpropagation
+## Tween (neural target propagation)
 
-Neural Target Propagation (`target_prop.go`) is a gradient-free alternative that estimates what each layer *should* have produced rather than computing exact chain-rule gradients.
+**Tween** is the name used in this codebase for layer-local target propagation. In papers it often appears as *target propagation*, *difference target propagation*, or similar. Implementation: `tween.go`.
+
+Tween is a gradient-free alternative that estimates what each layer *should* have produced rather than computing exact chain-rule gradients.
 
 ### Two Modes
 
@@ -163,9 +176,9 @@ Neural Target Propagation (`target_prop.go`) is a gradient-free alternative that
 target = actual + gradient × GradientScale
 ```
 
-This uses backpropagation to compute gradients, then shifts the target in the gradient direction. It is standard backprop dressed in TargetProp clothing.
+This uses backpropagation to compute gradients, then shifts the target in the gradient direction. It is standard backprop dressed in Tween clothing.
 
-**Pure TargetProp mode** (`UseChainRule = false`):
+**Pure Tween mode** (`UseChainRule = false`):
 
 ```
 target[i] = Σⱼ w[i,j] × currentTarget[j] / totalWeight[j]
@@ -173,27 +186,27 @@ target[i] = Σⱼ w[i,j] × currentTarget[j] / totalWeight[j]
 
 Estimates input targets using weighted importance from the layer's own weights, without computing derivatives. This is the biologically-motivated "local learning" variant. Supported for Dense, RNN, LSTM, MHA, and SwiGLU.
 
-### The TargetPropState
+### The TweenState
 
 ```go
-type TargetPropState[T Numeric] struct {
+type TweenState[T Numeric] struct {
     ForwardActs     []*Tensor[T]    // what layers produced
     BackwardTargets []*Tensor[T]    // what they should have produced
     Gradients       []*Tensor[float32]
     LinkBudgets     []float32       // cosine similarity: actual vs target
     Gaps            []float32       // RMS distance: actual vs target
-    Config          *TargetPropConfig
+    Config          *TweenConfig
 }
 ```
 
 ### Usage Pattern
 
 ```go
-state := poly.NewTargetPropState[float32](network, poly.DefaultTargetPropConfig())
-output := poly.TargetPropForward(network, state, input)
-poly.TargetPropBackward(network, state, target)
+state := poly.NewTweenState[float32](network, poly.DefaultTweenConfig())
+output := poly.TweenForward(network, state, input)
+poly.TweenBackward(network, state, target)
 state.CalculateLinkBudgets()
-poly.ApplyTargetPropGaps(network, state, lr)
+poly.ApplyTweenGaps(network, state, lr)
 ```
 
 ### Link Budget Gating
@@ -213,7 +226,7 @@ This prevents gradient corruption in layers where the signal has been destroyed.
 
 ## VGStepBP Adaptive Rate
 
-The README mentions `VGStepBP` (Variable Gradient Step Backpropagation) as an adaptive rate calculation. This integrates with the TargetProp `DepthScaleFactor` field:
+The README mentions `VGStepBP` (Variable Gradient Step Backpropagation) as an adaptive rate calculation. This integrates with the Tween `DepthScaleFactor` field:
 
 ```go
 DepthScaleFactor: 1.1   // each deeper layer gets 1.1× the base rate
@@ -225,7 +238,7 @@ Deeper layers receive slightly higher learning rates to compensate for gradient 
 
 ## Gradient Explosion Detection
 
-The `GradientClip` field in `TrainingConfig` (when non-zero) clips gradient norms. Additionally, the TargetProp gap system implicitly detects explosion: if `Gaps[i]` grows very large, the gap-based update `delta = lr × input × gap` will also be large, but the Link Budget gating prevents this from firing if the cosine similarity is low.
+The `GradientClip` field in `TrainingConfig` (when non-zero) clips gradient norms. Additionally, the Tween gap system implicitly detects explosion: if `Gaps[i]` grows very large, the gap-based update `delta = lr × input × gap` will also be large, but the Link Budget gating prevents this from firing if the cosine similarity is low.
 
 The README references "Gradient Explosion Detection & Damping" as a completed feature in the training automation section.
 
