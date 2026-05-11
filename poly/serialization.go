@@ -302,6 +302,8 @@ func ParseActivationType(s string) ActivationType {
 		return ActivationTanh
 	case "SIGMOID":
 		return ActivationSigmoid
+	case "LEAKYRELU", "LEAKY_RELU":
+		return ActivationLeakyReLU
 	case "LINEAR":
 		return ActivationLinear
 	default:

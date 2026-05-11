@@ -14,7 +14,7 @@ func main() {
 	fmt.Println("Initializing Lucy Bloom Rivers …")
 	reader := bufio.NewReader(os.Stdin)
 	mode := readInput(reader, "\n[1] Poly Talk (HuggingFace cache)\n"+
-		"[2] Tests — dense forward vs step (100 samples)\n"+
+		"[2] Tests — dense mid-stream adaptation benchmark\n"+
 		"[3] Layer testing — CPU/GPU suites (optional save to "+lucytesting.DefaultOutputDir+")\n"+
 		"[4] Download approved HF models (SoulGlitch-style HTTP → hub/manual-download)\n"+
 		"Choice [1]: ", "1")
