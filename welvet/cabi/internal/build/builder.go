@@ -135,6 +135,62 @@ func main() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Lucy (CLI) — same GOOS/GOARCH/CC as the C-ABI slice; output next to welvet.*
+// ──────────────────────────────────────────────────────────────────────────────
+
+func lucyModuleDir() (string, error) {
+	return filepath.Abs(filepath.Join("..", "..", "..", "..", "lucy"))
+}
+
+func lucyExeName(goos string) string {
+	if goos == "windows" {
+		return "lucy.exe"
+	}
+	return "lucy"
+}
+
+// buildLucyInto builds the lucy main package into outPath (e.g. dist/macos_arm64/lucy).
+// cc is the C compiler for CGO (webgpu); empty uses the default CC for the host.
+func buildLucyInto(p Platform, outPath, cc string) error {
+	lucyDir, err := lucyModuleDir()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(lucyDir, "go.mod")); err != nil {
+		return fmt.Errorf("lucy module: %w", err)
+	}
+	absOut, err := filepath.Abs(outPath)
+	if err != nil {
+		return err
+	}
+	// -o is resolved relative to cmd.Dir (lucy module root); use an absolute path
+	// so binaries land in dist/<slice>/ next to welvet, not under lucy/dist/.
+	outExe := filepath.Join(absOut, lucyExeName(p.GOOS))
+	fmt.Printf("  compiling lucy → %s...\n", filepath.Base(outExe))
+	cmd := exec.Command("go", "build", "-o", outExe, ".")
+	cmd.Dir = lucyDir
+	env := append(os.Environ(),
+		"GOOS="+p.GOOS,
+		"GOARCH="+p.GOARCH,
+		"CGO_ENABLED=1",
+	)
+	if p.GOARM != "" {
+		env = append(env, "GOARM="+p.GOARM)
+	}
+	if cc != "" {
+		env = append(env, "CC="+cc)
+	}
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("%s\n", string(out))
+		return fmt.Errorf("lucy: %w", err)
+	}
+	fmt.Printf("  ✓  %s\n", filepath.Join(outPath, lucyExeName(p.GOOS)))
+	return nil
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Platform selection
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -240,6 +296,9 @@ func buildPlatform(p Platform, outBase string) error {
 
 	// Always compile cabi_verify alongside the library so it ships in dist/.
 	compileVerify(p, outPath, cc)
+	if err := buildLucyInto(p, outPath, cc); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -482,6 +541,9 @@ func buildIOS(p Platform, outBase string) error {
 	}
 
 	fmt.Printf("  ✓  %s\n", outFile)
+	if err := buildLucyInto(p, outPath, cc); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -586,9 +648,15 @@ func buildMacUniversal(outBase string) error {
 	}
 	for _, p := range slices {
 		lib := filepath.Join(outBase, p.DirName, "welvet.dylib")
+		lucyBin := filepath.Join(outBase, p.DirName, lucyExeName("darwin"))
 		if _, err := os.Stat(lib); err != nil {
 			if err2 := buildPlatform(p, outBase); err2 != nil {
 				return fmt.Errorf("building %s slice: %w", p.DirName, err2)
+			}
+		} else if _, err := os.Stat(lucyBin); err != nil {
+			sliceOut := filepath.Join(outBase, p.DirName)
+			if err := buildLucyInto(p, sliceOut, crossCC(p)); err != nil {
+				return fmt.Errorf("lucy %s: %w", p.DirName, err)
 			}
 		}
 	}
@@ -607,6 +675,19 @@ func buildMacUniversal(outBase string) error {
 	copyFile(hSrc, hDst)
 
 	fmt.Printf("  ✓  %s\n", fatLib)
+
+	lucyAMD := filepath.Join(outBase, "macos_amd64", lucyExeName("darwin"))
+	lucyARM := filepath.Join(outBase, "macos_arm64", lucyExeName("darwin"))
+	fatLucy := filepath.Join(outPath, lucyExeName("darwin"))
+	if _, err1 := os.Stat(lucyAMD); err1 == nil {
+		if _, err2 := os.Stat(lucyARM); err2 == nil {
+			if err := run("lipo", "-create", lucyAMD, lucyARM, "-output", fatLucy); err != nil {
+				return err
+			}
+			fmt.Printf("  ✓  %s\n", fatLucy)
+		}
+	}
+
 	return nil
 }
 
