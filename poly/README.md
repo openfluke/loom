@@ -89,7 +89,7 @@ cd welvet/typescript
 npm test
 ```
 
-**Verified Results (Loom v0.75.0):**
+**Verified Results (Loom v0.76.0):**
 - **[PASS]** Internal WASM Exports (8/8)
 - **[PASS]** Network Wrapper Methods (16/16)
 - **[PASS]** NEAT Population Methods (8/8)
@@ -332,6 +332,7 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Dynamic Scale Calibration (Row-wise quantization)
 - [ ] Gradient Checkpointing (recompute activations to reduce peak VRAM)
 - [x] Post-Training Quantization (PTQ) weight conversion passes
+- [x] True on-the-fly / load-path quantization without a mandatory FP32 master copy in host RAM (native dtype staging)
 - [ ] Truncated BPTT (windowed gradient unroll for step-mesh long-sequence training)
 
 ### 1.6 GPU Backward Pass Completion
@@ -343,7 +344,7 @@ Our semantic version number directly reflects our progress against this absolute
 - [ ] Multi-Core CPU Tiling (All 18 Layers x 21 DTypes)
 - [ ] GPU Register Tiling (All 18 Layers x 21 DTypes)
 
-**Numerical Progress: 20 / 34**
+**Numerical Progress: 19 / 29**
 
 ---
 
@@ -397,8 +398,10 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Dynamic Grid Topology Visualization
 - [x] Reflection-based Method Discovery (JSON API Export)
 - [x] Observer-pattern Layer Monitoring
+- [x] TANHI — UDP JSON-line layer-wise telemetry for external HUDs (e.g. SoulGlitch); see `docs/tanhi.md` and Welvet `tanhi_ext`
+- [x] Allocator-level **memory footprint** reporting (`memory_footprint.go` and related rollups)
 
-**Architectural Progress: 30 / 35**
+**Architectural Progress: 32 / 37**
 
 ---
 
@@ -414,13 +417,14 @@ Our semantic version number directly reflects our progress against this absolute
 - [ ] Memory-Mapped (mmap) Model Weights (Zero-copy loading)
 - [ ] Circular/Evicting KV-Cache (VRAM-efficient infinite context)
 - [ ] Asynchronous IO/Compute Overlap (UI responsiveness)
+- [x] Large-model load path with **reduced peak host RAM** via orchestrated tensor staging (representative Qwen-class loads ~27 GB → ~15 GB class)
 
 ### 3.3 Hardware Acceleration & Adaptation
 - [ ] NPU / Apple Neural Engine (ANE) / NNAPI Backend support
 - [ ] On-Device Low-Rank Adaptation (LoRA-lite fine-tuning)
 - [ ] Low-Bit Inference Kernels (Non-standard 2-bit/1-bit targets)
 
-**Edge Optimization Progress: 0 / 10**
+**Edge Optimization Progress: 1 / 11**
 
 ---
 
@@ -433,6 +437,7 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Neural Tweening / Hybrid Geometric Training
 - [x] Neural Tweening Chain Rule Support
 - [x] Gradient Explosion Detection & Damping
+- [x] **Tiled dispatch as the primary path** — forward/backward unified on CPU/GPU tiling; legacy non-tiled paths removed or gated for a single source of truth
 
 ### 4.2 Optimizers & Schedulers
 - [x] Standard Optimizers (SGD, AdamW, RMSProp)
@@ -449,7 +454,7 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Random Architecture Generation & Mutation
 - [ ] Speculative Decoding (draft model + verify for faster autoregressive token generation)
 
-**Automation Progress: 13 / 16**
+**Automation Progress: 14 / 18**
 
 ---
 
@@ -477,6 +482,9 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] WebAssembly (WASM) browser execution
 - [x] Universal SafeTensors Support (Load / Save / V2 Multi-type)
 - [x] HuggingFace Checkpoint Interoperability (Weight Extraction)
+- [x] **Donate Compute** — TCP LAN volunteer / offload framing (`donate_compute_*.go`, `docs/donate_compute.md`)
+- [x] **Lucy** — HuggingFace model download, compile-on-the-go workflow, conversational smoke (`lucy/`)
+- [x] **Qwen3-family** checkpoints in the HF ingestion / LM pipeline
 
 ### 5.4 Benchmarks & Validation
 - [x] ARC-AGI Task Benchmark (K-Means Implementation)
@@ -485,7 +493,7 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Model Ensemble Diversity Metrics
 - [x] Training Method Comparison Analysis
 
-**Ecosystem Progress: 16 / 22**
+**Ecosystem Progress: 19 / 25**
 
 ---
 
@@ -511,7 +519,26 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] WebGPU LM-Head Offloading
 - [x] VRAM Usage Profiling & Distribution Metrics
 
-**LLM Progress: 15 / 15**
+**LLM Progress: 14 / 14**
+
+---
+
+## v0.76.0 — *Operation Mesh* (this release)
+
+These items shipped in the same wave as the **step mesh** / **tween** naming reset and the large poly refactor; each maps to a new `[x]` row above so the checklist stays honest.
+
+- **True on-the-fly quantization** on the load / inference path (no mandatory FP32 mirror in RAM).
+- **Qwen3** support in the HuggingFace ingestion and LM pipeline.
+- **UDP layer-wise packet logging** — [walkthrough](https://www.youtube.com/watch?v=LuDGc1aQPl0).
+- **Reduced peak RAM** on representative large LMs via staging / dtypes (~27 GB → ~15 GB class on your measurements).
+- **Step + tween config** names restored where the engine exposes them.
+- **Non-FP32-native weights** — load and run from proper packed / native stores instead of always inflating a FP32 master.
+- **Donate Compute** — LAN-friendly TCP protocol for volunteer or remote jobs (`docs/donate_compute.md`).
+- **TANHI** — sparse UDP inspection for SoulGlitch and tooling (`docs/tanhi.md`, default port **17481**).
+- **Lucy** — model pull from the Hub, compile-on-the-go, and talking smoke (`lucy/README.md`).
+- **Go / runtime refresh** — `go.mod` baseline and allocator work (incremental quality).
+- **Single tiling truth** — prefer CPU/GPU tiled forward/backward over duplicate non-tiled paths.
+- **Memory footprint** surfacing across the stack for visibility while tuning.
 
 ---
 
@@ -521,18 +548,18 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 
 | Category | Completed | Total |
 | :--- | :---: | :---: |
-| 1. Numerical Core | 20 | 34 |
-| 2. Architectural Layers | 30 | 35 |
-| 3. Edge Orchestration | 0 | 10 |
-| 4. Training Automation | 13 | 16 |
-| 5. Deployment Ecosystem | 19 | 22 |
-| 6. LLM & Tokenization | 15 | 15 |
-| **GRAND TOTAL** | **104** | **132** |
+| 1. Numerical Core | 19 | 29 |
+| 2. Architectural Layers | 32 | 37 |
+| 3. Edge Orchestration | 1 | 11 |
+| 4. Training Automation | 14 | 18 |
+| 5. Deployment Ecosystem | 19 | 25 |
+| 6. LLM & Tokenization | 14 | 14 |
+| **GRAND TOTAL** | **99** | **134** |
 
-### **Completion Ratio: 78.8%**
+### **Completion Ratio: 73.9%**
 
-## **Version 0.75.0 — CURRENT**
-*(Status: **v0.75.0 "Multi-Core Symphony" is officially current.** Milestone reached: Unified SC/MC Tiling across all 21 types, stabilized 3D step mesh propagation, and 100% C-ABI parity for Python/TS. Currently transitioning to **v0.8.0 "Edge-First Orchestration"**.)*
+## **Version 0.76.0 — CURRENT**
+*(Status: **v0.76.0 "Operation Mesh" is officially current.** Ships **Donate Compute**, **TANHI**, **Lucy**, **Qwen3-class** ingest, **true on-the-fly / non–FP32-master** quantization paths, **memory footprint** telemetry, and **tiled-first** dispatch on top of **v0.75.0 Multi-Core Symphony** (SC/MC tiling + stabilized step mesh + C-ABI parity). The checklist gained eight verified rows so the ratio retabulated honestly. **v0.8.0 "Edge-First Orchestration"** remains the next architectural focus: thermal-aware scheduling, UMA pinning, command-graph buffering.)*
 
 ## **v0.8.0 Roadmap — "Edge-First Orchestration"**
 *(Status: **In Research.** Focus moves to thermal-throttling aware scheduling and unified memory pinning for Apple Silicon and Snapdragon NPUs.)*

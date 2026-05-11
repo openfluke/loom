@@ -50,7 +50,7 @@ func LoomFreeGPUBuffer(bufHandle C.longlong) {
 		delete(stepStates, int64(bufHandle))
 	}
 	networkMu.Unlock()
-	if ok {
+	if ok && !c.Borrowed {
 		if buf, ok2 := c.State.(*wgpu.Buffer); ok2 {
 			buf.Destroy()
 		}

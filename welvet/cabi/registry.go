@@ -19,8 +19,9 @@ var networkNextID int64 = 1
 
 // State containers for polymorphic types
 type stepContainer struct {
-	State interface{}
-	DType poly.DType
+	State    interface{}
+	DType    poly.DType
+	Borrowed bool // GPU buffer owned by poly (e.g. layer weight); LoomFreeGPUBuffer must not Destroy
 }
 
 type tweenContainer struct {

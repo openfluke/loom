@@ -52,16 +52,17 @@ Loom provides bit-exact reproducibility across:
 - **C#/.NET** (Welvet) - *(In Development)*
 
 ## 📊 Versioning & Roadmap
-Loom uses a mathematical versioning system derived from a strictly verified checklist of 130 industry-scale features.
+Loom uses a mathematical versioning system derived from a strictly verified checklist in [`poly/README.md`](./poly/README.md) (row counts and completion ratio are maintained there).
 
-### **Current Version: 0.75.0 — CURRENT**
-- **Completion Ratio**: 78.8% (104 / 132 features verified — Multi-Core Symphony Complete)
-- **Status**: **0.75.0 "Multi-Core Symphony" is officially current.** Unified **SC/MC Tiling** is live across all 21 types, breaking the memory bandwidth wall on consumer hardware. The **step mesh 3D grid** has been stabilized to prevent uninitialized memory issues, and 100% C-ABI parity is achieved for Python and TypeScript.
+### **Current Version: 0.76.0 — CURRENT**
+- **Completion Ratio**: 73.9% (99 / 134 checklist rows verified — *Operation Mesh* wave)
+- **Status**: **0.76.0 "Operation Mesh"** builds on **Multi-Core Symphony**: **Donate Compute** (TCP LAN), **TANHI** (UDP layer telemetry for SoulGlitch), **Lucy** (HF pull + compile-on-the-go + chat smoke), **Qwen3-class** ingest, **true on-the-fly / non–FP32-master** quantization paths, **memory footprint** surfacing, and **tiled-first** forward/backward as the primary dispatch story — still with unified **SC/MC Tiling**, stabilized **step mesh 3D grid**, and **C-ABI parity** for Python and TypeScript.
     - > [!NOTE]
     - > **Numerical Tiling**: Introduces specialized Single-Core (SC) and Multi-Core (MC) profiles, optimizing register pressure vs. high-bandwidth L1/L2 cache throughput.
-- **Milestone achieved**:
-    - **v0.75.0 "Multi-Core Symphony"** ✅ — Tiling logic unrolled across the entire dispatcher; stabilized volumetric hopping; 100% functional parity for `welvet` SDKs.
-- **Next Target — v0.8.0 "Edge-First"**: Specialized Edge-First orchestration (Thermal-Awareness, UMA, Command Buffer Graphing) for mobile and wearable deployment.
+- **Milestones**:
+    - **v0.75.0 "Multi-Core Symphony"** ✅ — Tiling across the dispatcher; stabilized volumetric hopping; `welvet` parity.
+    - **v0.76.0 "Operation Mesh"** ✅ — Wire protocols, LM tooling burst, RAM-aware load path, telemetry. See [poly/README.md § v0.76.0](./poly/README.md#v0760--operation-mesh-this-release).
+- **Next Target — v0.8.0 "Edge-First"**: Thermal-aware scheduling, UMA pinning, command-buffer graphing for mobile and wearable deployment.
 - **Next Steps**: Command Graph Buffering; Thermal-Aware hardware scheduling.
 
 For a detailed breakdown of the roadmap and version calculation, see [poly/README.md](./poly/README.md#📊-true-version-calculation).

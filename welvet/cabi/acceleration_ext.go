@@ -939,26 +939,3 @@ func LoomForwardWGPU(transformerHandle C.longlong, inputHandle C.longlong) *C.ch
 	data, _ := json.Marshal(res.Data)
 	return C.CString(string(data))
 }
-
-// Dummy use to satisfy coverage scanner for poly structs
-var (
-	_ poly.WGPUDenseParams
-	_ poly.WGPUMHAParams
-	_ poly.WGPURNNParams
-	_ poly.WGPULSTMParams
-	_ poly.WGPUCNN1Params
-	_ poly.WGPUCNN2Params
-	_ poly.WGPUCNN3Params
-	_ poly.WGPURMSNormParams
-	_ poly.WGPUKVParams
-	_ poly.WGPURoPEParams
-	_ poly.WGPUEmbeddingParams
-)
-
-func dummyShaders() {
-	_ = poly.ShaderTiledDenseQ4
-	_ = poly.ShaderTiledDenseN
-	_ = poly.ShaderTiledSwiGLUQ4
-	_ = poly.ShaderTiledSwiGLUN
-	_ = poly.ShaderTiledMHAN
-}
