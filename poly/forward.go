@@ -85,7 +85,15 @@ func ForwardPolymorphic[T Numeric](n *VolumetricNetwork, input *Tensor[T]) (*Ten
 
 									lStart := time.Now()
 									_, post := DispatchLayer(layer, currentTensor, nil)
-									layerTimes[idx] = time.Since(lStart)
+									t1 := time.Now()
+									layerTimes[idx] = t1.Sub(lStart)
+									if n.Tanhi != nil && n.Tanhi.Enabled {
+										var sh []int
+										if n.Tanhi.SendShape && post != nil {
+											sh = append([]int(nil), post.Shape...)
+										}
+										tanhiEmit(n, "fwd", idx, layer, lStart, t1, sh)
+									}
 									currentTensor = post
 								}
 							}
@@ -108,7 +116,15 @@ func ForwardPolymorphic[T Numeric](n *VolumetricNetwork, input *Tensor[T]) (*Ten
 
 						lStart := time.Now()
 						_, post := DispatchLayer(layer, currentTensor, nil)
-						layerTimes[idx] = time.Since(lStart)
+						t1 := time.Now()
+						layerTimes[idx] = t1.Sub(lStart)
+						if n.Tanhi != nil && n.Tanhi.Enabled {
+							var sh []int
+							if n.Tanhi.SendShape && post != nil {
+								sh = append([]int(nil), post.Shape...)
+							}
+							tanhiEmit(n, "fwd", idx, layer, lStart, t1, sh)
+						}
 						currentTensor = post
 					}
 				}

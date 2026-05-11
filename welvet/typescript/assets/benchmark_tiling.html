@@ -145,7 +145,7 @@ async function runBenchFor(bc, useGPU, sysState) {
   const input = makeInput(bc.inputSize, bc.isEmbedding);
 
   if (useGPU && !sysState) {
-    // GPU path via systolic state
+    // GPU path via step state
     try {
       await net.initGPU();
       await net.syncToGPU();

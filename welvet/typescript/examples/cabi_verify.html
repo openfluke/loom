@@ -30,7 +30,7 @@
 
 <script type="module">
 import {
-  initBrowser, createNetwork, compareDNA, defaultTargetPropConfig,
+  initBrowser, createNetwork, compareDNA, defaultTweenConfig,
   getSpliceConfig, getNEATConfig, createNEATPopulation,
 } from '../dist/index.js';
 
@@ -65,7 +65,7 @@ const DENSE_3L = JSON.stringify({
 
 // ── 1. Global TS exports ──────────────────────────────────────────────────────
 function checkExports() {
-  const fns = { initBrowser, createNetwork, compareDNA, defaultTargetPropConfig, getSpliceConfig, getNEATConfig, createNEATPopulation };
+  const fns = { initBrowser, createNetwork, compareDNA, defaultTweenConfig, getSpliceConfig, getNEATConfig, createNEATPopulation };
   let pass = 0, fail = 0;
   pInfo('\n[1] Checking TypeScript module exports...\n');
   pDim('  ' + 'Export'.padEnd(40) + 'Status');
@@ -82,7 +82,7 @@ function checkExports() {
 // ── 2. Raw WASM globals ───────────────────────────────────────────────────────
 function checkWASMGlobals() {
   const syms = ['createLoomNetwork','loadLoomNetwork','compareLoomDNA',
-    'getDefaultTargetPropConfig','defaultSpliceConfig','defaultNEATConfig','createLoomNEATPopulation','setupWebGPU'];
+    'getDefaultTweenConfig','defaultSpliceConfig','defaultNEATConfig','createLoomNEATPopulation','setupWebGPU'];
   let pass = 0, fail = 0;
   pInfo('\n[2] Checking raw WASM globals...\n');
   pDim('  ' + 'Symbol'.padEnd(40) + 'Status');
@@ -99,8 +99,8 @@ function checkWASMGlobals() {
 // ── 3. Network method check ───────────────────────────────────────────────────
 function checkNetworkMethods() {
   const METHODS = ['sequentialForward','extractDNA','extractBlueprint','getLayerCount',
-    'getLayerSpec','morphLayer','spliceDNA','neatMutate','createSystolicState',
-    'createTargetPropState','initGPU','syncToGPU','syncToCPU','train','free','_id'];
+    'getLayerSpec','morphLayer','spliceDNA','neatMutate','createStepState',
+    'createTweenState','initGPU','syncToGPU','syncToCPU','train','free','_id'];
   let pass = 0, fail = 0;
   pInfo('\n[3] Checking network wrapper methods...\n');
   let net = null;
@@ -207,8 +207,8 @@ function runSmokes() {
     return s.substring(0, 60);
   });
 
-  smoke('defaultTargetPropConfig', () => {
-    const cfg = defaultTargetPropConfig();
+  smoke('defaultTweenConfig', () => {
+    const cfg = defaultTweenConfig();
     return 'ok (keys=' + Object.keys(cfg).length + ')';
   });
 

@@ -78,7 +78,15 @@ func BackwardPolymorphic[T Numeric](n *VolumetricNetwork, gradOutput *Tensor[T],
 					// DISPATCH BACKWARD
 					lStart := time.Now()
 					gIn, gW := DispatchLayerBackward(layer, currentGrad, input, nil, preAct)
-					layerTimes[idx] = time.Since(lStart)
+					t1 := time.Now()
+					layerTimes[idx] = t1.Sub(lStart)
+					if n.Tanhi != nil && n.Tanhi.Enabled {
+						var sh []int
+						if n.Tanhi.SendShape && gIn != nil {
+							sh = append([]int(nil), gIn.Shape...)
+						}
+						tanhiEmit(n, "bwd", idx, layer, lStart, t1, sh)
+					}
 					currentGrad = gIn
 					layerGradients[idx] = [2]*Tensor[T]{gIn, gW}
 				}

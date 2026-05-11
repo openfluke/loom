@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"unsafe"
@@ -39,6 +40,93 @@ func LoadSafetensors(filepath string) (map[string][]float32, error) {
 
 // LoadSafetensorsFromBytes reads safetensors data from a byte slice and returns tensors by name
 func LoadSafetensorsFromBytes(data []byte) (map[string][]float32, error) {
+	return loadSafetensorsFromBytesFiltered(data, nil)
+}
+
+// LoadSafetensorsSelectiveFromBytes decodes only tensors whose names satisfy keep(name).
+// If keep is nil, all tensors are decoded (same as LoadSafetensorsFromBytes).
+func LoadSafetensorsSelectiveFromBytes(data []byte, keep func(string) bool) (map[string][]float32, error) {
+	return loadSafetensorsFromBytesFiltered(data, keep)
+}
+
+// LoadSafetensorsSelective reads one safetensors file and decodes only tensors accepted by keep(name).
+func LoadSafetensorsSelective(filepath string, keep func(string) bool) (map[string][]float32, error) {
+	f, err := os.Open(filepath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+	defer f.Close()
+
+	var lenBuf [8]byte
+	if _, err := io.ReadFull(f, lenBuf[:]); err != nil {
+		return nil, fmt.Errorf("failed to read header size: %w", err)
+	}
+	headerSize := binary.LittleEndian.Uint64(lenBuf[:])
+	if headerSize > 256<<20 { // sanity guard (256 MB)
+		return nil, fmt.Errorf("safetensors header size unreasonable: %d", headerSize)
+	}
+	headerBytes := make([]byte, headerSize)
+	if _, err := io.ReadFull(f, headerBytes); err != nil {
+		return nil, fmt.Errorf("failed to read header: %w", err)
+	}
+
+	var rawHeader map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &rawHeader); err != nil {
+		return nil, fmt.Errorf("failed to parse header: %w", err)
+	}
+
+	dataStart := int64(8 + headerSize)
+	tensors := make(map[string][]float32)
+
+	for name, value := range rawHeader {
+		if name == "__metadata__" {
+			continue
+		}
+		if keep != nil && !keep(name) {
+			continue
+		}
+
+		infoMap, ok := value.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		encodedDtype, _ := infoMap["dtype"].(string)
+		shapeList, _ := infoMap["shape"].([]interface{})
+		offsetList, _ := infoMap["data_offsets"].([]interface{})
+		if len(offsetList) != 2 {
+			continue
+		}
+
+		shape := make([]int, len(shapeList))
+		numElements := 1
+		for i, v := range shapeList {
+			shape[i] = int(v.(float64))
+			numElements *= shape[i]
+		}
+
+		startOffset := int(offsetList[0].(float64))
+		endOffset := int(offsetList[1].(float64))
+		if endOffset < startOffset {
+			return nil, fmt.Errorf("tensor %s: invalid offsets %d..%d", name, startOffset, endOffset)
+		}
+		byteLen := endOffset - startOffset
+		tensorBytes := make([]byte, byteLen)
+		if _, err := f.ReadAt(tensorBytes, dataStart+int64(startOffset)); err != nil {
+			return nil, fmt.Errorf("tensor %s read failed: %w", name, err)
+		}
+
+		tensorData := make([]float32, numElements)
+		if err := decodeTensorData(tensorBytes, 0, encodedDtype, numElements, tensorData); err != nil {
+			return nil, fmt.Errorf("tensor %s: %w", name, err)
+		}
+		tensors[name] = tensorData
+	}
+
+	return tensors, nil
+}
+
+func loadSafetensorsFromBytesFiltered(data []byte, keep func(string) bool) (map[string][]float32, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("data too short: need at least 8 bytes for header size")
 	}
@@ -59,6 +147,9 @@ func LoadSafetensorsFromBytes(data []byte) (map[string][]float32, error) {
 
 	for name, value := range rawHeader {
 		if name == "__metadata__" {
+			continue
+		}
+		if keep != nil && !keep(name) {
 			continue
 		}
 
@@ -92,6 +183,43 @@ func LoadSafetensorsFromBytes(data []byte) (map[string][]float32, error) {
 	}
 
 	return tensors, nil
+}
+
+// SafetensorsTensorNames returns tensor names from a safetensors file without decoding tensor payloads.
+// Only reads the header prefix from disk (small I/O even for huge shards).
+func SafetensorsTensorNames(filepath string) ([]string, error) {
+	f, err := os.Open(filepath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var lenBuf [8]byte
+	if _, err := f.Read(lenBuf[:]); err != nil {
+		return nil, err
+	}
+	headerSize := binary.LittleEndian.Uint64(lenBuf[:])
+	if headerSize > 256<<20 { // sanity: header should be tiny
+		return nil, fmt.Errorf("safetensors header size unreasonable: %d", headerSize)
+	}
+	headerBytes := make([]byte, headerSize)
+	if _, err := f.Read(headerBytes); err != nil {
+		return nil, err
+	}
+
+	var rawHeader map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &rawHeader); err != nil {
+		return nil, fmt.Errorf("failed to parse header: %w", err)
+	}
+
+	names := make([]string, 0, len(rawHeader))
+	for name := range rawHeader {
+		if name == "__metadata__" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 // TensorMetaHeader is used for JSON serialization of tensor metadata in safetensors files

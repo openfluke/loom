@@ -32,7 +32,7 @@
     "binary",
     "ternary",
     "multi-precision",
-    "systolic",
+    "step-mesh",
     "target-propagation",
     "gradient-free",
     "swiglu",

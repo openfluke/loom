@@ -25,8 +25,8 @@
 import type {
   Network,
   NEATPopulation,
-  SystolicState,
-  TargetPropState,
+  StepState,
+  TweenState,
   TrainingBatch,
   TrainingResult,
   DNACompareResult,
@@ -135,10 +135,10 @@ export function compareDNA(dnaA: string, dnaB: string): DNACompareResult {
 }
 
 /**
- * Get the default TargetPropConfig.
+ * Get the default TweenConfig (neural target propagation settings).
  */
-export function defaultTargetPropConfig(): object {
-  return JSON.parse(getDefaultTargetPropConfig());
+export function defaultTweenConfig(): object {
+  return JSON.parse(getDefaultTweenConfig());
 }
 
 /**
@@ -257,7 +257,7 @@ export default {
   saveNetwork,
   setupWebGPU,
   compareDNA,
-  defaultTargetPropConfig,
+  defaultTweenConfig,
   getInternalParity,
   trainNetwork,
   getSpliceConfig,
@@ -274,4 +274,4 @@ export default {
 };
 
 // Suppress unused import warnings for re-exported types
-export type { Network, NEATPopulation, SystolicState, TargetPropState, TrainingBatch, TrainingResult, DNACompareResult };
+export type { Network, NEATPopulation, StepState, TweenState, TrainingBatch, TrainingResult, DNACompareResult };

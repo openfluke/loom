@@ -2,7 +2,7 @@
  * welvet — Type Definitions for the M-POLY-VTD AI Engine
  *
  * Wraps the Loom v0.75.0 WASM module which supports 21 numerical types,
- * systolic grid propagation, target propagation, and WebGPU acceleration.
+ * step mesh propagation, target propagation, and WebGPU acceleration.
  */
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -154,10 +154,10 @@ export interface TrainingResult {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Systolic State (stepping API)
+// StepState (mesh stepping API)
 // ──────────────────────────────────────────────────────────────────────────────
 
-export interface SystolicState {
+export interface StepState {
   /**
    * Inject input into the first layer of the grid.
    * @param data Float32Array or number[] of input values
@@ -165,7 +165,7 @@ export interface SystolicState {
   setInput(data: Float32Array | number[]): void;
 
   /**
-   * Advance the systolic grid by one clock cycle.
+   * Advance the step mesh by one clock cycle.
    * @param captureHistory Whether to store history for backpropagation
    * @returns Duration of the step in milliseconds
    */
@@ -189,9 +189,9 @@ export interface SystolicState {
    * @param target Global target tensor
    * @param lr Learning rate
    */
-  applyTargetProp(target: Float32Array | number[], lr: number): void;
+  applyTween(target: Float32Array | number[], lr: number): void;
 
-  /** Total number of systolic steps executed. */
+  /** Total number of mesh clock steps executed. */
   stepCount(): number;
 
   /** Release resources (no-op in WASM, included for API parity). */
@@ -199,10 +199,10 @@ export interface SystolicState {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Target Propagation State
+// Tween (neural target propagation)
 // ──────────────────────────────────────────────────────────────────────────────
 
-export interface TargetPropState {
+export interface TweenState {
   /**
    * Forward pass through all layers, storing local targets.
    * @param input Input data
@@ -364,15 +364,15 @@ export interface Network {
   train(batchesJSON: string, epochs: number, lr: number): string;
 
   /**
-   * Create a SystolicState for the stepping API.
+   * Create a StepState for the mesh stepping API.
    */
-  createSystolicState(): SystolicState;
+  createStepState(): StepState;
 
   /**
-   * Create a TargetPropState for gradient-free learning.
-   * @param useChainRule If true, uses chain-rule backprop instead of gap-based TP
+   * Create a TweenState for gradient-free learning (target propagation).
+   * @param useChainRule If true, uses chain-rule backprop instead of gap-based tween
    */
-  createTargetPropState(useChainRule?: boolean): TargetPropState;
+  createTweenState(useChainRule?: boolean): TweenState;
 
   /**
    * Genetic crossover with another network.
@@ -449,8 +449,8 @@ declare global {
   /** Compare two DNA JSON strings for architectural similarity. */
   function compareLoomDNA(dnaA: string, dnaB: string): string;
 
-  /** Get the default TargetPropConfig. */
-  function getDefaultTargetPropConfig(): string;
+  /** Get the default TweenConfig JSON. */
+  function getDefaultTweenConfig(): string;
 
   /** Get the default SpliceConfig JSON string. */
   function defaultSpliceConfig(): string;

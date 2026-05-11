@@ -16,7 +16,7 @@ import (
 func LoomDenseForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -62,7 +62,7 @@ func LoomDenseForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.lo
 func LoomRMSNormForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -105,7 +105,7 @@ func LoomRMSNormForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.
 func LoomLayerNormForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -148,7 +148,7 @@ func LoomLayerNormForward(networkHandle C.longlong, layerIdx C.int, inputHandle 
 func LoomMHAForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -192,7 +192,7 @@ func LoomSoftmaxForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
 	
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -244,7 +244,7 @@ func LoomSoftmaxForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.
 func LoomSwiGLUForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -287,7 +287,7 @@ func LoomSwiGLUForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.l
 func LoomEmbeddingForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -330,9 +330,9 @@ func LoomEmbeddingForward(networkHandle C.longlong, layerIdx C.int, inputHandle 
 func LoomResidualForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong, skipHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	s, ok := getSystolicContainer(int64(skipHandle))
+	s, ok := getStepContainer(int64(skipHandle))
 	if !ok { return errJSON("invalid skip handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -375,7 +375,7 @@ func LoomResidualForward(networkHandle C.longlong, layerIdx C.int, inputHandle C
 func LoomKMeansForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -417,7 +417,7 @@ func LoomKMeansForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.l
 func LoomRNNForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -460,7 +460,7 @@ func LoomRNNForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.long
 func LoomLSTMForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -503,7 +503,7 @@ func LoomLSTMForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.lon
 func LoomCNN1Forward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -546,7 +546,7 @@ func LoomCNN1Forward(networkHandle C.longlong, layerIdx C.int, inputHandle C.lon
 func LoomCNN2Forward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -589,7 +589,7 @@ func LoomCNN2Forward(networkHandle C.longlong, layerIdx C.int, inputHandle C.lon
 func LoomCNN3Forward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -632,7 +632,7 @@ func LoomCNN3Forward(networkHandle C.longlong, layerIdx C.int, inputHandle C.lon
 func LoomConvTransposed1DForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -675,7 +675,7 @@ func LoomConvTransposed1DForward(networkHandle C.longlong, layerIdx C.int, input
 func LoomConvTransposed2DForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -718,7 +718,7 @@ func LoomConvTransposed2DForward(networkHandle C.longlong, layerIdx C.int, input
 func LoomConvTransposed3DForward(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -761,7 +761,7 @@ func LoomConvTransposed3DForward(networkHandle C.longlong, layerIdx C.int, input
 func LoomDenseForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -789,7 +789,7 @@ func LoomDenseForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle
 func LoomCNN1ForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -817,7 +817,7 @@ func LoomCNN1ForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle 
 func LoomCNN2ForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -845,7 +845,7 @@ func LoomCNN2ForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle 
 func LoomCNN3ForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -873,7 +873,7 @@ func LoomCNN3ForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle 
 func LoomRNNForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -901,7 +901,7 @@ func LoomRNNForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C
 func LoomLSTMForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -929,7 +929,7 @@ func LoomLSTMForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle 
 func LoomMHAForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -957,7 +957,7 @@ func LoomMHAForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C
 func LoomSwiGLUForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -985,7 +985,7 @@ func LoomSwiGLUForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandl
 func LoomEmbeddingForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1013,9 +1013,9 @@ func LoomEmbeddingForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHa
 func LoomResidualForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong, skipHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(inputHandle))
+	c, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	s, ok := getSystolicContainer(int64(skipHandle))
+	s, ok := getStepContainer(int64(skipHandle))
 	if !ok { return errJSON("invalid skip handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1043,11 +1043,11 @@ func LoomResidualForwardTiled(networkHandle C.longlong, layerIdx C.int, inputHan
 func LoomCNN1BackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	go_cont, ok := getSystolicContainer(int64(gradOutputHandle))
+	go_cont, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	pa, ok := getSystolicContainer(int64(preActHandle))
+	pa, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1075,11 +1075,11 @@ func LoomCNN1BackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputH
 func LoomCNN2BackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	go_cont, ok := getSystolicContainer(int64(gradOutputHandle))
+	go_cont, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	pa, ok := getSystolicContainer(int64(preActHandle))
+	pa, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1107,11 +1107,11 @@ func LoomCNN2BackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputH
 func LoomCNN3BackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	go_cont, ok := getSystolicContainer(int64(gradOutputHandle))
+	go_cont, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	pa, ok := getSystolicContainer(int64(preActHandle))
+	pa, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1139,11 +1139,11 @@ func LoomCNN3BackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputH
 func LoomRNNBackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	go_cont, ok := getSystolicContainer(int64(gradOutputHandle))
+	go_cont, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	pa, ok := getSystolicContainer(int64(preActHandle))
+	pa, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1171,11 +1171,11 @@ func LoomRNNBackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputHa
 func LoomLSTMBackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	go_cont, ok := getSystolicContainer(int64(gradOutputHandle))
+	go_cont, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	pa, ok := getSystolicContainer(int64(preActHandle))
+	pa, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1203,11 +1203,11 @@ func LoomLSTMBackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputH
 func LoomParallelBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	go_cont, ok := getSystolicContainer(int64(gradOutputHandle))
+	go_cont, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	pa, ok := getSystolicContainer(int64(preActHandle))
+	pa, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1235,11 +1235,11 @@ func LoomParallelBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHa
 func LoomSwiGLUBackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	go_cont, ok := getSystolicContainer(int64(gradOutputHandle))
+	go_cont, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	pa, ok := getSystolicContainer(int64(preActHandle))
+	pa, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1267,11 +1267,11 @@ func LoomSwiGLUBackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutpu
 func LoomEmbeddingBackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	go_cont, ok := getSystolicContainer(int64(gradOutputHandle))
+	go_cont, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	pa, ok := getSystolicContainer(int64(preActHandle))
+	pa, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1299,11 +1299,11 @@ func LoomEmbeddingBackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOu
 func LoomResidualBackwardTiled(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	go_cont, ok := getSystolicContainer(int64(gradOutputHandle))
+	go_cont, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	pa, ok := getSystolicContainer(int64(preActHandle))
+	pa, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) { return errJSON("layer index out of range") }
 	l := &n.Layers[int(layerIdx)]
@@ -1338,12 +1338,12 @@ func LoomInitLayerNormCell(networkHandle C.longlong, z C.int, y C.int, x C.int, 
 func LoomDispatchLayer(networkHandle C.longlong, layerIdx C.int, inputHandle C.longlong, skipHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
 	
 	var skip *poly.Tensor[float32]
 	if skipHandle != 0 {
-		if s, ok := getSystolicContainer(int64(skipHandle)); ok {
+		if s, ok := getStepContainer(int64(skipHandle)); ok {
 			skip = s.State.(*poly.Tensor[float32])
 		}
 	}
@@ -1363,16 +1363,16 @@ func LoomDispatchLayer(networkHandle C.longlong, layerIdx C.int, inputHandle C.l
 func LoomDispatchLayerBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, skipHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	go_cont, ok := getSystolicContainer(int64(gradOutputHandle))
+	go_cont, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	pa, ok := getSystolicContainer(int64(preActHandle))
+	pa, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	var skip *poly.Tensor[float32]
 	if skipHandle != 0 {
-		if s, ok := getSystolicContainer(int64(skipHandle)); ok {
+		if s, ok := getStepContainer(int64(skipHandle)); ok {
 			skip = s.State.(*poly.Tensor[float32])
 		}
 	}
@@ -1402,7 +1402,7 @@ func LoomNewVolumetricNetwork(depth C.int, rows C.int, cols C.int, layersPerCell
 
 //export LoomComputeLayerStats
 func LoomComputeLayerStats(tensorHandle C.longlong) *C.char {
-	c, ok := getSystolicContainer(int64(tensorHandle))
+	c, ok := getStepContainer(int64(tensorHandle))
 	if !ok { return errJSON("invalid tensor handle") }
 	
 	var stats poly.LayerStats

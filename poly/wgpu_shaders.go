@@ -34,7 +34,9 @@ struct DenseScaleParams {
     activation: u32,
     scale: f32,
     hasBias: u32,
-    p1: u32, p2: u32, p3: u32, p4: u32, p5: u32, p6: u32,
+    totalOutStride: u32,
+    outputRowBase: u32,
+    p3: u32, p4: u32, p5: u32, p6: u32,
 };
 
 @group(0) @binding(0) var<uniform>             params:  DenseScaleParams;
@@ -51,6 +53,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(workgroup_
     let b = wg_id.y;
     if (o >= params.outputSize || b >= params.batchSize) { return; }
 
+    let outStride = select(params.outputSize, params.totalOutStride, params.totalOutStride != 0u);
+
     var sum: f32 = 0.0;
     let base_in = b * params.inputSize;
     let base_w = o * params.inputSize;
@@ -64,7 +68,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(workgroup_
         res += bias[o];
     }
     
-    output[b * params.outputSize + o] = activate(res, params.activation);
+    output[b * outStride + params.outputRowBase + o] = activate(res, params.activation);
 }
 `
 
@@ -187,6 +191,83 @@ fn main(
 `, tileSize)
 }
 
+// ShaderTiledDenseI8 generates a tiled dense shader that dequantizes 8-bit weights on the fly.
+// 4 weights per u32 word.
+func ShaderTiledDenseI8(tileSize int) string {
+	return fmt.Sprintf(`
+struct Params {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    tileSize: u32,
+    scale: f32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> weights: array<u32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>
+) {
+    let o = global_id.x;
+    let b = wg_id.y;
+
+    if (o >= params.outputSize || b >= params.batchSize) { return; }
+
+    var sum: f32 = 0.0;
+    
+    // We process 4 elements at a time (one u32 word)
+    let limit = params.inputSize / 4u;
+    let rem = params.inputSize %% 4u;
+    
+    let base_in = b * params.inputSize;
+    let base_w = o * params.inputSize;
+
+    var i: u32 = 0u;
+    for (var k: u32 = 0u; k < limit; k++) {
+        let wordIdx = (base_w + i) / 4u;
+        let packed = weights[wordIdx];
+        
+        let in0 = input[base_in + i];
+        let in1 = input[base_in + i + 1u];
+        let in2 = input[base_in + i + 2u];
+        let in3 = input[base_in + i + 3u];
+
+        // Byte 0
+        var q0 = i32(packed & 0xFFu); if (q0 > 127) { q0 -= 256; }
+        // Byte 1
+        var q1 = i32((packed >> 8u) & 0xFFu); if (q1 > 127) { q1 -= 256; }
+        // Byte 2
+        var q2 = i32((packed >> 16u) & 0xFFu); if (q2 > 127) { q2 -= 256; }
+        // Byte 3
+        var q3 = i32((packed >> 24u) & 0xFFu); if (q3 > 127) { q3 -= 256; }
+
+        sum += in0 * f32(q0) + in1 * f32(q1) + in2 * f32(q2) + in3 * f32(q3);
+        i += 4u;
+    }
+
+    for (var k: u32 = 0u; k < rem; k++) {
+        let globalIdx = base_w + i + k;
+        let wordIdx = globalIdx / 4u;
+        let byteIdx = globalIdx %% 4u;
+        let packed = weights[wordIdx];
+        
+        var q = i32((packed >> (byteIdx * 8u)) & 0xFFu);
+        if (q > 127) { q -= 256; }
+        
+        sum += input[base_in + i + k] * f32(q);
+    }
+
+    output[b * params.outputSize + o] = sum * params.scale;
+}
+`, tileSize)
+}
+
 func ShaderTiledDenseN(tileSize int) string {
 	return ShaderTiledDense(tileSize)
 }
@@ -200,7 +281,9 @@ struct DenseScaleParams {
     activation: u32,
     scale: f32,
     hasBias: u32,
-    p1: u32, p2: u32, p3: u32, p4: u32, p5: u32, p6: u32,
+    totalOutStride: u32,
+    outputRowBase: u32,
+    p3: u32, p4: u32, p5: u32, p6: u32,
 };
 
 @group(0) @binding(0) var<uniform>             params:  DenseScaleParams;
@@ -213,7 +296,7 @@ struct DenseScaleParams {
 // Since inputSize can be large, we cache it in chunks of tileSize.
 var<workgroup> iCache: array<f32, %d>;
 
-` + wgslActivate + `
+`+wgslActivate+`
 
 @compute @workgroup_size(%d, 1, 1)
 fn main(
@@ -227,6 +310,8 @@ fn main(
     let tileSize: u32 = %du;
 
     if (o >= params.outputSize || b >= params.batchSize) { return; }
+
+    let outStride = select(params.outputSize, params.totalOutStride, params.totalOutStride != 0u);
 
     var sum: f32 = 0.0;
     let base_in = b * params.inputSize;
@@ -256,7 +341,7 @@ fn main(
         res += bias[o];
     }
     
-    output[b * params.outputSize + o] = activate(res, params.activation);
+    output[b * outStride + params.outputRowBase + o] = activate(res, params.activation);
 }
 `, tileSize, tileSize, tileSize)
 }
@@ -379,6 +464,99 @@ fn main(
 
     gateSum += gateBiases[o];
     upSum   += upBiases[o];
+
+    output[b * params.outputSize + o] = silu(gateSum) * upSum;
+}
+`, tileSize)
+}
+
+// ShaderTiledSwiGLUI8 generates a tiled SwiGLU shader with INT8 weights.
+func ShaderTiledSwiGLUI8(tileSize int) string {
+	return fmt.Sprintf(`
+struct Params {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    tileSize: u32,
+    gScale: f32,
+    uScale: f32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> gateWeights: array<u32>;
+@group(0) @binding(3) var<storage, read> upWeights: array<u32>;
+@group(0) @binding(4) var<storage, read> gateBiases: array<f32>;
+@group(0) @binding(5) var<storage, read> upBiases: array<f32>;
+@group(0) @binding(6) var<storage, read_write> output: array<f32>;
+
+fn silu(x: f32) -> f32 {
+    return x * (1.0 / (1.0 + exp(-x)));
+}
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>
+) {
+    let o = global_id.x;
+    let b = wg_id.y;
+
+    if (o >= params.outputSize || b >= params.batchSize) { return; }
+
+    var gateSum: f32 = 0.0;
+    var upSum: f32 = 0.0;
+    
+    let limit = params.inputSize / 4u;
+    let rem = params.inputSize %% 4u;
+    
+    let base_in = b * params.inputSize;
+    let base_w = o * params.inputSize;
+
+    var i: u32 = 0u;
+    for (var k: u32 = 0u; k < limit; k++) {
+        let wordIdx = (base_w + i) / 4u;
+        let gPacked = gateWeights[wordIdx];
+        let uPacked = upWeights[wordIdx];
+        
+        let in0 = input[base_in + i];
+        let in1 = input[base_in + i + 1u];
+        let in2 = input[base_in + i + 2u];
+        let in3 = input[base_in + i + 3u];
+
+        // Unpack Gate
+        var gq0 = i32(gPacked & 0xFFu); if (gq0 > 127) { gq0 -= 256; }
+        var gq1 = i32((gPacked >> 8u) & 0xFFu); if (gq1 > 127) { gq1 -= 256; }
+        var gq2 = i32((gPacked >> 16u) & 0xFFu); if (gq2 > 127) { gq2 -= 256; }
+        var gq3 = i32((gPacked >> 24u) & 0xFFu); if (gq3 > 127) { gq3 -= 256; }
+        gateSum += in0 * f32(gq0) + in1 * f32(gq1) + in2 * f32(gq2) + in3 * f32(gq3);
+
+        // Unpack Up
+        var uq0 = i32(uPacked & 0xFFu); if (uq0 > 127) { uq0 -= 256; }
+        var uq1 = i32((uPacked >> 8u) & 0xFFu); if (uq1 > 127) { uq1 -= 256; }
+        var uq2 = i32((uPacked >> 16u) & 0xFFu); if (uq2 > 127) { uq2 -= 256; }
+        var uq3 = i32((uPacked >> 24u) & 0xFFu); if (uq3 > 127) { uq3 -= 256; }
+        upSum += in0 * f32(uq0) + in1 * f32(uq1) + in2 * f32(uq2) + in3 * f32(uq3);
+
+        i += 4u;
+    }
+
+    for (var k: u32 = 0u; k < rem; k++) {
+        let globalIdx = base_w + i + k;
+        let wordIdx = globalIdx / 4u;
+        let byteIdx = globalIdx %% 4u;
+        
+        var gQ = i32((gateWeights[wordIdx] >> (byteIdx * 8u)) & 0xFFu); if (gQ > 127) { gQ -= 256; }
+        var uQ = i32((upWeights[wordIdx] >> (byteIdx * 8u)) & 0xFFu); if (uQ > 127) { uQ -= 256; }
+        
+        let val = input[base_in + i + k];
+        gateSum += val * f32(gQ);
+        upSum   += val * f32(uQ);
+    }
+
+    gateSum = gateSum * params.gScale + gateBiases[o];
+    upSum   = upSum * params.uScale + upBiases[o];
 
     output[b * params.outputSize + o] = silu(gateSum) * upSum;
 }
@@ -537,6 +715,13 @@ fn main(
 func ShaderTiledMHAN(tileSize, headDim int) string {
 	// tile_k and tile_v each hold tileSize rows of headDim floats
 	kvArraySize := tileSize * headDim
+	wgSize := 64
+	if headDim > 64 {
+		wgSize = 128
+	}
+	if headDim > 128 {
+		wgSize = 256
+	}
 	return fmt.Sprintf(`
 struct Params {
     numHeads: u32,
@@ -558,7 +743,7 @@ var<workgroup> tile_q: array<f32, %d>;   // headDim
 var<workgroup> tile_k: array<f32, %d>;   // tileSize * headDim
 var<workgroup> tile_v: array<f32, %d>;   // tileSize * headDim
 
-@compute @workgroup_size(64, 1, 1)
+@compute @workgroup_size(%d, 1, 1)
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
     @builtin(local_invocation_id) local_id: vec3<u32>,
@@ -577,8 +762,8 @@ fn main(
 
     let scale = 1.0 / sqrt(f32(headDim));
 
-    if (tid < headDim) {
-        tile_q[tid] = q[(s * params.numHeads + h) * headDim + tid];
+    for (var d: u32 = tid; d < headDim; d += %du) {
+        tile_q[d] = q[(s * params.numHeads + h) * headDim + d];
     }
     workgroupBarrier();
 
@@ -589,7 +774,7 @@ fn main(
     for (var kTile: u32 = 0u; kTile < totalKLen; kTile += params.tileSize) {
         let currentKSize = min(params.tileSize, totalKLen - kTile);
 
-        for (var i: u32 = tid; i < currentKSize * headDim; i += 64u) {
+        for (var i: u32 = tid; i < currentKSize * headDim; i += %du) {
             let row = i / headDim;
             let col = i %% headDim;
             let kvIdx = (kvH * params.maxSeqLen + (kTile + row)) * params.headDim + col;
@@ -631,7 +816,7 @@ fn main(
         output[(s * params.numHeads + h) * headDim + tid] = local_v_acc / denom;
     }
 }
-`, headDim, kvArraySize, kvArraySize)
+`, headDim, kvArraySize, kvArraySize, wgSize, wgSize, wgSize)
 }
 
 // Legacy alias constants (kept for non-tiled paths if used elsewhere)
@@ -802,6 +987,44 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     } else {
         output[tid] = weights[vocabIdx * params.hiddenSize + dimIdx];
     }
+}
+`
+
+// ShaderEmbeddingShard loads embeddings when the weight matrix is split across bindings
+// (WebGPU maxStorageBufferBindingSize). Each dispatch binds rows [rowOffset, rowOffset + numRows).
+const ShaderEmbeddingShard = `
+struct Params {
+    vocabSize: u32,
+    hiddenSize: u32,
+    numTokens: u32,
+    _pad: u32,
+    rowOffset: u32,
+    numRows: u32,
+    _pad2: u32,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> indices: array<u32>;
+@group(0) @binding(2) var<storage, read> weights: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let tid = global_id.x;
+    if (tid >= params.numTokens * params.hiddenSize) { return; }
+
+    let tokenIdx = tid / params.hiddenSize;
+    let dimIdx = tid % params.hiddenSize;
+    let vocabIdx = indices[tokenIdx];
+
+    if (vocabIdx >= params.vocabSize) {
+        return;
+    }
+    if (vocabIdx < params.rowOffset || vocabIdx >= params.rowOffset + params.numRows) {
+        return;
+    }
+
+    let lr = vocabIdx - params.rowOffset;
+    output[tid] = weights[lr * params.hiddenSize + dimIdx];
 }
 `
 

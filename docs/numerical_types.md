@@ -91,7 +91,7 @@ type Numeric interface {
 This constraint makes `Tensor[T]`, `DispatchLayer[T]`, `ForwardPolymorphic[T]`, and all other generic functions work across any of Go's numeric primitives. The constraint is deliberately limited to types the compiler can generate native arithmetic for—no reflection, no `interface{}` boxing at the hot path.
 
 > [!NOTE]
-> FP4, FP8, BFloat16, and other non-native types are **simulated** on CPU. The layer holds them as `float32` or `int8` with a scale factor, and `SimulatePrecision` quantizes each multiply. On GPU they become native packed payloads in WGSL shaders.
+> FP4, FP8, BFloat16, and other non-native types are **simulated** via PTQ. Weights are stored as `float32` masters and quantized to the target dtype at GPU upload time via `MorphToFloat32ForGPU` (quantize → dequantize round-trip). On GPU, Dense/SwiGLU/MHA use native packed payloads in WGSL shaders; other layer types receive the pre-simulated float32 buffer.
 
 ---
 
@@ -213,25 +213,27 @@ This ensures the FP32 master is always available for gradient-based fine-tuning,
 
 ---
 
-## SimulatePrecision
+## MorphToFloat32ForGPU
 
-This is the universal quantization simulation function used by all CPU layers at the weight-multiply step:
+This is the PTQ simulation path used when uploading weights to the GPU for layers without a dedicated packed shader (CNN1-3, RNN, LSTM, Embedding):
 
 ```go
-func SimulatePrecision(wVal float32, dtype DType, scale float32) float32
+func (ws *WeightStore) MorphToFloat32ForGPU(dtype DType) []float32
 ```
 
-| DType | Behavior |
-|:------|:---------|
-| Float64, Int64, Uint64, Int32, Uint32 | Identity (no quantization) |
-| BFloat16 | Bit-mask to upper 16 bits |
-| FP8, Int8, Uint8, Int16, Uint16 | `int8(wVal/scale) * scale` |
-| Int4, Uint4, FP4 | `int(wVal/scale) * scale` |
-| Int2, Uint2 | 4-level: `int(wVal*2/scale) * scale/2` |
-| Ternary | Threshold: `+scale`, `0`, or `-scale` |
-| Binary | Sign: `+scale` if positive, else `-scale` |
+It calls `ws.Morph(dtype)` to produce the quantized version, then dequantizes back to float32 by multiplying by `ws.Scale`. The GPU shader sees float32 weights that already reflect quantization rounding loss — no new shader needed.
 
-The `scale` parameter comes from `WeightStore.Scale`, computed from the max absolute value of the master weights during morphing.
+| DType | Round-trip behaviour |
+|:------|:---------------------|
+| Float32, Float64 | Master returned as-is (no loss) |
+| BFloat16 | Upper 16 bits of mantissa preserved; lower 16 zeroed |
+| FP8, Int8, Uint8 | `round(w/scale) * scale` |
+| Int4, Uint4, FP4 | `trunc(w/scale) * scale`, range ±7 |
+| Int2, Uint2 | 4-level round-trip |
+| Ternary | Threshold snap to `{-scale, 0, +scale}` |
+| Binary | Sign only: `±scale` |
+
+The `scale` comes from `WeightStore.Scale`, set during `Morph` from the max absolute value of the master weights.
 
 ---
 
@@ -257,7 +259,7 @@ On the GPU, the WGSL shader receives the packed uint32 array plus the float32 sc
 
 ## CastWeights
 
-`CastWeights[T Numeric](weights any) []T` is the universal extraction helper. It type-switches on all 10 concrete slice types and uses `ConvertSlice[In, Out]` to re-cast the values into the requested type `T`. When `DispatchLayer` cannot find a dedicated fast-path for the layer's DType, it falls through to `CastWeights` followed by `SimulatePrecision`.
+`CastWeights[T Numeric](weights any) []T` is the universal extraction helper. It type-switches on all 10 concrete slice types and uses `ConvertSlice[In, Out]` to re-cast the values into the requested type `T`. When `DispatchLayer` cannot find a dedicated fast-path for the layer's DType, it falls through to `CastWeights` on the pre-quantized `Versions` data.
 
 ---
 

@@ -767,19 +767,19 @@
       "type": "Func"
     },
     {
-      "name": "TargetPropForward",
+      "name": "TweenForward",
       "type": "Func"
     },
     {
-      "name": "TargetPropBackward",
+      "name": "TweenBackward",
       "type": "Func"
     },
     {
-      "name": "TargetPropBackwardChainRule",
+      "name": "TweenBackwardChainRule",
       "type": "Func"
     },
     {
-      "name": "TargetPropBackwardTargetProp",
+      "name": "TweenBackwardLayerwise",
       "type": "Func"
     },
     {
@@ -1027,23 +1027,23 @@
       "type": "Func"
     },
     {
-      "name": "SystolicState",
+      "name": "StepState",
       "type": "Struct"
     },
     {
-      "name": "NewSystolicState",
+      "name": "NewStepState",
       "type": "Func"
     },
     {
-      "name": "SystolicForward",
+      "name": "StepForward",
       "type": "Func"
     },
     {
-      "name": "SystolicBackward",
+      "name": "StepBackward",
       "type": "Func"
     },
     {
-      "name": "SystolicApplyTargetProp",
+      "name": "StepApplyTween",
       "type": "Func"
     },
     {
@@ -1303,39 +1303,39 @@
   ],
   "LEARNING/DNA": [
     {
-      "name": "TargetPropConfig",
+      "name": "TweenConfig",
       "type": "Struct"
     },
     {
-      "name": "DefaultTargetPropConfig",
+      "name": "DefaultTweenConfig",
       "type": "Func"
     },
     {
-      "name": "TargetPropState",
+      "name": "TweenState",
       "type": "Struct"
     },
     {
-      "name": "NewTargetPropState",
+      "name": "NewTweenState",
       "type": "Func"
     },
     {
-      "name": "TargetPropForward",
+      "name": "TweenForward",
       "type": "Func"
     },
     {
-      "name": "TargetPropBackward",
+      "name": "TweenBackward",
       "type": "Func"
     },
     {
-      "name": "TargetPropBackwardChainRule",
+      "name": "TweenBackwardChainRule",
       "type": "Func"
     },
     {
-      "name": "TargetPropBackwardTargetProp",
+      "name": "TweenBackwardLayerwise",
       "type": "Func"
     },
     {
-      "name": "ApplyTargetPropGaps",
+      "name": "ApplyTweenGaps",
       "type": "Func"
     },
     {
@@ -1367,7 +1367,7 @@
       "type": "Func"
     },
     {
-      "name": "SystolicApplyTargetProp",
+      "name": "StepApplyTween",
       "type": "Func"
     },
     {

@@ -30,14 +30,14 @@ func LoomApplyGradients(networkHandle C.longlong, layerIdx C.int, gradWeightsJSO
 		return
 	}
 	
-	l.WeightStore.ApplyGradients(&grad, float32(learningRate))
+	l.WeightStore.ApplyGradients(&grad, float32(learningRate), 0.0)
 }
 
-//export LoomSystolicBackward
-func LoomSystolicBackward(networkHandle C.longlong, stateHandle C.longlong, gradOutputData *C.float, gradOutputLen C.int) *C.char {
+//export LoomStepBackward
+func LoomStepBackward(networkHandle C.longlong, stateHandle C.longlong, gradOutputData *C.float, gradOutputLen C.int) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	c, ok := getSystolicContainer(int64(stateHandle))
+	c, ok := getStepContainer(int64(stateHandle))
 	if !ok { return errJSON("invalid state handle") }
 
 	ptr := unsafe.Pointer(gradOutputData)
@@ -82,92 +82,92 @@ func LoomSystolicBackward(networkHandle C.longlong, stateHandle C.longlong, grad
 
 	switch c.DType {
 	case poly.DTypeFloat64:
-		s := c.State.(*poly.SystolicState[float64])
+		s := c.State.(*poly.StepState[float64])
 		f64 := make([]float64, gradOutputLen)
 		for i, v := range slice { f64[i] = float64(v) }
 		gradOut := poly.NewTensorFromSlice(f64, int(gradOutputLen))
-		gIn, _, err := poly.SystolicBackward(n, s, gradOut)
+		gIn, _, err := poly.StepBackward(n, s, gradOut)
 		if err != nil { return errJSON(err.Error()) }
 		return marshalGrad(gIn, c.DType)
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		s := c.State.(*poly.SystolicState[float32])
+		s := c.State.(*poly.StepState[float32])
 		gradOut := poly.NewTensorFromSlice(slice, int(gradOutputLen))
-		gIn, _, err := poly.SystolicBackward(n, s, gradOut)
+		gIn, _, err := poly.StepBackward(n, s, gradOut)
 		if err != nil { return errJSON(err.Error()) }
 		return marshalGrad(gIn, c.DType)
 	case poly.DTypeInt64:
-		s := c.State.(*poly.SystolicState[int64])
+		s := c.State.(*poly.StepState[int64])
 		ts := make([]int64, gradOutputLen)
 		for i, v := range slice { ts[i] = int64(v) }
 		gradOut := poly.NewTensorFromSlice(ts, int(gradOutputLen))
-		gIn, _, err := poly.SystolicBackward(n, s, gradOut)
+		gIn, _, err := poly.StepBackward(n, s, gradOut)
 		if err != nil { return errJSON(err.Error()) }
 		return marshalGrad(gIn, poly.DTypeInt64)
 	case poly.DTypeInt32:
-		s := c.State.(*poly.SystolicState[int32])
+		s := c.State.(*poly.StepState[int32])
 		ts := make([]int32, gradOutputLen)
 		for i, v := range slice { ts[i] = int32(v) }
 		gradOut := poly.NewTensorFromSlice(ts, int(gradOutputLen))
-		gIn, _, err := poly.SystolicBackward(n, s, gradOut)
+		gIn, _, err := poly.StepBackward(n, s, gradOut)
 		if err != nil { return errJSON(err.Error()) }
 		return marshalGrad(gIn, poly.DTypeInt32)
 	case poly.DTypeInt16:
-		s := c.State.(*poly.SystolicState[int16])
+		s := c.State.(*poly.StepState[int16])
 		ts := make([]int16, gradOutputLen)
 		for i, v := range slice { ts[i] = int16(v) }
 		gradOut := poly.NewTensorFromSlice(ts, int(gradOutputLen))
-		gIn, _, err := poly.SystolicBackward(n, s, gradOut)
+		gIn, _, err := poly.StepBackward(n, s, gradOut)
 		if err != nil { return errJSON(err.Error()) }
 		return marshalGrad(gIn, poly.DTypeInt16)
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		s := c.State.(*poly.SystolicState[int8])
+		s := c.State.(*poly.StepState[int8])
 		ts := make([]int8, gradOutputLen)
 		for i, v := range slice { ts[i] = int8(v) }
 		gradOut := poly.NewTensorFromSlice(ts, int(gradOutputLen))
-		gIn, _, err := poly.SystolicBackward(n, s, gradOut)
+		gIn, _, err := poly.StepBackward(n, s, gradOut)
 		if err != nil { return errJSON(err.Error()) }
 		return marshalGrad(gIn, poly.DTypeInt8)
 	case poly.DTypeUint64:
-		s := c.State.(*poly.SystolicState[uint64])
+		s := c.State.(*poly.StepState[uint64])
 		ts := make([]uint64, gradOutputLen)
 		for i, v := range slice { ts[i] = uint64(v) }
 		gradOut := poly.NewTensorFromSlice(ts, int(gradOutputLen))
-		gIn, _, err := poly.SystolicBackward(n, s, gradOut)
+		gIn, _, err := poly.StepBackward(n, s, gradOut)
 		if err != nil { return errJSON(err.Error()) }
 		return marshalGrad(gIn, poly.DTypeUint64)
 	case poly.DTypeUint32:
-		s := c.State.(*poly.SystolicState[uint32])
+		s := c.State.(*poly.StepState[uint32])
 		ts := make([]uint32, gradOutputLen)
 		for i, v := range slice { ts[i] = uint32(v) }
 		gradOut := poly.NewTensorFromSlice(ts, int(gradOutputLen))
-		gIn, _, err := poly.SystolicBackward(n, s, gradOut)
+		gIn, _, err := poly.StepBackward(n, s, gradOut)
 		if err != nil { return errJSON(err.Error()) }
 		return marshalGrad(gIn, poly.DTypeUint32)
 	case poly.DTypeUint16:
-		s := c.State.(*poly.SystolicState[uint16])
+		s := c.State.(*poly.StepState[uint16])
 		ts := make([]uint16, gradOutputLen)
 		for i, v := range slice { ts[i] = uint16(v) }
 		gradOut := poly.NewTensorFromSlice(ts, int(gradOutputLen))
-		gIn, _, err := poly.SystolicBackward(n, s, gradOut)
+		gIn, _, err := poly.StepBackward(n, s, gradOut)
 		if err != nil { return errJSON(err.Error()) }
 		return marshalGrad(gIn, poly.DTypeUint16)
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		s := c.State.(*poly.SystolicState[uint8])
+		s := c.State.(*poly.StepState[uint8])
 		ts := make([]uint8, gradOutputLen)
 		for i, v := range slice { ts[i] = uint8(v) }
 		gradOut := poly.NewTensorFromSlice(ts, int(gradOutputLen))
-		gIn, _, err := poly.SystolicBackward(n, s, gradOut)
+		gIn, _, err := poly.StepBackward(n, s, gradOut)
 		if err != nil { return errJSON(err.Error()) }
 		return marshalGrad(gIn, poly.DTypeUint8)
 	}
 	return errJSON("unsupported backward dtype")
 }
 
-//export LoomApplyTargetProp
-func LoomApplyTargetProp(networkHandle C.longlong, stateHandle C.longlong, targetData *C.float, targetLen C.int, learningRate C.float) {
+//export LoomApplyTween
+func LoomApplyTween(networkHandle C.longlong, stateHandle C.longlong, targetData *C.float, targetLen C.int, learningRate C.float) {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return }
-	c, ok := getSystolicContainer(int64(stateHandle))
+	c, ok := getStepContainer(int64(stateHandle))
 	if !ok { return }
 
 	ptr := unsafe.Pointer(targetData)
@@ -175,58 +175,58 @@ func LoomApplyTargetProp(networkHandle C.longlong, stateHandle C.longlong, targe
 
 	switch c.DType {
 	case poly.DTypeFloat64:
-		s := c.State.(*poly.SystolicState[float64])
+		s := c.State.(*poly.StepState[float64])
 		f := make([]float64, targetLen)
 		for i, v := range slice { f[i] = float64(v) }
-		poly.SystolicApplyTargetProp(n, s, poly.NewTensorFromSlice(f, int(targetLen)), float32(learningRate))
+		poly.StepApplyTween(n, s, poly.NewTensorFromSlice(f, int(targetLen)), float32(learningRate))
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		s := c.State.(*poly.SystolicState[float32])
-		poly.SystolicApplyTargetProp(n, s, poly.NewTensorFromSlice(slice, int(targetLen)), float32(learningRate))
+		s := c.State.(*poly.StepState[float32])
+		poly.StepApplyTween(n, s, poly.NewTensorFromSlice(slice, int(targetLen)), float32(learningRate))
 	case poly.DTypeInt64:
-		s := c.State.(*poly.SystolicState[int64])
+		s := c.State.(*poly.StepState[int64])
 		ts := make([]int64, targetLen)
 		for i, v := range slice { ts[i] = int64(v) }
-		poly.SystolicApplyTargetProp(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
+		poly.StepApplyTween(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
 	case poly.DTypeInt32:
-		s := c.State.(*poly.SystolicState[int32])
+		s := c.State.(*poly.StepState[int32])
 		ts := make([]int32, targetLen)
 		for i, v := range slice { ts[i] = int32(v) }
-		poly.SystolicApplyTargetProp(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
+		poly.StepApplyTween(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
 	case poly.DTypeInt16:
-		s := c.State.(*poly.SystolicState[int16])
+		s := c.State.(*poly.StepState[int16])
 		ts := make([]int16, targetLen)
 		for i, v := range slice { ts[i] = int16(v) }
-		poly.SystolicApplyTargetProp(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
+		poly.StepApplyTween(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		s := c.State.(*poly.SystolicState[int8])
+		s := c.State.(*poly.StepState[int8])
 		ts := make([]int8, targetLen)
 		for i, v := range slice { ts[i] = int8(v) }
-		poly.SystolicApplyTargetProp(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
+		poly.StepApplyTween(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
 	case poly.DTypeUint64:
-		s := c.State.(*poly.SystolicState[uint64])
+		s := c.State.(*poly.StepState[uint64])
 		ts := make([]uint64, targetLen)
 		for i, v := range slice { ts[i] = uint64(v) }
-		poly.SystolicApplyTargetProp(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
+		poly.StepApplyTween(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
 	case poly.DTypeUint32:
-		s := c.State.(*poly.SystolicState[uint32])
+		s := c.State.(*poly.StepState[uint32])
 		ts := make([]uint32, targetLen)
 		for i, v := range slice { ts[i] = uint32(v) }
-		poly.SystolicApplyTargetProp(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
+		poly.StepApplyTween(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
 	case poly.DTypeUint16:
-		s := c.State.(*poly.SystolicState[uint16])
+		s := c.State.(*poly.StepState[uint16])
 		ts := make([]uint16, targetLen)
 		for i, v := range slice { ts[i] = uint16(v) }
-		poly.SystolicApplyTargetProp(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
+		poly.StepApplyTween(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		s := c.State.(*poly.SystolicState[uint8])
+		s := c.State.(*poly.StepState[uint8])
 		ts := make([]uint8, targetLen)
 		for i, v := range slice { ts[i] = uint8(v) }
-		poly.SystolicApplyTargetProp(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
+		poly.StepApplyTween(n, s, poly.NewTensorFromSlice(ts, int(targetLen)), float32(learningRate))
 	}
 }
 
-//export LoomCreateTargetPropState
-func LoomCreateTargetPropState(networkHandle C.longlong, dtype C.int) C.longlong {
+//export LoomCreateTweenState
+func LoomCreateTweenState(networkHandle C.longlong, dtype C.int) C.longlong {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return -1 }
 	
@@ -235,132 +235,132 @@ func LoomCreateTargetPropState(networkHandle C.longlong, dtype C.int) C.longlong
 
 	switch dt {
 	case poly.DTypeFloat64:
-		state = poly.NewTargetPropState[float64](n, nil)
+		state = poly.NewTweenState[float64](n, nil)
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		state = poly.NewTargetPropState[float32](n, nil)
+		state = poly.NewTweenState[float32](n, nil)
 	case poly.DTypeInt64:
-		state = poly.NewTargetPropState[int64](n, nil)
+		state = poly.NewTweenState[int64](n, nil)
 	case poly.DTypeInt32:
-		state = poly.NewTargetPropState[int32](n, nil)
+		state = poly.NewTweenState[int32](n, nil)
 	case poly.DTypeInt16:
-		state = poly.NewTargetPropState[int16](n, nil)
+		state = poly.NewTweenState[int16](n, nil)
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		state = poly.NewTargetPropState[int8](n, nil)
+		state = poly.NewTweenState[int8](n, nil)
 	case poly.DTypeUint64:
-		state = poly.NewTargetPropState[uint64](n, nil)
+		state = poly.NewTweenState[uint64](n, nil)
 	case poly.DTypeUint32:
-		state = poly.NewTargetPropState[uint32](n, nil)
+		state = poly.NewTweenState[uint32](n, nil)
 	case poly.DTypeUint16:
-		state = poly.NewTargetPropState[uint16](n, nil)
+		state = poly.NewTweenState[uint16](n, nil)
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		state = poly.NewTargetPropState[uint8](n, nil)
+		state = poly.NewTweenState[uint8](n, nil)
 	default:
-		state = poly.NewTargetPropState[float32](n, nil)
+		state = poly.NewTweenState[float32](n, nil)
 		dt = poly.DTypeFloat32
 	}
 	
 	networkMu.Lock()
-	id := targetPropNextID
-	targetPropNextID++
-	targetPropStates[id] = &targetPropContainer{State: state, DType: dt}
+	id := tweenNextID
+	tweenNextID++
+	tweenStates[id] = &tweenContainer{State: state, DType: dt}
 	networkMu.Unlock()
 	
 	return C.longlong(id)
 }
 
-//export LoomTargetPropForward
-func LoomTargetPropForward(networkHandle C.longlong, tpHandle C.longlong, inputData *C.float, inputLen C.int) *C.char {
+//export LoomTweenForward
+func LoomTweenForward(networkHandle C.longlong, tpHandle C.longlong, inputData *C.float, inputLen C.int) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
 	
 	networkMu.RLock()
-	c, ok := targetPropStates[int64(tpHandle)]
+	c, ok := tweenStates[int64(tpHandle)]
 	networkMu.RUnlock()
-	if !ok { return errJSON("invalid targetprop handle") }
+	if !ok { return errJSON("invalid tween handle") }
 	
 	ptr := unsafe.Pointer(inputData)
 	slice := (*[1 << 30]float32)(ptr)[:inputLen:inputLen]
 	
 	switch c.DType {
 	case poly.DTypeFloat64:
-		tp := c.State.(*poly.TargetPropState[float64])
+		tp := c.State.(*poly.TweenState[float64])
 		f := make([]float64, inputLen)
 		for i, v := range slice { f[i] = float64(v) }
-		out := poly.TargetPropForward(n, tp, poly.NewTensorFromSlice(f, int(inputLen)))
+		out := poly.TweenForward(n, tp, poly.NewTensorFromSlice(f, int(inputLen)))
 		res, _ := json.Marshal(out.Data)
 		return C.CString(string(res))
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		tp := c.State.(*poly.TargetPropState[float32])
-		out := poly.TargetPropForward(n, tp, poly.NewTensorFromSlice(slice, int(inputLen)))
+		tp := c.State.(*poly.TweenState[float32])
+		out := poly.TweenForward(n, tp, poly.NewTensorFromSlice(slice, int(inputLen)))
 		res, _ := json.Marshal(out.Data)
 		return C.CString(string(res))
 	case poly.DTypeInt64:
-		tp := c.State.(*poly.TargetPropState[int64])
+		tp := c.State.(*poly.TweenState[int64])
 		ts := make([]int64, inputLen)
 		for i, v := range slice { ts[i] = int64(v) }
-		out := poly.TargetPropForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
+		out := poly.TweenForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
 		res, _ := json.Marshal(out.Data)
 		return C.CString(string(res))
 	case poly.DTypeInt32:
-		tp := c.State.(*poly.TargetPropState[int32])
+		tp := c.State.(*poly.TweenState[int32])
 		ts := make([]int32, inputLen)
 		for i, v := range slice { ts[i] = int32(v) }
-		out := poly.TargetPropForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
+		out := poly.TweenForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
 		res, _ := json.Marshal(out.Data)
 		return C.CString(string(res))
 	case poly.DTypeInt16:
-		tp := c.State.(*poly.TargetPropState[int16])
+		tp := c.State.(*poly.TweenState[int16])
 		ts := make([]int16, inputLen)
 		for i, v := range slice { ts[i] = int16(v) }
-		out := poly.TargetPropForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
+		out := poly.TweenForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
 		res, _ := json.Marshal(out.Data)
 		return C.CString(string(res))
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		tp := c.State.(*poly.TargetPropState[int8])
+		tp := c.State.(*poly.TweenState[int8])
 		ts := make([]int8, inputLen)
 		for i, v := range slice { ts[i] = int8(v) }
-		out := poly.TargetPropForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
+		out := poly.TweenForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
 		res, _ := json.Marshal(out.Data)
 		return C.CString(string(res))
 	case poly.DTypeUint64:
-		tp := c.State.(*poly.TargetPropState[uint64])
+		tp := c.State.(*poly.TweenState[uint64])
 		ts := make([]uint64, inputLen)
 		for i, v := range slice { ts[i] = uint64(v) }
-		out := poly.TargetPropForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
+		out := poly.TweenForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
 		res, _ := json.Marshal(out.Data)
 		return C.CString(string(res))
 	case poly.DTypeUint32:
-		tp := c.State.(*poly.TargetPropState[uint32])
+		tp := c.State.(*poly.TweenState[uint32])
 		ts := make([]uint32, inputLen)
 		for i, v := range slice { ts[i] = uint32(v) }
-		out := poly.TargetPropForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
+		out := poly.TweenForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
 		res, _ := json.Marshal(out.Data)
 		return C.CString(string(res))
 	case poly.DTypeUint16:
-		tp := c.State.(*poly.TargetPropState[uint16])
+		tp := c.State.(*poly.TweenState[uint16])
 		ts := make([]uint16, inputLen)
 		for i, v := range slice { ts[i] = uint16(v) }
-		out := poly.TargetPropForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
+		out := poly.TweenForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
 		res, _ := json.Marshal(out.Data)
 		return C.CString(string(res))
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		tp := c.State.(*poly.TargetPropState[uint8])
+		tp := c.State.(*poly.TweenState[uint8])
 		ts := make([]uint8, inputLen)
 		for i, v := range slice { ts[i] = uint8(v) }
-		out := poly.TargetPropForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
+		out := poly.TweenForward(n, tp, poly.NewTensorFromSlice(ts, int(inputLen)))
 		res, _ := json.Marshal(out.Data)
 		return C.CString(string(res))
 	}
 	return errJSON("unsupported tp forward dtype")
 }
 
-//export LoomTargetPropBackward
-func LoomTargetPropBackward(networkHandle C.longlong, tpHandle C.longlong, targetData *C.float, targetLen C.int) {
+//export LoomTweenBackward
+func LoomTweenBackward(networkHandle C.longlong, tpHandle C.longlong, targetData *C.float, targetLen C.int) {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return }
 	
 	networkMu.RLock()
-	c, ok := targetPropStates[int64(tpHandle)]
+	c, ok := tweenStates[int64(tpHandle)]
 	networkMu.RUnlock()
 	if !ok { return }
 	
@@ -369,102 +369,102 @@ func LoomTargetPropBackward(networkHandle C.longlong, tpHandle C.longlong, targe
 	
 	switch c.DType {
 	case poly.DTypeFloat64:
-		tp := c.State.(*poly.TargetPropState[float64])
+		tp := c.State.(*poly.TweenState[float64])
 		ts := make([]float64, targetLen)
 		for i, v := range slice { ts[i] = float64(v) }
-		poly.TargetPropBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
+		poly.TweenBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		tp := c.State.(*poly.TargetPropState[float32])
-		poly.TargetPropBackward(n, tp, poly.NewTensorFromSlice(slice, int(targetLen)))
+		tp := c.State.(*poly.TweenState[float32])
+		poly.TweenBackward(n, tp, poly.NewTensorFromSlice(slice, int(targetLen)))
 	case poly.DTypeInt64:
-		tp := c.State.(*poly.TargetPropState[int64])
+		tp := c.State.(*poly.TweenState[int64])
 		ts := make([]int64, targetLen)
 		for i, v := range slice { ts[i] = int64(v) }
-		poly.TargetPropBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
+		poly.TweenBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
 	case poly.DTypeInt32:
-		tp := c.State.(*poly.TargetPropState[int32])
+		tp := c.State.(*poly.TweenState[int32])
 		ts := make([]int32, targetLen)
 		for i, v := range slice { ts[i] = int32(v) }
-		poly.TargetPropBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
+		poly.TweenBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
 	case poly.DTypeInt16:
-		tp := c.State.(*poly.TargetPropState[int16])
+		tp := c.State.(*poly.TweenState[int16])
 		ts := make([]int16, targetLen)
 		for i, v := range slice { ts[i] = int16(v) }
-		poly.TargetPropBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
+		poly.TweenBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		tp := c.State.(*poly.TargetPropState[int8])
+		tp := c.State.(*poly.TweenState[int8])
 		ts := make([]int8, targetLen)
 		for i, v := range slice { ts[i] = int8(v) }
-		poly.TargetPropBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
+		poly.TweenBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
 	case poly.DTypeUint64:
-		tp := c.State.(*poly.TargetPropState[uint64])
+		tp := c.State.(*poly.TweenState[uint64])
 		ts := make([]uint64, targetLen)
 		for i, v := range slice { ts[i] = uint64(v) }
-		poly.TargetPropBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
+		poly.TweenBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
 	case poly.DTypeUint32:
-		tp := c.State.(*poly.TargetPropState[uint32])
+		tp := c.State.(*poly.TweenState[uint32])
 		ts := make([]uint32, targetLen)
 		for i, v := range slice { ts[i] = uint32(v) }
-		poly.TargetPropBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
+		poly.TweenBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
 	case poly.DTypeUint16:
-		tp := c.State.(*poly.TargetPropState[uint16])
+		tp := c.State.(*poly.TweenState[uint16])
 		ts := make([]uint16, targetLen)
 		for i, v := range slice { ts[i] = uint16(v) }
-		poly.TargetPropBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
+		poly.TweenBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		tp := c.State.(*poly.TargetPropState[uint8])
+		tp := c.State.(*poly.TweenState[uint8])
 		ts := make([]uint8, targetLen)
 		for i, v := range slice { ts[i] = uint8(v) }
-		poly.TargetPropBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
+		poly.TweenBackward(n, tp, poly.NewTensorFromSlice(ts, int(targetLen)))
 	}
 }
 
-//export LoomDefaultTargetPropConfig
-func LoomDefaultTargetPropConfig() *C.char {
-	config := poly.DefaultTargetPropConfig()
+//export LoomDefaultTweenConfig
+func LoomDefaultTweenConfig() *C.char {
+	config := poly.DefaultTweenConfig()
 	data, _ := json.Marshal(config)
 	return C.CString(string(data))
 }
 
-//export LoomApplyTargetPropGaps
-func LoomApplyTargetPropGaps(networkHandle C.longlong, tpHandle C.longlong, learningRate C.float) {
+//export LoomApplyTweenGaps
+func LoomApplyTweenGaps(networkHandle C.longlong, tpHandle C.longlong, learningRate C.float) {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return }
 	
 	networkMu.RLock()
-	c, ok := targetPropStates[int64(tpHandle)]
+	c, ok := tweenStates[int64(tpHandle)]
 	networkMu.RUnlock()
 	if !ok { return }
 	
 	switch c.DType {
 	case poly.DTypeFloat64:
-		poly.ApplyTargetPropGaps(n, c.State.(*poly.TargetPropState[float64]), float32(learningRate))
+		poly.ApplyTweenGaps(n, c.State.(*poly.TweenState[float64]), float32(learningRate))
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		poly.ApplyTargetPropGaps(n, c.State.(*poly.TargetPropState[float32]), float32(learningRate))
+		poly.ApplyTweenGaps(n, c.State.(*poly.TweenState[float32]), float32(learningRate))
 	case poly.DTypeInt64:
-		poly.ApplyTargetPropGaps(n, c.State.(*poly.TargetPropState[int64]), float32(learningRate))
+		poly.ApplyTweenGaps(n, c.State.(*poly.TweenState[int64]), float32(learningRate))
 	case poly.DTypeInt32:
-		poly.ApplyTargetPropGaps(n, c.State.(*poly.TargetPropState[int32]), float32(learningRate))
+		poly.ApplyTweenGaps(n, c.State.(*poly.TweenState[int32]), float32(learningRate))
 	case poly.DTypeInt16:
-		poly.ApplyTargetPropGaps(n, c.State.(*poly.TargetPropState[int16]), float32(learningRate))
+		poly.ApplyTweenGaps(n, c.State.(*poly.TweenState[int16]), float32(learningRate))
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		poly.ApplyTargetPropGaps(n, c.State.(*poly.TargetPropState[int8]), float32(learningRate))
+		poly.ApplyTweenGaps(n, c.State.(*poly.TweenState[int8]), float32(learningRate))
 	case poly.DTypeUint64:
-		poly.ApplyTargetPropGaps(n, c.State.(*poly.TargetPropState[uint64]), float32(learningRate))
+		poly.ApplyTweenGaps(n, c.State.(*poly.TweenState[uint64]), float32(learningRate))
 	case poly.DTypeUint32:
-		poly.ApplyTargetPropGaps(n, c.State.(*poly.TargetPropState[uint32]), float32(learningRate))
+		poly.ApplyTweenGaps(n, c.State.(*poly.TweenState[uint32]), float32(learningRate))
 	case poly.DTypeUint16:
-		poly.ApplyTargetPropGaps(n, c.State.(*poly.TargetPropState[uint16]), float32(learningRate))
+		poly.ApplyTweenGaps(n, c.State.(*poly.TweenState[uint16]), float32(learningRate))
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		poly.ApplyTargetPropGaps(n, c.State.(*poly.TargetPropState[uint8]), float32(learningRate))
+		poly.ApplyTweenGaps(n, c.State.(*poly.TweenState[uint8]), float32(learningRate))
 	}
 }
 
 //export LoomComputeLossGradient
 func LoomComputeLossGradient(outputHandle C.longlong, targetHandle C.longlong, lossType *C.char) *C.char {
-	cOut, ok := getSystolicContainer(int64(outputHandle))
+	cOut, ok := getStepContainer(int64(outputHandle))
 	if !ok { return errJSON("invalid output handle") }
-	cTar, ok := getSystolicContainer(int64(targetHandle))
+	cTar, ok := getStepContainer(int64(targetHandle))
 	if !ok { return errJSON("invalid target handle") }
 	
 	lt := C.GoString(lossType)
@@ -572,11 +572,11 @@ func LoomDenseBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandl
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
 	
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -619,11 +619,11 @@ func LoomDenseBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandl
 func LoomRMSNormBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -666,11 +666,11 @@ func LoomRMSNormBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHan
 func LoomLayerNormBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -713,11 +713,11 @@ func LoomLayerNormBackward(networkHandle C.longlong, layerIdx C.int, gradOutputH
 func LoomMHABackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -760,11 +760,11 @@ func LoomMHABackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle 
 func LoomSoftmaxBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, postActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPost, ok := getSystolicContainer(int64(postActHandle))
+	cPost, ok := getStepContainer(int64(postActHandle))
 	if !ok { return errJSON("invalid postAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -807,11 +807,11 @@ func LoomSoftmaxBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHan
 func LoomSwiGLUBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -854,11 +854,11 @@ func LoomSwiGLUBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHand
 func LoomEmbeddingBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -901,11 +901,11 @@ func LoomEmbeddingBackward(networkHandle C.longlong, layerIdx C.int, gradOutputH
 func LoomResidualBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -948,11 +948,11 @@ func LoomResidualBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHa
 func LoomKMeansBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -994,11 +994,11 @@ func LoomKMeansBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHand
 func LoomRNNBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -1041,11 +1041,11 @@ func LoomRNNBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle 
 func LoomLSTMBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -1088,11 +1088,11 @@ func LoomLSTMBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle
 func LoomCNN1Backward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -1135,11 +1135,11 @@ func LoomCNN1Backward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle
 func LoomCNN2Backward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -1182,11 +1182,11 @@ func LoomCNN2Backward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle
 func LoomCNN3Backward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -1229,11 +1229,11 @@ func LoomCNN3Backward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle
 func LoomConvTransposed1DBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -1276,11 +1276,11 @@ func LoomConvTransposed1DBackward(networkHandle C.longlong, layerIdx C.int, grad
 func LoomConvTransposed2DBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -1323,11 +1323,11 @@ func LoomConvTransposed2DBackward(networkHandle C.longlong, layerIdx C.int, grad
 func LoomConvTransposed3DBackward(networkHandle C.longlong, layerIdx C.int, gradOutputHandle C.longlong, inputHandle C.longlong, preActHandle C.longlong) *C.char {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return errJSON("invalid network handle") }
-	cGOut, ok := getSystolicContainer(int64(gradOutputHandle))
+	cGOut, ok := getStepContainer(int64(gradOutputHandle))
 	if !ok { return errJSON("invalid gradOutput handle") }
-	cIn, ok := getSystolicContainer(int64(inputHandle))
+	cIn, ok := getStepContainer(int64(inputHandle))
 	if !ok { return errJSON("invalid input handle") }
-	cPre, ok := getSystolicContainer(int64(preActHandle))
+	cPre, ok := getStepContainer(int64(preActHandle))
 	if !ok { return errJSON("invalid preAct handle") }
 
 	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
@@ -1366,69 +1366,69 @@ func LoomConvTransposed3DBackward(networkHandle C.longlong, layerIdx C.int, grad
 	return C.CString(string(data))
 }
 
-//export LoomTargetPropBackwardChainRule
-func LoomTargetPropBackwardChainRule(networkHandle C.longlong, tpHandle C.longlong, targetHandle C.longlong) {
+//export LoomTweenBackwardChainRule
+func LoomTweenBackwardChainRule(networkHandle C.longlong, tpHandle C.longlong, targetHandle C.longlong) {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return }
-	tp, ok := getTargetPropContainer(int64(tpHandle))
+	tp, ok := getTweenContainer(int64(tpHandle))
 	if !ok { return }
-	target, ok := getSystolicContainer(int64(targetHandle))
+	target, ok := getStepContainer(int64(targetHandle))
 	if !ok { return }
 
 	switch tp.DType {
 	case poly.DTypeFloat64:
-		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[float64]), target.State.(*poly.Tensor[float64]))
+		poly.TweenBackwardChainRule(n, tp.State.(*poly.TweenState[float64]), target.State.(*poly.Tensor[float64]))
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[float32]), target.State.(*poly.Tensor[float32]))
+		poly.TweenBackwardChainRule(n, tp.State.(*poly.TweenState[float32]), target.State.(*poly.Tensor[float32]))
 	case poly.DTypeInt64:
-		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[int64]), target.State.(*poly.Tensor[int64]))
+		poly.TweenBackwardChainRule(n, tp.State.(*poly.TweenState[int64]), target.State.(*poly.Tensor[int64]))
 	case poly.DTypeInt32:
-		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[int32]), target.State.(*poly.Tensor[int32]))
+		poly.TweenBackwardChainRule(n, tp.State.(*poly.TweenState[int32]), target.State.(*poly.Tensor[int32]))
 	case poly.DTypeInt16:
-		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[int16]), target.State.(*poly.Tensor[int16]))
+		poly.TweenBackwardChainRule(n, tp.State.(*poly.TweenState[int16]), target.State.(*poly.Tensor[int16]))
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[int8]), target.State.(*poly.Tensor[int8]))
+		poly.TweenBackwardChainRule(n, tp.State.(*poly.TweenState[int8]), target.State.(*poly.Tensor[int8]))
 	case poly.DTypeUint64:
-		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[uint64]), target.State.(*poly.Tensor[uint64]))
+		poly.TweenBackwardChainRule(n, tp.State.(*poly.TweenState[uint64]), target.State.(*poly.Tensor[uint64]))
 	case poly.DTypeUint32:
-		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[uint32]), target.State.(*poly.Tensor[uint32]))
+		poly.TweenBackwardChainRule(n, tp.State.(*poly.TweenState[uint32]), target.State.(*poly.Tensor[uint32]))
 	case poly.DTypeUint16:
-		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[uint16]), target.State.(*poly.Tensor[uint16]))
+		poly.TweenBackwardChainRule(n, tp.State.(*poly.TweenState[uint16]), target.State.(*poly.Tensor[uint16]))
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		poly.TargetPropBackwardChainRule(n, tp.State.(*poly.TargetPropState[uint8]), target.State.(*poly.Tensor[uint8]))
+		poly.TweenBackwardChainRule(n, tp.State.(*poly.TweenState[uint8]), target.State.(*poly.Tensor[uint8]))
 	}
 }
 
-//export LoomTargetPropBackwardTargetProp
-func LoomTargetPropBackwardTargetProp(networkHandle C.longlong, tpHandle C.longlong, targetHandle C.longlong) {
+//export LoomTweenBackwardLayerwise
+func LoomTweenBackwardLayerwise(networkHandle C.longlong, tpHandle C.longlong, targetHandle C.longlong) {
 	n, ok := getNetwork(int64(networkHandle))
 	if !ok { return }
-	tp, ok := getTargetPropContainer(int64(tpHandle))
+	tp, ok := getTweenContainer(int64(tpHandle))
 	if !ok { return }
-	target, ok := getSystolicContainer(int64(targetHandle))
+	target, ok := getStepContainer(int64(targetHandle))
 	if !ok { return }
 
 	switch tp.DType {
 	case poly.DTypeFloat64:
-		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[float64]), target.State.(*poly.Tensor[float64]))
+		poly.TweenBackwardLayerwise(n, tp.State.(*poly.TweenState[float64]), target.State.(*poly.Tensor[float64]))
 	case poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16, poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
-		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[float32]), target.State.(*poly.Tensor[float32]))
+		poly.TweenBackwardLayerwise(n, tp.State.(*poly.TweenState[float32]), target.State.(*poly.Tensor[float32]))
 	case poly.DTypeInt64:
-		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[int64]), target.State.(*poly.Tensor[int64]))
+		poly.TweenBackwardLayerwise(n, tp.State.(*poly.TweenState[int64]), target.State.(*poly.Tensor[int64]))
 	case poly.DTypeInt32:
-		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[int32]), target.State.(*poly.Tensor[int32]))
+		poly.TweenBackwardLayerwise(n, tp.State.(*poly.TweenState[int32]), target.State.(*poly.Tensor[int32]))
 	case poly.DTypeInt16:
-		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[int16]), target.State.(*poly.Tensor[int16]))
+		poly.TweenBackwardLayerwise(n, tp.State.(*poly.TweenState[int16]), target.State.(*poly.Tensor[int16]))
 	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeFP4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary:
-		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[int8]), target.State.(*poly.Tensor[int8]))
+		poly.TweenBackwardLayerwise(n, tp.State.(*poly.TweenState[int8]), target.State.(*poly.Tensor[int8]))
 	case poly.DTypeUint64:
-		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[uint64]), target.State.(*poly.Tensor[uint64]))
+		poly.TweenBackwardLayerwise(n, tp.State.(*poly.TweenState[uint64]), target.State.(*poly.Tensor[uint64]))
 	case poly.DTypeUint32:
-		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[uint32]), target.State.(*poly.Tensor[uint32]))
+		poly.TweenBackwardLayerwise(n, tp.State.(*poly.TweenState[uint32]), target.State.(*poly.Tensor[uint32]))
 	case poly.DTypeUint16:
-		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[uint16]), target.State.(*poly.Tensor[uint16]))
+		poly.TweenBackwardLayerwise(n, tp.State.(*poly.TweenState[uint16]), target.State.(*poly.Tensor[uint16]))
 	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
-		poly.TargetPropBackwardTargetProp(n, tp.State.(*poly.TargetPropState[uint8]), target.State.(*poly.Tensor[uint8]))
+		poly.TweenBackwardLayerwise(n, tp.State.(*poly.TweenState[uint8]), target.State.(*poly.Tensor[uint8]))
 	}
 }
 
@@ -1443,7 +1443,7 @@ func LoomApplyRecursiveGradients(networkHandle C.longlong, layerIdx C.int, gradW
 	if err := json.Unmarshal([]byte(C.GoString(gradWeightsJSON)), &grad); err != nil {
 		return
 	}
-	poly.ApplyRecursiveGradients(l, &grad, float32(learningRate))
+	poly.ApplyRecursiveGradients(l, &grad, float32(learningRate), 0.0)
 }
 
 // Dummy use for scanner

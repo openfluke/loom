@@ -71,7 +71,7 @@ func getWGPUContext(networkHandle int64) (*poly.WGPUContext, bool) {
 
 // Helper: get wgpu.Buffer from handle
 func getBuffer(handle int64) (*wgpu.Buffer, bool) {
-	c, ok := getSystolicContainer(handle)
+	c, ok := getStepContainer(handle)
 	if !ok {
 		return nil, false
 	}
@@ -916,7 +916,7 @@ func LoomForwardWGPU(transformerHandle C.longlong, inputHandle C.longlong) *C.ch
 	if !ok {
 		return errJSON("invalid transformer handle")
 	}
-	in, ok := getSystolicContainer(int64(inputHandle))
+	in, ok := getStepContainer(int64(inputHandle))
 	if !ok {
 		return errJSON("invalid input handle")
 	}
@@ -938,27 +938,4 @@ func LoomForwardWGPU(transformerHandle C.longlong, inputHandle C.longlong) *C.ch
 
 	data, _ := json.Marshal(res.Data)
 	return C.CString(string(data))
-}
-
-// Dummy use to satisfy coverage scanner for poly structs
-var (
-	_ poly.WGPUDenseParams
-	_ poly.WGPUMHAParams
-	_ poly.WGPURNNParams
-	_ poly.WGPULSTMParams
-	_ poly.WGPUCNN1Params
-	_ poly.WGPUCNN2Params
-	_ poly.WGPUCNN3Params
-	_ poly.WGPURMSNormParams
-	_ poly.WGPUKVParams
-	_ poly.WGPURoPEParams
-	_ poly.WGPUEmbeddingParams
-)
-
-func dummyShaders() {
-	_ = poly.ShaderTiledDenseQ4
-	_ = poly.ShaderTiledDenseN
-	_ = poly.ShaderTiledSwiGLUQ4
-	_ = poly.ShaderTiledSwiGLUN
-	_ = poly.ShaderTiledMHAN
 }

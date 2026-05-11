@@ -103,7 +103,7 @@ func KMeansForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 			var sqDist float32
 			offset := k * featureDim
 			for d := 0; d < featureDim; d++ {
-				wVal := SimulatePrecision(wData[offset+d], layer.DType, scaleW)
+				wVal := wData[offset+d]
 				diff := float32(input.Data[d]) - wVal
 				sqDist += diff * diff
 			}

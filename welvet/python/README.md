@@ -191,16 +191,16 @@ child_handle = report["child_handle"]
 
 ---
 
-## Systolic Grid (Online Learning)
+## Step mesh (online learning)
 
 The volumetric 3D grid supports clock-cycle accurate propagation with spatial feedback loops:
 
 ```python
-state = welvet.create_systolic_state(net._handle)
+state = welvet.create_step_state(net._handle)
 welvet.set_input(state, inputs)
-welvet.systolic_step(state)
+welvet.mesh_step(net._handle, state)
 output = welvet.get_output(state, layer_idx=-1)
-welvet.free_systolic_state(state)
+welvet.free_step_state(state)
 ```
 
 ---
@@ -218,20 +218,22 @@ Or use full GPU backward dispatch for maximum performance — see the [benchmark
 
 ---
 
-## Target Propagation
+## Tween (neural target propagation)
 
-An alternative to backpropagation using localized Hebbian gap-based learning:
+An alternative to backpropagation using localized Hebbian gap-based learning. We call this **tween** in APIs; papers often say *target propagation*.
 
 ```python
 from welvet import (
-    create_target_prop_state, get_default_target_prop_config,
-    target_prop_forward, target_prop_backward,
+    create_tween_state,
+    get_default_tween_config,
+    tween_forward,
+    tween_backward,
 )
 
-cfg = get_default_target_prop_config()
-state = create_target_prop_state(net._handle, cfg)
-target_prop_forward(state, inputs)
-target_prop_backward(state, targets)
+_ = get_default_tween_config()
+handle = create_tween_state(net.handle)
+tween_forward(net.handle, handle, inputs)
+tween_backward(net.handle, handle, targets)
 ```
 
 ---

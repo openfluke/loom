@@ -149,12 +149,26 @@ for zTile := 0; zTile < Depth; zTile += 4 {
 
 This is the CPU-side analogue of the GPU workgroup tile strategy. The intent is to improve data locality: all layers in a 4×4×4 spatial neighborhood execute together, keeping their weight data warm in L2/L3 cache.
 
-### SC (Single-Core) vs MC (Multi-Core) Tiling
-In v0.75.0, the tiling strategy is split into two specialized profiles for hardware optimization:
-- **SC Tiling**: Minimizes register pressure for low-cache environments (Edge/WASM).
-- **MC Tiling**: Maximizes SIMD throughput for high-bandwidth architectures (Ryzen/Apple Silicon).
+### SC (single-workgroup) vs MC (multi-workgroup) tiling
 
-The tile size is auto-detected from the hardware limits during initialization and stored in `WGPUContext.GPUTileSize` (for GPU) or `VolumetricLayer.TileSize` (for CPU).
+There are **two different “tiling” knobs** in `poly`:
+
+1. **`VolumetricNetwork.UseTiling`** (see [Tiled Traversal](#tiled-traversal) above) — spatial blocking of the **3D grid** in `ForwardPolymorphic` (4×4×4 cells). Unrelated to transformer matmul tiles.
+2. **Per-layer matmul / GPU workgroup tiling** — `RefreshRuntimeTileSizes()` fills per-dtype maps from layer geometry and (for GPU) `WGPUContext` limits.
+
+#### GPU: two tile maps, configurable SC vs MC
+
+On **GPU**, each layer gets **`GPUSCTileSizes`** and **`GPUMCTileSizes`** (see `refreshRuntimeGPUTileSizes` in `tile_detection.go`). At dispatch, **`VolumetricNetwork.EnableMultiCoreTiling`** chooses which map to use: `GetGPUMCTileSize(dtype)` when `true` (larger / higher-throughput tiles where limits allow), `GetGPUSCTileSize(dtype)` when `false` (smaller workgroups, friendlier to tight limits). So **MC vs SC on GPU is a real switch** — you are not stuck in one profile; set `EnableMultiCoreTiling` (or use **`TrainingModeGPUSC` / `TrainingModeGPUMC`** in `trainBatchWGPU`, which pick tile sizes the same way).
+
+Transformer-style forwards in `wgpu_forward.go` read **`network.EnableMultiCoreTiling`** (not per-layer) for that choice. `WGPUContext.GPUTileSize` is the device-tuned baseline that feeds how those SC/MC maps are built, not the only number used at dispatch.
+
+#### CPU: one tile map (not an SC/MC pair on the layer)
+
+On **CPU**, each layer has a **single** per-dtype map, **`CPUTileSizes`**, via `GetCPUTileSize` — there is **no** `CPUSCTileSizes` / `CPUMCTileSizes` pair. Tiled matmul-style loops (Dense, SwiGLU, CNN, etc.) all use that one size.
+
+`TrainingModeCPUSC` and `TrainingModeCPUMC` exist in the enum (and show up in benchmarks), but **`ConfigureNetworkForMode` applies the same wiring to all CPU modes** (`UseTiling`, `EnableMultiCoreTiling`, `RefreshRuntimeTileSizes`), and **`executeBatchCPU` does not receive the mode** — so there is **no** separate “CPU SC tile path” vs “CPU MC tile path” in the layer maps today. **`EnableMultiCoreTiling` on CPU** is set for consistency with GPU-bound nets and training tooling; it does **not** flip between two CPU tile sizes because only one map exists.
+
+`WGPUContext.GPUTileSize` is the auto-detected base hint (from limits); concrete SC/MC sizes per layer type on GPU live in the two GPU maps, not in that single int alone.
 
 ---
 
@@ -215,10 +229,10 @@ Feedback loop:
     │
  (0,0,2) ─── IsRemoteLink ──▶ TargetZ=0, TargetY=0, TargetX=0
                                 (reads from cycle N-1's output
-                                 of layer (0,0,0) — Systolic only)
+                                 of layer (0,0,0) — step mesh only)
 ```
 
-In `ForwardPolymorphic`, a remote-linked layer simply receives `currentTensor` like any other layer; the remote link semantic is only fully honored by `SystolicForward`, which maintains per-layer output buffers across time steps.
+In `ForwardPolymorphic`, a remote-linked layer simply receives `currentTensor` like any other layer; the remote link semantic is only fully honored by `StepForward`, which maintains per-layer output buffers across time steps.
 
 In `ParallelForwardPolymorphic` and `SequentialForwardPolymorphic`, remote links are resolved by calling `layer.Network.GetLayer(branch.TargetZ, ...)` and dispatching the resolved layer pointer.
 
@@ -256,4 +270,4 @@ This single-submission design reduces Go-to-GPU driver overhead from ~150+ round
 
 ## Disabled Layers
 
-Setting `layer.IsDisabled = true` causes both `ForwardPolymorphic` and `SystolicForward` to skip the layer entirely. In `SystolicForward`, a disabled layer passes its input buffer through to `NextBuffer` unchanged. This is the mechanism for implementing sparse MoE expert activation — gate layers can conditionally disable branches.
+Setting `layer.IsDisabled = true` causes both `ForwardPolymorphic` and `StepForward` to skip the layer entirely. In `StepForward`, a disabled layer passes its input buffer through to `NextBuffer` unchanged. This is the mechanism for implementing sparse MoE expert activation — gate layers can conditionally disable branches.

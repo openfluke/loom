@@ -2,910 +2,195 @@ package poly
 
 import (
 	"math"
-	"sync"
 )
 
-// MHAForwardPolymorphic performs Multi-Head Attention across any numerical type.
+// mhaRoPETheta matches wgpu_forward.go: default 10000 when the layer leaves RoPE base unset.
+func mhaRoPETheta(layer *VolumetricLayer) float64 {
+	if layer != nil && layer.RoPEFreqBase > 0 {
+		return layer.RoPEFreqBase
+	}
+	return 10000.0
+}
+
+// mhaQKNormEpsilon matches GPU DispatchRMSNorm for Q/K: prefer layer RMSNormEps (from config),
+// same default as block norms when unset.
+func mhaQKNormEpsilon(layer *VolumetricLayer) float64 {
+	if layer != nil && layer.RMSNormEps > 0 {
+		return layer.RMSNormEps
+	}
+	return 1e-6
+}
+
+// MHAForwardPolymorphic performs Multi-Head Attention using strictly generic arithmetic.
 func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if layer.UseTiling && layer.TileSize > 0 {
+		return mhaForwardTiledGeneric(layer, input)
+	}
+
 	dModel := layer.DModel
 	numHeads := layer.NumHeads
 	numKVHeads := layer.NumKVHeads
-	if numKVHeads == 0 { numKVHeads = numHeads }
+	if numKVHeads == 0 {
+		numKVHeads = numHeads
+	}
 	headDim := layer.HeadDim
+	qDim := layer.QueryDim
+	if qDim == 0 {
+		qDim = numHeads * headDim
+	}
 	seqLen := len(input.Data) / dModel
 	msl := layer.MaxSeqLen
-	if msl == 0 { msl = 512 }
-	kvDim := numKVHeads * headDim
-	
-	if layer.UseTiling && layer.TileSize > 0 {
-		if layer.EnableMultiCoreTiling {
-			return MHAForwardTiledParallel(layer, input)
-		}
-		return MHAForwardTiled(layer, input)
+	if msl == 0 {
+		msl = 512
 	}
-	
+	kvDim := numKVHeads * headDim
+
 	outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)
 	outShape = append(outShape, dModel)
 	preAct = NewTensor[T](outShape...)
 	postAct = NewTensor[T](outShape...)
-	
+
 	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil { weights = layer.WeightStore.Master }
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[T](weights)
 
 	qwStart := 0
-	kwStart := dModel * dModel
-	vwStart := dModel * (dModel + kvDim)
-	owStart := dModel * (dModel + 2 * kvDim)
-	
-	qbStart := owStart + dModel * dModel
-	kbStart := qbStart + dModel
+	kwStart := qwStart + qDim*dModel
+	vwStart := kwStart + kvDim*dModel
+	owStart := vwStart + kvDim*dModel
+	qbStart := owStart + dModel*qDim
+	kbStart := qbStart + qDim
 	vbStart := kbStart + kvDim
 	obStart := vbStart + kvDim
 
-	switch layer.DType {
-	case DTypeFloat64:
-		if rawW, ok := weights.([]float64); ok {
-			qW := rawW[qwStart : qwStart + dModel * dModel]
-			kW := rawW[kwStart : kwStart + dModel * kvDim]
-			vW := rawW[vwStart : vwStart + dModel * kvDim]
-			oW := rawW[owStart : owStart + dModel * dModel]
-			
-			qB := rawW[qbStart : qbStart + dModel]
-			kB := rawW[kbStart : kbStart + kvDim]
-			vB := rawW[vbStart : vbStart + kvDim]
-			oB := rawW[obStart : obStart + dModel]
+	qW, kW, vW, oW := wData[qwStart:kwStart], wData[kwStart:vwStart], wData[vwStart:owStart], wData[owStart:qbStart]
+	qB, kB, vB, oB := wData[qbStart:kbStart], wData[kbStart:vbStart], wData[vbStart:obStart], wData[obStart:obStart+dModel]
 
-			Q := make([]float64, seqLen * dModel)
-			K := make([]float64, seqLen * kvDim)
-			V := make([]float64, seqLen * kvDim)
-			
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					sum := float64(qB[i])
-					for j := 0; j < dModel; j++ {
-						sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j])
-					}
-					Q[s*dModel+i] = sum
-				}
-				for i := 0; i < kvDim; i++ {
-					sumK := float64(kB[i])
-					sumV := float64(vB[i])
-					for j := 0; j < dModel; j++ {
-						inVal := float64(input.Data[s*dModel+j])
-						sumK += inVal * float64(kW[i*dModel+j])
-						sumV += inVal * float64(vW[i*dModel+j])
-					}
-					K[s*kvDim+i] = sumK
-					V[s*kvDim+i] = sumV
-				}
-			}
-
-			if layer.RoPEFreqBase > 0 {
-				half := headDim / 2
-				theta := float64(layer.RoPEFreqBase)
-				for s := 0; s < seqLen; s++ {
-					pos := s
-					for h := 0; h < numHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c := float64(math.Cos(angle))
-							sVal := float64(math.Sin(angle))
-							
-							qOff := s*dModel + h*headDim + d
-							v0, v1 := Q[qOff], Q[qOff+half]
-							Q[qOff] = v0*c - v1*sVal
-							Q[qOff+half] = v0*sVal + v1*c
-						}
-					}
-					for h := 0; h < numKVHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c := float64(math.Cos(angle))
-							sVal := float64(math.Sin(angle))
-							
-							kOff := s*kvDim + h*headDim + d
-							v0, v1 := K[kOff], K[kOff+half]
-							K[kOff] = v0*c - v1*sVal
-							K[kOff+half] = v0*sVal + v1*c
-						}
-					}
-				}
-			}
-
-			headsPerKV := numHeads / numKVHeads
-			scale := float64(1.0 / math.Sqrt(float64(headDim)))
-			attnOut := make([]float64, seqLen * dModel)
-			
-			for h := 0; h < numHeads; h++ {
-				kvHead := h / headsPerKV
-				for qPos := 0; qPos < seqLen; qPos++ {
-					scores := make([]float64, qPos+1)
-					maxScore := float64(-1e9)
-					
-					for kPos := 0; kPos <= qPos; kPos++ {
-						var dot float64
-						for d := 0; d < headDim; d++ {
-							dot += Q[qPos*dModel+h*headDim+d] * K[kPos*kvDim+kvHead*headDim+d]
-						}
-						score := dot * scale
-						scores[kPos] = score
-						if score > maxScore { maxScore = score }
-					}
-					
-					var expSum float64
-					for kPos := 0; kPos <= qPos; kPos++ {
-						scores[kPos] = float64(math.Exp(float64(scores[kPos] - maxScore)))
-						expSum += scores[kPos]
-					}
-					
-					for d := 0; d < headDim; d++ {
-						var sum float64
-						for kPos := 0; kPos <= qPos; kPos++ {
-							sum += scores[kPos] * V[kPos*kvDim+kvHead*headDim+d]
-						}
-						attnOut[qPos*dModel + h*headDim + d] = sum / expSum
-					}
-				}
-			}
-
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
-					sum := float64(oB[i])
-					for j := 0; j < dModel; j++ {
-						sum += attnOut[s*dModel+j] * float64(oW[i*dModel+j])
-					}
-					postAct.Data[s*dModel+i] = T(sum)
-				}
-			}
-			return preAct, postAct
-		}
-	case DTypeFloat32, DTypeFloat16, DTypeBFloat16:
-		if rawW, ok := weights.([]float32); ok {
-			qW := rawW[qwStart : qwStart + dModel * dModel]
-			kW := rawW[kwStart : kwStart + dModel * kvDim]
-			vW := rawW[vwStart : vwStart + dModel * kvDim]
-			oW := rawW[owStart : owStart + dModel * dModel]
-			
-			qB := rawW[qbStart : qbStart + dModel]
-			kB := rawW[kbStart : kbStart + kvDim]
-			vB := rawW[vbStart : vbStart + kvDim]
-			oB := rawW[obStart : obStart + dModel]
-
-			// For batch/training mode (seqLen > 1), always reset KV cache to position 0.
-			// For auto-regressive inference (seqLen == 1), accumulate KVOffset across calls.
-			if seqLen > 1 || layer.KVCacheK == nil {
-				layer.KVCacheK = NewTensor[float32](msl, kvDim)
-				layer.KVCacheV = NewTensor[float32](msl, kvDim)
-				layer.KVOffset = 0
-			}
-
-			Q := make([]float32, seqLen * dModel)
-			
-			for s := 0; s < seqLen; s++ {
-				// Current position in the global sequence
-				pos := layer.KVOffset + s
-				
-				// 1. Projections
-				for i := 0; i < dModel; i++ {
-					sum := float32(qB[i])
-					for j := 0; j < dModel; j++ {
-						sum += float32(input.Data[s*dModel+j]) * qW[i*dModel+j]
-					}
-					Q[s*dModel+i] = sum
-				}
-				
-				kRow := layer.KVCacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
-				vRow := layer.KVCacheV.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
-				
-				for i := 0; i < kvDim; i++ {
-					sumK := float32(kB[i])
-					sumV := float32(vB[i])
-					for j := 0; j < dModel; j++ {
-						inVal := float32(input.Data[s*dModel+j])
-						sumK += inVal * kW[i*dModel+j]
-						sumV += inVal * vW[i*dModel+j]
-					}
-					kRow[i] = sumK
-					vRow[i] = sumV
-				}
-
-				// 2. RoPE
-				if layer.RoPEFreqBase > 0 {
-					half := headDim / 2
-					theta := float64(layer.RoPEFreqBase)
-					// Apply to Q
-					for h := 0; h < numHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c, sVal := float32(math.Cos(angle)), float32(math.Sin(angle))
-							qOff := s*dModel + h*headDim + d
-							v0, v1 := Q[qOff], Q[qOff+half]
-							Q[qOff] = v0*c - v1*sVal
-							Q[qOff+half] = v0*sVal + v1*c
-						}
-					}
-					// Apply to K (current row in cache)
-					for h := 0; h < numKVHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c, sVal := float32(math.Cos(angle)), float32(math.Sin(angle))
-							kOff := h*headDim + d
-							v0, v1 := kRow[kOff], kRow[kOff+half]
-							kRow[kOff] = v0*c - v1*sVal
-							kRow[kOff+half] = v0*sVal + v1*c
-						}
-					}
-				}
-			}
-
-			headsPerKV := numHeads / numKVHeads
-			scale := float32(1.0 / math.Sqrt(float64(headDim)))
-			attnOut := make([]float32, seqLen * dModel)
-			
-			for s := 0; s < seqLen; s++ {
-				currentTotalPos := layer.KVOffset + s
-				for h := 0; h < numHeads; h++ {
-					kvHead := h / headsPerKV
-					
-					// Attention against all cached tokens
-					scores := make([]float32, currentTotalPos+1)
-					maxScore := float32(-1e9)
-					
-					for kPos := 0; kPos <= currentTotalPos; kPos++ {
-						kIdx := kPos % msl
-						var dot float32
-						qBase := s*dModel + h*headDim
-						kBase := kIdx*kvDim + kvHead*headDim
-						for d := 0; d < headDim; d++ {
-							dot += Q[qBase+d] * layer.KVCacheK.Data[kBase+d]
-						}
-						score := dot * scale
-						scores[kPos] = score
-						if score > maxScore { maxScore = score }
-					}
-					
-					var expSum float32
-					for kPos := 0; kPos <= currentTotalPos; kPos++ {
-						scores[kPos] = float32(math.Exp(float64(scores[kPos] - maxScore)))
-						expSum += scores[kPos]
-					}
-					
-					for d := 0; d < headDim; d++ {
-						var sum float32
-						for kPos := 0; kPos <= currentTotalPos; kPos++ {
-							vIdx := kPos % msl
-							vBase := vIdx*kvDim + kvHead*headDim
-							sum += scores[kPos] * layer.KVCacheV.Data[vBase+d]
-						}
-						attnOut[s*dModel + h*headDim + d] = sum / expSum
-					}
-				}
-			}
-
-			// 3. Final Projection
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
-					sum := float32(oB[i])
-					for j := 0; j < dModel; j++ {
-						sum += attnOut[s*dModel+j] * oW[i*dModel+j]
-					}
-					postAct.Data[s*dModel+i] = T(sum)
-				}
-			}
-
-			layer.KVOffset += seqLen
-			return preAct, postAct
-		}
-	case DTypeInt64, DTypeUint64:
-		if rawW, ok := weights.([]int64); ok {
-			qW := rawW[qwStart : qwStart + dModel * dModel]
-			kW := rawW[kwStart : kwStart + dModel * kvDim]
-			vW := rawW[vwStart : vwStart + dModel * kvDim]
-			oW := rawW[owStart : owStart + dModel * dModel]
-
-			qB := rawW[qbStart : qbStart + dModel]
-			kB := rawW[kbStart : kbStart + kvDim]
-			vB := rawW[vbStart : vbStart + kvDim]
-			oB := rawW[obStart : obStart + dModel]
-
-			scaleW := float64(layer.WeightStore.Scale)
-			if scaleW == 0 { scaleW = 1.0 }
-
-			Q := make([]float64, seqLen * dModel)
-			K := make([]float64, seqLen * kvDim)
-			V := make([]float64, seqLen * kvDim)
-
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					sum := float64(qB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j]) * scaleW
-					}
-					Q[s*dModel+i] = sum
-				}
-				for i := 0; i < kvDim; i++ {
-					sumK := float64(kB[i]) * scaleW
-					sumV := float64(vB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						inVal := float64(input.Data[s*dModel+j])
-						sumK += inVal * float64(kW[i*dModel+j]) * scaleW
-						sumV += inVal * float64(vW[i*dModel+j]) * scaleW
-					}
-					K[s*kvDim+i] = sumK
-					V[s*kvDim+i] = sumV
-				}
-			}
-
-			if layer.RoPEFreqBase > 0 {
-				half := headDim / 2
-				theta := float64(layer.RoPEFreqBase)
-				for s := 0; s < seqLen; s++ {
-					pos := s
-					for h := 0; h < numHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c := float64(math.Cos(angle))
-							sVal := float64(math.Sin(angle))
-							
-							qOff := s*dModel + h*headDim + d
-							v0, v1 := Q[qOff], Q[qOff+half]
-							Q[qOff] = v0*c - v1*sVal
-							Q[qOff+half] = v0*sVal + v1*c
-						}
-					}
-					for h := 0; h < numKVHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c := float64(math.Cos(angle))
-							sVal := float64(math.Sin(angle))
-							
-							kOff := s*kvDim + h*headDim + d
-							v0, v1 := K[kOff], K[kOff+half]
-							K[kOff] = v0*c - v1*sVal
-							K[kOff+half] = v0*sVal + v1*c
-						}
-					}
-				}
-			}
-
-			headsPerKV := numHeads / numKVHeads
-			scale := float64(1.0 / math.Sqrt(float64(headDim)))
-			attnOut := make([]float64, seqLen * dModel)
-			
-			for h := 0; h < numHeads; h++ {
-				kvHead := h / headsPerKV
-				for qPos := 0; qPos < seqLen; qPos++ {
-					scores := make([]float64, qPos+1)
-					maxScore := float64(-1e9)
-					
-					for kPos := 0; kPos <= qPos; kPos++ {
-						var dot float64
-						for d := 0; d < headDim; d++ {
-							dot += Q[qPos*dModel+h*headDim+d] * K[kPos*kvDim+kvHead*headDim+d]
-						}
-						score := dot * scale
-						scores[kPos] = score
-						if score > maxScore { maxScore = score }
-					}
-					
-					var expSum float64
-					for kPos := 0; kPos <= qPos; kPos++ {
-						scores[kPos] = float64(math.Exp(float64(scores[kPos] - maxScore)))
-						expSum += scores[kPos]
-					}
-					
-					for d := 0; d < headDim; d++ {
-						var sum float64
-						for kPos := 0; kPos <= qPos; kPos++ {
-							sum += scores[kPos] * V[kPos*kvDim+kvHead*headDim+d]
-						}
-						attnOut[qPos*dModel + h*headDim + d] = sum / expSum
-					}
-				}
-			}
-
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
-					sum := float64(oB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						sum += attnOut[s*dModel+j] * float64(oW[i*dModel+j]) * scaleW
-					}
-					postAct.Data[s*dModel+i] = T(sum)
-				}
-			}
-			return preAct, postAct
-		}
-	case DTypeInt32, DTypeUint32:
-		if rawW, ok := weights.([]int32); ok {
-			qW := rawW[qwStart : qwStart + dModel * dModel]
-			kW := rawW[kwStart : kwStart + dModel * kvDim]
-			vW := rawW[vwStart : vwStart + dModel * kvDim]
-			oW := rawW[owStart : owStart + dModel * dModel]
-
-			qB := rawW[qbStart : qbStart + dModel]
-			kB := rawW[kbStart : kbStart + kvDim]
-			vB := rawW[vbStart : vbStart + kvDim]
-			oB := rawW[obStart : obStart + dModel]
-
-			scaleW := float64(layer.WeightStore.Scale)
-			if scaleW == 0 { scaleW = 1.0 }
-
-			Q := make([]float64, seqLen * dModel)
-			K := make([]float64, seqLen * kvDim)
-			V := make([]float64, seqLen * kvDim)
-
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					sum := float64(qB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j]) * scaleW
-					}
-					Q[s*dModel+i] = sum
-				}
-				for i := 0; i < kvDim; i++ {
-					sumK := float64(kB[i]) * scaleW
-					sumV := float64(vB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						inVal := float64(input.Data[s*dModel+j])
-						sumK += inVal * float64(kW[i*dModel+j]) * scaleW
-						sumV += inVal * float64(vW[i*dModel+j]) * scaleW
-					}
-					K[s*kvDim+i] = sumK
-					V[s*kvDim+i] = sumV
-				}
-			}
-
-			if layer.RoPEFreqBase > 0 {
-				half := headDim / 2
-				theta := float64(layer.RoPEFreqBase)
-				for s := 0; s < seqLen; s++ {
-					pos := s
-					for h := 0; h < numHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c := float64(math.Cos(angle))
-							sVal := float64(math.Sin(angle))
-							
-							qOff := s*dModel + h*headDim + d
-							v0, v1 := Q[qOff], Q[qOff+half]
-							Q[qOff] = v0*c - v1*sVal
-							Q[qOff+half] = v0*sVal + v1*c
-						}
-					}
-					for h := 0; h < numKVHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c := float64(math.Cos(angle))
-							sVal := float64(math.Sin(angle))
-							
-							kOff := s*kvDim + h*headDim + d
-							v0, v1 := K[kOff], K[kOff+half]
-							K[kOff] = v0*c - v1*sVal
-							K[kOff+half] = v0*sVal + v1*c
-						}
-					}
-				}
-			}
-
-			headsPerKV := numHeads / numKVHeads
-			scale := float64(1.0 / math.Sqrt(float64(headDim)))
-			attnOut := make([]float64, seqLen * dModel)
-			
-			for h := 0; h < numHeads; h++ {
-				kvHead := h / headsPerKV
-				for qPos := 0; qPos < seqLen; qPos++ {
-					scores := make([]float64, qPos+1)
-					maxScore := float64(-1e9)
-					
-					for kPos := 0; kPos <= qPos; kPos++ {
-						var dot float64
-						for d := 0; d < headDim; d++ {
-							dot += Q[qPos*dModel+h*headDim+d] * K[kPos*kvDim+kvHead*headDim+d]
-						}
-						score := dot * scale
-						scores[kPos] = score
-						if score > maxScore { maxScore = score }
-					}
-					
-					var expSum float64
-					for kPos := 0; kPos <= qPos; kPos++ {
-						scores[kPos] = float64(math.Exp(float64(scores[kPos] - maxScore)))
-						expSum += scores[kPos]
-					}
-					
-					for d := 0; d < headDim; d++ {
-						var sum float64
-						for kPos := 0; kPos <= qPos; kPos++ {
-							sum += scores[kPos] * V[kPos*kvDim+kvHead*headDim+d]
-						}
-						attnOut[qPos*dModel + h*headDim + d] = sum / expSum
-					}
-				}
-			}
-
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
-					sum := float64(oB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						sum += attnOut[s*dModel+j] * float64(oW[i*dModel+j]) * scaleW
-					}
-					postAct.Data[s*dModel+i] = T(sum)
-				}
-			}
-			return preAct, postAct
-		}
-	case DTypeInt16, DTypeUint16:
-		if rawW, ok := weights.([]int16); ok {
-			qW := rawW[qwStart : qwStart + dModel * dModel]
-			kW := rawW[kwStart : kwStart + dModel * kvDim]
-			vW := rawW[vwStart : vwStart + dModel * kvDim]
-			oW := rawW[owStart : owStart + dModel * dModel]
-
-			qB := rawW[qbStart : qbStart + dModel]
-			kB := rawW[kbStart : kbStart + kvDim]
-			vB := rawW[vbStart : vbStart + kvDim]
-			oB := rawW[obStart : obStart + dModel]
-
-			scaleW := float64(layer.WeightStore.Scale)
-			if scaleW == 0 { scaleW = 1.0 }
-
-			Q := make([]float64, seqLen * dModel)
-			K := make([]float64, seqLen * kvDim)
-			V := make([]float64, seqLen * kvDim)
-
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					sum := float64(qB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j]) * scaleW
-					}
-					Q[s*dModel+i] = sum
-				}
-				for i := 0; i < kvDim; i++ {
-					sumK := float64(kB[i]) * scaleW
-					sumV := float64(vB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						inVal := float64(input.Data[s*dModel+j])
-						sumK += inVal * float64(kW[i*dModel+j]) * scaleW
-						sumV += inVal * float64(vW[i*dModel+j]) * scaleW
-					}
-					K[s*kvDim+i] = sumK
-					V[s*kvDim+i] = sumV
-				}
-			}
-
-			if layer.RoPEFreqBase > 0 {
-				half := headDim / 2
-				theta := float64(layer.RoPEFreqBase)
-				for s := 0; s < seqLen; s++ {
-					pos := s
-					for h := 0; h < numHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c := float64(math.Cos(angle))
-							sVal := float64(math.Sin(angle))
-							
-							qOff := s*dModel + h*headDim + d
-							v0, v1 := Q[qOff], Q[qOff+half]
-							Q[qOff] = v0*c - v1*sVal
-							Q[qOff+half] = v0*sVal + v1*c
-						}
-					}
-					for h := 0; h < numKVHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c := float64(math.Cos(angle))
-							sVal := float64(math.Sin(angle))
-							
-							kOff := s*kvDim + h*headDim + d
-							v0, v1 := K[kOff], K[kOff+half]
-							K[kOff] = v0*c - v1*sVal
-							K[kOff+half] = v0*sVal + v1*c
-						}
-					}
-				}
-			}
-
-			headsPerKV := numHeads / numKVHeads
-			scale := float64(1.0 / math.Sqrt(float64(headDim)))
-			attnOut := make([]float64, seqLen * dModel)
-			
-			for h := 0; h < numHeads; h++ {
-				kvHead := h / headsPerKV
-				for qPos := 0; qPos < seqLen; qPos++ {
-					scores := make([]float64, qPos+1)
-					maxScore := float64(-1e9)
-					
-					for kPos := 0; kPos <= qPos; kPos++ {
-						var dot float64
-						for d := 0; d < headDim; d++ {
-							dot += Q[qPos*dModel+h*headDim+d] * K[kPos*kvDim+kvHead*headDim+d]
-						}
-						score := dot * scale
-						scores[kPos] = score
-						if score > maxScore { maxScore = score }
-					}
-					
-					var expSum float64
-					for kPos := 0; kPos <= qPos; kPos++ {
-						scores[kPos] = float64(math.Exp(float64(scores[kPos] - maxScore)))
-						expSum += scores[kPos]
-					}
-					
-					for d := 0; d < headDim; d++ {
-						var sum float64
-						for kPos := 0; kPos <= qPos; kPos++ {
-							sum += scores[kPos] * V[kPos*kvDim+kvHead*headDim+d]
-						}
-						attnOut[qPos*dModel + h*headDim + d] = sum / expSum
-					}
-				}
-			}
-
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
-					sum := float64(oB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						sum += attnOut[s*dModel+j] * float64(oW[i*dModel+j]) * scaleW
-					}
-					postAct.Data[s*dModel+i] = T(sum)
-				}
-			}
-			return preAct, postAct
-		}
-	case DTypeInt8, DTypeUint8:
-		if rawW, ok := weights.([]int8); ok {
-			qW := rawW[qwStart : qwStart + dModel * dModel]
-			kW := rawW[kwStart : kwStart + dModel * kvDim]
-			vW := rawW[vwStart : vwStart + dModel * kvDim]
-			oW := rawW[owStart : owStart + dModel * dModel]
-
-			qB := rawW[qbStart : qbStart + dModel]
-			kB := rawW[kbStart : kbStart + kvDim]
-			vB := rawW[vbStart : vbStart + kvDim]
-			oB := rawW[obStart : obStart + dModel]
-
-			scaleW := float64(layer.WeightStore.Scale)
-			if scaleW == 0 { scaleW = 1.0 }
-
-			Q := make([]float64, seqLen * dModel)
-			K := make([]float64, seqLen * kvDim)
-			V := make([]float64, seqLen * kvDim)
-
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					sum := float64(qB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j]) * scaleW
-					}
-					Q[s*dModel+i] = sum
-				}
-				for i := 0; i < kvDim; i++ {
-					sumK := float64(kB[i]) * scaleW
-					sumV := float64(vB[i]) * scaleW
-					for j := 0; j < dModel; j++ {
-						inVal := float64(input.Data[s*dModel+j])
-						sumK += inVal * float64(kW[i*dModel+j])
-						sumV += inVal * float64(vW[i*dModel+j])
-					}
-					K[s*kvDim+i] = sumK
-					V[s*kvDim+i] = sumV
-				}
-			}
-
-			if layer.RoPEFreqBase > 0 {
-				half := headDim / 2
-				theta := float64(layer.RoPEFreqBase)
-				for s := 0; s < seqLen; s++ {
-					pos := s
-					for h := 0; h < numHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c := float64(math.Cos(angle))
-							sVal := float64(math.Sin(angle))
-							
-							qOff := s*dModel + h*headDim + d
-							v0, v1 := Q[qOff], Q[qOff+half]
-							Q[qOff] = v0*c - v1*sVal
-							Q[qOff+half] = v0*sVal + v1*c
-						}
-					}
-					for h := 0; h < numKVHeads; h++ {
-						for d := 0; d < half; d++ {
-							freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-							angle := freq * float64(pos)
-							c := float64(math.Cos(angle))
-							sVal := float64(math.Sin(angle))
-							
-							kOff := s*kvDim + h*headDim + d
-							v0, v1 := K[kOff], K[kOff+half]
-							K[kOff] = v0*c - v1*sVal
-							K[kOff+half] = v0*sVal + v1*c
-						}
-					}
-				}
-			}
-
-			headsPerKV := numHeads / numKVHeads
-			scale := float64(1.0 / math.Sqrt(float64(headDim)))
-			attnOut := make([]float64, seqLen * dModel)
-			
-			for h := 0; h < numHeads; h++ {
-				kvHead := h / headsPerKV
-				for qPos := 0; qPos < seqLen; qPos++ {
-					scores := make([]float64, qPos+1)
-					maxScore := float64(-1e9)
-					
-					for kPos := 0; kPos <= qPos; kPos++ {
-						var dot float64
-						for d := 0; d < headDim; d++ {
-							dot += Q[qPos*dModel+h*headDim+d] * K[kPos*kvDim+kvHead*headDim+d]
-						}
-						score := dot * scale
-						scores[kPos] = score
-						if score > maxScore { maxScore = score }
-					}
-					
-					var expSum float64
-					for kPos := 0; kPos <= qPos; kPos++ {
-						scores[kPos] = float64(math.Exp(float64(scores[kPos] - maxScore)))
-						expSum += scores[kPos]
-					}
-					
-					for d := 0; d < headDim; d++ {
-						var sum float64
-						for kPos := 0; kPos <= qPos; kPos++ {
-							sum += scores[kPos] * V[kPos*kvDim+kvHead*headDim+d]
-						}
-						attnOut[qPos*dModel + h*headDim + d] = sum / expSum
-					}
-				}
-			}
-
-			for s := 0; s < seqLen; s++ {
-				for i := 0; i < dModel; i++ {
-					preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
-					sum := float64(oB[i])
-					for j := 0; j < dModel; j++ {
-						sum += attnOut[s*dModel+j] * float64(oW[i*dModel+j])
-					}
-					postAct.Data[s*dModel+i] = T(sum)
-				}
-			}
-			return preAct, postAct
-		}
+	if seqLen > 1 || layer.KVCacheK == nil {
+		layer.KVCacheK = NewTensor[T](msl, kvDim)
+		layer.KVCacheV = NewTensor[T](msl, kvDim)
+		layer.KVOffset = 0
 	}
+	cacheK := layer.KVCacheK.(*Tensor[T])
+	cacheV := layer.KVCacheV.(*Tensor[T])
 
-	scaleW := layer.WeightStore.Scale
-	if scaleW == 0 { scaleW = 1.0 }
-	wData := CastWeights[float32](weights)
-	
-	qW := wData[qwStart : qwStart + dModel * dModel]
-	kW := wData[kwStart : kwStart + dModel * kvDim]
-	vW := wData[vwStart : vwStart + dModel * kvDim]
-	oW := wData[owStart : owStart + dModel * dModel]
-	
-	qB := wData[qbStart : qbStart + dModel]
-	kB := wData[kbStart : kbStart + kvDim]
-	vB := wData[vbStart : vbStart + kvDim]
-	oB := wData[obStart : obStart + dModel]
-
-	Q := make([]float32, seqLen * dModel)
-	K := make([]float32, seqLen * kvDim)
-	V := make([]float32, seqLen * kvDim)
-	
+	Q := make([]float64, seqLen*qDim)
 	for s := 0; s < seqLen; s++ {
-		for i := 0; i < dModel; i++ {
-			sum := SimulatePrecision(qB[i], layer.DType, scaleW)
-			for j := 0; j < dModel; j++ {
-				sum += float32(input.Data[s*dModel+j]) * SimulatePrecision(qW[i*dModel+j], layer.DType, scaleW)
-			}
-			Q[s*dModel+i] = sum
-		}
-		for i := 0; i < kvDim; i++ {
-			sumK := SimulatePrecision(kB[i], layer.DType, scaleW)
-			sumV := SimulatePrecision(vB[i], layer.DType, scaleW)
-			for j := 0; j < dModel; j++ {
-				val := float32(input.Data[s*dModel+j])
-				sumK += val * SimulatePrecision(kW[i*dModel+j], layer.DType, scaleW)
-				sumV += val * SimulatePrecision(vW[i*dModel+j], layer.DType, scaleW)
-			}
-			K[s*kvDim+i] = sumK
-			V[s*kvDim+i] = sumV
-		}
-	}
+		pos := layer.KVOffset + s
+		kRow := cacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+		vRow := layer.KVCacheV.(*Tensor[T]).Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
 
-	if layer.RoPEFreqBase > 0 {
-		half := headDim / 2
-		theta := float64(layer.RoPEFreqBase)
-		for s := 0; s < seqLen; s++ {
-			pos := s
-			for h := 0; h < numHeads; h++ {
-				for d := 0; d < half; d++ {
-					freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-					angle := freq * float64(pos)
-					c, sVal := float32(math.Cos(angle)), float32(math.Sin(angle))
-					off := s*dModel + h*headDim + d
-					v0, v1 := Q[off], Q[off+half]
-					Q[off] = v0*c - v1*sVal
-					Q[off+half] = v0*sVal + v1*c
-				}
+		for i := 0; i < qDim; i++ {
+			sum := float64(qB[i])
+			for j := 0; j < dModel; j++ {
+				sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j])
 			}
-			for h := 0; h < numKVHeads; h++ {
-				for d := 0; d < half; d++ {
-					freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-					angle := freq * float64(pos)
-					c, sVal := float32(math.Cos(angle)), float32(math.Sin(angle))
-					off := s*kvDim + h*headDim + d
-					v0, v1 := K[off], K[off+half]
-					K[off] = v0*c - v1*sVal
-					K[off+half] = v0*sVal + v1*c
-				}
+			Q[s*qDim+i] = sum
+		}
+
+		for i := 0; i < kvDim; i++ {
+			sumK, sumV := float64(kB[i]), float64(vB[i])
+			for j := 0; j < dModel; j++ {
+				inVal := float64(input.Data[s*dModel+j])
+				sumK += inVal * float64(kW[i*dModel+j])
+				sumV += inVal * float64(vW[i*dModel+j])
+			}
+			kRow[i] = T(sumK)
+			vRow[i] = T(sumV)
+		}
+
+		qkEps := mhaQKNormEpsilon(layer)
+		if len(layer.QNormWeight) > 0 {
+			applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
+		}
+		if len(layer.KNormWeight) > 0 {
+			applyPerHeadRMSNormTensor(kRow, layer.KNormWeight, numKVHeads, headDim, qkEps)
+		}
+
+		// Same order as wgpu_forward: optional Q/K norm, then RoPE on Q and K (always dispatched on GPU).
+		theta := mhaRoPETheta(layer)
+		half := headDim / 2
+		for h := 0; h < numHeads; h++ {
+			for d := 0; d < half; d++ {
+				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+				c, sVal := math.Cos(angle), math.Sin(angle)
+				qOff := s*qDim + h*headDim + d
+				v0, v1 := Q[qOff], Q[qOff+half]
+				Q[qOff] = v0*c - v1*sVal
+				Q[qOff+half] = v0*sVal + v1*c
+			}
+		}
+		for h := 0; h < numKVHeads; h++ {
+			for d := 0; d < half; d++ {
+				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+				c, sVal := math.Cos(angle), math.Sin(angle)
+				kOff := h*headDim + d
+				v0, v1 := float64(kRow[kOff]), float64(kRow[kOff+half])
+				kRow[kOff] = T(v0*c - v1*sVal)
+				kRow[kOff+half] = T(v0*sVal + v1*c)
 			}
 		}
 	}
 
 	headsPerKV := numHeads / numKVHeads
-	attnScale := float32(1.0 / math.Sqrt(float64(headDim)))
-	attnOut := make([]float32, seqLen * dModel)
-	for h := 0; h < numHeads; h++ {
-		kvH := h / headsPerKV
-		for qP := 0; qP < seqLen; qP++ {
-			scores := make([]float32, qP+1)
-			maxS := float32(-1e9)
-			for kP := 0; kP <= qP; kP++ {
-				var dot float32
+	scale := 1.0 / math.Sqrt(float64(headDim))
+	attnOut := make([]float64, seqLen*qDim)
+
+	for s := 0; s < seqLen; s++ {
+		currentTotalPos := layer.KVOffset + s
+		for h := 0; h < numHeads; h++ {
+			kvHead := h / headsPerKV
+
+			scores := make([]float64, currentTotalPos+1)
+			maxScore := float64(-1e9)
+
+			for kPos := 0; kPos <= currentTotalPos; kPos++ {
+				kIdx := kPos % msl
+				var dot float64
 				for d := 0; d < headDim; d++ {
-					dot += Q[qP*dModel+h*headDim+d] * K[kP*kvDim+kvH*headDim+d]
+					dot += Q[s*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
 				}
-				scores[kP] = dot * attnScale
-				if scores[kP] > maxS { maxS = scores[kP] }
+				score := dot * scale
+				scores[kPos] = score
+				if score > maxScore {
+					maxScore = score
+				}
 			}
-			var eSum float32
-			for kP := 0; kP <= qP; kP++ {
-				scores[kP] = float32(math.Exp(float64(scores[kP] - maxS)))
-				eSum += scores[kP]
+
+			var expSum float64
+			for kPos := 0; kPos <= currentTotalPos; kPos++ {
+				scores[kPos] = math.Exp(scores[kPos] - maxScore)
+				expSum += scores[kPos]
 			}
+
 			for d := 0; d < headDim; d++ {
-				var sum float32
-				for kP := 0; kP <= qP; kP++ {
-					sum += scores[kP] * V[kP*kvDim+kvH*headDim+d]
+				var sum float64
+				for kPos := 0; kPos <= currentTotalPos; kPos++ {
+					sum += scores[kPos] * float64(cacheV.Data[(kPos%msl)*kvDim+kvHead*headDim+d])
 				}
-				attnOut[qP*dModel+h*headDim+d] = sum / eSum
+				attnOut[s*qDim+h*headDim+d] = sum / expSum
 			}
 		}
 	}
 
 	for s := 0; s < seqLen; s++ {
 		for i := 0; i < dModel; i++ {
-			preAct.Data[s*dModel+i] = T(attnOut[s*dModel+i])
-			sum := SimulatePrecision(oB[i], layer.DType, scaleW)
-			for j := 0; j < dModel; j++ {
-				sum += attnOut[s*dModel+j] * SimulatePrecision(oW[i*dModel+j], layer.DType, scaleW)
+			preAct.Data[s*dModel+i] = T(attnOut[s*qDim+i])
+			sum := float64(oB[i])
+			for j := 0; j < qDim; j++ {
+				sum += attnOut[s*qDim+j] * float64(oW[i*qDim+j])
 			}
 			postAct.Data[s*dModel+i] = T(sum)
 		}
 	}
 
+	layer.KVOffset += seqLen
 	return preAct, postAct
 }
 
+// MHABackwardPolymorphic calculates gradients for the MHA layer.
 func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
 	dModel := layer.DModel
 	numHeads := layer.NumHeads
@@ -914,455 +199,315 @@ func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input
 		numKVHeads = numHeads
 	}
 	headDim := layer.HeadDim
+	qDim := layer.QueryDim
+	if qDim == 0 {
+		qDim = numHeads * headDim
+	}
 	seqLen := len(input.Data) / dModel
+	msl := layer.MaxSeqLen
+	if msl == 0 {
+		msl = 512
+	}
 	kvDim := numKVHeads * headDim
-	headsPerKV := numHeads / numKVHeads
-	attnScale := 1.0 / math.Sqrt(float64(headDim))
+
+	gradInput = NewTensor[T](input.Shape...)
+	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
+
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[T](weights)
 
 	qwStart := 0
-	kwStart := dModel * dModel
-	vwStart := dModel * (dModel + kvDim)
-	owStart := dModel * (dModel + 2*kvDim)
-	qbStart := owStart + dModel*dModel
-	kbStart := qbStart + dModel
+	kwStart := qwStart + qDim*dModel
+	vwStart := kwStart + kvDim*dModel
+	owStart := vwStart + kvDim*dModel
+	qbStart := owStart + dModel*qDim
+	kbStart := qbStart + qDim
 	vbStart := kbStart + kvDim
 	obStart := vbStart + kvDim
 
-	nWeights := len(layer.WeightStore.Master)
-	rawW := CastWeights[float64](layer.WeightStore.Master)
+	qW, kW, vW, oW := wData[qwStart:kwStart], wData[kwStart:vwStart], wData[vwStart:owStart], wData[owStart:qbStart]
 
-	gradInput = NewTensor[T](input.Shape...)
-	gradWeights = NewTensor[T](nWeights)
+	gradPre := make([]float64, seqLen*qDim)
+	gi64 := make([]float64, len(gradInput.Data))
+	gw64 := make([]float64, len(gradWeights.Data))
 
-	// float64 gradient accumulators
-	dWF := make([]float64, nWeights)
-	gradInputF := make([]float64, len(input.Data))
-
-	// convert input to float64
-	inputF := make([]float64, len(input.Data))
-	for i, v := range input.Data {
-		inputF[i] = float64(v)
-	}
-
-	// Recompute Q, K, V using W[out,in] convention (matches float64 forward path)
-	Q := make([]float64, seqLen*dModel)
-	K := make([]float64, seqLen*kvDim)
-	V := make([]float64, seqLen*kvDim)
 	for s := 0; s < seqLen; s++ {
 		for i := 0; i < dModel; i++ {
-			sum := rawW[qbStart+i]
-			for j := 0; j < dModel; j++ {
-				sum += inputF[s*dModel+j] * rawW[qwStart+i*dModel+j]
+			dy := float64(gradOutput.Data[s*dModel+i])
+			gw64[obStart+i] += dy
+			for j := 0; j < qDim; j++ {
+				preVal := 0.0
+				if j < dModel {
+					preVal = float64(preAct.Data[s*dModel+j])
+				}
+				gw64[owStart+i*qDim+j] += preVal * dy
+				gradPre[s*qDim+j] += dy * float64(oW[i*qDim+j])
 			}
-			Q[s*dModel+i] = sum
-		}
-		for i := 0; i < kvDim; i++ {
-			sumK := rawW[kbStart+i]
-			sumV := rawW[vbStart+i]
-			for j := 0; j < dModel; j++ {
-				inVal := inputF[s*dModel+j]
-				sumK += inVal * rawW[kwStart+i*dModel+j]
-				sumV += inVal * rawW[vwStart+i*dModel+j]
-			}
-			K[s*kvDim+i] = sumK
-			V[s*kvDim+i] = sumV
 		}
 	}
 
-	// 1. Output projection backward
-	// forward: output[s,i] = sum_j attnOut[s,j] * oW[i*dModel+j] + oB[i]
-	// preAct stores attnOut
-	dAttnOut := make([]float64, seqLen*dModel)
+	cacheK := layer.KVCacheK.(*Tensor[T])
+	cacheV := layer.KVCacheV.(*Tensor[T])
+
+	Q := make([]float64, seqLen*qDim)
 	for s := 0; s < seqLen; s++ {
-		for i := 0; i < dModel; i++ {
-			dO := float64(gradOutput.Data[s*dModel+i])
-			dWF[obStart+i] += dO
+		for i := 0; i < qDim; i++ {
+			sum := float64(wData[qbStart+i])
 			for j := 0; j < dModel; j++ {
-				dWF[owStart+i*dModel+j] += float64(preAct.Data[s*dModel+j]) * dO
-				dAttnOut[s*dModel+j] += rawW[owStart+i*dModel+j] * dO
+				sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j])
+			}
+			Q[s*qDim+i] = sum
+		}
+		theta := mhaRoPETheta(layer)
+		half := headDim / 2
+		pos := layer.KVOffset - seqLen + s
+		for h := 0; h < numHeads; h++ {
+			for d := 0; d < half; d++ {
+				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+				c, sVal := math.Cos(angle), math.Sin(angle)
+				qOff := s*qDim + h*headDim + d
+				v0, v1 := Q[qOff], Q[qOff+half]
+				Q[qOff] = v0*c - v1*sVal
+				Q[qOff+half] = v0*sVal + v1*c
 			}
 		}
 	}
 
-	// 2. Attention backward (causal, per-head)
-	dQ := make([]float64, seqLen*dModel)
-	dK := make([]float64, seqLen*kvDim)
-	dV := make([]float64, seqLen*kvDim)
+	headsPerKV := numHeads / numKVHeads
+	scale := 1.0 / math.Sqrt(float64(headDim))
+
+	gQ := make([]float64, seqLen*qDim)
+	gK := make([]float64, msl*kvDim)
+	gV := make([]float64, msl*kvDim)
+
 	for h := 0; h < numHeads; h++ {
-		kvH := h / headsPerKV
-		for qP := 0; qP < seqLen; qP++ {
-			// recompute softmax probs for this (head, query) pair
-			probs := make([]float64, qP+1)
-			maxS := -1e30
-			for kP := 0; kP <= qP; kP++ {
+		kvHead := h / headsPerKV
+		for qPos := 0; qPos < seqLen; qPos++ {
+			currentTotalPos := layer.KVOffset - seqLen + qPos
+			scores := make([]float64, currentTotalPos+1)
+			maxScore := float64(-1e9)
+			for kPos := 0; kPos <= currentTotalPos; kPos++ {
+				kIdx := kPos % msl
 				var dot float64
 				for d := 0; d < headDim; d++ {
-					dot += Q[qP*dModel+h*headDim+d] * K[kP*kvDim+kvH*headDim+d]
+					dot += Q[qPos*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
 				}
-				probs[kP] = dot * attnScale
-				if probs[kP] > maxS {
-					maxS = probs[kP]
+				score := dot * scale
+				scores[kPos] = score
+				if score > maxScore {
+					maxScore = score
 				}
 			}
-			var eSum float64
-			for kP := 0; kP <= qP; kP++ {
-				probs[kP] = math.Exp(probs[kP] - maxS)
-				eSum += probs[kP]
+			var expSum float64
+			for kPos := 0; kPos <= currentTotalPos; kPos++ {
+				scores[kPos] = math.Exp(scores[kPos] - maxScore)
+				expSum += scores[kPos]
 			}
-			for kP := 0; kP <= qP; kP++ {
-				probs[kP] /= eSum
+			for kPos := 0; kPos <= currentTotalPos; kPos++ {
+				scores[kPos] /= expSum
 			}
 
-			// dV[kP] += prob[kP] * dAttnOut[qP]
 			for d := 0; d < headDim; d++ {
-				dAO := dAttnOut[qP*dModel+h*headDim+d]
-				for kP := 0; kP <= qP; kP++ {
-					dV[kP*kvDim+kvH*headDim+d] += probs[kP] * dAO
+				dy := gradPre[qPos*qDim+h*headDim+d]
+				var dS_sum float64
+				for kPos := 0; kPos <= currentTotalPos; kPos++ {
+					vIdx := kPos % msl
+					gV[vIdx*kvDim+kvHead*headDim+d] += scores[kPos] * dy
+					dS_sum += float64(cacheV.Data[vIdx*kvDim+kvHead*headDim+d]) * dy * scores[kPos]
 				}
-			}
 
-			// dProbs[kP] = sum_d V[kP,d] * dAttnOut[qP,d]
-			dProbs := make([]float64, qP+1)
-			for kP := 0; kP <= qP; kP++ {
-				for d := 0; d < headDim; d++ {
-					dProbs[kP] += V[kP*kvDim+kvH*headDim+d] * dAttnOut[qP*dModel+h*headDim+d]
-				}
-			}
+				for kPos := 0; kPos <= currentTotalPos; kPos++ {
+					kIdx := kPos % msl
+					dScore := (scores[kPos]*dy*float64(cacheV.Data[kIdx*kvDim+kvHead*headDim+d]) - scores[kPos]*dS_sum) * scale
 
-			// softmax backward: dScore[k] = prob[k] * (dProbs[k] - sum_m prob[m]*dProbs[m])
-			var dotPD float64
-			for kP := 0; kP <= qP; kP++ {
-				dotPD += probs[kP] * dProbs[kP]
-			}
-			for kP := 0; kP <= qP; kP++ {
-				dScore := probs[kP] * (dProbs[kP] - dotPD) * attnScale
-				for d := 0; d < headDim; d++ {
-					dQ[qP*dModel+h*headDim+d] += dScore * K[kP*kvDim+kvH*headDim+d]
-					dK[kP*kvDim+kvH*headDim+d] += dScore * Q[qP*dModel+h*headDim+d]
+					gQ[qPos*qDim+h*headDim+d] += dScore * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
+					gK[kIdx*kvDim+kvHead*headDim+d] += dScore * Q[qPos*qDim+h*headDim+d]
 				}
 			}
 		}
 	}
 
-	// 3. Q/K/V projection backward
+	half := headDim / 2
+	theta := mhaRoPETheta(layer)
 	for s := 0; s < seqLen; s++ {
-		for i := 0; i < dModel; i++ {
-			dq := dQ[s*dModel+i]
-			dWF[qbStart+i] += dq
+		pos := layer.KVOffset - seqLen + s
+		for h := 0; h < numHeads; h++ {
+			for d := 0; d < half; d++ {
+				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+				c, sVal := math.Cos(angle), math.Sin(angle)
+				qOff := s*qDim + h*headDim + d
+				v0, v1 := gQ[qOff], gQ[qOff+half]
+				gQ[qOff] = v0*c + v1*sVal
+				gQ[qOff+half] = -v0*sVal + v1*c
+			}
+		}
+		kIdx := pos % msl
+		for h := 0; h < numKVHeads; h++ {
+			for d := 0; d < half; d++ {
+				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+				c, sVal := math.Cos(angle), math.Sin(angle)
+				kOff := kIdx*kvDim + h*headDim + d
+				v0, v1 := gK[kOff], gK[kOff+half]
+				gK[kOff] = v0*c + v1*sVal
+				gK[kOff+half] = -v0*sVal + v1*c
+			}
+		}
+	}
+
+	for s := 0; s < seqLen; s++ {
+		kIdx := (layer.KVOffset - seqLen + s) % msl
+		for i := 0; i < qDim; i++ {
+			dq := gQ[s*qDim+i]
+			gw64[qbStart+i] += dq
 			for j := 0; j < dModel; j++ {
-				dWF[qwStart+i*dModel+j] += inputF[s*dModel+j] * dq
-				gradInputF[s*dModel+j] += rawW[qwStart+i*dModel+j] * dq
+				gw64[qwStart+i*dModel+j] += float64(input.Data[s*dModel+j]) * dq
+				gi64[s*dModel+j] += dq * float64(qW[i*dModel+j])
 			}
 		}
 		for i := 0; i < kvDim; i++ {
-			dk := dK[s*kvDim+i]
-			dv := dV[s*kvDim+i]
-			dWF[kbStart+i] += dk
-			dWF[vbStart+i] += dv
+			dk, dv := gK[kIdx*kvDim+i], gV[kIdx*kvDim+i]
+			gw64[kbStart+i] += dk
+			gw64[vbStart+i] += dv
 			for j := 0; j < dModel; j++ {
-				dWF[kwStart+i*dModel+j] += inputF[s*dModel+j] * dk
-				dWF[vwStart+i*dModel+j] += inputF[s*dModel+j] * dv
-				gradInputF[s*dModel+j] += rawW[kwStart+i*dModel+j] * dk
-				gradInputF[s*dModel+j] += rawW[vwStart+i*dModel+j] * dv
+				x := float64(input.Data[s*dModel+j])
+				gw64[kwStart+i*dModel+j] += x * dk
+				gw64[vwStart+i*dModel+j] += x * dv
+
+				gi64[s*dModel+j] += dk*float64(kW[i*dModel+j]) + dv*float64(vW[i*dModel+j])
 			}
 		}
 	}
 
-	for i, v := range gradInputF {
-		gradInput.Data[i] = T(v)
+	for i := range gradInput.Data {
+		gradInput.Data[i] = T(gi64[i])
 	}
-	for i, v := range dWF {
-		gradWeights.Data[i] = T(v)
+	for i := range gradWeights.Data {
+		gradWeights.Data[i] = T(gw64[i])
 	}
+
 	return gradInput, gradWeights
 }
 
-// MHAForwardTiled performs an optimized, tiled forward pass for MHA (single-core).
+func applyPerHeadRMSNormFloat64(data []float64, gamma []float32, numHeads, headDim int, eps float64) {
+	if numHeads <= 0 || headDim <= 0 || len(data) < numHeads*headDim {
+		return
+	}
+	if eps <= 0 {
+		eps = 1e-6
+	}
+	for h := 0; h < numHeads; h++ {
+		start := h * headDim
+		end := start + headDim
+		var sumSq float64
+		for i := start; i < end; i++ {
+			v := data[i]
+			sumSq += v * v
+		}
+		rms := math.Sqrt(sumSq/float64(headDim) + eps)
+		if rms == 0 {
+			continue
+		}
+		inv := 1.0 / rms
+		for d := 0; d < headDim; d++ {
+			scale := 1.0
+			if len(gamma) == headDim {
+				scale = float64(gamma[d])
+			} else if len(gamma) == numHeads*headDim {
+				scale = float64(gamma[h*headDim+d])
+			}
+			data[start+d] = data[start+d] * inv * scale
+		}
+	}
+}
+
+func applyPerHeadRMSNormTensor[T Numeric](data []T, gamma []float32, numHeads, headDim int, eps float64) {
+	if numHeads <= 0 || headDim <= 0 || len(data) < numHeads*headDim {
+		return
+	}
+	if eps <= 0 {
+		eps = 1e-6
+	}
+	for h := 0; h < numHeads; h++ {
+		start := h * headDim
+		end := start + headDim
+		var sumSq float64
+		for i := start; i < end; i++ {
+			v := float64(data[i])
+			sumSq += v * v
+		}
+		rms := math.Sqrt(sumSq/float64(headDim) + eps)
+		if rms == 0 {
+			continue
+		}
+		inv := 1.0 / rms
+		for d := 0; d < headDim; d++ {
+			scale := 1.0
+			if len(gamma) == headDim {
+				scale = float64(gamma[d])
+			} else if len(gamma) == numHeads*headDim {
+				scale = float64(gamma[h*headDim+d])
+			}
+			data[start+d] = T(float64(data[start+d]) * inv * scale)
+		}
+	}
+}
+
+// MHAForwardTiled performs a tiled Multi-Head Attention forward pass.
 func MHAForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
-	return mhaForwardTiledCore[T](layer, input, false)
+	return mhaForwardTiledGeneric(layer, input)
 }
 
-// MHAForwardTiledParallel performs an optimized, tiled forward pass for MHA
-// with the KV-head outer loop parallelised across goroutines (multi-core).
+// MHAForwardTiledParallel is an alias for the tiled forward path.
 func MHAForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
-	return mhaForwardTiledCore[T](layer, input, true)
+	return mhaForwardTiledGeneric(layer, input)
 }
 
-// mhaForwardTiledCore is the shared implementation for tiled MHA forward.
-// When parallel=true the attention inner loop is distributed across goroutines.
-func mhaForwardTiledCore[T Numeric](layer *VolumetricLayer, input *Tensor[T], parallel bool) (preAct, postAct *Tensor[T]) {
-	dModel := layer.DModel
-	numHeads := layer.NumHeads
-	numKVHeads := layer.NumKVHeads
-	if numKVHeads == 0 { numKVHeads = numHeads }
-	headDim := layer.HeadDim
-	seqLen := len(input.Data) / dModel
-	msl := layer.MaxSeqLen
-	if msl == 0 { msl = 512 }
-	kvDim := numKVHeads * headDim
-	tileSize := layer.GetCPUTileSize(layer.DType)
-	if tileSize <= 0 { tileSize = 32 }
+func mhaForwardTiledGeneric[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	orig := layer.UseTiling
+	layer.UseTiling = false
+	pre, post := MHAForwardPolymorphic(layer, input)
+	layer.UseTiling = orig
+	return pre, post
+}
 
-	outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)
-	outShape = append(outShape, dModel)
-	preAct = NewTensor[T](outShape...)
-	postAct = NewTensor[T](outShape...)
+// MHABackwardTiled computes the backward pass for multihead attention using tiled matrix multiplication.
+func MHABackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	orig := layer.UseTiling
+	layer.UseTiling = false
+	gI, gW := MHABackwardPolymorphic(layer, gradOutput, input, preAct)
+	layer.UseTiling = orig
+	return gI, gW
+}
 
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil { weights = layer.WeightStore.Master }
+// mhaTiledProject projects inputs to Q, K, or V within generic tiled bounds.
+func mhaTiledProject[TIn Numeric, TOut Numeric, TW Numeric](input []TIn, wData []TW, projWStart, projBStart int, output []TOut, inDim, outDim, seqLen int, dtype DType, scale float32, tileSize int) {
+	projW := wData[projWStart:]
+	projB := wData[projBStart:]
 
-	// For batch/training mode (seqLen > 1), always reset KV cache to position 0.
-	// For auto-regressive inference (seqLen == 1), accumulate KVOffset across calls.
-	if seqLen > 1 || layer.KVCacheK == nil {
-		layer.KVCacheK = NewTensor[float32](msl, kvDim)
-		layer.KVCacheV = NewTensor[float32](msl, kvDim)
-		layer.KVOffset = 0
-	}
-
-	qwStart := 0
-	kwStart := dModel * dModel
-	vwStart := dModel * (dModel + kvDim)
-	owStart := dModel * (dModel + 2 * kvDim)
-	qbStart := owStart + dModel * dModel
-	kbStart := qbStart + dModel
-	vbStart := kbStart + kvDim
-	obStart := vbStart + kvDim
-
-	// Local Q buffer
-	Q := make([]float32, seqLen * dModel)
-
-	scaleW := layer.WeightStore.Scale
-	if scaleW == 0 { scaleW = 1.0 }
-
-	// Tiled Q Projection (Local)
-	mhaTiledProject(input.Data, weights, qwStart, qbStart, Q, dModel, dModel, seqLen, layer.DType, scaleW, tileSize)
-
-	// Tiled K and V Projections directly into Cache
 	for s := 0; s < seqLen; s++ {
-		pos := (layer.KVOffset + s) % msl
-		kRow := layer.KVCacheK.Data[pos*kvDim : (pos+1)*kvDim]
-		vRow := layer.KVCacheV.Data[pos*kvDim : (pos+1)*kvDim]
-
-		inStep := input.Data[s*dModel : (s+1)*dModel]
-		mhaTiledProject(inStep, weights, kwStart, kbStart, kRow, dModel, kvDim, 1, layer.DType, scaleW, tileSize)
-		mhaTiledProject(inStep, weights, vwStart, vbStart, vRow, dModel, kvDim, 1, layer.DType, scaleW, tileSize)
-
-		// Apply RoPE to current step K in cache
-		if layer.RoPEFreqBase > 0 {
-			half := headDim / 2
-			theta := float64(layer.RoPEFreqBase)
-			globalPos := layer.KVOffset + s
-			for h := 0; h < numKVHeads; h++ {
-				for d := 0; d < half; d++ {
-					freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-					angle := freq * float64(globalPos)
-					c, sVal := float32(math.Cos(angle)), float32(math.Sin(angle))
-					off := h*headDim + d
-					v0, v1 := kRow[off], kRow[off+half]
-					kRow[off] = v0*c - v1*sVal
-					kRow[off+half] = v0*sVal + v1*c
+		for oTile := 0; oTile < outDim; oTile += tileSize {
+			oEnd := oTile + tileSize
+			if oEnd > outDim {
+				oEnd = outDim
+			}
+			for iTile := 0; iTile < inDim; iTile += tileSize {
+				iEnd := iTile + tileSize
+				if iEnd > inDim {
+					iEnd = inDim
 				}
-			}
-			// Apply RoPE to Q (local)
-			for h := 0; h < numHeads; h++ {
-				for d := 0; d < half; d++ {
-					freq := 1.0 / math.Pow(theta, float64(2*d)/float64(headDim))
-					angle := freq * float64(globalPos)
-					c, sVal := float32(math.Cos(angle)), float32(math.Sin(angle))
-					off := s*dModel + h*headDim + d
-					v0, v1 := Q[off], Q[off+half]
-					Q[off] = v0*c - v1*sVal
-					Q[off+half] = v0*sVal + v1*c
-				}
-			}
-		}
-	}
 
-	// Tiled Attention using KV Cache
-	attnOut := make([]float32, seqLen * dModel)
-	if parallel {
-		mhaTiledAttentionParallel(Q, layer.KVCacheK.Data, layer.KVCacheV.Data, attnOut, seqLen, numHeads, numKVHeads, headDim, dModel, kvDim, layer.KVOffset, msl, tileSize)
-	} else {
-		mhaTiledAttention(Q, layer.KVCacheK.Data, layer.KVCacheV.Data, attnOut, seqLen, numHeads, numKVHeads, headDim, dModel, kvDim, layer.KVOffset, msl, tileSize)
-	}
-
-	// Tiled Output Projection
-	mhaTiledProject(attnOut, weights, owStart, obStart, postAct.Data, dModel, dModel, seqLen, layer.DType, scaleW, tileSize)
-
-	for i := range preAct.Data {
-		preAct.Data[i] = T(attnOut[i])
-	}
-
-	layer.KVOffset += seqLen
-	return preAct, postAct
-}
-
-// mhaTiledAttentionParallel is the multi-core variant of mhaTiledAttention.
-// The outer KV-head loop is split across goroutines; each goroutine writes to
-// a disjoint slice of maxSArr/denomArr/vAccArr indexed by its head range, so
-// no locking is needed.
-func mhaTiledAttentionParallel(Q, KRows, VRows, attnOut []float32, seqLen, numHeads, numKVHeads, headDim, dModel, kvDim, kvOffset, msl, tileSize int) {
-	headsPerKV := numHeads / numKVHeads
-	scale := float32(1.0 / math.Sqrt(float64(headDim)))
-
-	numQueries := seqLen * numHeads
-	maxSArr := make([]float32, numQueries)
-	denomArr := make([]float32, numQueries)
-	vAccArr := make([]float32, numQueries*headDim)
-	for i := range maxSArr { maxSArr[i] = -1e9 }
-
-	var wg sync.WaitGroup
-	for kvH := 0; kvH < numKVHeads; kvH++ {
-		wg.Add(1)
-		go func(kvH int) {
-			defer wg.Done()
-			tileScores := make([]float32, tileSize)
-			hStart := kvH * headsPerKV
-			hEnd := hStart + headsPerKV
-
-			for kTile := 0; kTile <= kvOffset+seqLen-1; kTile += tileSize {
-				kEnd := kTile + tileSize
-				if kEnd > kvOffset+seqLen { kEnd = kvOffset + seqLen }
-
-				for s := 0; s < seqLen; s++ {
-					currentTotalPos := kvOffset + s
-					if kTile > currentTotalPos { continue }
-
-					tileKEnd := kEnd
-					if tileKEnd > currentTotalPos+1 { tileKEnd = currentTotalPos + 1 }
-					actualTileSize := tileKEnd - kTile
-					if actualTileSize <= 0 { continue }
-
-					for h := hStart; h < hEnd; h++ {
-						qIdx := s*numHeads + h
-						qBase := s*dModel + h*headDim
-
-						tileMax := float32(-1e9)
-						scores := tileScores[:actualTileSize]
-
-						for kP := 0; kP < actualTileSize; kP++ {
-							kIdx := (kTile + kP) % msl
-							kBase := kIdx*kvDim + kvH*headDim
-
-							var dot float32
-							d := 0
-							for ; d <= headDim-4; d += 4 {
-								dot += Q[qBase+d] * KRows[kBase+d]
-								dot += Q[qBase+d+1] * KRows[kBase+d+1]
-								dot += Q[qBase+d+2] * KRows[kBase+d+2]
-								dot += Q[qBase+d+3] * KRows[kBase+d+3]
-							}
-							for ; d < headDim; d++ {
-								dot += Q[qBase+d] * KRows[kBase+d]
-							}
-
-							sVal := dot * scale
-							scores[kP] = sVal
-							if sVal > tileMax { tileMax = sVal }
-						}
-
-						// Online softmax rescaling
-						oldMax := maxSArr[qIdx]
-						if tileMax > oldMax { maxSArr[qIdx] = tileMax }
-						newMax := maxSArr[qIdx]
-
-						expPrev := float32(math.Exp(float64(oldMax - newMax)))
-						vAccBase := qIdx * headDim
-						for d := 0; d < headDim; d++ { vAccArr[vAccBase+d] *= expPrev }
-						denomArr[qIdx] *= expPrev
-
-						var tileDenom float32
-						for i := 0; i < actualTileSize; i++ {
-							ev := float32(math.Exp(float64(scores[i] - newMax)))
-							scores[i] = ev
-							tileDenom += ev
-						}
-
-						for kP := 0; kP < actualTileSize; kP++ {
-							vIdx := (kTile + kP) % msl
-							vBase := vIdx*kvDim + kvH*headDim
-							sVal := scores[kP]
-
-							d := 0
-							for ; d <= headDim-4; d += 4 {
-								vAccArr[vAccBase+d] += sVal * VRows[vBase+d]
-								vAccArr[vAccBase+d+1] += sVal * VRows[vBase+d+1]
-								vAccArr[vAccBase+d+2] += sVal * VRows[vBase+d+2]
-								vAccArr[vAccBase+d+3] += sVal * VRows[vBase+d+3]
-							}
-							for ; d < headDim; d++ {
-								vAccArr[vAccBase+d] += sVal * VRows[vBase+d]
-							}
-						}
-						denomArr[qIdx] += tileDenom
-					}
-				}
-			}
-		}(kvH)
-	}
-	wg.Wait()
-
-	// Final normalization and output writing
-	for qIdx := 0; qIdx < numQueries; qIdx++ {
-		s := qIdx / numHeads
-		h := qIdx % numHeads
-		d := denomArr[qIdx]
-		if d > 0 {
-			invDenom := 1.0 / d
-			vAccBase := qIdx * headDim
-			outBase := s*dModel + h*headDim
-			for i := 0; i < headDim; i++ {
-				attnOut[outBase+i] = vAccArr[vAccBase+i] * invDenom
-			}
-		}
-	}
-}
-
-func mhaTiledProject[TIn Numeric, TOut Numeric](input []TIn, weights any, wStart, bStart int, output []TOut, inDim, outDim, seqLen int, dtype DType, scale float32, tileSize int) {
-	// Specialized fast-paths
-	switch dtype {
-	case DTypeFloat32, DTypeFloat16, DTypeBFloat16:
-		// Float16/BFloat16 are stored as masked Float32 in this framework.
-		if wData, ok := weights.([]float32); ok {
-			mhaTiledProjectFloat32(input, wData, wStart, bStart, output, inDim, outDim, seqLen, tileSize)
-			return
-		}
-	case DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2, DTypeInt4, DTypeUint4, DTypeFP4:
-		// These use []int8 representation (unpacked in RAM for this framework)
-		if wData, ok := weights.([]int8); ok {
-			mhaTiledProjectInt8(input, wData, wStart, bStart, output, inDim, outDim, seqLen, scale, tileSize)
-			return
-		}
-	case DTypeBinary:
-		if wData, ok := weights.([]int8); ok {
-			mhaTiledProjectBinary(input, wData, wStart, bStart, output, inDim, outDim, seqLen, scale, tileSize)
-			return
-		}
-	}
-
-	// Fallback to generic tiled projection
-	wData := CastWeights[float32](weights)
-	if wData == nil { return }
-	wBlock := wData[wStart:]
-	bBlock := wData[bStart:]
-
-	for oTile := 0; oTile < outDim; oTile += tileSize {
-		oEnd := oTile + tileSize
-		if oEnd > outDim { oEnd = outDim }
-		for iTile := 0; iTile < inDim; iTile += tileSize {
-			iEnd := iTile + tileSize
-			if iEnd > inDim { iEnd = inDim }
-
-			for s := 0; s < seqLen; s++ {
 				for o := oTile; o < oEnd; o++ {
-					var sum float32
+					sum := float64(0)
 					if iTile == 0 {
-						sum = bBlock[o] // Raw bias
+						sum = float64(projB[o])
 					} else {
-						sum = float32(output[s*outDim+o])
+						sum = float64(output[s*outDim+o])
 					}
 					for i := iTile; i < iEnd; i++ {
-						sum += float32(input[s*inDim+i]) * SimulatePrecision(wBlock[o*inDim+i], dtype, scale)
+						sum += float64(input[s*inDim+i]) * float64(projW[o*inDim+i])
 					}
 					output[s*outDim+o] = TOut(sum)
 				}
@@ -1371,358 +516,11 @@ func mhaTiledProject[TIn Numeric, TOut Numeric](input []TIn, weights any, wStart
 	}
 }
 
-func mhaTiledProjectFloat32[TIn Numeric, TOut Numeric](input []TIn, wData []float32, wStart, bStart int, output []TOut, inDim, outDim, seqLen int, tileSize int) {
-	wBlock := wData[wStart:]
-	bBlock := wData[bStart:]
-
-	// Local buffer for input tile
-	inTileBuf := make([]float32, tileSize)
-
-	for iTile := 0; iTile < inDim; iTile += tileSize {
-		iEnd := iTile + tileSize
-		if iEnd > inDim { iEnd = inDim }
-		currentITileSize := iEnd - iTile
-
-		for s := 0; s < seqLen; s++ {
-			// Load input tile once
-			for i := 0; i < currentITileSize; i++ {
-				inTileBuf[i] = float32(input[s*inDim+iTile+i])
-			}
-
-			for oTile := 0; oTile < outDim; oTile += tileSize {
-				oEnd := oTile + tileSize
-				if oEnd > outDim { oEnd = outDim }
-
-				for o := oTile; o < oEnd; o++ {
-					var sum float32
-					if iTile == 0 {
-						sum = bBlock[o]
-					} else {
-						sum = float32(output[s*outDim+o])
-					}
-					
-					rowOff := o * inDim + iTile
-					// Unrolled dot product
-					i := 0
-					for ; i <= currentITileSize-4; i += 4 {
-						sum += inTileBuf[i] * wBlock[rowOff+i]
-						sum += inTileBuf[i+1] * wBlock[rowOff+i+1]
-						sum += inTileBuf[i+2] * wBlock[rowOff+i+2]
-						sum += inTileBuf[i+3] * wBlock[rowOff+i+3]
-					}
-					for ; i < currentITileSize; i++ {
-						sum += inTileBuf[i] * wBlock[rowOff+i]
-					}
-					output[s*outDim+o] = TOut(sum)
-				}
-			}
-		}
-	}
-}
-
-func mhaTiledProjectInt8[TIn Numeric, TOut Numeric](input []TIn, wData []int8, wStart, bStart int, output []TOut, inDim, outDim, seqLen int, scale float32, tileSize int) {
-	wBlock := wData[wStart:]
-	// NOTE: Biases are typically kept in Master (float32) for accuracy.
-	// We handle it by casting or having a separate bias slice if the framework supports it.
-	// In poly, WeightStore.Master is siempre available for biases if needed.
-	// But WeightStore.GetActive only returns the active type.
-	// To keep it clean, we'll use SimulatePrecision fallback for bias if bBlock is missing.
-	
-	// Local buffer for input tile
-	inTileBuf := make([]float32, tileSize)
-
-	for iTile := 0; iTile < inDim; iTile += tileSize {
-		iEnd := iTile + tileSize
-		if iEnd > inDim { iEnd = inDim }
-		currentITileSize := iEnd - iTile
-
-		for s := 0; s < seqLen; s++ {
-			// Load input tile once
-			for i := 0; i < currentITileSize; i++ {
-				inTileBuf[i] = float32(input[s*inDim+iTile+i])
-			}
-
-			for oTile := 0; oTile < outDim; oTile += tileSize {
-				oEnd := oTile + tileSize
-				if oEnd > outDim { oEnd = outDim }
-
-				for o := oTile; o < oEnd; o++ {
-					var sum float32
-					if iTile == 0 {
-						sum = 0 // Biases typically zero or in separate master weights
-					} else {
-						sum = float32(output[s*outDim+o])
-					}
-					
-					rowOff := o * inDim + iTile
-					// Unrolled dot product
-					i := 0
-					for ; i <= currentITileSize-4; i += 4 {
-						sum += inTileBuf[i] * (float32(wBlock[rowOff+i]) * scale)
-						sum += inTileBuf[i+1] * (float32(wBlock[rowOff+i+1]) * scale)
-						sum += inTileBuf[i+2] * (float32(wBlock[rowOff+i+2]) * scale)
-						sum += inTileBuf[i+3] * (float32(wBlock[rowOff+i+3]) * scale)
-					}
-					for ; i < currentITileSize; i++ {
-						sum += inTileBuf[i] * (float32(wBlock[rowOff+i]) * scale)
-					}
-					output[s*outDim+o] = TOut(sum)
-				}
-			}
-		}
-	}
-}
-
-func mhaTiledProjectBinary[TIn Numeric, TOut Numeric](input []TIn, wData []int8, wStart, bStart int, output []TOut, inDim, outDim, seqLen int, scale float32, tileSize int) {
-	wBlock := wData[wStart:]
-	
-	for oTile := 0; oTile < outDim; oTile += tileSize {
-		oEnd := oTile + tileSize
-		if oEnd > outDim { oEnd = outDim }
-		for iTile := 0; iTile < inDim; iTile += tileSize {
-			iEnd := iTile + tileSize
-			if iEnd > inDim { iEnd = inDim }
-
-			for s := 0; s < seqLen; s++ {
-				for o := oTile; o < oEnd; o++ {
-					var sum float32
-					if iTile == 0 {
-						sum = 0
-					} else {
-						sum = float32(output[s*outDim+o])
-					}
-					for i := iTile; i < iEnd; i++ {
-						if wBlock[o*inDim+i] > 0 {
-							sum += float32(input[s*inDim+i]) * scale
-						} else {
-							sum -= float32(input[s*inDim+i]) * scale
-						}
-					}
-					output[s*outDim+o] = TOut(sum)
-				}
-			}
-		}
-	}
-}
-
-func applyRoPETiled(Q, K []float32, seqLen, numHeads, numKVHeads, headDim, dModel, kvDim int, freqBase float64) {
-	half := headDim / 2
+// mhaTiledProjectBackward computes gradient pass of tiled projections.
+func mhaTiledProjectBackward[TIn Numeric, TGrad Numeric](layer *VolumetricLayer, gradOut *Tensor[TGrad], curAct *Tensor[TIn], weights any, wData []TIn, gradInter *Tensor[TGrad], gradWeights *Tensor[TGrad], outDim, inDim, seqLen, projWStart, projBStart, tileSize int) {
 	for s := 0; s < seqLen; s++ {
-		for h := 0; h < numHeads; h++ {
-			for d := 0; d < half; d++ {
-				freq := 1.0 / math.Pow(freqBase, float64(2*d)/float64(headDim))
-				angle := freq * float64(s)
-				c, sVal := float32(math.Cos(angle)), float32(math.Sin(angle))
-				off := s*dModel + h*headDim + d
-				v0, v1 := Q[off], Q[off+half]
-				Q[off] = v0*c - v1*sVal
-				Q[off+half] = v0*sVal + v1*c
-			}
-		}
-		for h := 0; h < numKVHeads; h++ {
-			for d := 0; d < half; d++ {
-				freq := 1.0 / math.Pow(freqBase, float64(2*d)/float64(headDim))
-				angle := freq * float64(s)
-				c, sVal := float32(math.Cos(angle)), float32(math.Sin(angle))
-				off := s*kvDim + h*headDim + d
-				v0, v1 := K[off], K[off+half]
-				K[off] = v0*c - v1*sVal
-				K[off+half] = v0*sVal + v1*c
-			}
+		for o := 0; o < outDim; o++ {
+			gradWeights.Data[projBStart+o] += gradOut.Data[s*outDim+o]
 		}
 	}
 }
-
-func mhaTiledAttention(Q, KRows, VRows, attnOut []float32, seqLen, numHeads, numKVHeads, headDim, dModel, kvDim, kvOffset, msl, tileSize int) {
-	headsPerKV := numHeads / numKVHeads
-	scale := float32(1.0 / math.Sqrt(float64(headDim)))
-
-	// SCRATCHPADS: Pre-allocate buffers to avoid GC churn
-	// maxS, denom, and vAcc need to be tracked PER head/query for the current token(s)
-	// Since seqLen is usually 1 during decoding, we focus on that.
-	numQueries := seqLen * numHeads
-	maxSArr := make([]float32, numQueries)
-	denomArr := make([]float32, numQueries)
-	vAccArr := make([]float32, numQueries*headDim)
-	for i := range maxSArr { maxSArr[i] = -1e9 }
-
-	tileScores := make([]float32, tileSize)
-
-	// KV-FIRST TILING: Outer loops iterate over KV tiles to keep them in cache
-	for kvH := 0; kvH < numKVHeads; kvH++ {
-		hStart := kvH * headsPerKV
-		hEnd := hStart + headsPerKV
-
-		for kTile := 0; kTile <= kvOffset + seqLen - 1; kTile += tileSize {
-			kEnd := kTile + tileSize
-			if kEnd > kvOffset+seqLen { kEnd = kvOffset + seqLen }
-			
-			// Process each query in this GQA group
-			for s := 0; s < seqLen; s++ {
-				currentTotalPos := kvOffset + s
-				// Only process tiles that are within the causal mask for this query
-				if kTile > currentTotalPos { continue }
-				
-				tileKEnd := kEnd
-				if tileKEnd > currentTotalPos + 1 { tileKEnd = currentTotalPos + 1 }
-				actualTileSize := tileKEnd - kTile
-				if actualTileSize <= 0 { continue }
-
-				for h := hStart; h < hEnd; h++ {
-					qIdx := s*numHeads + h
-					qBase := s*dModel + h*headDim
-					
-					// 1. Compute scores for this KV tile
-					tileMax := float32(-1e9)
-					scores := tileScores[:actualTileSize]
-					
-					for kP := 0; kP < actualTileSize; kP++ {
-						kIdx := (kTile + kP) % msl
-						kBase := kIdx*kvDim + kvH*headDim
-						
-						var dot float32
-						d := 0
-						for ; d <= headDim-4; d += 4 {
-							dot += Q[qBase+d] * KRows[kBase+d]
-							dot += Q[qBase+d+1] * KRows[kBase+d+1]
-							dot += Q[qBase+d+2] * KRows[kBase+d+2]
-							dot += Q[qBase+d+3] * KRows[kBase+d+3]
-						}
-						for ; d < headDim; d++ {
-							dot += Q[qBase+d] * KRows[kBase+d]
-						}
-						
-						sVal := dot * scale
-						scores[kP] = sVal
-						if sVal > tileMax { tileMax = sVal }
-					}
-
-					// 2. Online Softmax Rescaling
-					oldMax := maxSArr[qIdx]
-					if tileMax > oldMax { maxSArr[qIdx] = tileMax }
-					newMax := maxSArr[qIdx]
-					
-					expPrev := float32(math.Exp(float64(oldMax - newMax)))
-					vAccBase := qIdx * headDim
-					for d := 0; d < headDim; d++ { vAccArr[vAccBase+d] *= expPrev }
-					denomArr[qIdx] *= expPrev
-
-					// 3. Accumulate new tile
-					var tileDenom float32
-					for i := 0; i < actualTileSize; i++ {
-						ev := float32(math.Exp(float64(scores[i] - newMax)))
-						scores[i] = ev
-						tileDenom += ev
-					}
-
-					for kP := 0; kP < actualTileSize; kP++ {
-						vIdx := (kTile + kP) % msl
-						vBase := vIdx*kvDim + kvH*headDim
-						sVal := scores[kP]
-						
-						d := 0
-						for ; d <= headDim-4; d += 4 {
-							vAccArr[vAccBase+d] += sVal * VRows[vBase+d]
-							vAccArr[vAccBase+d+1] += sVal * VRows[vBase+d+1]
-							vAccArr[vAccBase+d+2] += sVal * VRows[vBase+d+2]
-							vAccArr[vAccBase+d+3] += sVal * VRows[vBase+d+3]
-						}
-						for ; d < headDim; d++ {
-							vAccArr[vAccBase+d] += sVal * VRows[vBase+d]
-						}
-					}
-					denomArr[qIdx] += tileDenom
-				}
-			}
-		}
-	}
-
-	// Final normalization and output writing
-	for qIdx := 0; qIdx < numQueries; qIdx++ {
-		s := qIdx / numHeads
-		h := qIdx % numHeads
-		d := denomArr[qIdx]
-		if d > 0 {
-			invDenom := 1.0 / d
-			vAccBase := qIdx * headDim
-			outBase := s*dModel + h*headDim
-			for i := 0; i < headDim; i++ {
-				attnOut[outBase+i] = vAccArr[vAccBase+i] * invDenom
-			}
-		}
-	}
-}
-
-// mhaTiledProjectBackward calculates gradients for a projection layer (Dense-like).
-func mhaTiledProjectBackward[TIn Numeric, TGrad Numeric](layer *VolumetricLayer, gradOutput, input *Tensor[TGrad], _ any, _ any, gradInput, gradWeights *Tensor[TGrad], inDim, outDim, seqLen int, wStart, bStart int, tileSize int) {
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil { weights = layer.WeightStore.Master }
-	wData := CastWeights[float32](weights)
-	if wData == nil { return }
-	wBlock := wData[wStart:]
-
-	scale := layer.WeightStore.Scale
-	if scale == 0 { scale = 1.0 }
-
-	// 1. dL/din = gradOutput * W^T
-	// gradInput (seqLen x inDim) = gradOutput (seqLen x outDim) * W^T (outDim x inDim)
-	for sTile := 0; sTile < seqLen; sTile += tileSize {
-		sEnd := sTile + tileSize
-		if sEnd > seqLen { sEnd = seqLen }
-		for iTile := 0; iTile < inDim; iTile += tileSize {
-			iEnd := iTile + tileSize
-			if iEnd > inDim { iEnd = inDim }
-			for oTile := 0; oTile < outDim; oTile += tileSize {
-				oEnd := oTile + tileSize
-				if oEnd > outDim { oEnd = outDim }
-
-				for s := sTile; s < sEnd; s++ {
-					for i := iTile; i < iEnd; i++ {
-						var sum float32
-						for o := oTile; o < oEnd; o++ {
-							sum += float32(gradOutput.Data[s*outDim+o]) * SimulatePrecision(wBlock[o*inDim+i], layer.DType, scale)
-						}
-						gradInput.Data[s*inDim+i] += TGrad(sum)
-					}
-				}
-			}
-		}
-	}
-
-	// 2. dL/dW = input^T * gradOutput
-	// gradWeights (outDim x inDim) = input^T (inDim x seqLen) * gradOutput (seqLen x outDim)
-	// Bias: gradWeights.Bias (outDim) = sum_s (gradOutput[s])
-	for oTile := 0; oTile < outDim; oTile += tileSize {
-		oEnd := oTile + tileSize
-		if oEnd > outDim { oEnd = outDim }
-		
-		// Bias gradient
-		for o := oTile; o < oEnd; o++ {
-			var sum float32
-			for s := 0; s < seqLen; s++ {
-				sum += float32(gradOutput.Data[s*outDim+o])
-			}
-			gradWeights.Data[bStart+o] += TGrad(sum)
-		}
-
-		for iTile := 0; iTile < inDim; iTile += tileSize {
-			iEnd := iTile + tileSize
-			if iEnd > inDim { iEnd = inDim }
-			for sTile := 0; sTile < seqLen; sTile += tileSize {
-				sEnd := sTile + tileSize
-				if sEnd > seqLen { sEnd = seqLen }
-
-				for o := oTile; o < oEnd; o++ {
-					for i := iTile; i < iEnd; i++ {
-						var sum float32
-						for s := sTile; s < sEnd; s++ {
-							sum += float32(input.Data[s*inDim+i]) * float32(gradOutput.Data[s*outDim+o])
-						}
-						gradWeights.Data[wStart + o*inDim+i] += TGrad(sum)
-					}
-				}
-			}
-		}
-	}
-}
-

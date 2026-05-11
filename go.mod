@@ -1,5 +1,5 @@
 module github.com/openfluke/loom
 
-go 1.24.3
+go 1.26.2
 
 require github.com/openfluke/webgpu v0.0.2

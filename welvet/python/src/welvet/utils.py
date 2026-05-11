@@ -24,15 +24,17 @@ def _lib_path() -> Path:
     plat = sys.platform
     arch = platform.machine().lower()
 
+    if arch in ("armv7l", "i686", "i386", "armv6l"):
+        raise RuntimeError(
+            f"32-bit CPU ({arch}) is not supported; welvet ships 64-bit binaries only."
+        )
+
     # Map Python machine names to Go GOARCH names (used by the builder)
     arch_map = {
         "x86_64": "amd64",
-        "amd64":  "amd64",
+        "amd64": "amd64",
         "aarch64": "arm64",
-        "arm64":   "arm64",
-        "armv7l":  "arm",
-        "i686":    "386",
-        "i386":    "386",
+        "arm64": "arm64",
     }
     arch_key = arch_map.get(arch, arch)
 
@@ -249,15 +251,15 @@ if _LoomNewVolumetricNetwork:
     _LoomNewVolumetricNetwork.restype = ctypes.c_longlong
     _LoomNewVolumetricNetwork.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
 
-# Systolic state (polymorphic execution engine)
-_LoomCreateSystolicState = _sym("LoomCreateSystolicState")
-if _LoomCreateSystolicState:
-    _LoomCreateSystolicState.restype = ctypes.c_longlong
-    _LoomCreateSystolicState.argtypes = [ctypes.c_longlong, ctypes.c_int]
+# Step state (polymorphic execution engine)
+_LoomCreateStepState = _sym("LoomCreateStepState")
+if _LoomCreateStepState:
+    _LoomCreateStepState.restype = ctypes.c_longlong
+    _LoomCreateStepState.argtypes = [ctypes.c_longlong, ctypes.c_int]
 
-_LoomFreeSystolicState = _sym("LoomFreeSystolicState")
-if _LoomFreeSystolicState:
-    _LoomFreeSystolicState.argtypes = [ctypes.c_longlong]
+_LoomFreeStepState = _sym("LoomFreeStepState")
+if _LoomFreeStepState:
+    _LoomFreeStepState.argtypes = [ctypes.c_longlong]
 
 _LoomSetInput = _sym("LoomSetInput")
 if _LoomSetInput:
@@ -268,10 +270,10 @@ if _LoomSetInput:
         ctypes.c_int,
     ]
 
-_LoomSystolicStep = _sym("LoomSystolicStep")
-if _LoomSystolicStep:
-    _LoomSystolicStep.restype = ctypes.c_longlong
-    _LoomSystolicStep.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int]
+_LoomStep = _sym("LoomStep")
+if _LoomStep:
+    _LoomStep.restype = ctypes.c_longlong
+    _LoomStep.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_int]
 
 _LoomGetOutput = _sym("LoomGetOutput")
 if _LoomGetOutput:
@@ -299,10 +301,10 @@ if _LoomTrain:
         ctypes.c_char_p,             # configJSON
     ]
 
-_LoomSystolicBackward = _sym("LoomSystolicBackward")
-if _LoomSystolicBackward:
-    _LoomSystolicBackward.restype = ctypes.c_char_p
-    _LoomSystolicBackward.argtypes = [
+_LoomStepBackward = _sym("LoomStepBackward")
+if _LoomStepBackward:
+    _LoomStepBackward.restype = ctypes.c_char_p
+    _LoomStepBackward.argtypes = [
         ctypes.c_longlong,
         ctypes.c_longlong,
         ctypes.POINTER(ctypes.c_float),
@@ -338,10 +340,10 @@ if _LoomComputeLossGradient:
         ctypes.c_char_p,
     ]
 
-_LoomApplyTargetProp = _sym("LoomApplyTargetProp")
-if _LoomApplyTargetProp:
-    _LoomApplyTargetProp.restype = None
-    _LoomApplyTargetProp.argtypes = [
+_LoomApplyTween = _sym("LoomApplyTween")
+if _LoomApplyTween:
+    _LoomApplyTween.restype = None
+    _LoomApplyTween.argtypes = [
         ctypes.c_longlong,
         ctypes.c_longlong,
         ctypes.POINTER(ctypes.c_float),
@@ -349,46 +351,46 @@ if _LoomApplyTargetProp:
         ctypes.c_float,
     ]
 
-# TargetProp state
-_LoomCreateTargetPropState = _sym("LoomCreateTargetPropState")
-if _LoomCreateTargetPropState:
-    _LoomCreateTargetPropState.restype = ctypes.c_longlong
-    _LoomCreateTargetPropState.argtypes = [ctypes.c_longlong, ctypes.c_int]
+# Tween state
+_LoomCreateTweenState = _sym("LoomCreateTweenState")
+if _LoomCreateTweenState:
+    _LoomCreateTweenState.restype = ctypes.c_longlong
+    _LoomCreateTweenState.argtypes = [ctypes.c_longlong, ctypes.c_int]
 
-_LoomTargetPropForward = _sym("LoomTargetPropForward")
-if _LoomTargetPropForward:
-    _LoomTargetPropForward.restype = ctypes.c_char_p
-    _LoomTargetPropForward.argtypes = [
+_LoomTweenForward = _sym("LoomTweenForward")
+if _LoomTweenForward:
+    _LoomTweenForward.restype = ctypes.c_char_p
+    _LoomTweenForward.argtypes = [
         ctypes.c_longlong,
         ctypes.c_longlong,
         ctypes.POINTER(ctypes.c_float),
         ctypes.c_int,
     ]
 
-_LoomTargetPropBackward = _sym("LoomTargetPropBackward")
-if _LoomTargetPropBackward:
-    _LoomTargetPropBackward.restype = ctypes.c_char_p
-    _LoomTargetPropBackward.argtypes = [
+_LoomTweenBackward = _sym("LoomTweenBackward")
+if _LoomTweenBackward:
+    _LoomTweenBackward.restype = ctypes.c_char_p
+    _LoomTweenBackward.argtypes = [
         ctypes.c_longlong,
         ctypes.c_longlong,
         ctypes.POINTER(ctypes.c_float),
         ctypes.c_int,
     ]
 
-_LoomTargetPropBackwardChainRule = _sym("LoomTargetPropBackwardChainRule")
-if _LoomTargetPropBackwardChainRule:
-    _LoomTargetPropBackwardChainRule.restype = None
-    _LoomTargetPropBackwardChainRule.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
+_LoomTweenBackwardChainRule = _sym("LoomTweenBackwardChainRule")
+if _LoomTweenBackwardChainRule:
+    _LoomTweenBackwardChainRule.restype = None
+    _LoomTweenBackwardChainRule.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
 
-_LoomTargetPropBackwardTargetProp = _sym("LoomTargetPropBackwardTargetProp")
-if _LoomTargetPropBackwardTargetProp:
-    _LoomTargetPropBackwardTargetProp.restype = None
-    _LoomTargetPropBackwardTargetProp.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
+_LoomTweenBackwardLayerwise = _sym("LoomTweenBackwardLayerwise")
+if _LoomTweenBackwardLayerwise:
+    _LoomTweenBackwardLayerwise.restype = None
+    _LoomTweenBackwardLayerwise.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_longlong]
 
-_LoomDefaultTargetPropConfig = _sym("LoomDefaultTargetPropConfig")
-if _LoomDefaultTargetPropConfig:
-    _LoomDefaultTargetPropConfig.restype = ctypes.c_char_p
-    _LoomDefaultTargetPropConfig.argtypes = []
+_LoomDefaultTweenConfig = _sym("LoomDefaultTweenConfig")
+if _LoomDefaultTweenConfig:
+    _LoomDefaultTweenConfig.restype = ctypes.c_char_p
+    _LoomDefaultTweenConfig.argtypes = []
 
 # Weight morphing (numerical type switching)
 _LoomMorphLayer = _sym("LoomMorphLayer")
@@ -911,10 +913,10 @@ if _LoomComputeLayerStats:
     _LoomComputeLayerStats.restype = ctypes.c_char_p
     _LoomComputeLayerStats.argtypes = [ctypes.c_longlong]
 
-_LoomApplyTargetPropGaps = _sym("LoomApplyTargetPropGaps")
-if _LoomApplyTargetPropGaps:
-    _LoomApplyTargetPropGaps.restype = None
-    _LoomApplyTargetPropGaps.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_float]
+_LoomApplyTweenGaps = _sym("LoomApplyTweenGaps")
+if _LoomApplyTweenGaps:
+    _LoomApplyTweenGaps.restype = None
+    _LoomApplyTweenGaps.argtypes = [ctypes.c_longlong, ctypes.c_longlong, ctypes.c_float]
 
 # DNA Splice
 _LoomDefaultSpliceConfig = _sym("LoomDefaultSpliceConfig")
@@ -1299,14 +1301,14 @@ def get_available_methods() -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# SystolicState — polymorphic forward/backward execution
+# StepState — polymorphic forward/backward execution
 # ---------------------------------------------------------------------------
 
-def create_systolic_state(network_handle: int, dtype: int = DType.FLOAT32) -> int:
+def create_step_state(network_handle: int, dtype: int = DType.FLOAT32) -> int:
     """
     Create a typed execution state for the network.
 
-    The SystolicState manages per-layer activations and is the vehicle for
+    The StepState manages per-layer activations and is the vehicle for
     all forward and backward passes. Create one per inference/training call.
 
     Args:
@@ -1315,28 +1317,28 @@ def create_systolic_state(network_handle: int, dtype: int = DType.FLOAT32) -> in
                Inputs are always accepted as float32 and cast internally.
 
     Returns:
-        State handle. Free with free_systolic_state().
+        State handle. Free with free_step_state().
     """
-    if not _LoomCreateSystolicState:
-        raise RuntimeError("LoomCreateSystolicState not available in library")
-    handle = _LoomCreateSystolicState(int(network_handle), int(dtype))
+    if not _LoomCreateStepState:
+        raise RuntimeError("LoomCreateStepState not available in library")
+    handle = _LoomCreateStepState(int(network_handle), int(dtype))
     if handle < 0:
-        raise RuntimeError("Failed to create SystolicState")
+        raise RuntimeError("Failed to create StepState")
     return int(handle)
 
 
-def free_systolic_state(handle: int) -> None:
-    """Free a SystolicState handle."""
-    if _LoomFreeSystolicState and handle >= 0:
-        _LoomFreeSystolicState(int(handle))
+def free_step_state(handle: int) -> None:
+    """Free a StepState handle."""
+    if _LoomFreeStepState and handle >= 0:
+        _LoomFreeStepState(int(handle))
 
 
 def set_input(state_handle: int, data: List[float]) -> None:
     """
-    Load input data into a SystolicState before calling systolic_step().
+    Load input data into a StepState before calling mesh_step().
 
     Args:
-        state_handle: Handle from create_systolic_state().
+        state_handle: Handle from create_step_state().
         data: Input vector (float values — cast to state dtype internally).
     """
     if not _LoomSetInput:
@@ -1345,32 +1347,32 @@ def set_input(state_handle: int, data: List[float]) -> None:
     _LoomSetInput(int(state_handle), arr, length)
 
 
-def systolic_step(network_handle: int, state_handle: int,
+def mesh_step(network_handle: int, state_handle: int,
                   capture_history: bool = False) -> int:
     """
     Execute one full forward pass through the volumetric network.
 
     Args:
         network_handle: Network handle.
-        state_handle: SystolicState handle (must have input set via set_input()).
+        state_handle: StepState handle (must have input set via set_input()).
         capture_history: If True, stores per-layer activations for backward pass.
 
     Returns:
         Execution duration in nanoseconds.
     """
-    if not _LoomSystolicStep:
-        raise RuntimeError("LoomSystolicStep not available in library")
-    return int(_LoomSystolicStep(
+    if not _LoomStep:
+        raise RuntimeError("LoomStep not available in library")
+    return int(_LoomStep(
         int(network_handle), int(state_handle), int(capture_history)
     ))
 
 
 def get_output(state_handle: int, layer_idx: int = -1) -> List[float]:
     """
-    Retrieve the output tensor from a layer after systolic_step().
+    Retrieve the output tensor from a layer after mesh_step().
 
     Args:
-        state_handle: SystolicState handle.
+        state_handle: StepState handle.
         layer_idx: Layer index to read (use -1 to read the last layer via
                    layer_count - 1 — caller must supply the correct index).
 
@@ -1381,7 +1383,7 @@ def get_output(state_handle: int, layer_idx: int = -1) -> List[float]:
         raise RuntimeError("LoomGetOutput not available in library")
     result = _parse_json(_LoomGetOutput(int(state_handle), int(layer_idx)))
     if result is None:
-        raise RuntimeError("No output available — did you call systolic_step()?")
+        raise RuntimeError("No output available — did you call mesh_step()?")
     _check(result, "get_output")
     return result if isinstance(result, list) else []
 
@@ -1390,7 +1392,7 @@ def sequential_forward(network_handle: int, inputs: List[float]) -> List[float]:
     """
     One-shot forward pass — no state management required.
 
-    Internally creates a transient SystolicState, runs the forward pass,
+    Internally creates a transient StepState, runs the forward pass,
     extracts the final layer output, and disposes of the state. Uses the
     dtype of the first layer in the network.
 
@@ -1413,28 +1415,28 @@ def sequential_forward(network_handle: int, inputs: List[float]) -> List[float]:
 # Training
 # ---------------------------------------------------------------------------
 
-def systolic_backward(network_handle: int, state_handle: int,
+def mesh_backward(network_handle: int, state_handle: int,
                       grad_output: List[float]) -> List[float]:
     """
     Run backpropagation through the network.
 
-    Must be called after systolic_step() with capture_history=True.
+    Must be called after mesh_step() with capture_history=True.
 
     Args:
         network_handle: Network handle.
-        state_handle: SystolicState handle (with captured history).
+        state_handle: StepState handle (with captured history).
         grad_output: Loss gradient w.r.t. the network output.
 
     Returns:
         Gradient w.r.t. the network input.
     """
-    if not _LoomSystolicBackward:
-        raise RuntimeError("LoomSystolicBackward not available in library")
+    if not _LoomStepBackward:
+        raise RuntimeError("LoomStepBackward not available in library")
     arr, length = _to_cfloat_array(grad_output)
     result = _parse_json(
-        _LoomSystolicBackward(int(network_handle), int(state_handle), arr, length)
+        _LoomStepBackward(int(network_handle), int(state_handle), arr, length)
     )
-    _check(result, "systolic_backward")
+    _check(result, "mesh_backward")
     return result if isinstance(result, list) else []
 
 
@@ -1501,7 +1503,7 @@ def apply_recursive_gradients(network_handle: int, layer_idx: int, grad_json: di
     )
 
 
-def apply_target_prop(network_handle: int, state_handle: int,
+def apply_tween(network_handle: int, state_handle: int,
                       target: List[float], learning_rate: float) -> None:
     """
     Apply Neural Target Propagation — a backprop-free local learning rule.
@@ -1512,85 +1514,85 @@ def apply_target_prop(network_handle: int, state_handle: int,
 
     Args:
         network_handle: Network handle.
-        state_handle: SystolicState handle (after forward pass).
+        state_handle: StepState handle (after forward pass).
         target: Target output values.
         learning_rate: Step size.
     """
-    if not _LoomApplyTargetProp:
-        raise RuntimeError("LoomApplyTargetProp not available in library")
+    if not _LoomApplyTween:
+        raise RuntimeError("LoomApplyTween not available in library")
     arr, length = _to_cfloat_array(target)
-    _LoomApplyTargetProp(
+    _LoomApplyTween(
         int(network_handle), int(state_handle), arr, length, float(learning_rate)
     )
 
 
 # ---------------------------------------------------------------------------
-# TargetPropState — explicit target propagation session
+# TweenState — explicit target propagation session
 # ---------------------------------------------------------------------------
 
-def create_target_prop_state(network_handle: int,
+def create_tween_state(network_handle: int,
                               dtype: int = DType.FLOAT32) -> int:
     """
-    Create an explicit TargetPropState for fine-grained target propagation.
+    Create an explicit TweenState for fine-grained target propagation.
 
     Returns:
-        TargetPropState handle.
+        TweenState handle.
     """
-    if not _LoomCreateTargetPropState:
-        raise RuntimeError("LoomCreateTargetPropState not available in library")
-    handle = _LoomCreateTargetPropState(int(network_handle), int(dtype))
+    if not _LoomCreateTweenState:
+        raise RuntimeError("LoomCreateTweenState not available in library")
+    handle = _LoomCreateTweenState(int(network_handle), int(dtype))
     if handle < 0:
-        raise RuntimeError("Failed to create TargetPropState")
+        raise RuntimeError("Failed to create TweenState")
     return int(handle)
 
 
-def target_prop_forward(network_handle: int, tp_handle: int,
+def tween_forward(network_handle: int, tp_handle: int,
                         inputs: List[float]) -> List[float]:
-    """Run a forward pass using the TargetPropState."""
-    if not _LoomTargetPropForward:
-        raise RuntimeError("LoomTargetPropForward not available in library")
+    """Run a forward pass using the TweenState."""
+    if not _LoomTweenForward:
+        raise RuntimeError("LoomTweenForward not available in library")
     arr, length = _to_cfloat_array(inputs)
     result = _parse_json(
-        _LoomTargetPropForward(int(network_handle), int(tp_handle), arr, length)
+        _LoomTweenForward(int(network_handle), int(tp_handle), arr, length)
     )
-    _check(result, "target_prop_forward")
+    _check(result, "tween_forward")
     return result if isinstance(result, list) else []
 
 
-def target_prop_backward(network_handle: int, tp_handle: int,
+def tween_backward(network_handle: int, tp_handle: int,
                          target: List[float]) -> List[float]:
     """Run a backward pass using standard target propagation."""
-    if not _LoomTargetPropBackward:
-        raise RuntimeError("LoomTargetPropBackward not available in library")
+    if not _LoomTweenBackward:
+        raise RuntimeError("LoomTweenBackward not available in library")
     arr, length = _to_cfloat_array(target)
     result = _parse_json(
-        _LoomTargetPropBackward(int(network_handle), int(tp_handle), arr, length)
+        _LoomTweenBackward(int(network_handle), int(tp_handle), arr, length)
     )
-    _check(result, "target_prop_backward")
+    _check(result, "tween_backward")
     return result if isinstance(result, list) else []
 
 
-def target_prop_backward_chain_rule(network_handle: int, tp_handle: int,
+def tween_backward_chain_rule(network_handle: int, tp_handle: int,
                                     target_handle: int) -> None:
     """Run target prop backward with chain-rule hybrid."""
-    if not _LoomTargetPropBackwardChainRule:
-        raise RuntimeError("LoomTargetPropBackwardChainRule not available in library")
-    _LoomTargetPropBackwardChainRule(int(network_handle), int(tp_handle), int(target_handle))
+    if not _LoomTweenBackwardChainRule:
+        raise RuntimeError("LoomTweenBackwardChainRule not available in library")
+    _LoomTweenBackwardChainRule(int(network_handle), int(tp_handle), int(target_handle))
 
 
-def target_prop_backward_target_prop(network_handle: int, tp_handle: int,
+def tween_backward_layerwise(network_handle: int, tp_handle: int,
                                      target_handle: int) -> None:
     """Run target prop backward using pure target propagation."""
-    if not _LoomTargetPropBackwardTargetProp:
-        raise RuntimeError("LoomTargetPropBackwardTargetProp not available in library")
-    _LoomTargetPropBackwardTargetProp(int(network_handle), int(tp_handle), int(target_handle))
+    if not _LoomTweenBackwardLayerwise:
+        raise RuntimeError("LoomTweenBackwardLayerwise not available in library")
+    _LoomTweenBackwardLayerwise(int(network_handle), int(tp_handle), int(target_handle))
 
 
-def get_default_target_prop_config() -> dict:
-    """Return the default TargetPropConfig as a dict."""
-    if not _LoomDefaultTargetPropConfig:
+def get_default_tween_config() -> dict:
+    """Return the default TweenConfig as a dict."""
+    if not _LoomDefaultTweenConfig:
         return {}
-    result = _parse_json(_LoomDefaultTargetPropConfig())
+    result = _parse_json(_LoomDefaultTweenConfig())
     return result or {}
 
 
@@ -2617,7 +2619,7 @@ def layer_forward(layer_name: str, network_handle: int, layer_idx: int,
                     "MHA", "SwiGLU", "CNN1", "CNN2", "CNN3", etc.
         network_handle: Network handle.
         layer_idx: Index within n.Layers.
-        state_handle: SystolicState carrying the input tensor.
+        state_handle: StepState carrying the input tensor.
 
     Returns:
         Dict with 'pre' and 'post' activation tensors.
@@ -2703,13 +2705,13 @@ class Network:
         """GPU LLM-style forward from token IDs."""
         return forward_token_ids_wgpu(self._handle, token_ids)
 
-    def create_state(self, dtype: int = DType.FLOAT32) -> "SystolicState":
-        """Create a typed SystolicState bound to this network."""
-        return SystolicState(self, dtype=dtype)
+    def create_state(self, dtype: int = DType.FLOAT32) -> "StepState":
+        """Create a typed StepState bound to this network."""
+        return StepState(self, dtype=dtype)
 
-    def create_target_prop(self, dtype: int = DType.FLOAT32) -> "TargetPropState":
-        """Create a TargetPropState bound to this network."""
-        return TargetPropState(self, dtype=dtype)
+    def create_tween(self, dtype: int = DType.FLOAT32) -> "TweenState":
+        """Create a TweenState bound to this network."""
+        return TweenState(self, dtype=dtype)
 
     def create_transformer(self, embeddings: List[float] = None, 
                            lm_head: List[float] = None, 
@@ -2815,7 +2817,7 @@ class Network:
             return f"Network(handle={self._handle})"
 
 
-class SystolicState:
+class StepState:
     """
     Typed execution context for a single forward/backward pass.
 
@@ -2836,7 +2838,7 @@ class SystolicState:
 
     def __init__(self, network: Network, dtype: int = DType.FLOAT32):
         self._net = network
-        self._handle = create_systolic_state(network.handle, dtype)
+        self._handle = create_step_state(network.handle, dtype)
         self.dtype = dtype
 
     def set_input(self, data: List[float]) -> None:
@@ -2845,7 +2847,7 @@ class SystolicState:
 
     def step(self, capture_history: bool = False) -> int:
         """Run forward pass. Returns duration in nanoseconds."""
-        return systolic_step(self._net.handle, self._handle, capture_history)
+        return mesh_step(self._net.handle, self._handle, capture_history)
 
     def output(self, layer_idx: int) -> List[float]:
         """Get output from a specific layer after step()."""
@@ -2853,7 +2855,7 @@ class SystolicState:
 
     def backward(self, grad_output: List[float]) -> List[float]:
         """Run backpropagation. Requires step(capture_history=True)."""
-        return systolic_backward(self._net.handle, self._handle, grad_output)
+        return mesh_backward(self._net.handle, self._handle, grad_output)
 
     def compute_loss_gradient(self, targets: List[float],
                                loss_type: str = "mse") -> List[float]:
@@ -2865,20 +2867,20 @@ class SystolicState:
         """Apply weight gradients to a layer."""
         apply_gradients(network.handle, layer_idx, grad_weights, lr)
 
-    def apply_target_prop(self, target: List[float],
+    def apply_tween(self, target: List[float],
                           learning_rate: float) -> None:
         """Apply target propagation update."""
-        apply_target_prop(self._net.handle, self._handle, target, learning_rate)
+        apply_tween(self._net.handle, self._handle, target, learning_rate)
 
     def free(self) -> None:
         """Release native resources."""
         if self._handle >= 0:
-            free_systolic_state(self._handle)
+            free_step_state(self._handle)
             self._handle = -1
 
     def __del__(self):
         if hasattr(self, "_handle") and self._handle >= 0:
-            free_systolic_state(self._handle)
+            free_step_state(self._handle)
             self._handle = -1
 
     def __enter__(self):
@@ -2888,7 +2890,7 @@ class SystolicState:
         self.free()
 
 
-class TargetPropState:
+class TweenState:
     """
     Explicit Target Propagation session.
 
@@ -2898,27 +2900,31 @@ class TargetPropState:
 
     Example::
 
-        with net.create_target_prop(DType.FLOAT32) as tp:
+        with net.create_tween(DType.FLOAT32) as tp:
             output = tp.forward([0.0, 1.0])
             tp.backward([1.0])            # or tp.backward_chain_rule([1.0], lr=0.01)
     """
 
     def __init__(self, network: Network, dtype: int = DType.FLOAT32):
         self._net = network
-        self._handle = create_target_prop_state(network.handle, dtype)
+        self._handle = create_tween_state(network.handle, dtype)
         self.dtype = dtype
 
     def forward(self, inputs: List[float]) -> List[float]:
         """Run forward pass and store activations."""
-        return target_prop_forward(self._net.handle, self._handle, inputs)
+        return tween_forward(self._net.handle, self._handle, inputs)
 
     def backward(self, target: List[float]) -> List[float]:
         """Apply standard target propagation update."""
-        return target_prop_backward(self._net.handle, self._handle, target)
+        return tween_backward(self._net.handle, self._handle, target)
 
     def backward_chain_rule(self, target_handle: int) -> None:
         """Apply hybrid chain-rule + target propagation update."""
-        target_prop_backward_chain_rule(self._net.handle, self._handle, target_handle)
+        tween_backward_chain_rule(self._net.handle, self._handle, target_handle)
+
+    def backward_layerwise(self, target_handle: int) -> None:
+        """Pure layerwise target propagation (no chain-rule gradients)."""
+        tween_backward_layerwise(self._net.handle, self._handle, target_handle)
 
     def free(self) -> None:
         if self._handle >= 0:
@@ -3064,7 +3070,7 @@ def train(
     verbose: bool = False,
 ) -> List[float]:
     """
-    Train a network via poly.Train (proper sequential forward, no systolic).
+    Train a network via poly.Train (proper sequential forward, not step mesh).
 
     batches_in:  list of batches, each batch is a list of input vectors.
     batches_tgt: list of batches, each batch is a list of target vectors.
@@ -3122,7 +3128,7 @@ def train_network(
     verbose: bool = False,
 ) -> List[float]:
     """
-    Train a network for a fixed number of epochs using systolic execution.
+    Train a network for a fixed number of epochs using step mesh (clock-cycle) execution.
 
     Args:
         network: Network instance.

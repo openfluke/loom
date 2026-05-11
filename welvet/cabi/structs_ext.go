@@ -205,7 +205,7 @@ func LoomGetLayerSpec(networkHandle C.longlong, layerIdx C.int) C.LoomLayerSpec 
 
 //export LoomGetLayerStats
 func LoomGetLayerStats(stateHandle C.longlong, layerIdx C.int) C.LoomLayerStats {
-	c, ok := getSystolicContainer(int64(stateHandle))
+	c, ok := getStepContainer(int64(stateHandle))
 	if !ok {
 		return C.LoomLayerStats{}
 	}
@@ -215,7 +215,7 @@ func LoomGetLayerStats(stateHandle C.longlong, layerIdx C.int) C.LoomLayerStats 
 	var stats poly.LayerStats
 	switch c.DType {
 	case poly.DTypeFloat32:
-		st := c.State.(*poly.SystolicState[float32])
+		st := c.State.(*poly.StepState[float32])
 		if int(layerIdx) >= 0 && int(layerIdx) < len(st.LayerData) && st.LayerData[layerIdx] != nil {
 			stats = poly.ComputeLayerStats(st.LayerData[layerIdx])
 		}
