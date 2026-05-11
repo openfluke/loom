@@ -33,3 +33,13 @@ Architecture shorthand for a Loom stack that combines **multi-region volumetric*
 - **Streaming decode** — Outer loop can stay standard autoregressive / KV-style; mesh stepping is the inner temporal loop.
 
 - **KV cache** — Ordinary attention cache where used; align with mesh ticks per design.
+
+---
+
+## Test output
+
+Full layer-matrix runs (parity tables, training matrices, save/reload rows) are often captured under:
+
+- `lucy/lucy_testing_output/log.txt`
+
+How to read the summary symbols and what the rows imply (including “H-DRIFT”, Save/Reload FAIL vs TrainOK, and the peak gap footer) is documented in [`docs/testing_and_validation.md`](../docs/testing_and_validation.md).

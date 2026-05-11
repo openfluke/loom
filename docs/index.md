@@ -1,6 +1,6 @@
-# Loom / poly Documentation Index (v0.75.0)
+# Loom / poly Documentation Index (v0.76.0)
 
-This directory contains comprehensive documentation for the `poly/` package — the **M-POLY-VTD** (Multi-numerical POLYmorphic Volumetric Tiled-tensor Dispatcher) engine that powers the Loom neural framework. Current implementation progress: **78.8% (104/132 features)**.
+This directory contains comprehensive documentation for the `poly/` package — the **M-POLY-VTD** (Multi-numerical POLYmorphic Volumetric Tiled-tensor Dispatcher) engine that powers the Loom neural framework. For the live checklist and completion ratio, see [`poly/README.md`](../poly/README.md#-true-version-calculation).
 
 ---
 
@@ -26,6 +26,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [quantization.md](quantization.md) | PTQ pipeline, `WeightStore` versioning, `Morph`/`Unpack`, `Q4_0Block` block quantization, calibration, accuracy trade-offs |
 | [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, Qwen-style expanded-query + Q/K norm support, `Transformer[T]` generation type; CPU vs GPU tiling behavior |
 | [quick_reference.md](quick_reference.md) | Concise copy-paste snippets for all common operations |
+| [testing_and_validation.md](testing_and_validation.md) | **Lucy logs**, parity table legend, how to read `lucy_testing_output/log.txt`, and a compact map of `poly/` files the suites hit |
 
 ---
 
@@ -51,6 +52,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Building parallel/sequential sub-networks?** Read [parallel_sequential.md](parallel_sequential.md).
 
 **Just need a code snippet?** Go straight to [quick_reference.md](quick_reference.md).
+
+**Reading Lucy / Glitch test transcripts or parity tables?** See [testing_and_validation.md](testing_and_validation.md).
 
 ---
 
@@ -84,5 +87,7 @@ poly/
 ├── prefix_safetensor.go Weight name prefix stripping
 ├── donate_compute_*.go  LAN TCP donate-compute protocol (see donate_compute.md)
 ├── tanhi.go             UDP TANHI telemetry (see tanhi.md)
+├── native_layer_matrix.go   Dtype × mode benchmark matrix (hooks + reports)
+├── native_matrix_builtin_hooks.go  Default hooks for `RunNativeLayerMatrixBuiltin`
 └── universal_loader.go  Auto-detecting checkpoint loader
 ```

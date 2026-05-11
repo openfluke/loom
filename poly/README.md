@@ -58,26 +58,18 @@ A bidirectional learning alternative to traditional backpropagation that bridges
 ## Performance & Verification
 A comprehensive suite is provided to measure the speed, memory, and bit-level fidelity of the polymorphic dispatcher.
 
-### Running the Verification Demo
-To see bit-perfect parity and view the 98% compression metrics in seconds:
+### Running checks in this repo
+
+Layer matrices, GPU parity tables, and training transcripts are exercised from **`lucy/`** (output often under `lucy/lucy_testing_output/log.txt`). See [`docs/testing_and_validation.md`](../docs/testing_and_validation.md) for how to read the log.
+
 ```bash
-go run tva/poly/helpers/serialization_demo.go
+go test ./poly/...
 ```
 
-### Running the Benchmarks
-To view the raw performance/memory throughput for all 21 types:
-```bash
-go run tva/poly/example.go
-```
+C-ABI vs public `poly/` surface (export names):
 
-To run the WebGPU versus CPU Tiling showdown:
 ```bash
-go run tva/poly/benchmark_tiling.go
-```
-
-To run the end-to-end GPU training showdown (all supported layer architectures):
-```bash
-go run tva/poly/benchmark_training_comparison.go
+cd welvet/cabi/internal/check && go run check.go
 ```
 
 ### TypeScript / WASM Implementation Verification
@@ -492,6 +484,7 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Task-Switching Adaptation Benchmarks
 - [x] Model Ensemble Diversity Metrics
 - [x] Training Method Comparison Analysis
+- **Lucy / log interpretation** — [`docs/testing_and_validation.md`](../docs/testing_and_validation.md) (parity legend, `lucy/lucy_testing_output/log.txt`, poly file map for suites)
 
 **Ecosystem Progress: 19 / 25**
 
