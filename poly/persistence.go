@@ -216,7 +216,10 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 
 func shouldPersistMasterWeights(dt DType) bool {
 	switch dt {
-	case DTypeFloat32, DTypeUint4, DTypeUint2, DTypeBinary:
+	case DTypeFloat32,
+		DTypeFP8E4M3, DTypeFP8E5M2,
+		DTypeUint64, DTypeUint32, DTypeUint16, DTypeUint8, DTypeUint4, DTypeUint2,
+		DTypeBinary:
 		return true
 	default:
 		return false
@@ -550,37 +553,56 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 		}
 		return w, nil
 	case DTypeFloat16, DTypeBFloat16:
-		// Reconstruct float32 from 16-bit packed data
-		w := make([]float32, len(bytes)/2)
+		w := make([]uint16, len(bytes)/2)
 		for i := range w {
-			u16 := binary.LittleEndian.Uint16(bytes[i*2:])
-			u32 := uint32(u16) << 16
-			w[i] = math.Float32frombits(u32)
+			w[i] = binary.LittleEndian.Uint16(bytes[i*2:])
 		}
 		return w, nil
-	case DTypeInt64, DTypeUint64:
+	case DTypeInt64:
 		w := make([]int64, len(bytes)/8)
 		for i := range w {
 			w[i] = int64(binary.LittleEndian.Uint64(bytes[i*8:]))
 		}
 		return w, nil
-	case DTypeInt32, DTypeUint32:
+	case DTypeUint64:
+		w := make([]uint64, len(bytes)/8)
+		for i := range w {
+			w[i] = binary.LittleEndian.Uint64(bytes[i*8:])
+		}
+		return w, nil
+	case DTypeInt32:
 		w := make([]int32, len(bytes)/4)
 		for i := range w {
 			w[i] = int32(binary.LittleEndian.Uint32(bytes[i*4:]))
 		}
 		return w, nil
-	case DTypeInt16, DTypeUint16:
+	case DTypeUint32:
+		w := make([]uint32, len(bytes)/4)
+		for i := range w {
+			w[i] = binary.LittleEndian.Uint32(bytes[i*4:])
+		}
+		return w, nil
+	case DTypeInt16:
 		w := make([]int16, len(bytes)/2)
 		for i := range w {
 			w[i] = int16(binary.LittleEndian.Uint16(bytes[i*2:]))
 		}
 		return w, nil
-	case DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2:
+	case DTypeUint16:
+		w := make([]uint16, len(bytes)/2)
+		for i := range w {
+			w[i] = binary.LittleEndian.Uint16(bytes[i*2:])
+		}
+		return w, nil
+	case DTypeInt8:
 		w := make([]int8, len(bytes))
 		for i := range w {
 			w[i] = int8(bytes[i])
 		}
+		return w, nil
+	case DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2:
+		w := make([]uint8, len(bytes))
+		copy(w, bytes)
 		return w, nil
 	case DTypeInt4, DTypeUint4:
 		// Unpack 2 weights per byte into native []uint8 storage.

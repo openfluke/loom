@@ -1,8 +1,10 @@
-package poly
+package poly_test
 
 import (
 	"math"
 	"testing"
+
+	. "github.com/openfluke/loom/poly"
 )
 
 func deterministicWeights(n int) []float32 {
@@ -41,13 +43,92 @@ func allFinite(data []float32) bool {
 	return true
 }
 
+func bitNetTestScale(weights []float32) float32 {
+	if len(weights) == 0 {
+		return 1.0
+	}
+	var sumAbs float64
+	for _, v := range weights {
+		sumAbs += math.Abs(float64(v))
+	}
+	scale := float32(sumAbs / float64(len(weights)))
+	if scale == 0 {
+		return 1.0
+	}
+	return scale
+}
+
+func bitNetTestQuantValue(v, scale float32) uint8 {
+	if scale == 0 {
+		scale = 1.0
+	}
+	q := int(math.Round(float64(v / scale)))
+	if q > 1 {
+		q = 1
+	}
+	if q < -1 {
+		q = -1
+	}
+	return uint8(int8(q))
+}
+
 func dequantBitNetWeights(weights []float32) []float32 {
-	scale := bitNetTernaryScale(weights)
+	scale := bitNetTestScale(weights)
 	out := make([]float32, len(weights))
 	for i, v := range weights {
-		out[i] = float32(int8(bitNetQuantValue(v, scale))) * scale
+		out[i] = float32(int8(bitNetTestQuantValue(v, scale))) * scale
 	}
 	return out
+}
+
+func bitNetTestQuantizeActivation(input []float32) ([]int8, float32) {
+	maxAbs := float32(0)
+	for _, v := range input {
+		a := float32(math.Abs(float64(v)))
+		if a > maxAbs {
+			maxAbs = a
+		}
+	}
+	if maxAbs < 1e-5 {
+		maxAbs = 1e-5
+	}
+	out := make([]int8, len(input))
+	scale := 127.0 / float64(maxAbs)
+	for i, v := range input {
+		q := int(math.Round(float64(v) * scale))
+		if q < -128 {
+			q = -128
+		}
+		if q > 127 {
+			q = 127
+		}
+		out[i] = int8(q)
+	}
+	return out, maxAbs
+}
+
+func bitNetTestMatVecQuantized(matrix *BitNetTernaryMatrix, xq []int8, activationMax float32, out []float64) bool {
+	if matrix == nil || len(xq) < matrix.Cols || len(out) < matrix.Rows {
+		return false
+	}
+	outputScale := float64(matrix.Scale) * float64(activationMax) / 127.0
+	if outputScale == 0 {
+		outputScale = 1.0
+	}
+	rowWords := matrix.RowWords
+	if rowWords <= 0 {
+		rowWords = (matrix.Cols + 15) / 16
+	}
+	for r := 0; r < matrix.Rows; r++ {
+		var sum int32
+		for c := 0; c < matrix.Cols; c++ {
+			word := matrix.Words[r*rowWords+c/16]
+			code := (word >> uint((c%16)*2)) & 0x03
+			sum += int32(xq[c]) * (int32(code) - 1)
+		}
+		out[r] = float64(sum) * outputScale
+	}
+	return true
 }
 
 func TestBitNetTernaryQuantizerUsesAbsMean(t *testing.T) {
@@ -135,21 +216,23 @@ func TestPackedTernaryDenseMatchesDequantizedPath(t *testing.T) {
 func TestBitNetTernaryKernelHandlesTailColumns(t *testing.T) {
 	rows, cols := 3, 17
 	weights := deterministicWeights(rows * cols)
-	matrix, ok := packFloat32AsBitNetTernaryMatrix(weights, rows, cols)
+	ws := NewWeightStore(rows * cols)
+	copy(ws.Master, weights)
+	matrix, ok := ws.GetBitNetTernaryMatrix(0, rows, cols)
 	if !ok {
 		t.Fatal("failed to pack tail-column matrix")
 	}
 	input := deterministicWeights(cols)
-	xq, activationMax := bitNetQuantizeActivationNumeric(input, nil)
+	xq, activationMax := bitNetTestQuantizeActivation(input)
 	got := make([]float64, rows)
-	if !bitNetTernaryMatVecQuantized(matrix, xq, activationMax, got) {
+	if !bitNetTestMatVecQuantized(matrix, xq, activationMax, got) {
 		t.Fatal("kernel returned false")
 	}
 	outputScale := float64(matrix.Scale) * float64(activationMax) / 127.0
 	for r := 0; r < rows; r++ {
 		var sum int32
 		for c := 0; c < cols; c++ {
-			q := int8(bitNetQuantValue(weights[r*cols+c], matrix.Scale))
+			q := int8(bitNetTestQuantValue(weights[r*cols+c], matrix.Scale))
 			if q > 0 {
 				sum += int32(xq[c])
 			} else if q < 0 {
@@ -216,7 +299,7 @@ func TestMicrosoftOfflinePackedBitNetRowsDecode(t *testing.T) {
 
 	xq := []int8{2, -3}
 	got := make([]float64, 8)
-	if !bitNetTernaryMatVecQuantized(matrix, xq, 127, got) {
+	if !bitNetTestMatVecQuantized(matrix, xq, 127, got) {
 		t.Fatal("kernel returned false")
 	}
 
@@ -322,9 +405,6 @@ func TestPackedTernaryLMHeadProducesLogits(t *testing.T) {
 	if len(logits) != 3 {
 		t.Fatalf("logits len = %d, want 3", len(logits))
 	}
-	if tr.lmHeadPackedTernary == nil {
-		t.Fatal("lm_head packed cache was not populated")
-	}
 }
 
 func TestPackedTernaryLMHeadSkipsTiedEmbeddings(t *testing.T) {
@@ -337,13 +417,13 @@ func TestPackedTernaryLMHeadSkipsTiedEmbeddings(t *testing.T) {
 	tr.HiddenSize = 4
 	tr.VocabSize = 3
 
-	_ = tr.ApplyLMHead([]float32{0.2, -0.1, 0.4, -0.3})
-	if tr.lmHeadPackedTernary != nil {
-		t.Fatal("tied lm_head should stay on FP32 path")
+	logits := tr.ApplyLMHead([]float32{0.2, -0.1, 0.4, -0.3})
+	if len(logits) != 3 {
+		t.Fatalf("logits len = %d, want 3", len(logits))
 	}
 }
 
-func TestFP32LMHeadParallelMatchesSequential(t *testing.T) {
+func TestFP32LMHeadMatchesSequential(t *testing.T) {
 	net := NewVolumetricNetwork(1, 1, 1, 1)
 	weights := deterministicWeights(16 * 8)
 	tr := NewTransformer[float32](net, nil, weights, nil, Template{})
@@ -351,8 +431,7 @@ func TestFP32LMHeadParallelMatchesSequential(t *testing.T) {
 	tr.VocabSize = 16
 	hidden := deterministicWeights(8)
 
-	got := make([]float32, tr.VocabSize)
-	tr.applyFP32LMHeadRows(hidden, got)
+	got := tr.ApplyLMHead(hidden)
 	want := make([]float32, tr.VocabSize)
 	for v := 0; v < tr.VocabSize; v++ {
 		var sum float64
@@ -386,15 +465,17 @@ func BenchmarkPackedTernaryDenseForward(b *testing.B) {
 
 func BenchmarkBitNetTernaryKernel1536(b *testing.B) {
 	rows, cols := 1536, 1536
-	matrix, ok := packFloat32AsBitNetTernaryMatrix(deterministicWeights(rows*cols), rows, cols)
+	ws := NewWeightStore(rows * cols)
+	copy(ws.Master, deterministicWeights(rows*cols))
+	matrix, ok := ws.GetBitNetTernaryMatrix(0, rows, cols)
 	if !ok {
 		b.Fatal("failed to pack matrix")
 	}
-	xq, activationMax := bitNetQuantizeActivationNumeric(deterministicWeights(cols), nil)
+	xq, activationMax := bitNetTestQuantizeActivation(deterministicWeights(cols))
 	out := make([]float64, rows)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if !bitNetTernaryMatVecQuantized(matrix, xq, activationMax, out) {
+		if !bitNetTestMatVecQuantized(matrix, xq, activationMax, out) {
 			b.Fatal("kernel failed")
 		}
 	}

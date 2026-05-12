@@ -1,6 +1,10 @@
-package poly
+package poly_test
 
-import "testing"
+import (
+	"testing"
+
+	. "github.com/openfluke/loom/poly"
+)
 
 func TestMetaspaceTokenizerAddsBOSAndDecodes(t *testing.T) {
 	data := []byte(`{
