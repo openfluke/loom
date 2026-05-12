@@ -86,8 +86,17 @@ func runForwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 
 	ctx := l.Network.GPUContext
 	if ctx == nil {
-		l.Network.InitWGPU()
+		if err := l.Network.InitWGPU(); err != nil {
+			fmt.Printf("GPU init failed: %v\n", err)
+			stats.AddSpectrum(SpecBroken)
+			return false
+		}
 		ctx = l.Network.GPUContext
+	}
+	if ctx == nil {
+		fmt.Println("GPU init failed: context is nil")
+		stats.AddSpectrum(SpecBroken)
+		return false
 	}
 
 	fmt.Printf("| %-10s | %-4s | %-12s | %-12s | %-12s | %-12s | %-8s | %-8s | %-8s | %-8s | %-8s | %-8s |\n",
@@ -99,8 +108,9 @@ func runForwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 	for _, cfg := range allTypes {
 		l.DType = cfg.dtype
 		if l.WeightStore != nil {
-			l.WeightStore.Morph(cfg.dtype)
+			l.WeightStore.InvalidateVersions()
 			l.WeightStore.Scale = cfg.scale
+			l.WeightStore.Morph(cfg.dtype)
 			l.SyncToCPU()
 		}
 
@@ -196,8 +206,17 @@ func runBackwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 
 	ctx := l.Network.GPUContext
 	if ctx == nil {
-		l.Network.InitWGPU()
+		if err := l.Network.InitWGPU(); err != nil {
+			fmt.Printf("GPU init failed: %v\n", err)
+			stats.AddSpectrum(SpecBroken)
+			return false
+		}
 		ctx = l.Network.GPUContext
+	}
+	if ctx == nil {
+		fmt.Println("GPU init failed: context is nil")
+		stats.AddSpectrum(SpecBroken)
+		return false
 	}
 
 	fmt.Printf("| %-10s | %-4s | %-12s | %-12s | %-12s | %-7s | %-7s | %-9s | %-9s | %-9s | %-9s | %-8s | %-8s |\n",
@@ -209,8 +228,9 @@ func runBackwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 	for _, cfg := range allTypes {
 		l.DType = cfg.dtype
 		if l.WeightStore != nil {
-			l.WeightStore.Morph(cfg.dtype)
+			l.WeightStore.InvalidateVersions()
 			l.WeightStore.Scale = cfg.scale
+			l.WeightStore.Morph(cfg.dtype)
 		}
 		l.Network.SyncToGPU()
 
@@ -258,19 +278,45 @@ func runBackwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 
 		ctx.GPUTileSize = l.GetGPUSCTileSize(cfg.dtype)
 		t0 = time.Now()
-		ctx.DispatchBackwardLayer(l, spec.InputShape[0], goBuf, inBuf, preBuf, dxBufSC, dwBufSC)
-		ctx.Device.Poll(true, nil)
+		errSC := ctx.DispatchBackwardLayer(l, spec.InputShape[0], goBuf, inBuf, preBuf, dxBufSC, dwBufSC)
+		if errSC == nil {
+			ctx.Device.Poll(true, nil)
+		}
 		tGPUSC := time.Since(t0)
-		gDXSC, _ := ctx.ReadBuffer(dxBufSC)
-		gDWSC, _ := ctx.ReadBuffer(dwBufSC)
+		var gDXSC, gDWSC []float32
+		if errSC == nil {
+			gDXSC, _ = ctx.ReadBuffer(dxBufSC)
+			gDWSC, _ = ctx.ReadBuffer(dwBufSC)
+		}
 
 		ctx.GPUTileSize = l.GetGPUMCTileSize(cfg.dtype)
 		t0 = time.Now()
-		ctx.DispatchBackwardLayer(l, spec.InputShape[0], goBuf, inBuf, preBuf, dxBufMC, dwBufMC)
-		ctx.Device.Poll(true, nil)
+		errMC := ctx.DispatchBackwardLayer(l, spec.InputShape[0], goBuf, inBuf, preBuf, dxBufMC, dwBufMC)
+		if errMC == nil {
+			ctx.Device.Poll(true, nil)
+		}
 		tGPUMC := time.Since(t0)
-		gDXMC, _ := ctx.ReadBuffer(dxBufMC)
-		gDWMC, _ := ctx.ReadBuffer(dwBufMC)
+		var gDXMC, gDWMC []float32
+		if errMC == nil {
+			gDXMC, _ = ctx.ReadBuffer(dxBufMC)
+			gDWMC, _ = ctx.ReadBuffer(dwBufMC)
+		}
+
+		if errSC != nil || errMC != nil {
+			fmt.Printf("| %-10s | %-4d | %-12v | %-12v | %-12v | %-7s | %-7s | %-9s | %-9s | %-9s | %-9s | %-8s | %-8s |\n",
+				cfg.name, l.GetCPUTileSize(cfg.dtype), tCPUMC, tGPUSC, tGPUMC,
+				"ERR", "ERR", "ERR", "ERR", "ERR", "ERR", markMark(false), markMark(false))
+			if errSC != nil {
+				fmt.Printf("  GPU SC backward error: %v\n", errSC)
+			}
+			if errMC != nil {
+				fmt.Printf("  GPU MC backward error: %v\n", errMC)
+			}
+			allPass = false
+			stats.AddSpectrum(SpecBroken)
+			stats.AddSpectrum(SpecBroken)
+			continue
+		}
 
 		dxDiffSC := maxAbsDiff(cpuDX.Data, gDXSC)
 		dwDiffSC := maxAbsDiff(cpuDW.Data, gDWSC)

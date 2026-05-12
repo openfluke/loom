@@ -2456,32 +2456,55 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 		rmsBuf := c.GetActivationBuffer(fmt.Sprintf("rms_%p", l), uint64(batchSize*4), wgpu.BufferUsageStorage)
 		// Provide 1.0 for dummy validation
 		c.Queue.WriteBuffer(rmsBuf, 0, wgpu.ToBytes([]float32{1.0}))
-		return c.DispatchRMSNormBackward(batchSize, l.InputHeight, 1e-5, gradOutBuf, inputBuf, rmsBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), dxBuf, dwBuf)
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
+		return c.DispatchRMSNormBackward(batchSize, l.InputHeight, 1e-5, gradOutBuf, inputBuf, rmsBuf, wBuf, dxBuf, dwBuf)
 	case LayerCNN1:
 		if isCNN1NativeGPUQuantDType(l.DType) {
-			if err := c.DispatchCNN1PackedBackwardDX(l.DType, batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, cnn1PackedGPUScale(l), gradOutBuf, GetGPUWeightBuffer(l), preActBuf, dxBuf); err != nil {
+			wBuf := GetGPUWeightBuffer(l)
+			if wBuf == nil {
+				return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+			}
+			if err := c.DispatchCNN1PackedBackwardDX(l.DType, batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, cnn1PackedGPUScale(l), gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
 				return err
 			}
 			return c.DispatchCNN1BackwardDW(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, inputBuf, preActBuf, dwBuf)
 		}
-		if err := c.DispatchCNN1BackwardDX(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), preActBuf, dxBuf); err != nil {
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
+		if err := c.DispatchCNN1BackwardDX(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
 			return err
 		}
 		return c.DispatchCNN1BackwardDW(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, inputBuf, preActBuf, dwBuf)
 	case LayerCNN2:
-		if err := c.DispatchCNN2BackwardDX(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), preActBuf, dxBuf); err != nil {
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
+		if err := c.DispatchCNN2BackwardDX(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
 			return err
 		}
 		return c.DispatchCNN2BackwardDW(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, inputBuf, preActBuf, dwBuf)
 	case LayerCNN3:
-		if err := c.DispatchCNN3BackwardDX(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), preActBuf, dxBuf); err != nil {
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
+		if err := c.DispatchCNN3BackwardDX(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
 			return err
 		}
 		return c.DispatchCNN3BackwardDW(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, inputBuf, preActBuf, dwBuf)
 	case LayerSwiGLU:
 		return c.dispatchBackwardLayerCPUFallback(l, batchSize, gradOutBuf, inputBuf, dxBuf, dwBuf)
 	case LayerRNN:
-		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
 		// hCurrBuf = histPreBuf[i] = post-tanh output; backward uses 1-hCurr^2 for tanh derivative.
 		// wBuf starts with wIH at offset 0, so DX can read wIH[h*I+i] correctly from the full buffer.
 		hPrevBuf := c.GetActivationBuffer(fmt.Sprintf("rnn_hprev_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
@@ -2490,7 +2513,10 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 		}
 		return c.DispatchRNNBackwardDW(tileSize, batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, inputBuf, preActBuf, hPrevBuf, dwBuf)
 	case LayerLSTM:
-		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
 		lstmPreAct := c.GetActivationBuffer(fmt.Sprintf("lstm_preact_%p", l), uint64(batchSize*5*l.OutputHeight*4), wgpu.BufferUsageStorage)
 		hPrevBuf := c.GetActivationBuffer(fmt.Sprintf("lstm_hprev_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
 		if err := c.DispatchLSTMBackwardDX(tileSize, batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, wBuf, lstmPreAct, dxBuf); err != nil {
