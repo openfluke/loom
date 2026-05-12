@@ -54,6 +54,13 @@ func HFConfigFloat64Default(config map[string]interface{}, key string, d float64
 	return d
 }
 
+func HFConfigStringDefault(config map[string]interface{}, key string, d string) string {
+	if v, ok := config[key].(string); ok {
+		return v
+	}
+	return d
+}
+
 // EOSTokenIDsFromHFConfig extracts eos_token_id from an unmarshaled config.json map.
 // Returns default [2, 0] when absent or empty (matches lucy / welvet behavior).
 func EOSTokenIDsFromHFConfig(config map[string]interface{}) []int {
@@ -127,6 +134,12 @@ func TokenizerBannedSpecialExceptEOS(tk *Tokenizer, eosTokens []int) []int {
 // TemplateForHFModelID picks chat template from an HF-style model id string.
 func TemplateForHFModelID(modelName string) Template {
 	name := strings.ToLower(modelName)
+	if strings.Contains(name, "microsoft/bitnet-b1.58-2b-4t") {
+		return MicrosoftBitNetChat
+	}
+	if strings.Contains(name, "bitnet") || strings.Contains(name, "1bit") {
+		return BitNetInstruction
+	}
 	if strings.Contains(name, "llama-3") || strings.Contains(name, "smollm3") {
 		return Llama3
 	}

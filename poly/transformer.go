@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"sync"
 	"time"
 )
 
@@ -22,6 +23,9 @@ type Transformer[T Numeric] struct {
 
 	// hostWeightsReleased is set after ReleaseInferenceHostWeights; CPU fallback paths are unsafe.
 	hostWeightsReleased bool
+
+	lmHeadPackedTernary *BitNetTernaryMatrix
+	lmHeadPackedLen     int
 }
 
 // NewTransformer creates a new polymorphic transformer
@@ -516,16 +520,92 @@ func (t *Transformer[T]) ApplyLMHead(hidden []T) []float32 {
 		return out
 	}
 
+	if t.usePackedTernaryLMHead() {
+		if logits := t.applyPackedTernaryLMHead(hidden); logits != nil {
+			return logits
+		}
+	}
+
 	normalized := hidden
 
 	logits := make([]float32, t.VocabSize)
-	for v := 0; v < t.VocabSize; v++ {
-		var sum float64
-		offset := v * t.HiddenSize
-		for d := 0; d < t.HiddenSize; d++ {
-			sum += float64(normalized[d]) * float64(t.LMHead[offset+d])
+	t.applyFP32LMHeadRows(normalized, logits)
+	return logits
+}
+
+func (t *Transformer[T]) applyFP32LMHeadRows(hidden []T, logits []float32) {
+	worker := func(start, end int) {
+		for v := start; v < end; v++ {
+			var sum float64
+			offset := v * t.HiddenSize
+			for d := 0; d < t.HiddenSize; d++ {
+				sum += float64(hidden[d]) * float64(t.LMHead[offset+d])
+			}
+			logits[v] = float32(sum)
 		}
-		logits[v] = float32(sum)
+	}
+
+	work := t.VocabSize * t.HiddenSize
+	if work < 262144 || t.VocabSize < 4 {
+		worker(0, t.VocabSize)
+		return
+	}
+	workers := runtime.GOMAXPROCS(0)
+	if workers > t.VocabSize {
+		workers = t.VocabSize
+	}
+	if workers <= 1 {
+		worker(0, t.VocabSize)
+		return
+	}
+	chunk := (t.VocabSize + workers - 1) / workers
+	var wg sync.WaitGroup
+	for start := 0; start < t.VocabSize; start += chunk {
+		end := start + chunk
+		if end > t.VocabSize {
+			end = t.VocabSize
+		}
+		wg.Add(1)
+		go func(start, end int) {
+			defer wg.Done()
+			worker(start, end)
+		}(start, end)
+	}
+	wg.Wait()
+}
+
+func (t *Transformer[T]) usePackedTernaryLMHead() bool {
+	if t == nil || t.Network == nil || !t.Network.UseExactDType || t.Network.UseGPU {
+		return false
+	}
+	if slicesShareBackingStoreFloat32(t.LMHead, t.Embeddings) {
+		return false
+	}
+	for i := range t.Network.Layers {
+		if t.Network.Layers[i].DType == DTypeTernary {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *Transformer[T]) applyPackedTernaryLMHead(hidden []T) []float32 {
+	if t.lmHeadPackedTernary == nil || t.lmHeadPackedLen != len(t.LMHead) ||
+		t.lmHeadPackedTernary.Rows != t.VocabSize || t.lmHeadPackedTernary.Cols != t.HiddenSize {
+		packed, ok := packFloat32AsBitNetTernaryMatrix(t.LMHead, t.VocabSize, t.HiddenSize)
+		if !ok {
+			return nil
+		}
+		t.lmHeadPackedTernary = packed
+		t.lmHeadPackedLen = len(t.LMHead)
+	}
+	logits64 := make([]float64, t.VocabSize)
+	if !bitNetTernaryMatVecNumeric(t.lmHeadPackedTernary, hidden, logits64) {
+		return nil
+	}
+	logits := make([]float32, t.VocabSize)
+	for i, v := range logits64 {
+		logits[i] = float32(v)
 	}
 	return logits
 }

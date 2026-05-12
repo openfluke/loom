@@ -17,6 +17,10 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 
 // DenseForwardTiled performs a tiled forward pass for the dense layer (multi-core).
 func DenseForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if usePackedTernaryCPU(layer) {
+		return DenseForwardPackedTernaryCPU(layer, input)
+	}
+
 	batchSize := input.Shape[0]
 	outputSize := layer.OutputHeight
 	tileSize := layer.GetCPUTileSize(layer.DType)
@@ -37,6 +41,43 @@ func DenseForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (pre
 
 	for i := range postAct.Data {
 		postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
+	}
+	return preAct, postAct
+}
+
+func DenseForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	batchSize := input.Shape[0]
+	inputSize := layer.InputHeight
+	outputSize := layer.OutputHeight
+	matrix, ok := layer.WeightStore.GetBitNetTernaryMatrix(0, outputSize, inputSize)
+	if !ok {
+		exact := layer.Network.UseExactDType
+		layer.Network.UseExactDType = false
+		pre, post := DenseForwardTiled(layer, input)
+		layer.Network.UseExactDType = exact
+		return pre, post
+	}
+
+	preAct = NewTensor[T](batchSize, outputSize)
+	postAct = NewTensor[T](batchSize, outputSize)
+	tmp := make([]float64, outputSize)
+	xq := make([]int8, inputSize)
+	for b := 0; b < batchSize; b++ {
+		row := input.Data[b*inputSize : (b+1)*inputSize]
+		var activationMax float32
+		xq, activationMax = bitNetQuantizeActivationNumeric(row, xq)
+		if !bitNetTernaryMatVecQuantized(matrix, xq, activationMax, tmp) {
+			exact := layer.Network.UseExactDType
+			layer.Network.UseExactDType = false
+			pre, post := DenseForwardTiled(layer, input)
+			layer.Network.UseExactDType = exact
+			return pre, post
+		}
+		for o := 0; o < outputSize; o++ {
+			v := T(tmp[o])
+			preAct.Data[b*outputSize+o] = v
+			postAct.Data[b*outputSize+o] = Activate(v, layer.Activation)
+		}
 	}
 	return preAct, postAct
 }

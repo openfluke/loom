@@ -85,18 +85,30 @@ func nativeQuantValue(dtype DType, v float32) uint8 {
 		return 255 // -1 for int8
 	case DTypeUint8:
 		q := int(math.Round(float64(v)))
-		if q < 0 { q = 0 }
-		if q > 255 { q = 255 }
+		if q < 0 {
+			q = 0
+		}
+		if q > 255 {
+			q = 255
+		}
 		return uint8(q)
 	case DTypeUint4:
 		q := int(math.Round(float64(v)))
-		if q < 0 { q = 0 }
-		if q > 15 { q = 15 }
+		if q < 0 {
+			q = 0
+		}
+		if q > 15 {
+			q = 15
+		}
 		return uint8(q)
 	case DTypeUint2:
 		q := int(math.Round(float64(v)))
-		if q < 0 { q = 0 }
-		if q > 3 { q = 3 }
+		if q < 0 {
+			q = 0
+		}
+		if q > 3 {
+			q = 3
+		}
 		return uint8(q)
 	default:
 		return uint8(math.Round(float64(v)))
@@ -139,7 +151,7 @@ func e4m3ToFloat32(v uint8) float32 {
 	}
 	if exp == 0 {
 		// Subnormal approximation
-		return math.Float32frombits((sign << 31) | (127-7)<<23 | (mant << 20)) * 0.125
+		return math.Float32frombits((sign<<31)|(127-7)<<23|(mant<<20)) * 0.125
 	}
 
 	resExp := exp + 127 - 7
@@ -661,6 +673,17 @@ func (ws *WeightStore) Int8Slice(dtype DType) []int8 {
 // SizeInBytes calculates the memory footprint of the currently active version.
 func (ws *WeightStore) SizeInBytes(dtype DType) int {
 	count := len(ws.Master)
+	if count == 0 && dtype == DTypeTernary && len(ws.CPUPacked) > 0 {
+		total := 0
+		for _, packed := range ws.CPUPacked {
+			if matrix, ok := packed.(*BitNetTernaryMatrix); ok && matrix != nil {
+				total += len(matrix.Words) * 4
+			}
+		}
+		if total > 0 {
+			return total
+		}
+	}
 	switch dtype {
 	case DTypeFloat64, DTypeInt64, DTypeUint64:
 		return count * 8
@@ -744,11 +767,15 @@ func (ws *WeightStore) Unpack(dtype DType) {
 		}
 	case DTypeFloat16:
 		if w, ok := data.([]uint16); ok {
-			for i, v := range w { ws.Master[i] = float16ToFloat32(v) }
+			for i, v := range w {
+				ws.Master[i] = float16ToFloat32(v)
+			}
 		}
 	case DTypeBFloat16:
 		if w, ok := data.([]uint16); ok {
-			for i, v := range w { ws.Master[i] = bfloat16ToFloat32(v) }
+			for i, v := range w {
+				ws.Master[i] = bfloat16ToFloat32(v)
+			}
 		}
 	case DTypeFP4:
 		if w, ok := data.([]uint8); ok {
@@ -757,17 +784,40 @@ func (ws *WeightStore) Unpack(dtype DType) {
 		}
 	case DTypeFP8E4M3:
 		if w, ok := data.([]uint8); ok {
-			for i, v := range w { ws.Master[i] = e4m3ToFloat32(v) * ws.Scale }
+			for i, v := range w {
+				ws.Master[i] = e4m3ToFloat32(v) * ws.Scale
+			}
 		}
 	case DTypeFP8E5M2:
 		if w, ok := data.([]uint8); ok {
-			for i, v := range w { ws.Master[i] = e5m2ToFloat32(v) * ws.Scale }
+			for i, v := range w {
+				ws.Master[i] = e5m2ToFloat32(v) * ws.Scale
+			}
 		}
-	case DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32, DTypeInt16, DTypeUint16, DTypeInt8, DTypeUint8, DTypeInt4, DTypeUint4, DTypeInt2, DTypeUint2, DTypeTernary, DTypeBinary:
-		// These are already unpacked slices (int8/int16/etc) in Versions during I/O
+	case DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32, DTypeInt16, DTypeUint16, DTypeUint8, DTypeUint4, DTypeUint2:
 		packed := CastWeights[float32](data)
 		for i := 0; i < len(ws.Master) && i < len(packed); i++ {
 			ws.Master[i] = packed[i] * ws.Scale
+		}
+	case DTypeInt8, DTypeInt4, DTypeInt2, DTypeTernary, DTypeBinary:
+		scale := ws.Scale
+		if scale == 0 {
+			scale = 1.0
+		}
+		switch packed := data.(type) {
+		case []uint8:
+			for i := 0; i < len(ws.Master) && i < len(packed); i++ {
+				ws.Master[i] = float32(int8(packed[i])) * scale
+			}
+		case []int8:
+			for i := 0; i < len(ws.Master) && i < len(packed); i++ {
+				ws.Master[i] = float32(packed[i]) * scale
+			}
+		default:
+			converted := CastWeights[float32](data)
+			for i := 0; i < len(ws.Master) && i < len(converted); i++ {
+				ws.Master[i] = converted[i] * scale
+			}
 		}
 	}
 }

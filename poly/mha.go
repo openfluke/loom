@@ -23,6 +23,9 @@ func mhaQKNormEpsilon(layer *VolumetricLayer) float64 {
 
 // MHAForwardPolymorphic performs Multi-Head Attention using strictly generic arithmetic.
 func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if usePackedTernaryCPU(layer) {
+		return MHAForwardPackedTernaryCPU(layer, input)
+	}
 	if layer.UseTiling && layer.TileSize > 0 {
 		return mhaForwardTiledGeneric(layer, input)
 	}
@@ -183,6 +186,173 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 				sum += attnOut[s*qDim+j] * float64(oW[i*qDim+j])
 			}
 			postAct.Data[s*dModel+i] = T(sum)
+		}
+	}
+
+	layer.KVOffset += seqLen
+	return preAct, postAct
+}
+
+func MHAForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	dModel := layer.DModel
+	numHeads := layer.NumHeads
+	numKVHeads := layer.NumKVHeads
+	if numKVHeads == 0 {
+		numKVHeads = numHeads
+	}
+	headDim := layer.HeadDim
+	qDim := layer.QueryDim
+	if qDim == 0 {
+		qDim = numHeads * headDim
+	}
+	seqLen := len(input.Data) / dModel
+	msl := layer.MaxSeqLen
+	if msl == 0 {
+		msl = 512
+	}
+	kvDim := numKVHeads * headDim
+
+	outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)
+	outShape = append(outShape, dModel)
+	preAct = NewTensor[T](outShape...)
+	postAct = NewTensor[T](outShape...)
+
+	qwStart := 0
+	kwStart := qwStart + qDim*dModel
+	vwStart := kwStart + kvDim*dModel
+	owStart := vwStart + kvDim*dModel
+	qbStart := owStart + dModel*qDim
+	kbStart := qbStart + qDim
+	vbStart := kbStart + kvDim
+	obStart := vbStart + kvDim
+
+	qW, okQ := layer.WeightStore.GetBitNetTernaryMatrix(qwStart, qDim, dModel)
+	kW, okK := layer.WeightStore.GetBitNetTernaryMatrix(kwStart, kvDim, dModel)
+	vW, okV := layer.WeightStore.GetBitNetTernaryMatrix(vwStart, kvDim, dModel)
+	oW, okO := layer.WeightStore.GetBitNetTernaryMatrix(owStart, dModel, qDim)
+	if !okQ || !okK || !okV || !okO {
+		// Fall back with exact dtype disabled to avoid recursively re-entering this fast path.
+		exact := layer.Network.UseExactDType
+		layer.Network.UseExactDType = false
+		pre, post := MHAForwardPolymorphic(layer, input)
+		layer.Network.UseExactDType = exact
+		return pre, post
+	}
+
+	if seqLen > 1 || layer.KVCacheK == nil {
+		layer.KVCacheK = NewTensor[T](msl, kvDim)
+		layer.KVCacheV = NewTensor[T](msl, kvDim)
+		layer.KVOffset = 0
+	}
+	cacheK := layer.KVCacheK.(*Tensor[T])
+	cacheV := layer.KVCacheV.(*Tensor[T])
+
+	Q := make([]float64, seqLen*qDim)
+	tmpQ := make([]float64, qDim)
+	tmpK := make([]float64, kvDim)
+	tmpV := make([]float64, kvDim)
+	inputQ := make([]int8, dModel)
+	for s := 0; s < seqLen; s++ {
+		pos := layer.KVOffset + s
+		inputRow := input.Data[s*dModel : (s+1)*dModel]
+		kRow := cacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+		vRow := cacheV.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+
+		inputQ, activationMax := bitNetQuantizeActivationNumeric(inputRow, inputQ)
+		bitNetTernaryMatVecQuantized(qW, inputQ, activationMax, tmpQ)
+		for i := 0; i < qDim; i++ {
+			Q[s*qDim+i] = tmpQ[i] + bitNetTernaryBias(layer.WeightStore, qbStart+i)
+		}
+
+		bitNetTernaryMatVecQuantized(kW, inputQ, activationMax, tmpK)
+		bitNetTernaryMatVecQuantized(vW, inputQ, activationMax, tmpV)
+		for i := 0; i < kvDim; i++ {
+			kRow[i] = T(tmpK[i] + bitNetTernaryBias(layer.WeightStore, kbStart+i))
+			vRow[i] = T(tmpV[i] + bitNetTernaryBias(layer.WeightStore, vbStart+i))
+		}
+
+		qkEps := mhaQKNormEpsilon(layer)
+		if len(layer.QNormWeight) > 0 {
+			applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
+		}
+		if len(layer.KNormWeight) > 0 {
+			applyPerHeadRMSNormTensor(kRow, layer.KNormWeight, numKVHeads, headDim, qkEps)
+		}
+
+		theta := mhaRoPETheta(layer)
+		half := headDim / 2
+		for h := 0; h < numHeads; h++ {
+			for d := 0; d < half; d++ {
+				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+				c, sVal := math.Cos(angle), math.Sin(angle)
+				qOff := s*qDim + h*headDim + d
+				v0, v1 := Q[qOff], Q[qOff+half]
+				Q[qOff] = v0*c - v1*sVal
+				Q[qOff+half] = v0*sVal + v1*c
+			}
+		}
+		for h := 0; h < numKVHeads; h++ {
+			for d := 0; d < half; d++ {
+				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+				c, sVal := math.Cos(angle), math.Sin(angle)
+				kOff := h*headDim + d
+				v0, v1 := float64(kRow[kOff]), float64(kRow[kOff+half])
+				kRow[kOff] = T(v0*c - v1*sVal)
+				kRow[kOff+half] = T(v0*sVal + v1*c)
+			}
+		}
+	}
+
+	headsPerKV := numHeads / numKVHeads
+	scale := 1.0 / math.Sqrt(float64(headDim))
+	attnOut := make([]float64, seqLen*qDim)
+
+	for s := 0; s < seqLen; s++ {
+		currentTotalPos := layer.KVOffset + s
+		for h := 0; h < numHeads; h++ {
+			kvHead := h / headsPerKV
+			scores := make([]float64, currentTotalPos+1)
+			maxScore := float64(-1e9)
+
+			for kPos := 0; kPos <= currentTotalPos; kPos++ {
+				kIdx := kPos % msl
+				var dot float64
+				for d := 0; d < headDim; d++ {
+					dot += Q[s*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
+				}
+				score := dot * scale
+				scores[kPos] = score
+				if score > maxScore {
+					maxScore = score
+				}
+			}
+
+			var expSum float64
+			for kPos := 0; kPos <= currentTotalPos; kPos++ {
+				scores[kPos] = math.Exp(scores[kPos] - maxScore)
+				expSum += scores[kPos]
+			}
+
+			for d := 0; d < headDim; d++ {
+				var sum float64
+				for kPos := 0; kPos <= currentTotalPos; kPos++ {
+					sum += scores[kPos] * float64(cacheV.Data[(kPos%msl)*kvDim+kvHead*headDim+d])
+				}
+				attnOut[s*qDim+h*headDim+d] = sum / expSum
+			}
+		}
+	}
+
+	tmpO := make([]float64, dModel)
+	attnQ := make([]int8, qDim)
+	for s := 0; s < seqLen; s++ {
+		attnRow := attnOut[s*qDim : (s+1)*qDim]
+		bitNetRMSNormFloat64Weighted(attnRow, layer.InnerNormWeight, layer.RMSNormEps)
+		attnQ, activationMax := bitNetQuantizeActivationFloat64(attnRow, attnQ)
+		bitNetTernaryMatVecQuantized(oW, attnQ, activationMax, tmpO)
+		for i := 0; i < dModel; i++ {
+			preAct.Data[s*dModel+i] = T(attnRow[i])
+			postAct.Data[s*dModel+i] = T(tmpO[i] + bitNetTernaryBias(layer.WeightStore, obStart+i))
 		}
 	}
 

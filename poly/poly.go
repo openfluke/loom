@@ -92,6 +92,7 @@ const (
 	ActivationTanh      ActivationType = 3
 	ActivationSigmoid   ActivationType = 4
 	ActivationLeakyReLU ActivationType = 5
+	ActivationReLU2     ActivationType = 6
 	ActivationLinear    ActivationType = -1
 )
 
@@ -125,6 +126,8 @@ func (a ActivationType) String() string {
 		return "Sigmoid"
 	case ActivationLeakyReLU:
 		return "LeakyReLU"
+	case ActivationReLU2:
+		return "ReLU2"
 	case ActivationLinear:
 		return "Linear"
 	default:
@@ -183,6 +186,11 @@ func Activate[T Numeric](v T, act ActivationType) T {
 			return T(float64(v) * 0.01)
 		}
 		return v
+	case ActivationReLU2:
+		if v < 0 {
+			return 0
+		}
+		return v * v
 	case ActivationLinear:
 		return v
 	default:
@@ -222,6 +230,11 @@ func ActivateDerivative[T Numeric](v T, act ActivationType) T {
 			return T(1) / 100
 		}
 		return T(1)
+	case ActivationReLU2:
+		if v <= 0 {
+			return 0
+		}
+		return 2 * v
 	case ActivationLinear:
 		return 1
 	default:
@@ -573,6 +586,9 @@ type VolumetricLayer struct {
 	// Optional per-head RMSNorm scales used by Qwen-style attention.
 	QNormWeight []float32
 	KNormWeight []float32
+
+	// Optional BitNet inner RMSNorm scales used inside attention and MLP blocks.
+	InnerNormWeight []float32
 
 	VocabSize    int
 	EmbeddingDim int
@@ -1145,6 +1161,7 @@ func (l *VolumetricLayer) ReleaseInferenceHostWeights() {
 	}
 	l.QNormWeight = nil
 	l.KNormWeight = nil
+	l.InnerNormWeight = nil
 	for i := range l.ParallelBranches {
 		l.ParallelBranches[i].ReleaseInferenceHostWeights()
 	}

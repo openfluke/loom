@@ -102,10 +102,17 @@ func LoadWithPrefixes(net *VolumetricNetwork, tensors map[string][]float32) erro
 		slot := -1
 		subRole := ""
 
-		if strings.Contains(k, "input_layernorm") || strings.Contains(k, "ln_1") {
+		if strings.Contains(k, "inner_attn_ln") || strings.Contains(k, "attn_sub_norm") {
+			slot = 1
+			subRole = "inner_norm"
+		} else if strings.Contains(k, "ffn_layernorm") || strings.Contains(k, "ffn_sub_norm") {
+			slot = 3
+			subRole = "inner_norm"
+		} else if strings.Contains(k, "input_layernorm") || strings.Contains(k, "ln_1") {
 			slot = 0
 		} else if strings.Contains(k, "self_attn") || strings.Contains(k, "attn") {
 			slot = 1
+			isScale := strings.Contains(k, "weight_scale")
 			if strings.Contains(k, "q_proj") {
 				subRole = "q"
 			}
@@ -118,6 +125,9 @@ func LoadWithPrefixes(net *VolumetricNetwork, tensors map[string][]float32) erro
 			if strings.Contains(k, "o_proj") {
 				subRole = "o"
 			}
+			if isScale && subRole != "" {
+				subRole += "_scale"
+			}
 			if strings.Contains(k, "q_norm") {
 				subRole = "qn"
 			}
@@ -128,6 +138,7 @@ func LoadWithPrefixes(net *VolumetricNetwork, tensors map[string][]float32) erro
 			slot = 2
 		} else if strings.Contains(k, "mlp") {
 			slot = 3
+			isScale := strings.Contains(k, "weight_scale")
 			if strings.Contains(k, "gate_proj") || strings.Contains(k, "w1") {
 				subRole = "g"
 			}
@@ -136,6 +147,9 @@ func LoadWithPrefixes(net *VolumetricNetwork, tensors map[string][]float32) erro
 			}
 			if strings.Contains(k, "down_proj") || strings.Contains(k, "w2") {
 				subRole = "d"
+			}
+			if isScale && subRole != "" {
+				subRole += "_scale"
 			}
 		}
 
@@ -184,34 +198,73 @@ func copyWeights(layer *VolumetricLayer, role string, data []float32) {
 	intermediateSize := layer.OutputHeight
 
 	offset := -1
+	scaleOffset := -1
+	rows := 0
+	cols := 0
 	switch layer.Type {
 	case LayerMultiHeadAttention:
 		switch role {
 		case "q":
 			offset = 0
+			rows, cols = qDim, dModel
+		case "q_scale":
+			scaleOffset = 0
 		case "k":
 			offset = qDim * dModel
+			rows, cols = kvDim, dModel
+		case "k_scale":
+			scaleOffset = qDim * dModel
 		case "v":
 			offset = qDim*dModel + kvDim*dModel
+			rows, cols = kvDim, dModel
+		case "v_scale":
+			scaleOffset = qDim*dModel + kvDim*dModel
 		case "o":
 			offset = qDim*dModel + 2*kvDim*dModel
+			rows, cols = dModel, qDim
+		case "o_scale":
+			scaleOffset = qDim*dModel + 2*kvDim*dModel
 		case "qn":
 			layer.QNormWeight = append([]float32(nil), data...)
 		case "kn":
 			layer.KNormWeight = append([]float32(nil), data...)
+		case "inner_norm":
+			layer.InnerNormWeight = append([]float32(nil), data...)
 		}
 	case LayerSwiGLU:
 		switch role {
 		case "g":
 			offset = 0
+			rows, cols = intermediateSize, dModel
+		case "g_scale":
+			scaleOffset = 0
 		case "u":
 			offset = dModel * intermediateSize
+			rows, cols = intermediateSize, dModel
+		case "u_scale":
+			scaleOffset = dModel * intermediateSize
 		case "d":
 			offset = 2 * dModel * intermediateSize
+			rows, cols = dModel, intermediateSize
+		case "d_scale":
+			scaleOffset = 2 * dModel * intermediateSize
+		case "inner_norm":
+			layer.InnerNormWeight = append([]float32(nil), data...)
 		}
 	case LayerRMSNorm:
 		if role == "w" {
 			offset = 0
+		}
+	}
+
+	if scaleOffset != -1 && len(data) > 0 {
+		layer.WeightStore.SetBitNetPackedScale(scaleOffset, data[0])
+		return
+	}
+
+	if offset != -1 && rows > 0 && cols > 0 && len(data)*4 == rows*cols {
+		if layer.WeightStore.SetMicrosoftBitNetPackedMatrix(offset, rows, cols, data) {
+			return
 		}
 	}
 

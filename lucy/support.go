@@ -115,6 +115,9 @@ func templateForModel(modelName string) poly.Template {
 
 func defaultSystemPromptForModel(modelName string) string {
 	name := strings.ToLower(modelName)
+	if strings.Contains(name, "bitnet") || strings.Contains(name, "1bit") {
+		return ""
+	}
 	if strings.Contains(name, "qwen") {
 		return "You are a helpful assistant. Respond directly with the final answer only. Do not expose internal reasoning or chain-of-thought."
 	}

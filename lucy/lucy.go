@@ -77,7 +77,24 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		log.Fatalf("Invalid model selection: %d", selectedIdx)
 	}
 	modelName := models[selectedIdx-1]
-	isQwen := strings.Contains(strings.ToLower(modelName), "qwen")
+	modelNameLower := strings.ToLower(modelName)
+	isQwen := strings.Contains(modelNameLower, "qwen")
+	isBitNetModel := strings.Contains(modelNameLower, "bitnet") || strings.Contains(modelNameLower, "1bit")
+	useBitNetCPU := false
+	useTernaryPTQCPU := false
+	if !useGPU {
+		if isBitNetModel {
+			useBitNetCPU = true
+			fmt.Println("🧮 BitNet model detected; enabling CPU packed ternary inference.")
+		} else {
+			quantInput := readInput(reader, "🧮 CPU weight precision? (32=FP32 / ternary=experimental PTQ) [32]: ", "32")
+			switch strings.ToLower(strings.TrimSpace(quantInput)) {
+			case "ternary", "t", "bitnet", "1bit", "b1.58", "158":
+				useTernaryPTQCPU = true
+				fmt.Println("⚠️  Ternary PTQ is experimental. It is not equivalent to BitNet training and may produce bad text.")
+			}
+		}
+	}
 	template := templateForModel(modelName)
 	activeSystemPrompt := defaultSystemPromptForModel(modelName)
 	if deterministic && isQwen {
@@ -109,6 +126,7 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		log.Fatalf("⚠️  config parse: %v", err)
 	}
 	eosTokens = poly.LoadEOSTokenIDsFromConfigPath(configPath)
+	eosTokens = mergeIntSets(eosTokens, loadEOSTokensFromJSON(filepath.Join(snapshotDir, "generation_config.json")))
 
 	safetensorFiles, _ := filepath.Glob(filepath.Join(snapshotDir, "*.safetensors"))
 	if len(safetensorFiles) == 0 {
@@ -119,7 +137,7 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	var embeddings, lmHead, finalNorm []float32
 	var allTensors map[string][]float32
 
-	if sequentialGPULoad && useGPU {
+	if (sequentialGPULoad && useGPU) || useBitNetCPU {
 		globalTensors := make(map[string][]float32)
 		for _, f := range safetensorFiles {
 			part, err := poly.LoadSafetensorsSelective(f, poly.HFWeightIsGlobal)
@@ -190,6 +208,10 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 
 	rmsNormEps := poly.HFConfigFloat64Default(config, "rms_norm_eps", 1e-6)
 	ropeFreqBase := poly.HFConfigFloat64Default(config, "rope_theta", 10000.0)
+	activation := poly.ActivationSilu
+	if strings.EqualFold(poly.HFConfigStringDefault(config, "hidden_act", ""), "relu2") {
+		activation = poly.ActivationReLU2
+	}
 	if useGPU && useTiling && hiddenSize >= 1536 {
 		fmt.Printf("⚠️  Large model detected (hidden=%d). Tiled GPU path can destabilize logits here; forcing Standard Forward.\n", hiddenSize)
 		useTiling = false
@@ -225,14 +247,55 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		IntermediateSize: intermediateSize,
 		RMSNormEps:       rmsNormEps,
 		RoPEFreqBase:     ropeFreqBase,
+		Activation:       activation,
 	})
 
-	if !(sequentialGPULoad && useGPU) {
+	if useBitNetCPU {
+		fmt.Printf("⏳ BitNet CPU block-wise load + pack (%d transformer blocks)...\n", numLayers)
+		layerFiles := buildLayerShardIndex(safetensorFiles, numLayers)
+		for li := 0; li < numLayers; li++ {
+			layerMap := make(map[string][]float32)
+			for _, sf := range layerFiles[li] {
+				part, err := poly.LoadSafetensorsSelective(sf, func(k string) bool {
+					return poly.HFWeightMatchesLayer(k, li)
+				})
+				if err != nil {
+					log.Fatalf("⚠️  safetensors %s: %v", sf, err)
+				}
+				for k, v := range part {
+					layerMap[k] = v
+				}
+			}
+			poly.LoadWithPrefixes(net, layerMap)
+			if err := poly.PrepareDecoderBlockBitNetTernaryCPU(net, li); err != nil {
+				log.Fatalf("❌ BitNet CPU preparation failed for block %d: %v", li, err)
+			}
+			poly.ReleaseTransientSafetensorMap(layerMap)
+			fmt.Printf("   ✓ Block %d/%d packed\n", li+1, numLayers)
+		}
+		runtime.GC()
+		debug.FreeOSMemory()
+	} else if !(sequentialGPULoad && useGPU) {
 		poly.LoadWithPrefixes(net, allTensors)
+	}
+	if useBitNetCPU {
+		if isBitNetModel {
+			fmt.Print("🧮 BitNet b1.58 packed CPU weights ready (FP32 projections released)... ")
+		}
+		net.UseExactDType = true
+		fmt.Println("done.")
+	}
+	if useTernaryPTQCPU {
+		fmt.Print("🧮 Quantizing FP32 transformer weights to experimental ternary PTQ... ")
+		if err := poly.MorphNetworkBitNetTernary(net); err != nil {
+			log.Fatalf("❌ Ternary PTQ failed: %v", err)
+		}
+		net.UseExactDType = true
+		fmt.Println("done.")
 	}
 
 	tr = poly.NewTransformer[float32](net, embeddings, lmHead, finalNorm, template)
-	if !(sequentialGPULoad && useGPU) {
+	if !(sequentialGPULoad && useGPU) && !useBitNetCPU {
 		poly.ReleaseTransientSafetensorMap(allTensors, embeddings, lmHead, finalNorm)
 	}
 	tr.SetRMSNormEps(rmsNormEps)
@@ -323,6 +386,9 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	}
 	if !useGPU {
 		applyGlitchTilingFlags(tr.Network, false, useTiling, tilingMode)
+		if useBitNetCPU || useTernaryPTQCPU {
+			tr.Network.UseExactDType = true
+		}
 		tr.SyncInferenceCPU()
 	}
 
@@ -335,10 +401,17 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		fmt.Printf("🧯 Special-token mask active (%d banned IDs)\n", len(bannedTokens))
 	}
 
-	encode := func(text string) []uint32 { return tk.Encode(text, false) }
+	addSpecialTokens := false
+	if strings.Contains(modelNameLower, "microsoft/bitnet-b1.58-2b-4t") {
+		addSpecialTokens = true
+	}
+	encode := func(text string) []uint32 { return tk.Encode(text, addSpecialTokens) }
 	decode := func(tokens []uint32) string { return tk.Decode(tokens, false) }
 
 	maxTokens = 2048
+	if isBitNetModel {
+		maxTokens = 192
+	}
 
 	temp := float32(0.7)
 	if deterministic {
@@ -375,6 +448,36 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 			Assistant: reply,
 		})
 	}
+}
+
+func loadEOSTokensFromJSON(path string) []int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil
+	}
+	return poly.EOSTokenIDsFromHFConfig(config)
+}
+
+func mergeIntSets(base []int, extra []int) []int {
+	seen := make(map[int]struct{}, len(base)+len(extra))
+	out := make([]int, 0, len(base)+len(extra))
+	for _, v := range base {
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	for _, v := range extra {
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func buildLayerShardIndex(safetensorFiles []string, numLayers int) [][]string {

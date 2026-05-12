@@ -500,8 +500,8 @@ func encodeNativeWeights(data any, dt DType) string {
 		}
 		return base64.StdEncoding.EncodeToString(buf)
 	case []uint8:
-		if dt == DTypeFP4 {
-			// FP4 native storage uses one 4-bit code per weight; persist it compactly.
+		if dt == DTypeInt4 || dt == DTypeUint4 || dt == DTypeFP4 {
+			// Sub-byte native storage uses one 4-bit code per weight; persist it compactly.
 			buf := make([]byte, (len(w)+1)/2)
 			for i, v := range w {
 				val := v & 0x0F
@@ -509,6 +509,22 @@ func encodeNativeWeights(data any, dt DType) string {
 					buf[i/2] |= val << 4
 				} else {
 					buf[i/2] |= val
+				}
+			}
+			return base64.StdEncoding.EncodeToString(buf)
+		} else if dt == DTypeInt2 || dt == DTypeUint2 || dt == DTypeTernary {
+			buf := make([]byte, (len(w)+3)/4)
+			for i, v := range w {
+				val := v & 0x03
+				shift := uint(6 - (i%4)*2)
+				buf[i/4] |= val << shift
+			}
+			return base64.StdEncoding.EncodeToString(buf)
+		} else if dt == DTypeBinary {
+			buf := make([]byte, (len(w)+7)/8)
+			for i, v := range w {
+				if int8(v) > 0 {
+					buf[i/8] |= 1 << uint(7-(i%8))
 				}
 			}
 			return base64.StdEncoding.EncodeToString(buf)
@@ -567,8 +583,8 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 		}
 		return w, nil
 	case DTypeInt4, DTypeUint4:
-		// Unpack 2 weights per byte into []int8
-		w := make([]int8, len(bytes)*2)
+		// Unpack 2 weights per byte into native []uint8 storage.
+		w := make([]uint8, len(bytes)*2)
 		for i := range bytes {
 			valHigh := (bytes[i] >> 4) & 0x0F
 			valLow := bytes[i] & 0x0F
@@ -586,9 +602,9 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 				}
 			}
 
-			w[i*2] = sh
+			w[i*2] = uint8(sh)
 			if i*2+1 < len(w) {
-				w[i*2+1] = sl
+				w[i*2+1] = uint8(sl)
 			}
 		}
 		return w, nil
@@ -603,8 +619,8 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 		}
 		return w, nil
 	case DTypeInt2, DTypeUint2, DTypeTernary:
-		// Unpack 4 weights per byte into []int8
-		w := make([]int8, len(bytes)*4)
+		// Unpack 4 weights per byte into native []uint8 storage.
+		w := make([]uint8, len(bytes)*4)
 		for i := range bytes {
 			for j := 0; j < 4; j++ {
 				shift := uint(6 - j*2)
@@ -617,14 +633,14 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 					}
 				}
 				if i*4+j < len(w) {
-					w[i*4+j] = sv
+					w[i*4+j] = uint8(sv)
 				}
 			}
 		}
 		return w, nil
 	case DTypeBinary:
-		// Unpack 8 weights per byte into []int8
-		w := make([]int8, len(bytes)*8)
+		// Unpack 8 weights per byte into native []uint8 storage.
+		w := make([]uint8, len(bytes)*8)
 		for i := range bytes {
 			for j := 0; j < 8; j++ {
 				bit := (bytes[i] >> uint(7-j)) & 0x01
@@ -633,7 +649,7 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 					val = 1
 				}
 				if i*8+j < len(w) {
-					w[i*8+j] = val
+					w[i*8+j] = uint8(val)
 				}
 			}
 		}
