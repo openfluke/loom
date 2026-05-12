@@ -319,12 +319,14 @@ const (
 	DTypeBinary   DType = 20 // 1-bit (XNOR-Net)
 
 	// Sub-weight identifiers for specific layer types (used as keys in GPUWeights map)
-	WeightMHAQuery      DType = 200
-	WeightMHAKey        DType = 201
-	WeightMHAValue      DType = 202
-	WeightMHAProjection DType = 203
-	WeightMHAQNorm      DType = 204
-	WeightMHAKNorm      DType = 205
+	WeightMHAQuery        DType = 200
+	WeightMHAKey          DType = 201
+	WeightMHAValue        DType = 202
+	WeightMHAProjection   DType = 203
+	WeightMHAQNorm        DType = 204
+	WeightMHAKNorm        DType = 205
+	WeightMHAInnerNorm    DType = 206
+	WeightSwiGLUInnerNorm DType = 120
 )
 
 func (d DType) String() string {
@@ -1039,6 +1041,20 @@ func (l *VolumetricLayer) SyncToGPU() error {
 		hasCNN1NativePackedPath := l.Type == LayerCNN1 && isCNN1NativeGPUQuantDType(l.DType)
 		if l.Type == LayerRMSNorm {
 			// RMSNorm MUST stay in FP32
+		} else if hasQuantizedShader && l.DType == DTypeTernary {
+			if l.Type == LayerSwiGLU {
+				if err := l.syncBitNetPackedSwiGLU(ctx); err != nil {
+					return err
+				}
+			} else if l.Type == LayerMultiHeadAttention {
+				if err := l.syncBitNetPackedMHA(ctx); err != nil {
+					return err
+				}
+			} else {
+				if err := l.syncBitNetPackedDense(ctx); err != nil {
+					return err
+				}
+			}
 		} else if hasQuantizedShader && DTypeBits(l.DType) == 8 {
 			if l.Type == LayerSwiGLU {
 				h, inter := l.InputHeight, l.OutputHeight

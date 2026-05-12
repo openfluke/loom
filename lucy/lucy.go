@@ -81,20 +81,27 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	isQwen := strings.Contains(modelNameLower, "qwen")
 	isBitNetModel := strings.Contains(modelNameLower, "bitnet") || strings.Contains(modelNameLower, "1bit")
 	useBitNetCPU := false
+	useBitNetGPU := false
 	useTernaryPTQCPU := false
-	if !useGPU {
-		if isBitNetModel {
+	if isBitNetModel {
+		if useGPU {
+			useBitNetGPU = true
+			weightDType = poly.DTypeTernary
+			sequentialGPULoad = false
+			fmt.Println("🧪 BitNet model detected; enabling experimental WebGPU packed ternary inference.")
+		} else {
 			useBitNetCPU = true
 			fmt.Println("🧮 BitNet model detected; enabling CPU packed ternary inference.")
-		} else {
-			quantInput := readInput(reader, "🧮 CPU weight precision? (32=FP32 / ternary=experimental PTQ) [32]: ", "32")
-			switch strings.ToLower(strings.TrimSpace(quantInput)) {
-			case "ternary", "t", "bitnet", "1bit", "b1.58", "158":
-				useTernaryPTQCPU = true
-				fmt.Println("⚠️  Ternary PTQ is experimental. It is not equivalent to BitNet training and may produce bad text.")
-			}
+		}
+	} else if !useGPU {
+		quantInput := readInput(reader, "🧮 CPU weight precision? (32=FP32 / ternary=experimental PTQ) [32]: ", "32")
+		switch strings.ToLower(strings.TrimSpace(quantInput)) {
+		case "ternary", "t", "bitnet", "1bit", "b1.58", "158":
+			useTernaryPTQCPU = true
+			fmt.Println("⚠️  Ternary PTQ is experimental. It is not equivalent to BitNet training and may produce bad text.")
 		}
 	}
+	useBitNetPacked := useBitNetCPU || useBitNetGPU
 	template := templateForModel(modelName)
 	activeSystemPrompt := defaultSystemPromptForModel(modelName)
 	if deterministic && isQwen {
@@ -137,7 +144,7 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	var embeddings, lmHead, finalNorm []float32
 	var allTensors map[string][]float32
 
-	if (sequentialGPULoad && useGPU) || useBitNetCPU {
+	if (sequentialGPULoad && useGPU) || useBitNetPacked {
 		globalTensors := make(map[string][]float32)
 		for _, f := range safetensorFiles {
 			part, err := poly.LoadSafetensorsSelective(f, poly.HFWeightIsGlobal)
@@ -250,8 +257,12 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		Activation:       activation,
 	})
 
-	if useBitNetCPU {
-		fmt.Printf("⏳ BitNet CPU block-wise load + pack (%d transformer blocks)...\n", numLayers)
+	if useBitNetPacked {
+		if useBitNetGPU {
+			fmt.Printf("⏳ BitNet WebGPU block-wise load + pack (%d transformer blocks)...\n", numLayers)
+		} else {
+			fmt.Printf("⏳ BitNet CPU block-wise load + pack (%d transformer blocks)...\n", numLayers)
+		}
 		layerFiles := buildLayerShardIndex(safetensorFiles, numLayers)
 		for li := 0; li < numLayers; li++ {
 			layerMap := make(map[string][]float32)
@@ -278,9 +289,13 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	} else if !(sequentialGPULoad && useGPU) {
 		poly.LoadWithPrefixes(net, allTensors)
 	}
-	if useBitNetCPU {
+	if useBitNetPacked {
 		if isBitNetModel {
-			fmt.Print("🧮 BitNet b1.58 packed CPU weights ready (FP32 projections released)... ")
+			if useBitNetGPU {
+				fmt.Print("🧪 BitNet b1.58 packed weights ready for WebGPU upload (FP32 projections released)... ")
+			} else {
+				fmt.Print("🧮 BitNet b1.58 packed CPU weights ready (FP32 projections released)... ")
+			}
 		}
 		net.UseExactDType = true
 		fmt.Println("done.")
@@ -295,7 +310,7 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	}
 
 	tr = poly.NewTransformer[float32](net, embeddings, lmHead, finalNorm, template)
-	if !(sequentialGPULoad && useGPU) && !useBitNetCPU {
+	if !(sequentialGPULoad && useGPU) && !useBitNetPacked {
 		poly.ReleaseTransientSafetensorMap(allTensors, embeddings, lmHead, finalNorm)
 	}
 	tr.SetRMSNormEps(rmsNormEps)

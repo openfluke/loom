@@ -12,12 +12,13 @@ import (
 // as the primary execution state, while the Master and Versions serve as
 // secondary sync points for persistence, I/O, and CPU fallbacks.
 type WeightStore struct {
-	Master     []float32              // Secondary sync body (Source of Truth for Persistence/IO)
-	Versions   map[DType]any          // CPU-side cached versions (e.g., map[DTypeFP4][]byte)
-	CPUPacked  map[DType]any          // CPU-side packed caches for exact low-bit kernels
-	GPUWeights map[DType]any          // Primary Execution Store (VRAM-resident wgpu.Buffer)
-	GPUScales  map[DType]*wgpu.Buffer // VRAM-resident scales for quantized types
-	Scale      float32                // Dynamic quantization scale factor
+	Master         []float32              // Secondary sync body (Source of Truth for Persistence/IO)
+	Versions       map[DType]any          // CPU-side cached versions (e.g., map[DTypeFP4][]byte)
+	CPUPacked      map[DType]any          // CPU-side packed caches for exact low-bit kernels
+	GPUWeights     map[DType]any          // Primary Execution Store (VRAM-resident wgpu.Buffer)
+	GPUScales      map[DType]*wgpu.Buffer // VRAM-resident scales for quantized types
+	GPUScaleValues map[DType]float32      // CPU metadata for VRAM-resident packed kernels
+	Scale          float32                // Dynamic quantization scale factor
 }
 
 func isCNN1NativeQuantDType(dtype DType) bool {
@@ -391,12 +392,13 @@ morphSwitch:
 // NewWeightStore creates a new storage for weights.
 func NewWeightStore(size int) *WeightStore {
 	return &WeightStore{
-		Master:     AlignedFloat32(size),
-		Versions:   make(map[DType]any),
-		CPUPacked:  make(map[DType]any),
-		GPUWeights: make(map[DType]any),
-		GPUScales:  make(map[DType]*wgpu.Buffer),
-		Scale:      1.0,
+		Master:         AlignedFloat32(size),
+		Versions:       make(map[DType]any),
+		CPUPacked:      make(map[DType]any),
+		GPUWeights:     make(map[DType]any),
+		GPUScales:      make(map[DType]*wgpu.Buffer),
+		GPUScaleValues: make(map[DType]float32),
+		Scale:          1.0,
 	}
 }
 
@@ -1021,5 +1023,8 @@ func (ws *WeightStore) Release() {
 			b.Destroy()
 		}
 		delete(ws.GPUScales, dt)
+	}
+	for dt := range ws.GPUScaleValues {
+		delete(ws.GPUScaleValues, dt)
 	}
 }
