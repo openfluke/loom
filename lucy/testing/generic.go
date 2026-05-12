@@ -518,10 +518,33 @@ func runTrainingSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 					cfg.name, mode.String(), res.LossHistory[0], res.FinalLoss, dur.Round(time.Millisecond),
 					markMark(trainOK), markMark(saveOK), float64(len(js))/1024.0, float64(ramBytes)/1024.0)
 			} else {
-				trainOK, saveOK = true, true
-				fmt.Printf("| %-10s | %-13s | %-10.4e | %-10.4e | %-8v | %-7v | %-11v | %-8s | %-8s |\n",
-					cfg.name, mode.String(), res.LossHistory[0], res.FinalLoss, dur.Round(time.Millisecond),
-					"N/A", "N/A", "0KB", "0KB")
+				lossInit := math.Inf(1)
+				if len(res.LossHistory) > 0 {
+					lossInit = res.LossHistory[0]
+				}
+				trainOK = !math.IsNaN(lossInit) && !math.IsNaN(res.FinalLoss) &&
+					!math.IsInf(lossInit, 0) && !math.IsInf(res.FinalLoss, 0) &&
+					res.FinalLoss <= lossInit*1.01+1e-6
+
+				js, serErr := poly.SerializeNetwork(l.Network)
+				var diff float64
+				if serErr == nil && len(js) > 0 {
+					if net2, deserErr := poly.DeserializeNetwork(js); deserErr == nil && net2 != nil {
+						l2 := net2.GetLayer(0, 0, 0, 0)
+						if l2 != nil && l2.Type == l.Type && l2.WeightStore == nil {
+							l2.ResetState()
+							_, postReload := poly.DispatchLayer(l2, input, nil)
+							l.ResetState()
+							_, postCurrent := poly.DispatchLayer(l, input, nil)
+							diff = maxAbsDiff(postCurrent.Data, postReload.Data)
+							saveOK = diff < cfg.tolerance
+						}
+					}
+				}
+
+				fmt.Printf("| %-10s | %-13s | %-10.4e | %-10.4e | %-8v | %-7s | %-11s | %-8.1fKB | %-8s |\n",
+					cfg.name, mode.String(), lossInit, res.FinalLoss, dur.Round(time.Millisecond),
+					markMark(trainOK), markMark(saveOK), float64(len(js))/1024.0, "0KB")
 			}
 
 			if !trainOK || !saveOK {
