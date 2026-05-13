@@ -1061,7 +1061,8 @@ func (l *VolumetricLayer) SyncToGPU() error {
 				l.syncQuantizedSwiGLU_I8(ctx, h, inter)
 			} else if l.Type == LayerMultiHeadAttention {
 				l.syncQuantizedMHA_I8(ctx)
-			} else {
+			} else if l.Type == LayerDense && l.DType == DTypeInt8 {
+				// Packed INT8 dense path only — Uint8/FP8 use PTQ→F32 buffers like F16.
 				l.syncQuantizedDenseI8(ctx, "Layer Weights")
 			}
 		} else if hasQuantizedShader && DTypeBits(l.DType) <= 4 {
@@ -1102,11 +1103,16 @@ func (l *VolumetricLayer) SyncToGPU() error {
 				fwdDType = DTypeFloat32
 			}
 
-			// SwiGLU, MHA, and Dense have dedicated syncQuantized* functions above that
-			// already filled GPUWeights with the right quantized buffers. Skip uploading
-			// a second copy to avoid doubling VRAM on LLM models.
+			// Dense: skip redundant PTQ→native-key upload only when forward uses a packed
+			// native buffer (BitNet, signed INT8, or ≤4-bit / Q4-style). Uint8/FP8 are not
+			// the INT8 packed dense path; they use dequantized F32 in the generic upload.
+			denseUsedNativeQuantGPU := l.Type == LayerDense &&
+				(l.DType == DTypeTernary || l.DType == DTypeInt8 || DTypeBits(l.DType) <= 4)
 			hasSpecialPath := fwdDType != DTypeFloat32 &&
-				(l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerDense || hasCNN1NativePackedPath)
+				(hasCNN1NativePackedPath ||
+					l.Type == LayerSwiGLU ||
+					l.Type == LayerMultiHeadAttention ||
+					denseUsedNativeQuantGPU)
 
 			if !hasSpecialPath {
 				gpuData := l.WeightStore.MorphToFloat32ForGPU(fwdDType)
@@ -1121,6 +1127,14 @@ func (l *VolumetricLayer) SyncToGPU() error {
 					}
 					l.WeightStore.GPUWeights[fwdDType] = buf
 				}
+			}
+		}
+
+		// Dense backward tiled kernels always read dequantized float32 coefficients (same
+		// PTQ simulation as MorphToFloat32ForGPU), not packed INT8/Q4 payloads.
+		if l.Type == LayerDense {
+			if err := l.syncDenseFloat32CoefForBackward(ctx); err != nil {
+				return err
 			}
 		}
 	}
@@ -1184,6 +1198,38 @@ func (l *VolumetricLayer) ReleaseInferenceHostWeights() {
 	for i := range l.SequentialLayers {
 		l.SequentialLayers[i].ReleaseInferenceHostWeights()
 	}
+}
+
+// syncDenseFloat32CoefForBackward uploads dequantized float32 weights for Dense layers.
+// Forward may use packed INT8/Q4/BitNet buffers; tiled backward (DispatchDenseBackward*)
+// always consumes the same PTQ-simulated f32 matrix as MorphToFloat32ForGPU.
+func (l *VolumetricLayer) syncDenseFloat32CoefForBackward(ctx *WGPUContext) error {
+	ws := l.WeightStore
+	if ws == nil || len(ws.Master) == 0 {
+		return nil
+	}
+	gpuData := ws.MorphToFloat32ForGPU(l.DType)
+	if len(gpuData) == 0 {
+		return nil
+	}
+	wantBytes := uint64(len(gpuData) * 4)
+	type sizer interface{ GetSize() uint64 }
+	if existingAny, ok := ws.GPUWeights[DTypeFloat32]; ok {
+		if wBuf, ok2 := existingAny.(*wgpu.Buffer); ok2 && wBuf != nil {
+			if sz, ok3 := interface{}(wBuf).(sizer); ok3 && sz.GetSize() >= wantBytes {
+				ctx.Queue.WriteBuffer(wBuf, 0, wgpu.ToBytes(gpuData))
+				return nil
+			}
+			wBuf.Release()
+			delete(ws.GPUWeights, DTypeFloat32)
+		}
+	}
+	buf, err := ctx.CreatePersistentBuffer(gpuData, "Dense coef F32 (backward)")
+	if err != nil {
+		return err
+	}
+	ws.GPUWeights[DTypeFloat32] = buf
+	return nil
 }
 
 // syncQuantizedDense handles the quantization and upload of a single weight buffer.

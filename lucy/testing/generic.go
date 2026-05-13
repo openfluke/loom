@@ -231,6 +231,7 @@ func runBackwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 			l.WeightStore.InvalidateVersions()
 			l.WeightStore.Scale = cfg.scale
 			l.WeightStore.Morph(cfg.dtype)
+			l.SyncToCPU()
 		}
 		l.Network.SyncToGPU()
 

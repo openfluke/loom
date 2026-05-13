@@ -2440,9 +2440,14 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 
 	switch l.Type {
 	case LayerDense:
-		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		var wBuf *wgpu.Buffer
+		if l.WeightStore != nil {
+			if b, ok := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer); ok && b != nil {
+				wBuf = b
+			}
+		}
 		if wBuf == nil {
-			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights (dense backward requires Float32 coef buffer)", l.Type.String(), l.Z, l.Y, l.X, l.L)
 		}
 		// Call the premium tiled backward dispatchers in wgpu_dense_tiled.go
 		if err := c.DispatchDenseBackwardDXTiled(tileSize, batchSize, l.InputHeight, l.OutputHeight, uint32(l.Activation), gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
