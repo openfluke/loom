@@ -126,6 +126,206 @@ func LoadSafetensorsSelective(filepath string, keep func(string) bool) (map[stri
 	return tensors, nil
 }
 
+// HFStoredTensor is one safetensors tensor as raw on-disk bytes plus dtype/shape.
+// Use this for BitNet-style loads to avoid expanding U8/BF16 payloads into []float32
+// before copying into WeightStore (saves RAM and matches checkpoint layout).
+type HFStoredTensor struct {
+	DType string
+	Shape []int
+	Bytes []byte
+}
+
+// StoredTensorNumElements returns the product of t.Shape (1 if shape is empty).
+func StoredTensorNumElements(t HFStoredTensor) int {
+	n := 1
+	for _, d := range t.Shape {
+		n *= d
+	}
+	return n
+}
+
+// safetensorPayloadByteLength is the exact byte length of a tensor payload for dtype×n elements.
+func safetensorPayloadByteLength(dtype string, n int) (int, error) {
+	if n < 0 {
+		return 0, fmt.Errorf("negative numElements")
+	}
+	switch dtype {
+	case "F32", "I32", "U32":
+		return n * 4, nil
+	case "F64", "I64", "U64":
+		return n * 8, nil
+	case "F16", "BF16", "I16", "U16":
+		return n * 2, nil
+	case "I8", "U8":
+		return n, nil
+	case "F4":
+		return (n + 1) / 2, nil
+	default:
+		return 0, fmt.Errorf("unsupported dtype for raw sizing: %s", dtype)
+	}
+}
+
+// DecodeTensorBytesInto decodes one tensor's raw safetensors payload into dst.
+// len(dst) must equal the tensor's element count (product of shape).
+func DecodeTensorBytesInto(dst []float32, tensorBytes []byte, dtype string) error {
+	if len(dst) == 0 {
+		return nil
+	}
+	return decodeTensorData(tensorBytes, 0, dtype, len(dst), dst)
+}
+
+// LoadSafetensorsSelectiveRaw reads tensors accepted by keep(name) without dtype decode:
+// each value carries DType, Shape, and the exact file byte range for that tensor.
+func LoadSafetensorsSelectiveRaw(filepath string, keep func(string) bool) (map[string]HFStoredTensor, error) {
+	f, err := os.Open(filepath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+	defer f.Close()
+
+	var lenBuf [8]byte
+	if _, err := io.ReadFull(f, lenBuf[:]); err != nil {
+		return nil, fmt.Errorf("failed to read header size: %w", err)
+	}
+	headerSize := binary.LittleEndian.Uint64(lenBuf[:])
+	if headerSize > 256<<20 {
+		return nil, fmt.Errorf("safetensors header size unreasonable: %d", headerSize)
+	}
+	headerBytes := make([]byte, headerSize)
+	if _, err := io.ReadFull(f, headerBytes); err != nil {
+		return nil, fmt.Errorf("failed to read header: %w", err)
+	}
+
+	var rawHeader map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &rawHeader); err != nil {
+		return nil, fmt.Errorf("failed to parse header: %w", err)
+	}
+
+	dataStart := int64(8 + headerSize)
+	out := make(map[string]HFStoredTensor)
+
+	for name, value := range rawHeader {
+		if name == "__metadata__" {
+			continue
+		}
+		if keep != nil && !keep(name) {
+			continue
+		}
+
+		infoMap, ok := value.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		encodedDtype, _ := infoMap["dtype"].(string)
+		shapeList, _ := infoMap["shape"].([]interface{})
+		offsetList, _ := infoMap["data_offsets"].([]interface{})
+		if len(offsetList) != 2 {
+			continue
+		}
+
+		shape := make([]int, len(shapeList))
+		numElements := 1
+		for i, v := range shapeList {
+			shape[i] = int(v.(float64))
+			numElements *= shape[i]
+		}
+
+		startOffset := int(offsetList[0].(float64))
+		endOffset := int(offsetList[1].(float64))
+		if endOffset < startOffset {
+			return nil, fmt.Errorf("tensor %s: invalid offsets %d..%d", name, startOffset, endOffset)
+		}
+		byteLen := endOffset - startOffset
+		want, err := safetensorPayloadByteLength(encodedDtype, numElements)
+		if err != nil {
+			return nil, fmt.Errorf("tensor %s: %w", name, err)
+		}
+		if byteLen != want {
+			return nil, fmt.Errorf("tensor %s: payload %d bytes, expected %d for dtype=%s num=%d", name, byteLen, want, encodedDtype, numElements)
+		}
+
+		tensorBytes := make([]byte, byteLen)
+		if _, err := f.ReadAt(tensorBytes, dataStart+int64(startOffset)); err != nil {
+			return nil, fmt.Errorf("tensor %s read failed: %w", name, err)
+		}
+
+		out[name] = HFStoredTensor{DType: encodedDtype, Shape: shape, Bytes: tensorBytes}
+	}
+
+	return out, nil
+}
+
+// LoadSafetensorsSelectiveRawFromBytes is the in-memory equivalent of LoadSafetensorsSelectiveRaw.
+func LoadSafetensorsSelectiveRawFromBytes(data []byte, keep func(string) bool) (map[string]HFStoredTensor, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("data too short: need at least 8 bytes for header size")
+	}
+
+	headerSize := binary.LittleEndian.Uint64(data[0:8])
+	if len(data) < int(8+headerSize) {
+		return nil, fmt.Errorf("data too short: header size %d but only %d bytes available", headerSize, len(data)-8)
+	}
+
+	headerBytes := data[8 : 8+headerSize]
+	var rawHeader map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &rawHeader); err != nil {
+		return nil, fmt.Errorf("failed to parse header: %w", err)
+	}
+
+	allData := data[8+headerSize:]
+	out := make(map[string]HFStoredTensor)
+
+	for name, value := range rawHeader {
+		if name == "__metadata__" {
+			continue
+		}
+		if keep != nil && !keep(name) {
+			continue
+		}
+
+		infoMap, ok := value.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		encodedDtype, _ := infoMap["dtype"].(string)
+		shapeList, _ := infoMap["shape"].([]interface{})
+		offsetList, _ := infoMap["data_offsets"].([]interface{})
+		if len(offsetList) != 2 {
+			continue
+		}
+
+		shape := make([]int, len(shapeList))
+		numElements := 1
+		for i, v := range shapeList {
+			shape[i] = int(v.(float64))
+			numElements *= shape[i]
+		}
+
+		startOffset := int(offsetList[0].(float64))
+		endOffset := int(offsetList[1].(float64))
+		if endOffset < startOffset || startOffset < 0 || endOffset > len(allData) {
+			return nil, fmt.Errorf("tensor %s: invalid offsets %d..%d (payload len %d)", name, startOffset, endOffset, len(allData))
+		}
+		byteLen := endOffset - startOffset
+		want, err := safetensorPayloadByteLength(encodedDtype, numElements)
+		if err != nil {
+			return nil, fmt.Errorf("tensor %s: %w", name, err)
+		}
+		if byteLen != want {
+			return nil, fmt.Errorf("tensor %s: payload %d bytes, expected %d for dtype=%s num=%d", name, byteLen, want, encodedDtype, numElements)
+		}
+
+		tensorBytes := make([]byte, byteLen)
+		copy(tensorBytes, allData[startOffset:endOffset])
+
+		out[name] = HFStoredTensor{DType: encodedDtype, Shape: shape, Bytes: tensorBytes}
+	}
+
+	return out, nil
+}
+
 func loadSafetensorsFromBytesFiltered(data []byte, keep func(string) bool) (map[string][]float32, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("data too short: need at least 8 bytes for header size")

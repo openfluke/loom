@@ -269,6 +269,24 @@ func bitNetPackedScaleKey(offset int) DType {
 	return bitNetTernaryPackedScaleKeyBase + DType(offset)
 }
 
+func (ws *WeightStore) lookupBitNetTernaryPacked(offset, rows, cols int) *BitNetTernaryMatrix {
+	if ws == nil || ws.CPUPacked == nil || rows <= 0 || cols <= 0 || offset < 0 {
+		return nil
+	}
+	key := bitNetPackedKey(offset)
+	if m, ok := ws.CPUPacked[key].(*BitNetTernaryMatrix); ok && m != nil &&
+		m.Offset == offset && m.Rows == rows && m.Cols == cols {
+		return m
+	}
+	for _, v := range ws.CPUPacked {
+		if m, ok := v.(*BitNetTernaryMatrix); ok && m != nil &&
+			m.Offset == offset && m.Rows == rows && m.Cols == cols {
+			return m
+		}
+	}
+	return nil
+}
+
 func (ws *WeightStore) GetBitNetTernaryMatrix(offset, rows, cols int) (*BitNetTernaryMatrix, bool) {
 	if ws == nil || rows <= 0 || cols <= 0 || offset < 0 {
 		return nil, false
@@ -278,12 +296,14 @@ func (ws *WeightStore) GetBitNetTernaryMatrix(offset, rows, cols int) (*BitNetTe
 		ws.CPUPacked = make(map[DType]any)
 	}
 	key := bitNetPackedKey(offset)
-	if cached, ok := ws.CPUPacked[key].(*BitNetTernaryMatrix); ok &&
-		cached.Rows == rows && cached.Cols == cols && cached.Offset == offset {
-		return cached, true
+	// Prefer slabs installed directly from safetensors (microsoft/bitnet-b1.58
+	// offline packed layout via SetMicrosoftBitNetPackedMatrix) — those never
+	// populate Master[offset:offset+total] with a dense FP32 unfold.
+	if m := ws.lookupBitNetTernaryPacked(offset, rows, cols); m != nil {
+		return m, true
 	}
 
-	if offset+total > len(ws.Master) {
+	if ws.Master == nil || offset+total > len(ws.Master) {
 		return nil, false
 	}
 	matrix, ok := packFloat32AsBitNetTernaryMatrix(ws.Master[offset:offset+total], rows, cols)
@@ -295,9 +315,10 @@ func (ws *WeightStore) GetBitNetTernaryMatrix(offset, rows, cols int) (*BitNetTe
 	return matrix, true
 }
 
-// PrepareNetworkBitNetTernaryCPU pre-packs BitLinear-style projections for CPU
-// inference and releases their FP32 masters. It is intended for BitNet-trained
-// checkpoints in inference-only mode; embeddings and RMSNorm weights stay FP32.
+// PrepareNetworkBitNetTernaryCPU prepares decoder BitLinear weights for CPU
+// inference: either packs from FP32 Master (HF float weights) or keeps slabs
+// already decoded from microsoft/bitnet-b1.58 offline safetensors via
+// SetMicrosoftBitNetPackedMatrix. Embeddings / RMSNorm stay as loaded.
 func PrepareNetworkBitNetTernaryCPU(n *VolumetricNetwork) error {
 	if n == nil {
 		return nil
@@ -310,8 +331,9 @@ func PrepareNetworkBitNetTernaryCPU(n *VolumetricNetwork) error {
 	return nil
 }
 
-// PrepareDecoderBlockBitNetTernaryCPU pre-packs one 4-layer HF decoder block
-// (RMSNorm, MHA, RMSNorm, SwiGLU) and releases FP32 projection masters.
+// PrepareDecoderBlockBitNetTernaryCPU prepares one 4-layer HF decoder block
+// (RMSNorm, MHA, RMSNorm, SwiGLU). Releases FP32 Master only after successful pack
+// so offline-packed weights never get re-quantized from an empty Master span.
 func PrepareDecoderBlockBitNetTernaryCPU(n *VolumetricNetwork, blockIdx int) error {
 	if n == nil || blockIdx < 0 {
 		return nil
@@ -339,9 +361,10 @@ func prepareLayerTreeBitNetTernaryCPU(l *VolumetricLayer) error {
 	switch l.Type {
 	case LayerDense:
 		if l.WeightStore != nil {
-			l.DType = DTypeTernary
-			l.WeightStore.GetBitNetTernaryMatrix(0, l.OutputHeight, l.InputHeight)
-			releaseBitNetPackedProjectionMaster(l.WeightStore)
+			if _, ok := l.WeightStore.GetBitNetTernaryMatrix(0, l.OutputHeight, l.InputHeight); ok {
+				l.DType = DTypeTernary
+				releaseBitNetPackedProjectionMaster(l.WeightStore)
+			}
 		}
 	case LayerMultiHeadAttention:
 		prepareBitNetMHA(l)
@@ -717,7 +740,7 @@ func (ws *WeightStore) SetMicrosoftBitNetPackedMatrix(offset, rows, cols int, pa
 	if ws.CPUPacked == nil {
 		ws.CPUPacked = make(map[DType]any)
 	}
-	words := packMicrosoftOfflineBitNetRowsToU32(packed, rows, cols)
+	words := packMicrosoftOfflineBitNetRowsToU32FromFloatU8Slots(packed, rows, cols)
 	matrix := &BitNetTernaryMatrix{
 		Rows:     rows,
 		Cols:     cols,
@@ -730,13 +753,63 @@ func (ws *WeightStore) SetMicrosoftBitNetPackedMatrix(offset, rows, cols int, pa
 	return true
 }
 
-func packMicrosoftOfflineBitNetRowsToU32(packed []float32, rows, cols int) []uint32 {
+// SetMicrosoftBitNetPackedMatrixBytes installs microsoft/bitnet-b1.58 offline-packed
+// weights from raw U8 (or any per-cell byte payload) without an intermediate []float32.
+// len(packed) must equal (rows/4)*cols and rows must be divisible by 4.
+func (ws *WeightStore) SetMicrosoftBitNetPackedMatrixBytes(offset, rows, cols int, packed []byte) bool {
+	if ws == nil || rows <= 0 || cols <= 0 || offset < 0 || len(packed) == 0 {
+		return false
+	}
+	if rows%4 != 0 || len(packed) != (rows/4)*cols {
+		return false
+	}
+	if ws.CPUPacked == nil {
+		ws.CPUPacked = make(map[DType]any)
+	}
+	words := packMicrosoftOfflineBitNetRowsToU32FromBytes(packed, rows, cols)
+	matrix := &BitNetTernaryMatrix{
+		Rows:     rows,
+		Cols:     cols,
+		RowWords: (cols + 15) / 16,
+		Offset:   offset,
+		Scale:    ws.bitNetPackedScale(offset),
+		Words:    words,
+	}
+	ws.CPUPacked[bitNetPackedKey(offset)] = matrix
+	return true
+}
+
+// packMicrosoftOfflineBitNetRowsToU32FromFloatU8Slots matches HF checkpoints that decode
+// U8 tensors into []float32 (values 0–255) before packing.
+func packMicrosoftOfflineBitNetRowsToU32FromFloatU8Slots(packed []float32, rows, cols int) []uint32 {
 	rowWords := (cols + 15) / 16
 	out := make([]uint32, rows*rowWords)
 	packedRows := rows / 4
 	for pr := 0; pr < packedRows; pr++ {
 		for c := 0; c < cols; c++ {
 			b := uint8(packed[pr*cols+c])
+			for lane := 0; lane < 4; lane++ {
+				code := (b >> uint(lane*2)) & 0x03
+				if code > 2 {
+					code = 1
+				}
+				row := lane*packedRows + pr
+				wordOff := row*rowWords + c/16
+				shift := uint((c % 16) * 2)
+				out[wordOff] |= uint32(code) << shift
+			}
+		}
+	}
+	return out
+}
+
+func packMicrosoftOfflineBitNetRowsToU32FromBytes(packed []byte, rows, cols int) []uint32 {
+	rowWords := (cols + 15) / 16
+	out := make([]uint32, rows*rowWords)
+	packedRows := rows / 4
+	for pr := 0; pr < packedRows; pr++ {
+		for c := 0; c < cols; c++ {
+			b := packed[pr*cols+c]
 			for lane := 0; lane < 4; lane++ {
 				code := (b >> uint(lane*2)) & 0x03
 				if code > 2 {

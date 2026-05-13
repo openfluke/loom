@@ -145,19 +145,18 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	var allTensors map[string][]float32
 
 	if (sequentialGPULoad && useGPU) || useBitNetPacked {
-		globalTensors := make(map[string][]float32)
+		globalStored := make(map[string]poly.HFStoredTensor)
 		for _, f := range safetensorFiles {
-			part, err := poly.LoadSafetensorsSelective(f, poly.HFWeightIsGlobal)
+			part, err := poly.LoadSafetensorsSelectiveRaw(f, poly.HFWeightIsGlobal)
 			if err != nil {
 				log.Fatalf("⚠️  safetensors %s: %v", f, err)
 			}
 			for k, v := range part {
-				globalTensors[k] = v
+				globalStored[k] = v
 			}
 		}
-		embeddings, lmHead, finalNorm, _ = mapper.MapWeights(globalTensors)
-		embeddings, lmHead, finalNorm = poly.CloneMappedGlobalWeights(embeddings, lmHead, finalNorm)
-		globalTensors = nil
+		embeddings, lmHead, finalNorm, _ = mapper.MapWeightsFromStored(globalStored)
+		poly.ReleaseTransientHFStoredMap(globalStored)
 		runtime.GC()
 		debug.FreeOSMemory()
 	} else {
@@ -265,9 +264,9 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		}
 		layerFiles := buildLayerShardIndex(safetensorFiles, numLayers)
 		for li := 0; li < numLayers; li++ {
-			layerMap := make(map[string][]float32)
+			layerMap := make(map[string]poly.HFStoredTensor)
 			for _, sf := range layerFiles[li] {
-				part, err := poly.LoadSafetensorsSelective(sf, func(k string) bool {
+				part, err := poly.LoadSafetensorsSelectiveRaw(sf, func(k string) bool {
 					return poly.HFWeightMatchesLayer(k, li)
 				})
 				if err != nil {
@@ -277,11 +276,11 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 					layerMap[k] = v
 				}
 			}
-			poly.LoadWithPrefixes(net, layerMap)
+			poly.LoadWithPrefixesFromHFStored(net, layerMap)
 			if err := poly.PrepareDecoderBlockBitNetTernaryCPU(net, li); err != nil {
 				log.Fatalf("❌ BitNet CPU preparation failed for block %d: %v", li, err)
 			}
-			poly.ReleaseTransientSafetensorMap(layerMap)
+			poly.ReleaseTransientHFStoredMap(layerMap)
 			fmt.Printf("   ✓ Block %d/%d packed\n", li+1, numLayers)
 		}
 		runtime.GC()
@@ -292,9 +291,9 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	if useBitNetPacked {
 		if isBitNetModel {
 			if useBitNetGPU {
-				fmt.Print("🧪 BitNet b1.58 packed weights ready for WebGPU upload (FP32 projections released)... ")
+				fmt.Print("🧪 BitNet b1.58: decoder weights from raw safetensors (U8 offline → packed; dense → Master then pack); globals decoded once. ")
 			} else {
-				fmt.Print("🧮 BitNet b1.58 packed CPU weights ready (FP32 projections released)... ")
+				fmt.Print("🧮 BitNet b1.58: decoder weights from raw safetensors (U8 offline → packed; dense → Master then pack); globals decoded once. ")
 			}
 		}
 		net.UseExactDType = true

@@ -281,6 +281,56 @@ func TestPrepareBitNetTernaryCPUReleasesProjectionMaster(t *testing.T) {
 	}
 }
 
+func TestSetMicrosoftBitNetPackedMatrixBytesMatchesFloatU8Slots(t *testing.T) {
+	rows, cols := 8, 4
+	packedBytes := make([]byte, (rows/4)*cols)
+	for i := range packedBytes {
+		packedBytes[i] = byte((i * 17) & 0xff)
+	}
+	packedF := make([]float32, len(packedBytes))
+	for i, b := range packedBytes {
+		packedF[i] = float32(b)
+	}
+	wsA := NewWeightStore(0)
+	wsB := NewWeightStore(0)
+	if !wsA.SetMicrosoftBitNetPackedMatrixBytes(0, rows, cols, packedBytes) {
+		t.Fatal("SetMicrosoftBitNetPackedMatrixBytes failed")
+	}
+	if !wsB.SetMicrosoftBitNetPackedMatrix(0, rows, cols, packedF) {
+		t.Fatal("SetMicrosoftBitNetPackedMatrix failed")
+	}
+	ma, okA := wsA.GetBitNetTernaryMatrix(0, rows, cols)
+	mb, okB := wsB.GetBitNetTernaryMatrix(0, rows, cols)
+	if !okA || !okB || ma == nil || mb == nil {
+		t.Fatalf("GetBitNetTernaryMatrix okA=%v okB=%v", okA, okB)
+	}
+	if len(ma.Words) != len(mb.Words) {
+		t.Fatalf("word len %d vs %d", len(ma.Words), len(mb.Words))
+	}
+	for i := range ma.Words {
+		if ma.Words[i] != mb.Words[i] {
+			t.Fatalf("mismatch at %d: %v vs %v", i, ma.Words[i], mb.Words[i])
+		}
+	}
+}
+
+func TestGetBitNetTernaryMatrixFindsOfflinePackedWithoutMasterSlab(t *testing.T) {
+	// microsoft/bitnet-b1.58 offline weights can be installed only via
+	// SetMicrosoftBitNetPackedMatrix with an empty Master (no dense FP32 copy).
+	ws := NewWeightStore(0)
+	packed := []float32{0x01, 0x10}
+	if !ws.SetMicrosoftBitNetPackedMatrix(0, 4, 2, packed) {
+		t.Fatal("SetMicrosoftBitNetPackedMatrix failed")
+	}
+	m, ok := ws.GetBitNetTernaryMatrix(0, 4, 2)
+	if !ok || m == nil {
+		t.Fatalf("GetBitNetTernaryMatrix: ok=%v matrix=%v", ok, m)
+	}
+	if m.Rows != 4 || m.Cols != 2 {
+		t.Fatalf("rows=%d cols=%d", m.Rows, m.Cols)
+	}
+}
+
 func TestMicrosoftOfflinePackedBitNetRowsDecode(t *testing.T) {
 	ws := NewWeightStore(8 * 2)
 	packed := []float32{
