@@ -211,8 +211,8 @@ type GenMetrics struct {
 	DecodeTokPerSec  float64
 	TotalTokPerSec   float64
 	FirstLogit       float32
-	// RAMUsageMB is kept for backward compatibility and now represents
-	// approximate current process RAM (not just static layer weights).
+	// RAMUsageMB is host-side Poly model tensors (same as ModelRAMUsageMB).
+	// It is not Go runtime MemStats.Sys and not OS RSS.
 	RAMUsageMB float64
 	// ModelRAMUsageMB is host-side model memory tracked by Loom (weights/tensors).
 	ModelRAMUsageMB float64
@@ -331,10 +331,10 @@ func (t *Transformer[T]) Generate(
 	metrics.GeneratedTokens = generatedCount
 
 	modelRAMBytes := t.calculateHostModelBytes()
-	processRAMBytes := currentProcessRAMBytes()
 	vramBytes := t.Network.GetVRAMUsage()
-	metrics.RAMUsageMB = float64(processRAMBytes) / (1024 * 1024)
-	metrics.ModelRAMUsageMB = float64(modelRAMBytes) / (1024 * 1024)
+	hostModelMB := float64(modelRAMBytes) / (1024 * 1024)
+	metrics.ModelRAMUsageMB = hostModelMB
+	metrics.RAMUsageMB = hostModelMB
 	metrics.VRAMUsageMB = float64(vramBytes) / (1024 * 1024)
 
 	if generatedCount > 0 {
@@ -360,14 +360,6 @@ func (t *Transformer[T]) Generate(
 	}
 
 	return stream.String(), metrics
-}
-
-func currentProcessRAMBytes() uint64 {
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	// Sys is bytes obtained from the OS and generally tracks real process
-	// memory far better than Alloc for large model loads.
-	return ms.Sys
 }
 
 func (t *Transformer[T]) calculateHostModelBytes() uint64 {

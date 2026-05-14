@@ -96,7 +96,9 @@ func printPostLoadMemorySnapshot(tr *poly.Transformer[float32]) {
 	if tr == nil || tr.Network == nil {
 		return
 	}
-	poly.PrintTransformerMemoryFootprint(tr, true)
+	m := poly.NewMemoryFootprintFromTransformer(tr)
+	fmt.Printf("📊 Memory: host weights %.2f MB | GPU weights %.2f MB | GPU KV %.2f MB\n",
+		m.HostWeightsMB, m.GPUWeightsMB, m.GPUKVMB)
 }
 
 func readInput(reader *bufio.Reader, prompt string, Default string) string {

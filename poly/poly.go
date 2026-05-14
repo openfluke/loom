@@ -815,7 +815,7 @@ func volumetricLayerCPUSizeRecursive(l *VolumetricLayer) int {
 	return n
 }
 
-func volumetricLayerVRAMRecursive(l *VolumetricLayer) int64 {
+func volumetricLayerVRAMWeightsRecursive(l *VolumetricLayer) int64 {
 	if l == nil {
 		return 0
 	}
@@ -833,6 +833,21 @@ func volumetricLayerVRAMRecursive(l *VolumetricLayer) int64 {
 			}
 		}
 	}
+	for i := range l.ParallelBranches {
+		total += volumetricLayerVRAMWeightsRecursive(&l.ParallelBranches[i])
+	}
+	for i := range l.SequentialLayers {
+		total += volumetricLayerVRAMWeightsRecursive(&l.SequentialLayers[i])
+	}
+	return total
+}
+
+func volumetricLayerVRAMKVRecursive(l *VolumetricLayer) int64 {
+	if l == nil {
+		return 0
+	}
+	type sizer interface{ GetSize() uint64 }
+	var total int64
 	if buf, ok := l.GPUKVCacheK.(sizer); ok && buf != nil {
 		total += int64(buf.GetSize())
 	}
@@ -840,10 +855,10 @@ func volumetricLayerVRAMRecursive(l *VolumetricLayer) int64 {
 		total += int64(buf.GetSize())
 	}
 	for i := range l.ParallelBranches {
-		total += volumetricLayerVRAMRecursive(&l.ParallelBranches[i])
+		total += volumetricLayerVRAMKVRecursive(&l.ParallelBranches[i])
 	}
 	for i := range l.SequentialLayers {
-		total += volumetricLayerVRAMRecursive(&l.SequentialLayers[i])
+		total += volumetricLayerVRAMKVRecursive(&l.SequentialLayers[i])
 	}
 	return total
 }
@@ -857,37 +872,52 @@ func (n *VolumetricNetwork) CalculateTotalMemory() int {
 	return total
 }
 
+// GetVRAMWeightsBytes returns GPU bytes for embeddings, LM head (if distinct), layer weights/scales,
+// and nested stacks. It excludes KV cache buffers and internal activation/uniform pools.
+func (n *VolumetricNetwork) GetVRAMWeightsBytes() int64 {
+	if n.GPUContext == nil {
+		return 0
+	}
+	type sizer interface{ GetSize() uint64 }
+	var total int64
+	if buf, ok := n.GPUEmbeddings.(sizer); ok && buf != nil {
+		total += int64(buf.GetSize())
+	}
+	if buf, ok := n.GPULMHead.(sizer); ok && buf != nil {
+		if n.GPULMHead != n.GPUEmbeddings {
+			total += int64(buf.GetSize())
+		}
+	}
+	for i := range n.Layers {
+		total += volumetricLayerVRAMWeightsRecursive(&n.Layers[i])
+	}
+	return total
+}
+
+// GetVRAMKVCacheBytes returns GPU bytes for per-layer K/V cache buffers only.
+func (n *VolumetricNetwork) GetVRAMKVCacheBytes() int64 {
+	if n.GPUContext == nil {
+		return 0
+	}
+	var total int64
+	for i := range n.Layers {
+		total += volumetricLayerVRAMKVRecursive(&n.Layers[i])
+	}
+	return total
+}
+
 // GetVRAMUsage calculates the total GPU memory allocated by the network in bytes.
 func (n *VolumetricNetwork) GetVRAMUsage() int64 {
 	if n.GPUContext == nil {
 		return 0
 	}
-	var total int64 = 0
-
-	// 1. Embeddings & LM Head
-	type sizer interface{ GetSize() uint64 }
-	if buf, ok := n.GPUEmbeddings.(sizer); ok && buf != nil {
-		total += int64(buf.GetSize())
-	}
-	if buf, ok := n.GPULMHead.(sizer); ok && buf != nil {
-		if n.GPULMHead != n.GPUEmbeddings { // Avoid double-counting tied weights
-			total += int64(buf.GetSize())
-		}
-	}
-
-	// 2. Layers (Weights, Scales, KV Cache), including nested parallel/sequential stacks.
-	for i := range n.Layers {
-		total += volumetricLayerVRAMRecursive(&n.Layers[i])
-	}
-
-	// 3. Internal Context Buffers (Activation, Uniforms)
+	total := n.GetVRAMWeightsBytes() + n.GetVRAMKVCacheBytes()
 	for _, buf := range n.GPUContext.ActivationPool {
 		total += int64(buf.GetSize())
 	}
 	for _, buf := range n.GPUContext.UniformPool {
 		total += int64(buf.GetSize())
 	}
-
 	return total
 }
 
