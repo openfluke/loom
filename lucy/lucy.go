@@ -408,6 +408,8 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 
 	applyGlitchTanhiIfRequested(reader, tr.Network)
 
+	configureCPUForwardMode(reader, tr, useGPU)
+
 	fmt.Printf("\n✅ Model loaded! (%d layers)\n", numLayers)
 	printPostLoadMemorySnapshot(tr)
 	bannedTokens := poly.TokenizerBannedSpecialExceptEOS(tk, eosTokens)
@@ -427,13 +429,43 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		maxTokens = 192
 	}
 
+	layerTrace := readInput(reader, "\n📼 Layer action recording? (1=yes / 0=no) [0]: ", "0") == "1"
+	layerTraceMaxTokens := 8
+	layerTracePrefill := false
+	repeatDecoderBlock := -1
+	if layerTrace {
+		fmt.Println("ℹ️  Each new token runs through all decoder blocks (30 layers → ~181 sub-steps per token).")
+		fmt.Println("   Prefill (your whole prompt) is a separate full pass unless you opt in below.")
+		if useGPU {
+			fmt.Println("ℹ️  Traced decode uses CPU stepped forward; untraced prefill can still use GPU.")
+		}
+		tokInput := readInput(reader, "🔢 How many new tokens to trace per turn? [8]: ", "8")
+		fmt.Sscanf(tokInput, "%d", &layerTraceMaxTokens)
+		if layerTraceMaxTokens < 1 {
+			layerTraceMaxTokens = 1
+		}
+		layerTracePrefill = readInput(reader, "📥 Also trace prefill (full prompt through all layers)? (1=yes / 0=no) [0]: ", "0") == "1"
+		repeatInput := readInput(reader, fmt.Sprintf("🔁 Repeat a decoder block after its first pass? (1-%d, 0=off) [0]: ", numLayers), "0")
+		var repeatOneBased int
+		fmt.Sscanf(repeatInput, "%d", &repeatOneBased)
+		if repeatOneBased >= 1 && repeatOneBased <= numLayers {
+			repeatDecoderBlock = repeatOneBased - 1
+			fmt.Printf("   Block %d will run twice; repeat pass is logged as REPEAT.\n", repeatOneBased)
+		}
+		maxTokens = layerTraceMaxTokens
+	}
+
 	temp := float32(0.7)
 	if deterministic {
 		temp = 0
 	}
+	minTokens := 8
+	if layerTrace {
+		minTokens = 1
+	}
 	opts := poly.GenOptions{
 		MaxTokens:             maxTokens,
-		MinTokens:             8,
+		MinTokens:             minTokens,
 		Temperature:           temp,
 		TopK:                  40,
 		Deterministic:         deterministic,
@@ -443,6 +475,19 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		RepetitionWindow:      64,
 		MaxConsecutiveRepeats: 3,
 		NoRepeatNGram:         3,
+		LayerTrace:            layerTrace,
+		LayerTraceMaxTokens:   layerTraceMaxTokens,
+		LayerTracePrefill:     layerTracePrefill,
+		RepeatDecoderBlock:    repeatDecoderBlock,
+	}
+	if layerTrace {
+		opts.Silent = true
+		stepsPerTok := numLayers*6 + 1
+		if layerTracePrefill {
+			fmt.Printf("📼 Trace mode: prefill + up to %d decode token(s) (~%d sub-layer lines each phase).\n", layerTraceMaxTokens, stepsPerTok)
+		} else {
+			fmt.Printf("📼 Trace mode: up to %d decode token(s) only (~%d sub-layer lines per token; prefill not traced).\n", layerTraceMaxTokens, stepsPerTok)
+		}
 	}
 
 	for {
@@ -455,13 +500,73 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 
 		fmt.Print("GlitchBot: ")
 		reply, _ := tr.Generate(encode, decode, chatTurns, activeSystemPrompt, userMsg, opts)
-		fmt.Println()
+		if layerTrace {
+			fmt.Printf("\n(decoded) %s\n", reply)
+		} else {
+			fmt.Println()
+		}
 
 		chatTurns = append(chatTurns, poly.Turn{
 			User:      userMsg,
 			Assistant: reply,
 		})
 	}
+}
+
+func configureCPUForwardMode(reader *bufio.Reader, tr *poly.Transformer[float32], useGPU bool) {
+	fmt.Println("\n🧠 CPU forward schedule (decoder sub-layers):")
+	fmt.Println("  [1] Normal — fused blocks per forward (default, fastest)")
+	fmt.Println("  [2] Stepped — same math, one sub-layer at a time (auto-drained each forward)")
+	fmt.Println("  [3] Queued — same as stepped; pause each sub-layer (micro-queue, one token)")
+	fmt.Println("  [4] Pipeline — wavefront: tokens at different blocks; one tick = one clock")
+	fwdInput := readInput(reader, "Choice [1]: ", "1")
+	switch strings.TrimSpace(fwdInput) {
+	case "2":
+		tr.ForwardMode = poly.TransformerForwardSteppedCPU
+	case "3":
+		tr.ForwardMode = poly.TransformerForwardQueuedCPU
+	case "4":
+		tr.ForwardMode = poly.TransformerForwardPipelineCPU
+	default:
+		tr.ForwardMode = poly.TransformerForwardNormal
+	}
+	if tr.ForwardMode == poly.TransformerForwardNormal {
+		return
+	}
+	if useGPU {
+		fmt.Println("ℹ️  Non-normal CPU forward modes skip GPU during generation.")
+	}
+	steps := tr.CPUForwardQueueStepTotal()
+	nb := len(tr.Network.Layers) / 4
+	if tr.ForwardMode == poly.TransformerForwardPipelineCPU {
+		fmt.Printf("ℹ️  Pipeline: tokens can overlap across blocks (%d blocks). One tick advances all ready sub-layers.\n", nb)
+		fmt.Println("   Multiple prompt tokens can be in flight at different blocks during prefill.")
+	} else {
+		fmt.Printf("ℹ️  Each token forward = %d sub-layer steps (%d decoder blocks).\n", steps, nb)
+	}
+	if readInput(reader, "📝 Log each sub-layer step during generation? (1=yes / 0=no) [0]: ", "0") == "1" {
+		tr.ForwardStepDebug = true
+		tr.SetForwardStepObserver(func(step, total int, label string) {
+			fmt.Printf("   [%s] step %d/%d: %s\n", tr.ForwardMode, step, total, label)
+		})
+	}
+	if tr.ForwardMode == poly.TransformerForwardQueuedCPU &&
+		readInput(reader, "⏯️  Interactive micro-queue (Enter per sub-layer)? (1=yes / 0=no) [0]: ", "0") == "1" {
+		tr.QueueTickPause = func(step, total int, label string) {
+			fmt.Printf("   ⏸ step %d/%d: %s — press Enter… ", step, total, label)
+			_, _ = reader.ReadString('\n')
+		}
+		fmt.Println("   Interactive micro-queue enabled.")
+	}
+	if tr.ForwardMode == poly.TransformerForwardPipelineCPU &&
+		readInput(reader, "⏯️  Interactive pipeline (Enter per wavefront tick)? (1=yes / 0=no) [0]: ", "0") == "1" {
+		tr.PipelineTickPause = func(tick, total int, summary string) {
+			fmt.Printf("   ⏸ %s — press Enter… ", summary)
+			_, _ = reader.ReadString('\n')
+		}
+		fmt.Println("   Interactive pipeline enabled.")
+	}
+	fmt.Printf("✓ CPU forward mode: %s\n", tr.ForwardMode)
 }
 
 func loadEOSTokensFromJSON(path string) []int {

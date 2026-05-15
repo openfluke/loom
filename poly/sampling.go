@@ -24,6 +24,20 @@ type GenOptions struct {
 	BannedTokens          []int
 	Silent                bool
 	StreamCallback        func(string)
+
+	// LayerTrace records every CPU sub-layer step and prints activation stats.
+	// Forces host-side stepped forward (GPU forward is skipped).
+	LayerTrace bool
+	// LayerTraceMaxTokens caps generation when LayerTrace is set (>0 overrides MaxTokens).
+	LayerTraceMaxTokens int
+	// LayerTraceSilent suppresses per-step stderr/stdout lines (records are still kept).
+	LayerTraceSilent bool
+	// LayerTracePrefill traces the prompt forward (all layers × prompt length context).
+	// Default off: "N tokens" usually means decode only (~181 steps per token for 30 layers).
+	LayerTracePrefill bool
+	// RepeatDecoderBlock is a 0-based decoder block index to run a second time after its
+	// first pass; the repeat pass is labeled REPEAT in logs and records. <0 disables.
+	RepeatDecoderBlock int
 }
 
 // SampleTopK performs top-K sampling with temperature and optional determinism

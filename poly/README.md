@@ -202,6 +202,46 @@ Unlike the standard sequential flow, the **step mesh engine** treats the 3D grid
 > [!TIP]
 > Use `poly.StepForward` and `poly.StepApplyTween` when you need a "living network" that evolves and learns over time rather than a static pipeline. o_O
 
+### 4b. HF decoder CPU forward schedules (Lucy / `Transformer`)
+
+The **3D step mesh** (`step.go`, `StepForward`) is a **volumetric-grid clock** for arbitrary `VolumetricNetwork` topologies. It is **not** what Lucy chat uses for HuggingFace decoder inference.
+
+For **Llama-style decoder stacks** (`InitHFDecoderBlocks`: RMSNorm → MHA → RMSNorm → SwiGLU per block), `poly.Transformer` exposes a separate **CPU forward schedule** selected by `ForwardMode` (configured in **`lucy/`** after model load):
+
+| Mode | Constant | Behavior |
+| :--- | :--- | :--- |
+| **1 Normal** | `TransformerForwardNormal` | Fused block loop — default, fastest on CPU. |
+| **2 Stepped** | `TransformerForwardSteppedCPU` | Same math; one **sub-layer** per internal step; auto-drains each `ForwardFull` / `forwardOne`. |
+| **3 Queued** | `TransformerForwardQueuedCPU` | Same as stepped; optional **Enter** pause per sub-layer (`QueueTickPause`). |
+| **4 Pipeline** | `TransformerForwardPipelineCPU` | **Wavefront scheduler**: multiple prompt tokens can sit at different decoder blocks; each `PipelineTick` is one global clock that advances every **ready** job by one sub-layer. |
+
+**Implementation files:** `transformer_forward.go` (modes 1–3), `transformer_pipeline.go` (mode 4), `transformer_layer_trace.go` (optional per-sub-layer recording during `Generate`).
+
+#### What “pipeline / wavefront” means here
+
+This is **classic wavefront / pipeline scheduling** (dependencies along token position and block depth; independence across the diagonal), applied to the HF decoder’s **six sub-steps per block** (pre-attn RMSNorm, MHA, attn residual, pre-MLP RMSNorm, SwiGLU, MLP residual) plus optional final RMSNorm.
+
+- **One `PipelineTick` ≠ one sampled vocabulary token.** A tick is one sub-layer pulse for each ready `(token position, block, phase)` job. A full new decode token still needs on the order of **`numBlocks × 6 + 1`** ticks (~181 for 30 blocks) before `ApplyLMHead` and sampling.
+- **Prefill** can overlap work: e.g. token 4 at block 8 while token 7 is at block 5 (turn on Lucy’s sub-layer log or interactive pipeline to see mixed `tok N block M/…` lines on the same tick).
+- **Autoregressive decode** (one new embedding per step) usually has **one token in flight**, so overlap does not beat fused forward on a single CPU thread — expect **similar tok/s** to mode 1, not “one word per tick.”
+
+**KV / position rules:** injection starts at `batchStartPos` (block-0 MHA `KVOffset` after prefill). MHA at block `b` uses **that block’s** MHA layer cursor (`Layers[b*4+1].KVOffset`), not block 0’s, so continuation after prefill does not deadlock when block 0 has already advanced.
+
+#### Honest scope (NLP industry)
+
+This is **not a new language-model algorithm** or paper claim. Serving stacks already use related ideas under other names (**pipeline parallelism**, **continuous batching**, **prefill/decode scheduling**, **speculative decoding**). Loom’s contribution is an **explicit, debuggable CPU scheduler** in-tree, aligned with the mesh/step mental model, and a stepping stone toward **multi-sequence / multi-token** overlap when parallel backends exist.
+
+**When to use which mode**
+
+| Goal | Mode |
+| :--- | :--- |
+| Fastest Lucy chat on CPU | **1 Normal** (GPU if enabled) |
+| Step through one token, one sub-layer | **2** or **3** |
+| See wavefront / debug KV order / prefill overlap | **4** + sub-layer logging or interactive pipeline ticks |
+| Record every sub-layer to a trace | **Layer trace** in Lucy (`GenOptions`; uses traced CPU path, not the pipeline scheduler) |
+
+**Tests:** `poly/tests/pipeline_forward_test.go` — prefill fused, pipeline decode, no stall (`TestPipelineDecodeAfterPrefillNoStall`).
+
 ### 5. Recursive Neural Trees (`Tensor.Nested`)
 **Decision**: Implementing a recursive `Nested` field in the `Tensor` struct.
 *   **Rationale**: To support nesting (`Parallel`/`Sequential`) without losing the ability to train. This creates an **Activation Tree** during the forward pass and a **Gradient Tree** during the backward pass, establishing a "Plug-and-Learn" bedrock where any complex sub-architecture is automatically differentiable.
@@ -500,6 +540,7 @@ Our semantic version number directly reflects our progress against this absolute
 
 ### 6.2 Generation Logic
 - [x] KV Cache Optimization (Stateful incremental inference)
+- [x] CPU forward schedules for HF decoder (normal / stepped / queued / **wavefront pipeline**) — see **§4b**
 - [x] Batched Prefill & Autoregressive Decoding
 - [x] Sampling Suite (Top-K, Temperature, Nucleus Placeholder)
 - [x] Repetition Penalty & Windowed Logit Bias
@@ -512,7 +553,7 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] WebGPU LM-Head Offloading
 - [x] VRAM Usage Profiling & Distribution Metrics
 
-**LLM Progress: 14 / 14**
+**LLM Progress: 15 / 15**
 
 ---
 
@@ -528,7 +569,7 @@ These items shipped in the same wave as the **step mesh** / **tween** naming res
 - **Non-FP32-native weights** — load and run from proper packed / native stores instead of always inflating a FP32 master.
 - **Donate Compute** — LAN-friendly TCP protocol for volunteer or remote jobs (`docs/donate_compute.md`).
 - **TANHI** — sparse UDP inspection for SoulGlitch and tooling (`docs/tanhi.md`, default port **17481**).
-- **Lucy** — model pull from the Hub, compile-on-the-go, and talking smoke (`lucy/README.md`).
+- **Lucy** — model pull from the Hub, compile-on-the-go, talking smoke, and **CPU forward mode** picker (normal / stepped / queued / pipeline wavefront) — see **§4b** (`lucy/README.md`).
 - **Go / runtime refresh** — `go.mod` baseline and allocator work (incremental quality).
 - **Single tiling truth** — prefer CPU/GPU tiled forward/backward over duplicate non-tiled paths.
 - **Memory footprint** surfacing across the stack for visibility while tuning.
@@ -546,10 +587,10 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 | 3. Edge Orchestration | 1 | 11 |
 | 4. Training Automation | 14 | 18 |
 | 5. Deployment Ecosystem | 19 | 25 |
-| 6. LLM & Tokenization | 14 | 14 |
-| **GRAND TOTAL** | **99** | **134** |
+| 6. LLM & Tokenization | 15 | 15 |
+| **GRAND TOTAL** | **100** | **135** |
 
-### **Completion Ratio: 73.9%**
+### **Completion Ratio: 74.1%**
 
 ## **Version 0.76.0 — CURRENT**
 *(Status: **v0.76.0 "Operation Mesh" is officially current.** Ships **Donate Compute**, **TANHI**, **Lucy**, **Qwen3-class** ingest, **true on-the-fly / non–FP32-master** quantization paths, **memory footprint** telemetry, and **tiled-first** dispatch on top of **v0.75.0 Multi-Core Symphony** (SC/MC tiling + stabilized step mesh + C-ABI parity). The checklist gained eight verified rows so the ratio retabulated honestly. **v0.8.0 "Edge-First Orchestration"** remains the next architectural focus: thermal-aware scheduling, UMA pinning, command-graph buffering.)*
