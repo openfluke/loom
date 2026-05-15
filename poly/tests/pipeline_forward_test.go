@@ -38,6 +38,32 @@ func newTinyHFTransformer(numLayers, hidden int) *Transformer[float32] {
 	return NewTransformer[float32](net, embeddings, embeddings, finalNorm, Template{})
 }
 
+func TestPipelinePrefillWavefrontOverlap(t *testing.T) {
+	const hidden = 8
+	const numLayers = 4
+	tr := newTinyHFTransformer(numLayers, hidden)
+	tr.ForwardMode = TransformerForwardPipelineCPU
+
+	prefillToks := []uint32{1, 2, 3, 4, 5}
+	prefill := tr.TokensToTensor(prefillToks)
+	tr.Reset()
+	_ = tr.ForwardFull(prefill)
+	st := tr.TakePipelineForwardStats()
+	if st.MaxActiveJobs < 2 {
+		t.Fatalf("expected wavefront overlap (max_active>=2), got %d (ticks=%d ops=%d)",
+			st.MaxActiveJobs, st.PipelineTicks, st.SubLayerOps)
+	}
+	if st.PipelineTicks <= uint64(numLayers*6+1) {
+		t.Fatalf("expected more than one token worth of ticks, got %d", st.PipelineTicks)
+	}
+	if len(st.TokenDoneTick) != len(prefillToks) {
+		t.Fatalf("TokenDoneTick len: got %d want %d", len(st.TokenDoneTick), len(prefillToks))
+	}
+	if st.TokenDoneTick[0] <= 0 || st.TokenDoneTick[len(prefillToks)-1] <= st.TokenDoneTick[0] {
+		t.Fatalf("expected increasing done ticks, got %v", st.TokenDoneTick)
+	}
+}
+
 func TestPipelineDecodeAfterPrefillNoStall(t *testing.T) {
 	const hidden = 8
 	const numLayers = 2

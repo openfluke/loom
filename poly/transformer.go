@@ -39,6 +39,10 @@ type Transformer[T Numeric] struct {
 	// pipe holds macro pipeline state when ForwardMode == TransformerForwardPipelineCPU.
 	pipe *decoderPipelineState[T]
 
+	// pipeStatsCur accumulates during forwardCPUHiddenPipeline; copied to lastPipelineStats at end.
+	pipeStatsCur      PipelineForwardStats
+	lastPipelineStats PipelineForwardStats
+
 	// Internal RMSNorm config for final norm if needed
 	finalNormLayer *VolumetricLayer
 

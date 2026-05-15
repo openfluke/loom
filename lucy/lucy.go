@@ -32,33 +32,50 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		fmt.Printf("  [%d] %s\n", i+1, model)
 	}
 
-	detInput := readInput(reader, "🎯 Deterministic mode? (1=yes / 0=no) [0]: ", "0")
-	deterministic = detInput == "1"
+	if forwardBenchOnly {
+		idx, name, ok := findBitNetBenchModel(models)
+		if !ok {
+			log.Fatalf("Forward benchmark requires %q in the HuggingFace cache.", bitNetBenchModelNeedle)
+		}
+		fmt.Printf("\n📊 Forward benchmark: auto-selecting [%d] %s (CPU, deterministic)\n", idx, name)
+		deterministic = true
+	} else {
+		detInput := readInput(reader, "🎯 Deterministic mode? (1=yes / 0=no) [0]: ", "0")
+		deterministic = detInput == "1"
+	}
 
 	useTiling := true
 	tileSize := -1 // auto-detect
 
 	var useGPU bool
-	fmt.Print("🎮 Enable GPU Acceleration? (1=yes / 0=no) [0]: ")
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-	useGPU = input == "1"
-
-	fmt.Println("\n🚀 Select Execution Mode:")
-	fmt.Println("  [1] Tiled — GPU: single-workgroup; CPU: multi-core tiled")
-	fmt.Println("  [2] Tiled — GPU: multi-workgroup; CPU: multi-core tiled")
-	execModeInput := readInput(reader, "Choice [2]: ", "2")
+	if forwardBenchOnly {
+		useGPU = false
+		fmt.Println("🎮 GPU: off (benchmark uses CPU BitNet + pipeline wavefront stats)")
+	} else {
+		fmt.Print("🎮 Enable GPU Acceleration? (1=yes / 0=no) [0]: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		useGPU = input == "1"
+	}
 
 	var tilingMode string
-	tilingMode, tileSize = parseLLMExecutionMode(execModeInput)
+	if forwardBenchOnly {
+		tilingMode, tileSize = parseLLMExecutionMode("2")
+	} else {
+		fmt.Println("\n🚀 Select Execution Mode:")
+		fmt.Println("  [1] Tiled — GPU: single-workgroup; CPU: multi-core tiled")
+		fmt.Println("  [2] Tiled — GPU: multi-workgroup; CPU: multi-core tiled")
+		execModeInput := readInput(reader, "Choice [2]: ", "2")
+		tilingMode, tileSize = parseLLMExecutionMode(execModeInput)
+	}
 
 	if useGPU {
 		fmt.Print("💎 Weight Precision? (4=Q4_0 / 8=INT8 / 32=FP32) [4]: ")
-		input, _ = reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-		if input == "32" {
+		precInput, _ := reader.ReadString('\n')
+		precInput = strings.TrimSpace(precInput)
+		if precInput == "32" {
 			weightDType = poly.DTypeFloat32
-		} else if input == "8" {
+		} else if precInput == "8" {
 			weightDType = poly.DTypeInt8
 		} else {
 			weightDType = poly.DTypeInt4
@@ -70,13 +87,22 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		sequentialGPULoad = readInput(reader, "📥 Load weights block-by-block into GPU (lower peak host RAM; skips holding full checkpoint map)? (1=yes / 0=no) [0]: ", "0") == "1"
 	}
 
-	modelInput := readInput(reader, "\nSelect model number: ", "1")
+	var modelName string
 	var selectedIdx int
-	fmt.Sscanf(modelInput, "%d", &selectedIdx)
-	if selectedIdx < 1 || selectedIdx > len(models) {
-		log.Fatalf("Invalid model selection: %d", selectedIdx)
+	if forwardBenchOnly {
+		var ok bool
+		selectedIdx, modelName, ok = findBitNetBenchModel(models)
+		if !ok {
+			log.Fatalf("Forward benchmark requires %q in the HuggingFace cache.", bitNetBenchModelNeedle)
+		}
+	} else {
+		modelInput := readInput(reader, "\nSelect model number: ", "1")
+		fmt.Sscanf(modelInput, "%d", &selectedIdx)
+		if selectedIdx < 1 || selectedIdx > len(models) {
+			log.Fatalf("Invalid model selection: %d", selectedIdx)
+		}
+		modelName = models[selectedIdx-1]
 	}
-	modelName := models[selectedIdx-1]
 	modelNameLower := strings.ToLower(modelName)
 	isQwen := strings.Contains(modelNameLower, "qwen")
 	isBitNetModel := strings.Contains(modelNameLower, "bitnet") || strings.Contains(modelNameLower, "1bit")
@@ -406,14 +432,14 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		tr.SyncInferenceCPU()
 	}
 
-	applyGlitchTanhiIfRequested(reader, tr.Network)
-
-	configureCPUForwardMode(reader, tr, useGPU)
+	if !forwardBenchOnly {
+		applyGlitchTanhiIfRequested(reader, tr.Network)
+	}
 
 	fmt.Printf("\n✅ Model loaded! (%d layers)\n", numLayers)
 	printPostLoadMemorySnapshot(tr)
 	bannedTokens := poly.TokenizerBannedSpecialExceptEOS(tk, eosTokens)
-	if len(bannedTokens) > 0 {
+	if len(bannedTokens) > 0 && !forwardBenchOnly {
 		fmt.Printf("🧯 Special-token mask active (%d banned IDs)\n", len(bannedTokens))
 	}
 
@@ -423,6 +449,17 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	}
 	encode := func(text string) []uint32 { return tk.Encode(text, addSpecialTokens) }
 	decode := func(tokens []uint32) string { return tk.Decode(tokens, false) }
+
+	if forwardBenchOnly {
+		if !isBitNetModel || useGPU {
+			log.Fatalf("Forward benchmark requires BitNet b1.58 loaded on CPU (no GPU).")
+		}
+		runForwardScheduleComparison(tr, encode, activeSystemPrompt, numLayers)
+		forwardBenchOnly = false
+		return
+	}
+
+	configureCPUForwardMode(reader, tr, useGPU)
 
 	maxTokens = 2048
 	if isBitNetModel {

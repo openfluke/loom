@@ -155,6 +155,7 @@ func (t *Transformer[T]) pipeCompleteJob(j *pipeJob[T]) {
 	p.completed[j.pos] = j.hidden
 	p.lastRow = j.hidden
 	j.done = true
+	t.pipeMarkTokenDone(j.pos)
 	t.pipeRemoveJob(j)
 }
 
@@ -238,6 +239,7 @@ func (t *Transformer[T]) PipelineTick() (labels []string, finished bool, err err
 	p := t.pipe
 
 	_ = t.pipeTryInject()
+	t.pipeObserveWavefront()
 
 	mhaPicked := make(map[int]*pipeJob[T])
 	for _, j := range p.active {
@@ -267,8 +269,10 @@ func (t *Transformer[T]) PipelineTick() (labels []string, finished bool, err err
 	}
 
 	_ = t.pipeTryInject()
+	t.pipeObserveWavefront()
 
 	p.tick++
+	t.pipeRecordWavefrontSnapshot(len(labels))
 
 	batchDone := p.batchRows > 0 && p.nextInjectPos == p.batchStartPos+p.batchRows
 	lastCompleted := false
@@ -311,6 +315,7 @@ func (t *Transformer[T]) forwardCPUHiddenPipeline(input *Tensor[T]) *Tensor[T] {
 		return NewTensor[T](1, h)
 	}
 
+	t.resetPipelineForwardStats()
 	t.ensurePipelineState()
 	p := t.pipe
 	p.pending = p.pending[:0]
@@ -337,7 +342,10 @@ func (t *Transformer[T]) forwardCPUHiddenPipeline(input *Tensor[T]) *Tensor[T] {
 		labels, done, err := t.PipelineTick()
 		if err != nil {
 			fmt.Printf("⚠️  %v\n", err)
-			return t.forwardOnCPUNormal(input)
+			t.pipeStatsCur.StallFallback = true
+			out := t.forwardOnCPUNormal(input)
+			t.finalizePipelineForwardStats()
+			return out
 		}
 		for _, lbl := range labels {
 			stepN++
@@ -348,7 +356,10 @@ func (t *Transformer[T]) forwardCPUHiddenPipeline(input *Tensor[T]) *Tensor[T] {
 		}
 		if len(labels) == 0 {
 			fmt.Println("⚠️  pipeline stall; falling back to fused forward for this pass")
-			return t.forwardOnCPUNormal(input)
+			t.pipeStatsCur.StallFallback = true
+			out := t.forwardOnCPUNormal(input)
+			t.finalizePipelineForwardStats()
+			return out
 		}
 	}
 
@@ -366,12 +377,19 @@ func (t *Transformer[T]) forwardCPUHiddenPipeline(input *Tensor[T]) *Tensor[T] {
 		if ok {
 			p.lastRow = NewTensor[T](1, h)
 			copy(p.lastRow.Data, out.Data[(rows-1)*h:rows*h])
-			return out
+			outFin := out
+			t.finalizePipelineForwardStats()
+			return outFin
 		}
 	}
 
 	if p.lastRow != nil {
-		return p.lastRow.Clone()
+		out := p.lastRow.Clone()
+		t.finalizePipelineForwardStats()
+		return out
 	}
-	return t.forwardOnCPUNormal(input)
+	t.pipeStatsCur.StallFallback = true
+	out := t.forwardOnCPUNormal(input)
+	t.finalizePipelineForwardStats()
+	return out
 }

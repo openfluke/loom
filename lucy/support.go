@@ -19,6 +19,7 @@ var (
 	deterministic bool       = true
 	maxTokens                = 2048
 	maxSeqLen                = 512
+	forwardBenchOnly         = false
 )
 
 func applyGlitchTilingFlags(net *poly.VolumetricNetwork, useGPU, useTiling bool, tilingMode string) {
