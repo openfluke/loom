@@ -1,9 +1,10 @@
-package dense
+package dense_test
 
 import (
 	"testing"
 
 	"github.com/openfluke/loom/poly/asm"
+	"github.com/openfluke/loom/poly/asm/dense"
 	"github.com/openfluke/loom/poly/asm/dot"
 	"github.com/openfluke/loom/poly/asm/matmul"
 )
@@ -17,10 +18,10 @@ func TestForwardF32MatchesDot(t *testing.T) {
 		0, 0, 1, 0,
 	}
 	want := make([]float32, batch*outDim)
-	matmul.ForwardGEMVF32(want, input, weights, batch, inDim, outDim, false, 32)
+	matmul.ForwardTiledF32(want, input, weights, batch, inDim, outDim, false, 32)
 
 	got := make([]float32, batch*outDim)
-	Forward(got, input, weights, batch, inDim, outDim, false, 32)
+	dense.Forward(got, input, weights, batch, inDim, outDim, false, 32)
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("index %d: got %v want %v", i, got[i], want[i])
@@ -37,7 +38,7 @@ func TestForwardInt8(t *testing.T) {
 		0, 0, 1, 0,
 	}
 	got := make([]int8, batch*outDim)
-	Forward(got, input, weights, batch, inDim, outDim, false, 32)
+	dense.Forward(got, input, weights, batch, inDim, outDim, false, 32)
 	if got[0] != 1 || got[4] != -1 {
 		t.Fatalf("got %v", got)
 	}

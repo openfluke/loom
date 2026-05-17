@@ -9,14 +9,14 @@ import (
 func Forward[T any](preAct, input, weights []T, batch, inDim, outDim int, mc bool, tileSize int) {
 	switch any(*new(T)).(type) {
 	case float32:
-		matmul.ForwardGEMVF32(
+		matmul.ForwardTiledF32(
 			any(preAct).([]float32),
 			any(input).([]float32),
 			any(weights).([]float32),
 			batch, inDim, outDim, mc, tileSize,
 		)
 	case float64:
-		matmul.ForwardGEMVF64(
+		matmul.ForwardTiledF64(
 			any(preAct).([]float64),
 			any(input).([]float64),
 			any(weights).([]float64),

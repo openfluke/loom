@@ -1,0 +1,385 @@
+#include "textflag.h"
+
+// int64 dotI8NativeI64 — native integer dot, int64 accumulator
+TEXT ·dotI8NativeI64(SB), NOSPLIT, $0-32
+	MOVQ	x+0(FP), AX
+	MOVQ	w+8(FP), BX
+	MOVQ	n+16(FP), CX
+	XORQ	R10, R10
+	CMPQ	$4, CX
+	JL	tail
+
+loop4:
+	MOVSBQ 0(AX), R8
+	MOVSBQ 1(AX), R9
+	MOVSBQ 2(AX), R10
+	MOVSBQ 3(AX), R11
+	MOVSBQ 0(BX), R12
+	MOVSBQ 1(BX), R13
+	MOVSBQ 2(BX), R14
+	MOVSBQ 3(BX), R15
+	IMUL R12, R8
+	ADDQ R8, R10
+	IMUL R13, R9
+	ADDQ R9, R10
+	IMUL R14, R10
+	ADDQ R10, R10
+	IMUL R15, R11
+	ADDQ R11, R10
+	ADDQ	$4, AX
+	ADDQ	$4, BX
+	SUBQ	$4, CX
+	CMPQ	$4, CX
+	JGE	loop4
+
+tail:
+	CMPQ	$0, CX
+	JE	done
+	MOVSBQ (AX), R8
+	MOVSBQ (BX), R9
+	IMUL	R9, R8
+	ADDQ	R8, R10
+	ADDQ	$1, AX
+	ADDQ	$1, BX
+	SUBQ	$1, CX
+	JMP	tail
+
+done:
+	MOVQ	R10, ret+24(FP)
+	RET
+
+// int64 dotI16NativeI64 — native integer dot, int64 accumulator
+TEXT ·dotI16NativeI64(SB), NOSPLIT, $0-32
+	MOVQ	x+0(FP), AX
+	MOVQ	w+8(FP), BX
+	MOVQ	n+16(FP), CX
+	XORQ	R10, R10
+	CMPQ	$4, CX
+	JL	tail
+
+loop4:
+	MOVSWQ 0(AX), R8
+	MOVSWQ 2(AX), R9
+	MOVSWQ 4(AX), R10
+	MOVSWQ 6(AX), R11
+	MOVSWQ 0(BX), R12
+	MOVSWQ 2(BX), R13
+	MOVSWQ 4(BX), R14
+	MOVSWQ 6(BX), R15
+	IMUL R12, R8
+	ADDQ R8, R10
+	IMUL R13, R9
+	ADDQ R9, R10
+	IMUL R14, R10
+	ADDQ R10, R10
+	IMUL R15, R11
+	ADDQ R11, R10
+	ADDQ	$8, AX
+	ADDQ	$8, BX
+	SUBQ	$4, CX
+	CMPQ	$4, CX
+	JGE	loop4
+
+tail:
+	CMPQ	$0, CX
+	JE	done
+	MOVSWQ (AX), R8
+	MOVSWQ (BX), R9
+	IMUL	R9, R8
+	ADDQ	R8, R10
+	ADDQ	$2, AX
+	ADDQ	$2, BX
+	SUBQ	$1, CX
+	JMP	tail
+
+done:
+	MOVQ	R10, ret+24(FP)
+	RET
+
+// int64 dotI32NativeI64 — native integer dot, int64 accumulator
+TEXT ·dotI32NativeI64(SB), NOSPLIT, $0-32
+	MOVQ	x+0(FP), AX
+	MOVQ	w+8(FP), BX
+	MOVQ	n+16(FP), CX
+	XORQ	R10, R10
+	CMPQ	$4, CX
+	JL	tail
+
+loop4:
+	MOVLQSX 0(AX), R8
+	MOVLQSX 4(AX), R9
+	MOVLQSX 8(AX), R10
+	MOVLQSX 12(AX), R11
+	MOVLQSX 0(BX), R12
+	MOVLQSX 4(BX), R13
+	MOVLQSX 8(BX), R14
+	MOVLQSX 12(BX), R15
+	IMUL R12, R8
+	ADDQ R8, R10
+	IMUL R13, R9
+	ADDQ R9, R10
+	IMUL R14, R10
+	ADDQ R10, R10
+	IMUL R15, R11
+	ADDQ R11, R10
+	ADDQ	$16, AX
+	ADDQ	$16, BX
+	SUBQ	$4, CX
+	CMPQ	$4, CX
+	JGE	loop4
+
+tail:
+	CMPQ	$0, CX
+	JE	done
+	MOVLQSX (AX), R8
+	MOVLQSX (BX), R9
+	IMUL	R9, R8
+	ADDQ	R8, R10
+	ADDQ	$4, AX
+	ADDQ	$4, BX
+	SUBQ	$1, CX
+	JMP	tail
+
+done:
+	MOVQ	R10, ret+24(FP)
+	RET
+
+// int64 dotI64NativeI64 — native integer dot, int64 accumulator
+TEXT ·dotI64NativeI64(SB), NOSPLIT, $0-32
+	MOVQ	x+0(FP), AX
+	MOVQ	w+8(FP), BX
+	MOVQ	n+16(FP), CX
+	XORQ	R10, R10
+	CMPQ	$4, CX
+	JL	tail
+
+loop4:
+	MOVQ 0(AX), R8
+	MOVQ 8(AX), R9
+	MOVQ 16(AX), R10
+	MOVQ 24(AX), R11
+	MOVQ 0(BX), R12
+	MOVQ 8(BX), R13
+	MOVQ 16(BX), R14
+	MOVQ 24(BX), R15
+	IMUL R12, R8
+	ADDQ R8, R10
+	IMUL R13, R9
+	ADDQ R9, R10
+	IMUL R14, R10
+	ADDQ R10, R10
+	IMUL R15, R11
+	ADDQ R11, R10
+	ADDQ	$32, AX
+	ADDQ	$32, BX
+	SUBQ	$4, CX
+	CMPQ	$4, CX
+	JGE	loop4
+
+tail:
+	CMPQ	$0, CX
+	JE	done
+	MOVQ (AX), R8
+	MOVQ (BX), R9
+	IMUL	R9, R8
+	ADDQ	R8, R10
+	ADDQ	$8, AX
+	ADDQ	$8, BX
+	SUBQ	$1, CX
+	JMP	tail
+
+done:
+	MOVQ	R10, ret+24(FP)
+	RET
+
+// int64 dotU8NativeI64 — native integer dot, int64 accumulator
+TEXT ·dotU8NativeI64(SB), NOSPLIT, $0-32
+	MOVQ	x+0(FP), AX
+	MOVQ	w+8(FP), BX
+	MOVQ	n+16(FP), CX
+	XORQ	R10, R10
+	CMPQ	$4, CX
+	JL	tail
+
+loop4:
+	MOVBQZX 0(AX), R8
+	MOVBQZX 1(AX), R9
+	MOVBQZX 2(AX), R10
+	MOVBQZX 3(AX), R11
+	MOVBQZX 0(BX), R12
+	MOVBQZX 1(BX), R13
+	MOVBQZX 2(BX), R14
+	MOVBQZX 3(BX), R15
+	IMUL R12, R8
+	ADDQ R8, R10
+	IMUL R13, R9
+	ADDQ R9, R10
+	IMUL R14, R10
+	ADDQ R10, R10
+	IMUL R15, R11
+	ADDQ R11, R10
+	ADDQ	$4, AX
+	ADDQ	$4, BX
+	SUBQ	$4, CX
+	CMPQ	$4, CX
+	JGE	loop4
+
+tail:
+	CMPQ	$0, CX
+	JE	done
+	MOVBQZX (AX), R8
+	MOVBQZX (BX), R9
+	IMUL	R9, R8
+	ADDQ	R8, R10
+	ADDQ	$1, AX
+	ADDQ	$1, BX
+	SUBQ	$1, CX
+	JMP	tail
+
+done:
+	MOVQ	R10, ret+24(FP)
+	RET
+
+// int64 dotU16NativeI64 — native integer dot, int64 accumulator
+TEXT ·dotU16NativeI64(SB), NOSPLIT, $0-32
+	MOVQ	x+0(FP), AX
+	MOVQ	w+8(FP), BX
+	MOVQ	n+16(FP), CX
+	XORQ	R10, R10
+	CMPQ	$4, CX
+	JL	tail
+
+loop4:
+	MOVZWQ 0(AX), R8
+	MOVZWQ 2(AX), R9
+	MOVZWQ 4(AX), R10
+	MOVZWQ 6(AX), R11
+	MOVZWQ 0(BX), R12
+	MOVZWQ 2(BX), R13
+	MOVZWQ 4(BX), R14
+	MOVZWQ 6(BX), R15
+	IMUL R12, R8
+	ADDQ R8, R10
+	IMUL R13, R9
+	ADDQ R9, R10
+	IMUL R14, R10
+	ADDQ R10, R10
+	IMUL R15, R11
+	ADDQ R11, R10
+	ADDQ	$8, AX
+	ADDQ	$8, BX
+	SUBQ	$4, CX
+	CMPQ	$4, CX
+	JGE	loop4
+
+tail:
+	CMPQ	$0, CX
+	JE	done
+	MOVZWQ (AX), R8
+	MOVZWQ (BX), R9
+	IMUL	R9, R8
+	ADDQ	R8, R10
+	ADDQ	$2, AX
+	ADDQ	$2, BX
+	SUBQ	$1, CX
+	JMP	tail
+
+done:
+	MOVQ	R10, ret+24(FP)
+	RET
+
+// int64 dotU32NativeI64 — native integer dot, int64 accumulator
+TEXT ·dotU32NativeI64(SB), NOSPLIT, $0-32
+	MOVQ	x+0(FP), AX
+	MOVQ	w+8(FP), BX
+	MOVQ	n+16(FP), CX
+	XORQ	R10, R10
+	CMPQ	$4, CX
+	JL	tail
+
+loop4:
+	MOVLQZX 0(AX), R8
+	MOVLQZX 4(AX), R9
+	MOVLQZX 8(AX), R10
+	MOVLQZX 12(AX), R11
+	MOVLQZX 0(BX), R12
+	MOVLQZX 4(BX), R13
+	MOVLQZX 8(BX), R14
+	MOVLQZX 12(BX), R15
+	IMUL R12, R8
+	ADDQ R8, R10
+	IMUL R13, R9
+	ADDQ R9, R10
+	IMUL R14, R10
+	ADDQ R10, R10
+	IMUL R15, R11
+	ADDQ R11, R10
+	ADDQ	$16, AX
+	ADDQ	$16, BX
+	SUBQ	$4, CX
+	CMPQ	$4, CX
+	JGE	loop4
+
+tail:
+	CMPQ	$0, CX
+	JE	done
+	MOVLQZX (AX), R8
+	MOVLQZX (BX), R9
+	IMUL	R9, R8
+	ADDQ	R8, R10
+	ADDQ	$4, AX
+	ADDQ	$4, BX
+	SUBQ	$1, CX
+	JMP	tail
+
+done:
+	MOVQ	R10, ret+24(FP)
+	RET
+
+// int64 dotU64NativeI64 — native integer dot, int64 accumulator
+TEXT ·dotU64NativeI64(SB), NOSPLIT, $0-32
+	MOVQ	x+0(FP), AX
+	MOVQ	w+8(FP), BX
+	MOVQ	n+16(FP), CX
+	XORQ	R10, R10
+	CMPQ	$4, CX
+	JL	tail
+
+loop4:
+	MOVQ 0(AX), R8
+	MOVQ 8(AX), R9
+	MOVQ 16(AX), R10
+	MOVQ 24(AX), R11
+	MOVQ 0(BX), R12
+	MOVQ 8(BX), R13
+	MOVQ 16(BX), R14
+	MOVQ 24(BX), R15
+	IMUL R12, R8
+	ADDQ R8, R10
+	IMUL R13, R9
+	ADDQ R9, R10
+	IMUL R14, R10
+	ADDQ R10, R10
+	IMUL R15, R11
+	ADDQ R11, R10
+	ADDQ	$32, AX
+	ADDQ	$32, BX
+	SUBQ	$4, CX
+	CMPQ	$4, CX
+	JGE	loop4
+
+tail:
+	CMPQ	$0, CX
+	JE	done
+	MOVQ (AX), R8
+	MOVQ (BX), R9
+	IMUL	R9, R8
+	ADDQ	R8, R10
+	ADDQ	$8, AX
+	ADDQ	$8, BX
+	SUBQ	$1, CX
+	JMP	tail
+
+done:
+	MOVQ	R10, ret+24(FP)
+	RET

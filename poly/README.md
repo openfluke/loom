@@ -10,10 +10,10 @@ M-POLY-VTD is a next-generation neural inference engine designed for high-perfor
 | Backend | Role | Status |
 | :--- | :--- | :--- |
 | **Go** | Portable CPU: SC/MC tiled loops, all layers, 21 dtypes | ✅ baseline |
-| **`poly/asm`** | Hot CPU inner loops (`.s`, not CGO) | 🚧 **Dense forward** shipped; more layers → more speed |
+| **`poly/asm`** | Hot CPU inner loops (`.s`, not CGO) | 🚧 **Dense forward** (all 21 dtypes); more layers → more speed |
 | **WebGPU** | GPU forward / backward / training (WGSL from Go) | ✅ production |
 
-**CPU gets faster as asm lands.** v0.78 Dense forward already shows ~**1.5–2×** wall time vs Go on Lucy (arm64/amd64 MC). Backward, SwiGLU, MHA, and CNN asm are the next wins — same tiling model, tighter inner loops.
+**CPU gets faster as asm lands.** Dense forward on Lucy (arm64, 8×1024×512) is ~**1.7–2.5×** Go SC for Int4/Ternary/low-bit and up to ~**3×** Go MC for Uint8/Binary. Backward, SwiGLU, MHA, and CNN asm are the next wins — same tiling model, tighter inner loops. Internals: [`asm/README.md`](asm/README.md).
 
 ### Where we are now — **v0.78.0 “ASM CPU”**
 
@@ -72,9 +72,9 @@ Hand-written **Plan 9 assembly** (`.s` files, **not** CGO) for hot matmul/dot in
 *   **Platforms**: **arm64** + **amd64** ship `.s` kernels; other `GOARCH` → Go fallback, no crash.
 *   **Lucy**: Dense → L1 / GPU Forward tables show **Go SC · Go MC · ASM SC · ASM MC · GPU SC · GPU MC** and **Go÷ASM** / **GPU÷ASM** speedup columns (`loom/lucy/lucy_testing_output/log.txt`).
 
-**Shipped in v0.78:** `poly/asm/dense/` only — scalar 4-wide `dotF32` + `ForwardSC` / `ForwardMC`. Training and backward still use Go/GPU paths.
+**Shipped in v0.78+:** `poly/asm/dense/` forward for **all 21 dtypes** — float tiled matmul (`f32`/`f64` acc) plus **native integer** dots (`IMUL` + int64 acc, no FP inside the kernel). Low-bit CPU dense uses morphed `[]uint8` weights (one quant byte per element), not packed bitstreams on the hot path. Training and backward still use Go/GPU paths.
 
-See **[ASM layer matrix](#asm-layer-matrix-status)** below (includes rollout priority).
+See **[ASM layer matrix](#asm-layer-matrix-status)** below and **[`asm/README.md`](asm/README.md)** for path matrix, codegen, and TODOs.
 
 ### VII. Tween (neural target propagation)
 A bidirectional learning alternative to traditional backpropagation that bridges the gap between actual activations and idealized targets. **Tween** is our code name; papers often say *target propagation* or *difference target propagation*.
@@ -100,7 +100,7 @@ C-ABI vs public `poly/` surface (export names):
 cd welvet/cabi/internal/check && go run check.go
 ```
 
-### Lucy ASM forward benchmarks (Dense POC)
+### Lucy ASM forward benchmarks (Dense)
 
 From repo root, run **`lucy/`** → **Dense** → **L1 Caching** or **GPU Forward Parity** (both include ASM timers). Logs land in `loom/lucy/lucy_testing_output/log.txt`.
 
@@ -108,7 +108,7 @@ From repo root, run **`lucy/`** → **Dense** → **L1 Caching** or **GPU Forwar
 cd loom/lucy && go run .
 ```
 
-Read **Go/Asm↑** columns: values **> 1.0** mean assembly beat Go CPU for that mode. Training paths do not use asm yet.
+Read **Go/Asm↑** columns: values **> 1.0** mean assembly beat Go CPU for that mode. Recent Dense L1 highlights (Metal / arm64): Uint8 **~2.5×** SC, Int4/Ternary **~1.7–2×** SC (was ~0.5× / ~0.17× before morph-u8 routing), Binary MC **~3×**. Forward parity vs Go float64 reference may show 🟤 heavy drift for native-int paths — expected math-path difference, not a broken kernel. Training paths do not use asm yet.
 
 ---
 
@@ -138,16 +138,20 @@ Legend: **✅** done · **—** not started · **~** Go/GPU only, no `.s` yet ·
 
 | Package | Forward | Backward | Notes |
 | :--- | :---: | :---: | :--- |
-| [`asm/dense/`](asm/dense/) | ✅ SC+MC | — | `dot_arm64.s`, `dot_amd64.s`, `forward.go` |
+| [`asm/dot/`](asm/dot/) | shared | shared | `f32`/`f64`, `native_int_*`, legacy `native_packed_*` |
+| [`asm/matmul/`](asm/matmul/) | shared | — | tiled forward (float + native int), `OverOutputTiles` MC |
+| [`asm/dense/`](asm/dense/) | ✅ SC+MC | — | layer entry; poly routes float vs native in `dense_asm*.go` |
 | `asm/mha/` | — | — | planned |
 | `asm/swiglu/` | — | — | planned |
 | `asm/cnn/` | — | — | planned |
 
-**Training** does not call asm yet (forward-only POC).
+Full layout, codegen, and checklist: **[`asm/README.md`](asm/README.md)**.
+
+**Training** does not call asm yet (forward-only).
 
 ### ASM rollout queue (priority)
 
-1. **Dense** — forward ✅ · backward asm · fused ReLU / NEON GEMM
+1. **Dense** — forward ✅ (21 dtypes) · backward asm · buffer pooling · NEON/SIMD · Float64 SC tuning
 2. **SwiGLU** — three matmuls per block
 3. **MHA** — Q/K/V/O projections
 4. **CNN1/2/3** — conv inner loops
@@ -175,7 +179,7 @@ npm test
 
 *   **SC**: One worker, smaller tiles (e.g. 8×8) — WASM-friendly, deterministic, low overhead.
 *   **MC**: Parallel tiles across `runtime.NumCPU()` — Apple Silicon / Ryzen / desktop class.
-*   **ASM**: Same SC/MC orchestration; inner matmul/dot loops run from `.s` when `UseAsmForward` is set (Dense forward POC first).
+*   **ASM**: Same SC/MC orchestration; inner matmul/dot loops run from `.s` when `UseAsmForward` is set (Dense forward: float tiled + native integer paths).
 
 ### VII. Step Mesh Stability
 The **step mesh engine** has been fundamentally stabilized in v0.75.0:
