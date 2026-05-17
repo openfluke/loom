@@ -166,9 +166,9 @@ func runLayerTests(reader *bufio.Reader, layerName, testInput string) {
 		}
 	case "Dense":
 		tests = []testEntry{
-			{"L1 Caching (CPU SC/MC + GPU SC/MC)", RunDenseL1Caching},
+			{"L1 Caching (CPU/ASM SC/MC + GPU SC/MC)", RunDenseL1Caching},
 			{"Training (4 tiled modes × 21 types)", RunDenseTraining},
-			{"GPU Forward Parity", RunDenseGPUForward},
+			{"GPU Forward Parity (incl. ASM timers)", RunDenseGPUForward},
 			{"GPU Backward Parity", RunDenseGPUBackward},
 		}
 	case "SwiGLU":

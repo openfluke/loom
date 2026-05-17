@@ -3,10 +3,15 @@ package poly
 import (
 	"runtime"
 	"sync"
+
+	"github.com/openfluke/loom/poly/asm"
 )
 
 // DenseForwardPolymorphic performs a forward pass through a dense layer.
 func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if layerUseAsmForward(layer) && asm.Enabled() {
+		return denseForwardAsm(layer, input)
+	}
 	return DenseForwardTiled(layer, input)
 }
 
@@ -37,7 +42,11 @@ func DenseForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (pre
 	}
 	wData := CastWeights[T](weights)
 
-	denseForwardTiledParallel(layer, input, preAct, wData, tileSize)
+	if layer.EnableMultiCoreTiling {
+		denseForwardTiledParallel(layer, input, preAct, wData, tileSize)
+	} else {
+		denseForwardTiledSerial(layer, input, preAct, wData, tileSize)
+	}
 
 	for i := range postAct.Data {
 		postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
@@ -80,6 +89,38 @@ func DenseForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tens
 		}
 	}
 	return preAct, postAct
+}
+
+func denseForwardTiledSerial[T Numeric](layer *VolumetricLayer, input *Tensor[T], preAct *Tensor[T], weights []T, tileSize int) {
+	batchSize := input.Shape[0]
+	inputSize := layer.InputHeight
+	outputSize := layer.OutputHeight
+
+	for oTile := 0; oTile < outputSize; oTile += tileSize {
+		oEnd := oTile + tileSize
+		if oEnd > outputSize {
+			oEnd = outputSize
+		}
+		for iTile := 0; iTile < inputSize; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > inputSize {
+				iEnd = inputSize
+			}
+			for b := 0; b < batchSize; b++ {
+				for o := oTile; o < oEnd; o++ {
+					var sum float64
+					if iTile > 0 {
+						sum = float64(preAct.Data[b*outputSize+o])
+					}
+					rowOff := o * inputSize
+					for i := iTile; i < iEnd; i++ {
+						sum += float64(input.Data[b*inputSize+i]) * float64(weights[rowOff+i])
+					}
+					preAct.Data[b*outputSize+o] = T(sum)
+				}
+			}
+		}
+	}
 }
 
 func denseForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T], preAct *Tensor[T], weights []T, tileSize int) {

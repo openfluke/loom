@@ -530,6 +530,7 @@ type VolumetricNetwork struct {
 	// Global Tiling & GPU Switches
 	UseTiling             bool
 	EnableMultiCoreTiling bool
+	UseAsmForward         bool // Plan 9 assembly CPU kernels (see poly/asm)
 	UseGPU                bool
 	UseExactDType         bool
 
@@ -624,6 +625,7 @@ type VolumetricLayer struct {
 	// Tiling & GPU Config
 	UseTiling             bool
 	EnableMultiCoreTiling bool
+	UseAsmForward         bool
 	TileSize              int           // legacy fallback; prefer per-dtype maps below
 	CPUTileSizes          map[DType]int // CPU tile size per numerical type
 	GPUSCTileSizes        map[DType]int // GPU single-core tile size per numerical type
@@ -1825,6 +1827,7 @@ func (l *VolumetricLayer) syncQuantizedMHA(ctx *WGPUContext) {
 // Per-dtype CPU tile sizes are computed for all 21 numerical types.
 func (l *VolumetricLayer) SyncToCPU() {
 	l.EnableMultiCoreTiling = l.Network.EnableMultiCoreTiling
+	l.UseAsmForward = l.Network.UseAsmForward
 
 	if l.UseTiling {
 		l.refreshRuntimeCPUTileSizes()

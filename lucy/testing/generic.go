@@ -54,7 +54,11 @@ func RunGenericLayerSuite(spec TestSpec, mode TestMode) bool {
 
 	if mode&TestForward != 0 {
 		stats.ResetSub()
-		allPass = runForwardSuite(spec, l) && allPass
+		if spec.Name == "Dense" {
+			allPass = runDenseForwardSuite(spec) && allPass
+		} else {
+			allPass = runForwardSuite(spec, l) && allPass
+		}
 		stats.ReportSub("Forward Parity")
 	}
 
