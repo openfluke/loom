@@ -289,7 +289,85 @@ func buildPlatform(p Platform, outBase string) error {
 	if err := buildLucyInto(p, outPath, cc); err != nil {
 		return err
 	}
+	bundleWindowsRuntime(p, outPath, cc)
 	return nil
+}
+
+// bundleWindowsRuntime copies MinGW/UCRT DLLs required at load time (e.g. libunwind.dll
+// from llvm-mingw). Without these, lucy.exe / welvet.dll exit immediately on Windows
+// with no console output when the loader cannot resolve imports.
+func bundleWindowsRuntime(p Platform, outPath, cc string) {
+	if p.GOOS != "windows" {
+		return
+	}
+	for _, name := range []string{"libunwind.dll"} {
+		src := findWindowsRuntimeDLL(p, cc, name)
+		if src == "" {
+			fmt.Printf("  ⚠  %s not found — Windows builds need it beside lucy.exe (llvm-mingw …/bin)\n", name)
+			continue
+		}
+		dst := filepath.Join(outPath, name)
+		if err := copyFileErr(src, dst); err != nil {
+			fmt.Printf("  ⚠  copy %s: %v\n", name, err)
+			continue
+		}
+		fmt.Printf("  ✓  %s (Windows runtime)\n", name)
+	}
+}
+
+func findWindowsRuntimeDLL(p Platform, cc, name string) string {
+	try := func(path string) string {
+		path = filepath.Clean(path)
+		if st, err := os.Stat(path); err == nil && !st.IsDir() {
+			return path
+		}
+		return ""
+	}
+
+	// llvm-mingw layout: $ROOT/<triple>/bin/libunwind.dll
+	triple := "x86_64-w64-mingw32"
+	if p.GOARCH == "arm64" {
+		triple = "aarch64-w64-mingw32"
+	}
+	var llvmRoots []string
+	if v := strings.TrimSpace(os.Getenv("LLVM_MINGW_HOME")); v != "" {
+		llvmRoots = append(llvmRoots, v)
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		llvmRoots = append(llvmRoots, filepath.Join(h, "llvm-mingw"))
+	}
+	seen := map[string]struct{}{}
+	for _, root := range llvmRoots {
+		root = filepath.Clean(root)
+		if root == "" {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		if p := try(filepath.Join(root, triple, "bin", name)); p != "" {
+			return p
+		}
+		if p := try(filepath.Join(root, "bin", name)); p != "" {
+			return p
+		}
+	}
+
+	if cc != "" {
+		compilerBin, _ := splitCC(cc)
+		if compilerBin != "" {
+			if p := try(filepath.Join(filepath.Dir(compilerBin), name)); p != "" {
+				return p
+			}
+			if out, err := exec.Command(compilerBin, "-print-file-name="+name).Output(); err == nil {
+				if p := try(strings.TrimSpace(string(out))); p != "" {
+					return p
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // compileVerify builds cabi_verify(.exe) into outPath using the same compiler
@@ -897,8 +975,8 @@ func printSummary(successes, failures []string) {
 			fmt.Println("     brew install mingw-w64")
 			fmt.Println("   Windows arm64 (mingw-w64 formula has no aarch64 GCC — use llvm-mingw):")
 			fmt.Println("     https://github.com/mstorsjo/llvm-mingw/releases")
-			fmt.Println("     Download *-macos-* (or *-macos-universal-*), unpack, export PATH=\"$PATH:/path/to/llvm-mingw/bin\"")
-			fmt.Println("     (needs aarch64-w64-mingw32-clang on PATH; CGO uses it as CC)")
+			fmt.Println("     Download *-macos-* (or *-macos-universal-*), unpack, set LLVM_MINGW_HOME=/path/to/llvm-mingw")
+			fmt.Println("     (builder copies libunwind.dll into dist/windows_* for lucy.exe / welvet.dll)")
 		default:
 			fmt.Println("   Debian/Ubuntu cross packages:")
 			fmt.Println("     sudo apt install gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu \\")
@@ -927,9 +1005,13 @@ func runOutput(name string, args ...string) (string, error) {
 }
 
 func copyFile(src, dst string) {
+	_ = copyFileErr(src, dst)
+}
+
+func copyFileErr(src, dst string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
-		return
+		return err
 	}
-	os.WriteFile(dst, data, 0644)
+	return os.WriteFile(dst, data, 0755)
 }
