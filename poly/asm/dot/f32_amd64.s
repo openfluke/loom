@@ -7,7 +7,7 @@ TEXT ·dotF32(SB), NOSPLIT, $0-24
 	MOVQ	n+16(FP), CX
 
 	XORPS	X0, X0
-	CMPQ	$4, CX
+	CMPQ	CX, $4
 	JL	tail
 
 loop4:
@@ -30,11 +30,11 @@ loop4:
 	ADDQ	$16, AX
 	ADDQ	$16, BX
 	SUBQ	$4, CX
-	CMPQ	$4, CX
+	CMPQ	CX, $4
 	JGE	loop4
 
 tail:
-	CMPQ	$0, CX
+	CMPQ	CX, $0
 	JE	done
 	MOVSS	(AX), X1
 	MOVSS	(BX), X2
