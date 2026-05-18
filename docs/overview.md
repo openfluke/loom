@@ -5,7 +5,7 @@
 M-POLY-VTD is a neural inference and training engine built from first principles in Go. It treats a neural network not as a sequential stack of layers, but as a **spatial 3D grid** where each cell can hold any layer type, and every layer can morph its numerical precision on demand.
 
 > [!NOTE]
-> Current version: **0.75.0 (Multi-Core Symphony)**. The core engine is stabilized with 100% C-ABI parity. **Numerical Tiling (SC/MC)** is live across all 21 DTypes, and the **step mesh 3D grid** has been hardened with coordinate guarding to prevent runtime panics.
+> Current version: **0.78.0 (ASM CPU)**. The Loom stack is **Go + `poly/asm` + WebGPU** only. **Numerical Tiling (SC/MC)** is live across all 21 DTypes; **Dense forward** can use Plan 9 assembly via `UseAsmForward`. Checkpoints save **native packed weights per layer dtype** (not FP32-only JSON). See [`poly/README.md`](../poly/README.md) for the live checklist and [`testing_and_validation.md`](testing_and_validation.md) for the latest Lucy log interpretation.
 
 ---
 

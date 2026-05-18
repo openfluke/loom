@@ -118,19 +118,21 @@ Run from `loom/lucy` → **Dense** → **L1 Caching** or **GPU Forward Parity**.
 
 **Interpreting parity:** Lucy compares ASM to Go **float64 tiled** forward. Native-int asm (exact integer math + boundary dequant) often shows 🟤 **heavy drift** vs that reference while still being correct for the native path. Float dtypes may show ~2.5 `D(G,SC)` from Go f64 vs GPU f32 — separate from asm.
 
-### Recent Dense L1 snapshot (arm64 / Metal, post morph-u8 fix)
+### Recent Dense snapshot (arm64 / Metal, May 2026 `log.txt`)
 
 | DType | Go/Asm↑ SC | Go/Asm↑ MC | Notes |
 | :--- | ---: | ---: | :--- |
-| Uint8 | ~2.5× | ~2.4× | best overall |
-| Int4, Ternary, Binary | ~1.7–2.0× | ~2.5–3.0× | was ~0.5× / ~0.17× on packed path |
-| FP4, Uint4 | ~2.3–2.4× | ~2.5–3.0× | |
-| Int8 | ~1.6× | ~2.6× | |
-| Float32 | ~1.1× | ~0.8–1.0× | |
-| Float64 | ~0.9× | ~1.2× | SC still slightly behind Go |
-| Int64 / Uint64 | ~0.8× | ~1.0× | SC tuning opportunity |
+| Uint8 | **2.46×** | **3.19×** | best SC |
+| Uint4 | 2.29× | **3.55×** | best MC |
+| Ternary | 1.95× | 3.21× | |
+| FP4 | 2.21× | 3.25× | |
+| Int8 | 1.66× | 2.72× | |
+| Int4, Binary | ~1.7–2.2× | ~2.1–2.8× | morph-u8 native dots |
+| Float32 | ~1.11× | ~1.00× | parity |
+| Float64 | **0.85×** | **0.61×** | asm slower — tile tuning |
+| Int64 / Uint64 | ~0.8–0.84× | ~0.85–0.99× | SC tuning opportunity |
 
-Training matrix (84 runs) remains 💎 with asm forward-only.
+Footer: **Best Go/Asm↑ SC: Uint8 2.46× · Best MC: Uint4 3.55×**. Full suite: **0 ❌ / 0 💀** (~2992 rows). Dense training **Save/Reload PASS** all 21 dtypes (native JSON). Asm is **forward-only**; training still Go/GPU.
 
 ---
 

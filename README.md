@@ -54,14 +54,15 @@ Loom provides bit-exact reproducibility across:
 ## 📊 Versioning & Roadmap
 Loom uses a mathematical versioning system derived from a strictly verified checklist in [`poly/README.md`](./poly/README.md) (row counts and completion ratio are maintained there).
 
-### **Current Version: 0.76.0 — CURRENT**
-- **Completion Ratio**: 73.9% (99 / 134 checklist rows verified — *Operation Mesh* wave)
-- **Status**: **0.76.0 "Operation Mesh"** builds on **Multi-Core Symphony**: **Donate Compute** (TCP LAN), **TANHI** (UDP layer telemetry for SoulGlitch), **Lucy** (HF pull + compile-on-the-go + chat smoke), **Qwen3-class** ingest, **true on-the-fly / non–FP32-master** quantization paths, **memory footprint** surfacing, and **tiled-first** forward/backward as the primary dispatch story — still with unified **SC/MC Tiling**, stabilized **step mesh 3D grid**, and **C-ABI parity** for Python and TypeScript.
+### **Current Version: 0.78.0 — CURRENT**
+- **Completion Ratio**: 76.1% (108 / 142 checklist rows verified — *ASM CPU* wave)
+- **Status**: **0.78.0 "ASM CPU"** adds **Plan 9 dense forward** (`poly/asm`, `UseAsmForward`) on top of **Operation Mesh**: **Donate Compute** (TCP LAN), **TANHI** (UDP layer telemetry for SoulGlitch), **Lucy** (HF pull + compile-on-the-go + layer suites with **Go · ASM · GPU** timers), **native JSON persistence** per layer dtype (not FP32-only checkpoints), **Qwen3-class** ingest, and **tiled-first** forward/backward — still with unified **SC/MC Tiling**, stabilized **step mesh 3D grid**, and **C-ABI parity** for Python and TypeScript.
     - > [!NOTE]
     - > **Numerical Tiling**: Introduces specialized Single-Core (SC) and Multi-Core (MC) profiles, optimizing register pressure vs. high-bandwidth L1/L2 cache throughput.
 - **Milestones**:
     - **v0.75.0 "Multi-Core Symphony"** ✅ — Tiling across the dispatcher; stabilized volumetric hopping; `welvet` parity.
-    - **v0.76.0 "Operation Mesh"** ✅ — Wire protocols, LM tooling burst, RAM-aware load path, telemetry. See [poly/README.md § v0.76.0](./poly/README.md#v0760--operation-mesh-this-release).
+    - **v0.76.0 "Operation Mesh"** ✅ — Wire protocols, LM tooling burst, RAM-aware load path, telemetry. See [poly/README.md § v0.76.0](./poly/README.md#v0760--operation-mesh-previous).
+    - **v0.78.0 "ASM CPU"** ✅ — Dense forward Plan 9 kernels (21 dtypes), Lucy ASM columns, native save/load per dtype. See [poly/README.md § v0.78.0](./poly/README.md#v0780--asm-cpu-current).
 - **Next Target — v0.8.0 "Edge-First"**: Thermal-aware scheduling, UMA pinning, command-buffer graphing for mobile and wearable deployment.
 - **Next Steps**: Command Graph Buffering; Thermal-Aware hardware scheduling.
 

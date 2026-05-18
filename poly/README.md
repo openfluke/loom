@@ -13,7 +13,7 @@ M-POLY-VTD is a next-generation neural inference engine designed for high-perfor
 | **`poly/asm`** | Hot CPU inner loops (`.s`, not CGO) | 🚧 **Dense forward** (all 21 dtypes); more layers → more speed |
 | **WebGPU** | GPU forward / backward / training (WGSL from Go) | ✅ production |
 
-**CPU gets faster as asm lands.** Dense forward on Lucy (arm64, 8×1024×512) is ~**1.7–2.5×** Go SC for Int4/Ternary/low-bit and up to ~**3×** Go MC for Uint8/Binary. Backward, SwiGLU, MHA, and CNN asm are the next wins — same tiling model, tighter inner loops. Internals: [`asm/README.md`](asm/README.md).
+**CPU gets faster as asm lands.** Dense forward on Lucy (arm64 Metal, 8×1024→512) is ~**1.7–2.5×** Go SC for Int4/Ternary/low-bit and up to ~**3.2×** Go MC for Uint4/Ternary/FP4 (best MC **Uint4 ~3.55×**; best SC **Uint8 ~2.46×**). Float64 can still be slower than Go on SC/MC — tile tuning, not a dead asm path. Backward, SwiGLU, MHA, and CNN asm are the next wins. Internals: [`asm/README.md`](asm/README.md).
 
 ### Where we are now — **v0.78.0 “ASM CPU”**
 
@@ -62,7 +62,8 @@ The framework provides an **Idempotent Serialization Tunnel** designed for extre
 *   **Transparent Bit-Packing**: Low-bit models (`FP4`, `Binary`, etc.) are natively packed into bit-streams during I/O, achieving up to **98.4% compression** on disk.
 *   **Automated Unpacking**: Models are stored in their native DType but automatically `Unpack` into RAM-compatible formats during deserialization, ensuring high-speed inference.
 *   **Bit-Perfect Identity**: Verified across **378/378 permutations** (18 Layers x 21 DTypes) with **0.000000% mathematical divergence**. 
-*   **Idempotency Verified**: Serializing a reloaded model produces a byte-for-byte identical JSON to the original.
+*   **Per-dtype JSON checkpoints**: `SerializeNetwork` writes each layer’s **active `dtype`** plus **native-packed** Base64 (`Native: true`, `Scale` preserved) — not an FP32-only blob. Lucy Dense training reports **Save/Reload PASS** for all 21 types (see `File` KB column: Binary ~17 KB vs Float64 ~5.4 MB on the standard bench).
+*   **Idempotency Verified**: Serializing a reloaded model produces a byte-for-byte identical JSON to the original (when round-tripping the same dtype path).
 
 ### VI. ASM CPU (device-aware compute)
 Hand-written **Plan 9 assembly** (`.s` files, **not** CGO) for hot matmul/dot inner loops. One subpackage per layer: `poly/asm/dense/`, `poly/asm/mha/`, … — called from Go via `//go:noescape` stubs.
@@ -108,7 +109,7 @@ From repo root, run **`lucy/`** → **Dense** → **L1 Caching** or **GPU Forwar
 cd loom/lucy && go run .
 ```
 
-Read **Go/Asm↑** columns: values **> 1.0** mean assembly beat Go CPU for that mode. Recent Dense L1 highlights (Metal / arm64): Uint8 **~2.5×** SC, Int4/Ternary **~1.7–2×** SC (was ~0.5× / ~0.17× before morph-u8 routing), Binary MC **~3×**. Forward parity vs Go float64 reference may show 🟤 heavy drift for native-int paths — expected math-path difference, not a broken kernel. Training paths do not use asm yet.
+Read **Go/Asm↑** columns: values **> 1.0** mean assembly beat Go CPU for that mode. Latest full log (May 2026, Metal / arm64): **Uint8 ~2.46×** SC, **Uint4 ~3.55×** MC, **Ternary ~3.21×** MC, **FP4 ~3.25×** MC, **Int8 ~2.72×** MC; Float32 ~parity; Float64 asm **&lt; 1×** on this bench. Suite totals: **0 ❌ / 0 💀** across ~2992 classified rows. Forward parity vs float reference may show 🟤 **H-DRIFT** on native-int/low-bit — expected path difference, not a broken kernel. Training does not use asm yet; **Save/Reload** after training is native per dtype.
 
 ---
 
@@ -652,10 +653,11 @@ Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`po
 
 ## v0.78.0 — *ASM CPU* (current)
 
-- **`poly/asm/dense/`** — Plan 9 `dotF32` + forward SC/MC on arm64/amd64.
-- **`UseAsmForward`** — network/layer toggle; training unchanged.
-- **Lucy Dense** — L1 / GPU Forward / All forward sections use **Go · ASM · GPU** timer columns.
-- **POC result** — ~**1.5–2×** CPU forward wall time (MC) vs Go tiled on the 8×1024→512 Dense bench, across 21 dtypes.
+- **`poly/asm/dense/`** + **`asm/dot/`** + **`asm/matmul/`** — Plan 9 forward SC/MC on arm64/amd64 (float tiled + native integer / morphed-u8 quant paths).
+- **`UseAsmForward`** — network/layer toggle; training/backward unchanged (Go/GPU).
+- **Lucy Dense** — Generic suite prints **Go · ASM · GPU** timers and **Go/Asm↑** summary (best SC **Uint8 ~2.46×**, best MC **Uint4 ~3.55×** on latest `log.txt`).
+- **Native JSON save** — `SerializeNetwork` persists **packed weights for the layer’s active dtype** + `Scale`; Lucy Dense **Save/Reload PASS** all 21 dtypes after training.
+- **Validation** — latest full Lucy run: **0 broken / 0 fatal**; training matrix `File`/`RAM` columns fixed.
 
 ## v0.76.0 — *Operation Mesh* (previous)
 
@@ -680,7 +682,7 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 ### **Completion Ratio: 76.1%**
 
 ## **Version 0.78.0 — CURRENT**
-*(**v0.78.0 "ASM CPU"** — Loom stack = **Go + asm + WebGPU** only. First asm kernel: **Dense forward** (~1.5–2× CPU POC). **Next:** Dense backward, then SwiGLU / MHA — CPU keeps getting faster without changing the stack.)*
+*(**v0.78.0 "ASM CPU"** — Loom stack = **Go + asm + WebGPU** only. **Dense forward** Plan 9 (~**2–3.5×** Go MC on quant dtypes; Float64 tuning pending). **Native JSON** per dtype on save. **Next:** more `poly/asm/*` layers (SwiGLU, MHA, CNN); optional Dense backward asm.)*
 
 ## **v0.79–0.81 Roadmap — ASM rollout**
 *(Expand `poly/asm/*` layer-by-layer; block GEMM + fused ops on CPU. WebGPU track continues in parallel — fusion, graphs, attention kernels.)*

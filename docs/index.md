@@ -1,4 +1,4 @@
-# Loom / poly Documentation Index (v0.76.0)
+# Loom / poly Documentation Index (v0.78.0)
 
 This directory contains comprehensive documentation for the `poly/` package — the **M-POLY-VTD** (Multi-numerical POLYmorphic Volumetric Tiled-tensor Dispatcher) engine that powers the Loom neural framework. For the live checklist and completion ratio, see [`poly/README.md`](../poly/README.md#-true-version-calculation).
 
@@ -26,7 +26,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [quantization.md](quantization.md) | PTQ pipeline, `WeightStore` versioning, `Morph`/`Unpack`, `Q4_0Block` block quantization, calibration, accuracy trade-offs |
 | [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, Qwen-style expanded-query + Q/K norm support, `Transformer[T]` generation type; CPU vs GPU tiling behavior |
 | [quick_reference.md](quick_reference.md) | Concise copy-paste snippets for all common operations |
-| [testing_and_validation.md](testing_and_validation.md) | **Lucy logs**, parity table legend, how to read `lucy_testing_output/log.txt`, and a compact map of `poly/` files the suites hit |
+| [testing_and_validation.md](testing_and_validation.md) | **Lucy logs**, parity table legend, how to read `lucy_testing_output/log.txt`, Dense **Go÷ASM** benchmarks, and a compact map of `poly/` files the suites hit |
+| [`../poly/asm/README.md`](../poly/asm/README.md) | **Plan 9 CPU kernels**: `UseAsmForward`, dense forward routing, dot/matmul layout, Lucy speedup interpretation |
 
 ---
 
