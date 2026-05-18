@@ -147,47 +147,20 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 		IsDisabled:  l.IsDisabled,
 	}
 
-	if l.WeightStore != nil {
+	if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
+		// Persist native weights for this layer's DType (int8 bytes, bf16 uint16, etc.).
+		// Keep the live scale so save/load round-trips match what training used.
 		dt := l.DType
-
-		if shouldPersistMasterWeights(dt) && len(l.WeightStore.Master) > 0 {
-			// For lossy/asymmetric packed formats, we preserve the high-precision
-			// secondary Master body to ensure that subsequent training sessions
-			// can resume from the exact trained state without quantization noise.
-			ls.Weights = encodeWeights(l.WeightStore.Master)
-			ls.Native = false
-			ls.Scale = l.WeightStore.Scale
-		} else if dt != DTypeFloat32 && len(l.WeightStore.Master) > 0 {
-			// Re-quantize from Master with a freshly auto-computed scale so that
-			// trained weights (which may have grown beyond the original scale range)
-			// are encoded within one quantization step.
-			// Do NOT mutate the live WeightStore permanently — save and restore Scale
-			// and clear the temp Versions entry after encoding.
-			savedScale := l.WeightStore.Scale
-			l.WeightStore.Scale = 1.0          // trigger auto-scaling in Morph
-			delete(l.WeightStore.Versions, dt) // force fresh quantization
-			l.WeightStore.Morph(dt)
-			ls.Scale = l.WeightStore.Scale // capture auto-computed scale for JSON
-			// Use Versions directly (raw integer slice) — not GetActive which now
-			// returns scale-applied float32 for forward passes.
-			active := l.WeightStore.Versions[dt]
-			if active != nil {
-				ls.Weights = encodeNativeWeights(active, dt)
-				ls.Native = true
-			} else if len(l.WeightStore.Master) > 0 {
-				ls.Weights = encodeWeights(l.WeightStore.Master)
-				ls.Native = false
-			}
-			// Restore original state so subsequent code paths aren't affected.
-			l.WeightStore.Scale = savedScale
-			delete(l.WeightStore.Versions, dt) // clear stale version
-		} else {
-			// Float32: just encode Master directly.
-			if len(l.WeightStore.Master) > 0 {
-				ls.Weights = encodeWeights(l.WeightStore.Master)
-				ls.Native = false
-			}
-			ls.Scale = l.WeightStore.Scale
+		delete(l.WeightStore.Versions, dt)
+		l.WeightStore.Morph(dt)
+		ls.Scale = l.WeightStore.Scale
+		active := l.WeightStore.Versions[dt]
+		if active == nil {
+			active = l.WeightStore.GetNative(dt)
+		}
+		if active != nil {
+			ls.Weights = encodeNativeWeights(active, dt)
+			ls.Native = true
 		}
 	}
 
@@ -212,18 +185,6 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 	ls.MetaRules = l.MetaRules
 
 	return ls
-}
-
-func shouldPersistMasterWeights(dt DType) bool {
-	switch dt {
-	case DTypeFloat32,
-		DTypeFP8E4M3, DTypeFP8E5M2,
-		DTypeUint64, DTypeUint32, DTypeUint16, DTypeUint8, DTypeUint4, DTypeUint2,
-		DTypeBinary:
-		return true
-	default:
-		return false
-	}
 }
 
 // DeserializeNetwork reconstructs a VolumetricNetwork from a JSON byte slice.
@@ -292,29 +253,26 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	initializeWeights(l)
 
 	if ls.Weights != "" {
-		dt := DTypeFloat32
-		if ls.Native {
-			dt = l.DType
-		}
-
 		if l.WeightStore == nil {
 			return fmt.Errorf("failed to initialize WeightStore for layer type %v", l.Type)
 		}
 		l.WeightStore.Scale = ls.Scale
+		dt := l.DType
 
 		if ls.Native {
 			decoded, err := decodeNativeWeights(ls.Weights, dt)
 			if err != nil {
 				return err
 			}
-			l.WeightStore.Versions[dt] = decoded
-			l.WeightStore.Unpack(dt)
+			l.WeightStore.SetLoadedWeights(dt, decoded)
 		} else {
+			// Legacy checkpoints: float32 master blob before per-dtype native saves.
 			m, err := decodeWeights(ls.Weights)
 			if err != nil {
 				return err
 			}
 			l.WeightStore.Master = m
+			l.WeightStore.Morph(dt)
 		}
 	}
 
@@ -552,6 +510,8 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 			w[i] = math.Float64frombits(binary.LittleEndian.Uint64(bytes[i*8:]))
 		}
 		return w, nil
+	case DTypeFloat32:
+		return decodeWeights(s)
 	case DTypeFloat16, DTypeBFloat16:
 		w := make([]uint16, len(bytes)/2)
 		for i := range w {

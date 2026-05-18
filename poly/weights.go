@@ -509,6 +509,41 @@ func (ws *WeightStore) GetNative(dtype DType) any {
 	return ws.Versions[dtype]
 }
 
+// SetLoadedWeights installs weights from disk as the canonical native store for dtype.
+// Execution and save both use this representation; Master is refreshed for training fallbacks.
+func (ws *WeightStore) SetLoadedWeights(dtype DType, data any) {
+	if ws == nil || data == nil {
+		return
+	}
+	if ws.Versions == nil {
+		ws.Versions = make(map[DType]any)
+	}
+	ws.Versions[dtype] = data
+	ws.CPUPacked = make(map[DType]any)
+	ws.GPUWeights = make(map[DType]any)
+	ws.Unpack(dtype)
+}
+
+// ActiveWeightsFloat32 returns a float32 view of the layer weights at dtype (for loss/parity).
+func ActiveWeightsFloat32(ws *WeightStore, dtype DType) []float32 {
+	if ws == nil {
+		return nil
+	}
+	ws.Morph(dtype)
+	active := ws.GetActive(dtype)
+	if active == nil {
+		return nil
+	}
+	switch w := active.(type) {
+	case []float32:
+		out := make([]float32, len(w))
+		copy(out, w)
+		return out
+	default:
+		return CastWeights[float32](active)
+	}
+}
+
 // GetNativePackedCPU returns a CPU-side packed cache for exact low-bit kernels.
 // The packed cache is derived from the current native representation rather than
 // the FP32 master so it remains faithful to the exact-dtype execution path.

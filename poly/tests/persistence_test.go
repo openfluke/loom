@@ -63,7 +63,8 @@ func TestMasterPersistenceRoundTripKeepsTrainedWeights(t *testing.T) {
 	} {
 		t.Run(dtype.String(), func(t *testing.T) {
 			net := persistenceDenseNetwork(dtype)
-			want := append([]float32(nil), net.GetLayer(0, 0, 0, 0).WeightStore.Master...)
+			layer := net.GetLayer(0, 0, 0, 0)
+			want := ActiveWeightsFloat32(layer.WeightStore, dtype)
 
 			data, err := SerializeNetwork(net)
 			if err != nil {
@@ -73,9 +74,14 @@ func TestMasterPersistenceRoundTripKeepsTrainedWeights(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := roundTrip.GetLayer(0, 0, 0, 0).WeightStore.Master
-			if diff := maxAbsDiffSlice(got, want); diff != 0 {
-				t.Fatalf("round-trip diff = %.6f, want exact master preservation", diff)
+			gotLayer := roundTrip.GetLayer(0, 0, 0, 0)
+			got := ActiveWeightsFloat32(gotLayer.WeightStore, dtype)
+			tol := float64(1e-4)
+			if gotLayer.WeightStore.Scale != 0 {
+				tol = float64(gotLayer.WeightStore.Scale) * 0.51
+			}
+			if diff := maxAbsDiffSlice(got, want); diff > tol {
+				t.Fatalf("round-trip diff = %.6f, want <= %.6f", diff, tol)
 			}
 		})
 	}

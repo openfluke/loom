@@ -472,7 +472,9 @@ func runTrainingSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 				if mode.IsGPU() {
 					poly.SyncWeightsFromGPU(l.Network)
 				}
-				wt := l.WeightStore.Master
+				l.WeightStore.Morph(cfg.dtype)
+				l.WeightStore.Unpack(cfg.dtype)
+				wt := append([]float32(nil), l.WeightStore.Master...)
 				trainNoNaN := !math.IsNaN(res.FinalLoss) && !math.IsNaN(res.LossHistory[0])
 				// Also guard against NaN weights written back from a broken GPU pass.
 				for _, v := range wt {
@@ -535,13 +537,10 @@ func runTrainingSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 				if l2 == nil || l2.WeightStore == nil {
 					saveOK = false
 				} else {
-					wr = l2.WeightStore.Master
+					wr = append([]float32(nil), l2.WeightStore.Master...)
 				}
 
-				// Save/Reload tolerance: serializeLayer auto-computes the scale from
-				// the current Master so trained weights fit within one quantization step.
-				// Use the scale from the RELOADED layer (l2) — that's what Unpack used
-				// to reconstruct Master, so the round-trip error is exactly 0.5 * l2.Scale.
+				// Compare Master after native encode/decode (SetLoadedWeights → Unpack on reload).
 				expected := wt
 				var tol float64
 				switch cfg.dtype {
@@ -551,16 +550,13 @@ func runTrainingSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 						tol = 1e-4
 					}
 				default:
-					// For all quantized types, max round-trip error = 0.5 * scale.
 					reloadScale := float64(1.0)
-					if wr != nil && l2 != nil && l2.WeightStore != nil && l2.WeightStore.Scale != 0 {
+					if l2 != nil && l2.WeightStore != nil && l2.WeightStore.Scale != 0 {
 						reloadScale = float64(l2.WeightStore.Scale)
 					}
 					tol = reloadScale * 0.51
 				}
-				// Only compute diff if wr was successfully populated by reload.
-				// saveOK stays false if wr == nil (l2 was nil / no WeightStore / bad deser).
-				if wr != nil {
+				if wr != nil && expected != nil {
 					saveOK = maxAbsDiff(wr, expected) < tol
 				}
 
