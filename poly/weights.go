@@ -21,6 +21,32 @@ type WeightStore struct {
 	Scale          float32                // Dynamic quantization scale factor
 }
 
+// gpuPackedWeightsKeyBase offsets GPUWeights keys for packed post-optimizer quantize.
+// GPUWeights[dtype] holds PTQ-dequantized f32 for forward; packed output must use another slot.
+const gpuPackedWeightsKeyBase DType = 31000
+
+func GPUPackedWeightsKey(dtype DType) DType {
+	return gpuPackedWeightsKeyBase + dtype
+}
+
+func GPUPackedNativeByteSize(dtype DType, weightCount int) int {
+	if weightCount <= 0 {
+		return 0
+	}
+	switch dtype {
+	case DTypeTernary:
+		return ((weightCount + 15) / 16) * 4
+	case DTypeBinary:
+		return ((weightCount + 31) / 32) * 4
+	case DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2:
+		return weightCount
+	case DTypeInt4, DTypeUint4, DTypeFP4:
+		return (weightCount + 1) / 2
+	default:
+		return weightCount * 4
+	}
+}
+
 func isCNN1NativeQuantDType(dtype DType) bool {
 	switch dtype {
 	case DTypeInt8, DTypeInt4, DTypeFP4, DTypeInt2, DTypeTernary, DTypeBinary,
@@ -659,6 +685,31 @@ func (ws *WeightStore) GetNativePackedCPU(dtype DType) any {
 	}
 	ws.CPUPacked[dtype] = p
 	return p
+}
+
+// MorphToFloat32ForGPUMasterSlice is like MorphToFloat32ForGPU but uses a temporary
+// master slice (e.g. GPU readback) without permanently invalidating Versions[dtype].
+func (ws *WeightStore) MorphToFloat32ForGPUMasterSlice(master []float32, dtype DType) []float32 {
+	if ws == nil || len(master) == 0 {
+		return nil
+	}
+	if dtype == DTypeFloat32 || dtype == DTypeFloat64 {
+		out := make([]float32, len(master))
+		copy(out, master)
+		return out
+	}
+	savedMaster := ws.Master
+	savedVer, hadVer := ws.Versions[dtype]
+	ws.Master = master
+	delete(ws.Versions, dtype)
+	out := ws.MorphToFloat32ForGPU(dtype)
+	ws.Master = savedMaster
+	if hadVer {
+		ws.Versions[dtype] = savedVer
+	} else {
+		delete(ws.Versions, dtype)
+	}
+	return out
 }
 
 // MorphToFloat32ForGPU returns a float32 slice that represents the master weights
