@@ -23,6 +23,41 @@ func LoomNativeGPUParityRowJSON() *C.char {
 	return C.CString(string(b))
 }
 
+//export LoomWGPUDenseBitNetTernaryParamsJSON
+func LoomWGPUDenseBitNetTernaryParamsJSON() *C.char {
+	b, _ := json.Marshal(poly.WGPUDenseBitNetTernaryParams{})
+	return C.CString(string(b))
+}
+
+//export LoomWGPUBitNetQuantizeActivationParamsJSON
+func LoomWGPUBitNetQuantizeActivationParamsJSON() *C.char {
+	b, _ := json.Marshal(poly.WGPUBitNetQuantizeActivationParams{})
+	return C.CString(string(b))
+}
+
+//export LoomWGPUDenseBitNetTernaryQuantizedParamsJSON
+func LoomWGPUDenseBitNetTernaryQuantizedParamsJSON() *C.char {
+	b, _ := json.Marshal(poly.WGPUDenseBitNetTernaryQuantizedParams{})
+	return C.CString(string(b))
+}
+
+//export LoomWGPUBitNetGateProductParamsJSON
+func LoomWGPUBitNetGateProductParamsJSON() *C.char {
+	b, _ := json.Marshal(poly.WGPUBitNetGateProductParams{})
+	return C.CString(string(b))
+}
+
+//export LoomBitNetShaderNamesJSON
+func LoomBitNetShaderNamesJSON() *C.char {
+	names := []string{
+		poly.ShaderTiledDenseBitNetTernary(32),
+		poly.ShaderTiledDenseBitNetTernaryQuantized(32),
+		poly.ShaderTiledDenseBitNetTernaryQuantizedReduce(32),
+	}
+	b, _ := json.Marshal(map[string]interface{}{"sample_tile_32": names})
+	return C.CString(string(b))
+}
+
 //export LoomGPUInfoJSON
 func LoomGPUInfoJSON() *C.char {
 	b, err := json.Marshal(poly.GPUInfo{})
@@ -762,4 +797,126 @@ func LoomGetGPUWeightBuffer(networkHandle C.longlong, layerIdx C.int) C.longlong
 	stepStates[id] = &stepContainer{State: buf, DType: poly.DTypeFloat32, Borrowed: true}
 	networkMu.Unlock()
 	return C.longlong(id)
+}
+
+// ── BitNet GPU kernels ──
+
+//export LoomDispatchDenseBitNetTernary
+func LoomDispatchDenseBitNetTernary(networkHandle C.longlong, batchSize C.int, inputSize C.int, outputSize C.int, inputHandle C.longlong, weightHandle C.longlong, biasHandle C.longlong, outputHandle C.longlong, weightScale C.float, activation C.int, tileSize C.int) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok || n.GPUContext == nil {
+		return errJSON("invalid network or WGPU not initialized")
+	}
+	in, ok := getGPUBufferFromHandle(int64(inputHandle))
+	if !ok {
+		return errJSON("invalid input buffer handle")
+	}
+	wt, ok := getGPUBufferFromHandle(int64(weightHandle))
+	if !ok {
+		return errJSON("invalid weight buffer handle")
+	}
+	out, ok := getGPUBufferFromHandle(int64(outputHandle))
+	if !ok {
+		return errJSON("invalid output buffer handle")
+	}
+	var err error
+	if biasHandle == 0 {
+		err = n.GPUContext.DispatchDenseBitNetTernary(int(batchSize), int(inputSize), int(outputSize), in, wt, nil, out, float32(weightScale), poly.ActivationType(activation), int(tileSize))
+	} else {
+		bias, ok := getGPUBufferFromHandle(int64(biasHandle))
+		if !ok {
+			return errJSON("invalid bias buffer handle")
+		}
+		err = n.GPUContext.DispatchDenseBitNetTernary(int(batchSize), int(inputSize), int(outputSize), in, wt, bias, out, float32(weightScale), poly.ActivationType(activation), int(tileSize))
+	}
+	if err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDispatchBitNetQuantizeActivation
+func LoomDispatchBitNetQuantizeActivation(networkHandle C.longlong, batchSize C.int, inputSize C.int, inputHandle C.longlong, qPackedHandle C.longlong, scaleHandle C.longlong) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok || n.GPUContext == nil {
+		return errJSON("invalid network or WGPU not initialized")
+	}
+	in, ok := getGPUBufferFromHandle(int64(inputHandle))
+	if !ok {
+		return errJSON("invalid input buffer handle")
+	}
+	qp, ok := getGPUBufferFromHandle(int64(qPackedHandle))
+	if !ok {
+		return errJSON("invalid qPacked buffer handle")
+	}
+	sc, ok := getGPUBufferFromHandle(int64(scaleHandle))
+	if !ok {
+		return errJSON("invalid scale buffer handle")
+	}
+	if err := n.GPUContext.DispatchBitNetQuantizeActivation(int(batchSize), int(inputSize), in, qp, sc); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDispatchDenseBitNetTernaryQuantized
+func LoomDispatchDenseBitNetTernaryQuantized(networkHandle C.longlong, batchSize C.int, inputSize C.int, outputSize C.int, qPackedHandle C.longlong, scaleHandle C.longlong, weightHandle C.longlong, biasHandle C.longlong, outputHandle C.longlong, weightScale C.float, activation C.int, tileSize C.int) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok || n.GPUContext == nil {
+		return errJSON("invalid network or WGPU not initialized")
+	}
+	qp, ok := getGPUBufferFromHandle(int64(qPackedHandle))
+	if !ok {
+		return errJSON("invalid qPacked buffer handle")
+	}
+	sc, ok := getGPUBufferFromHandle(int64(scaleHandle))
+	if !ok {
+		return errJSON("invalid scale buffer handle")
+	}
+	wt, ok := getGPUBufferFromHandle(int64(weightHandle))
+	if !ok {
+		return errJSON("invalid weight buffer handle")
+	}
+	out, ok := getGPUBufferFromHandle(int64(outputHandle))
+	if !ok {
+		return errJSON("invalid output buffer handle")
+	}
+	var err error
+	if biasHandle == 0 {
+		err = n.GPUContext.DispatchDenseBitNetTernaryQuantized(int(batchSize), int(inputSize), int(outputSize), qp, sc, wt, nil, out, float32(weightScale), poly.ActivationType(activation), int(tileSize))
+	} else {
+		bias, ok := getGPUBufferFromHandle(int64(biasHandle))
+		if !ok {
+			return errJSON("invalid bias buffer handle")
+		}
+		err = n.GPUContext.DispatchDenseBitNetTernaryQuantized(int(batchSize), int(inputSize), int(outputSize), qp, sc, wt, bias, out, float32(weightScale), poly.ActivationType(activation), int(tileSize))
+	}
+	if err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
+}
+
+//export LoomDispatchBitNetGateProduct
+func LoomDispatchBitNetGateProduct(networkHandle C.longlong, batchSize C.int, hiddenSize C.int, activation C.int, gatePreHandle C.longlong, upPreHandle C.longlong, outputHandle C.longlong) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok || n.GPUContext == nil {
+		return errJSON("invalid network or WGPU not initialized")
+	}
+	gate, ok := getGPUBufferFromHandle(int64(gatePreHandle))
+	if !ok {
+		return errJSON("invalid gatePre buffer handle")
+	}
+	up, ok := getGPUBufferFromHandle(int64(upPreHandle))
+	if !ok {
+		return errJSON("invalid upPre buffer handle")
+	}
+	out, ok := getGPUBufferFromHandle(int64(outputHandle))
+	if !ok {
+		return errJSON("invalid output buffer handle")
+	}
+	if err := n.GPUContext.DispatchBitNetGateProduct(int(batchSize), int(hiddenSize), poly.ActivationType(activation), gate, up, out); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status": "ok"}`)
 }
