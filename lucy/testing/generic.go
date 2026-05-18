@@ -472,6 +472,7 @@ func runTrainingSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 			tcfg.Mode = mode
 			tcfg.Verbose = false
 			tcfg.LearningRate = 0.01
+			tcfg.GradientClip = 1.0
 
 			l.ResetState()
 			start := time.Now()
@@ -499,11 +500,7 @@ func runTrainingSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 					}
 				}
 				lossInit := res.LossHistory[0]
-				trainOK = trainNoNaN && weightsFinite && trainingLossImproved(lossInit, res.FinalLoss, cfg.dtype)
-				// Collapsed loss with finite loss but NaN master can happen on some GPU low-bit paths.
-				if !weightsFinite && lossInit < 1e-6 && res.FinalLoss < 1e-6 && trainNoNaN {
-					trainOK = trainingLossImproved(lossInit, res.FinalLoss, cfg.dtype)
-				}
+				trainOK = trainNoNaN && trainingLossOK(lossInit, res.FinalLoss, cfg.dtype, weightsFinite)
 
 				// Serialize: if Master contains NaN (broken GPU pass), skip serialize
 				// so json.Marshal doesn't fail on NaN float32 values and crash the run.

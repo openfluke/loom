@@ -492,6 +492,54 @@ func (ws *WeightStore) GetActive(dtype DType) any {
 			}
 		}
 		return out
+	case DTypeInt64:
+		if raw, ok := v.([]int64); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
+	case DTypeUint64:
+		if raw, ok := v.([]uint64); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
+	case DTypeInt32:
+		if raw, ok := v.([]int32); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
+	case DTypeUint32:
+		if raw, ok := v.([]uint32); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
+	case DTypeInt16:
+		if raw, ok := v.([]int16); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
+	case DTypeUint16:
+		if raw, ok := v.([]uint16); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
 	}
 	return v
 }

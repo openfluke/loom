@@ -13,3 +13,9 @@ func TestMHAForwardParity(t *testing.T) {
 		t.Fatal("MHA forward parity had failures")
 	}
 }
+
+func TestMHATrainingMatrix(t *testing.T) {
+	if !RunGenericLayerSuite(mhaSpec, TestTraining) {
+		t.Fatal("MHA training matrix had failures")
+	}
+}
