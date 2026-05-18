@@ -42,6 +42,8 @@ type llmState struct {
 	bannedTokens  []int
 	history       []poly.Turn
 	deterministic bool
+	// Microsoft BitNet b1.58 chat template parity with loom/lucy (tokenizer.encode add_special).
+	encodeAddSpecial bool
 
 	// streaming
 	streamMu      sync.Mutex
@@ -79,6 +81,24 @@ func runOnGPUThread(fn func()) {
 	done := make(chan struct{})
 	gpuWorkerChan <- func() { fn(); close(done) }
 	<-done
+}
+
+func llmDetectBitNetModel(config map[string]interface{}, snapshotDir string) bool {
+	snap := strings.ToLower(snapshotDir)
+	if strings.Contains(snap, "bitnet") || strings.Contains(snap, "1bit") {
+		return true
+	}
+	if strings.EqualFold(poly.HFConfigStringDefault(config, "model_type", ""), "bitnet") {
+		return true
+	}
+	if arch, ok := config["architectures"].([]interface{}); ok {
+		for _, a := range arch {
+			if s, ok := a.(string); ok && strings.Contains(strings.ToLower(s), "bitnet") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ─── LoomLLMListModels ────────────────────────────────────────────────────────
@@ -147,31 +167,39 @@ func LoomCreateLLM(snapshotDirC *C.char, execMode C.int, precisionInt C.int, use
 
 	eosTokens := poly.EOSTokenIDsFromHFConfig(config)
 
-	// ── Load safetensors ──────────────────────────────────────────────────────
+	// ── Load safetensors / globals (Lucy parity: BitNet needs HFStored + CPU pack) ─
 	safetensorFiles, _ := filepath.Glob(filepath.Join(snapshotDir, "*.safetensors"))
 	if len(safetensorFiles) == 0 {
 		return -1
 	}
-	// For Soulglitch GPU mounts, prefer lower-peak host RAM by loading blocks
-	// sequentially (Lucy parity).
-	sequentialGPULoad := int(useGPUInt) == 1
+
+	isBitNetModel := llmDetectBitNetModel(config, snapshotDir)
+	useGPU := int(useGPUInt) == 1
+	if isBitNetModel && useGPU {
+		fmt.Println("ℹ️  BitNet: SoulGlitch welvet uses CPU packed ternary inference (loom/lucy parity). Forcing CPU.")
+		useGPU = false
+	}
+	// Block-wise GPU upload path only when we actually run on GPU.
+	sequentialGPULoad := useGPU && int(useGPUInt) == 1
+	useBitNetPacked := isBitNetModel && !useGPU
+
 	mapper := poly.NewPrefixWeightMapper()
 	var embeddings, lmHead, finalNorm []float32
 	var allTensors map[string][]float32
-	if sequentialGPULoad {
-		globalTensors := make(map[string][]float32)
+
+	if (sequentialGPULoad && useGPU) || useBitNetPacked {
+		globalStored := make(map[string]poly.HFStoredTensor)
 		for _, f := range safetensorFiles {
-			part, err := poly.LoadSafetensorsSelective(f, poly.HFWeightIsGlobal)
+			part, err := poly.LoadSafetensorsSelectiveRaw(f, poly.HFWeightIsGlobal)
 			if err != nil {
-				continue
+				return -1
 			}
 			for k, v := range part {
-				globalTensors[k] = v
+				globalStored[k] = v
 			}
 		}
-		embeddings, lmHead, finalNorm, _ = mapper.MapWeights(globalTensors)
-		embeddings, lmHead, finalNorm = poly.CloneMappedGlobalWeights(embeddings, lmHead, finalNorm)
-		globalTensors = nil
+		embeddings, lmHead, finalNorm, _ = mapper.MapWeightsFromStored(globalStored)
+		poly.ReleaseTransientHFStoredMap(globalStored)
 		runtime.GC()
 		debug.FreeOSMemory()
 	} else {
@@ -235,7 +263,6 @@ func LoomCreateLLM(snapshotDirC *C.char, execMode C.int, precisionInt C.int, use
 	default:
 		dtype = poly.DTypeInt4
 	}
-	useGPU := int(useGPUInt) == 1
 
 	// ── Tiling ────────────────────────────────────────────────────────────────
 	useTiling := int(execMode) != 1
@@ -255,6 +282,11 @@ func LoomCreateLLM(snapshotDirC *C.char, execMode C.int, precisionInt C.int, use
 		dtype = poly.DTypeInt8
 	}
 
+	activation := poly.ActivationSilu
+	if strings.EqualFold(poly.HFConfigStringDefault(config, "hidden_act", ""), "relu2") {
+		activation = poly.ActivationReLU2
+	}
+
 	net := poly.NewVolumetricNetwork(1, 1, 1, numLayers*4)
 	poly.InitHFDecoderBlocks(net, poly.HFDecoderDims{
 		NumLayers:          numLayers,
@@ -267,8 +299,41 @@ func LoomCreateLLM(snapshotDirC *C.char, execMode C.int, precisionInt C.int, use
 		IntermediateSize:   intermediateSize,
 		RMSNormEps:         rmsNormEps,
 		RoPEFreqBase:       ropeFreqBase,
+		Activation:         activation,
 	})
-	if !sequentialGPULoad {
+
+	if useBitNetPacked {
+		fmt.Printf("⏳ BitNet CPU block-wise load + pack (%d transformer blocks)...\n", numLayers)
+		layerFiles := buildLayerShardIndex(safetensorFiles, numLayers)
+		for li := 0; li < numLayers; li++ {
+			layerMap := make(map[string]poly.HFStoredTensor)
+			for _, sf := range layerFiles[li] {
+				part, err := poly.LoadSafetensorsSelectiveRaw(sf, func(k string) bool {
+					return poly.HFWeightMatchesLayer(k, li)
+				})
+				if err != nil {
+					fmt.Printf("❌ BitNet safetensors %s block %d: %v\n", sf, li, err)
+					return -1
+				}
+				for k, v := range part {
+					layerMap[k] = v
+				}
+			}
+			poly.LoadWithPrefixesFromHFStored(net, layerMap)
+			if err := poly.PrepareDecoderBlockBitNetTernaryCPU(net, li); err != nil {
+				fmt.Printf("❌ BitNet CPU preparation failed for block %d: %v\n", li, err)
+				return -1
+			}
+			poly.ReleaseTransientHFStoredMap(layerMap)
+			if li == 0 || (li+1)%4 == 0 || li+1 == numLayers {
+				runtime.GC()
+				debug.FreeOSMemory()
+			}
+		}
+		net.UseExactDType = true
+		runtime.GC()
+		debug.FreeOSMemory()
+	} else if !sequentialGPULoad {
 		poly.LoadWithPrefixes(net, allTensors)
 		poly.ReleaseTransientSafetensorMap(allTensors, embeddings, lmHead, finalNorm)
 	}
@@ -379,18 +444,25 @@ func LoomCreateLLM(snapshotDirC *C.char, execMode C.int, precisionInt C.int, use
 		})
 	}
 	if !useGPU {
+		if useBitNetPacked {
+			tr.Network.UseExactDType = true
+		}
 		tr.SyncInferenceCPU()
 	}
 
 	banned := poly.TokenizerBannedSpecialExceptEOS(tk, eosTokens)
 
+	encodeAddSpecial := isBitNetModel &&
+		strings.Contains(strings.ToLower(snapshotDir), "bitnet-b1.58")
+
 	// ── Register ──────────────────────────────────────────────────────────────
 	state := &llmState{
-		tr:            tr,
-		tk:            tk,
-		eosTokens:     eosTokens,
-		bannedTokens:  banned,
-		deterministic: int(deterministicInt) == 1,
+		tr:               tr,
+		tk:               tk,
+		eosTokens:        eosTokens,
+		bannedTokens:     banned,
+		deterministic:    int(deterministicInt) == 1,
+		encodeAddSpecial: encodeAddSpecial,
 	}
 
 	llmMu.Lock()
@@ -488,7 +560,7 @@ func LoomLLMGenerate(handle C.longlong, systemPromptC *C.char, userMsgC *C.char,
 		Silent:                true,
 	}
 
-	encode := func(text string) []uint32 { return state.tk.Encode(text, false) }
+	encode := func(text string) []uint32 { return state.tk.Encode(text, state.encodeAddSpecial) }
 	decode := func(tokens []uint32) string { return state.tk.Decode(tokens, false) }
 
 	var reply string
@@ -575,7 +647,7 @@ func LoomLLMStartGenerate(handle C.longlong, systemPromptC *C.char, userMsgC *C.
 		},
 	}
 
-	encode := func(text string) []uint32 { return state.tk.Encode(text, false) }
+	encode := func(text string) []uint32 { return state.tk.Encode(text, state.encodeAddSpecial) }
 	decode := func(tokens []uint32) string { return state.tk.Decode(tokens, false) }
 	history := append([]poly.Turn{}, state.history...) // snapshot
 

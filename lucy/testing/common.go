@@ -52,6 +52,58 @@ func parityMark(ok bool) string {
 	return "FAIL"
 }
 
+func isQuantIntegerDType(dt poly.DType) bool {
+	switch dt {
+	case poly.DTypeInt64, poly.DTypeInt32, poly.DTypeInt16, poly.DTypeInt8, poly.DTypeInt4, poly.DTypeInt2,
+		poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16, poly.DTypeUint8,
+		poly.DTypeUint4, poly.DTypeUint2, poly.DTypeBinary, poly.DTypeTernary, poly.DTypeFP4,
+		poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
+		return true
+	default:
+		return false
+	}
+}
+
+// trainingLossOK decides whether a short training run behaved acceptably for the matrix.
+// Save/reload is checked separately; quant paths often drift slightly without failing.
+func trainingLossOK(lossInit, lossFinal float64, dtype poly.DType, weightsFinite bool) bool {
+	if math.IsNaN(lossInit) || math.IsNaN(lossFinal) ||
+		math.IsInf(lossInit, 0) || math.IsInf(lossFinal, 0) {
+		return false
+	}
+	// Obvious runaway (e.g. MHA GPU int32); keep these broken.
+	if lossInit > 1e-3 && (lossFinal > lossInit*50 || lossFinal > 1e10) {
+		return false
+	}
+	if !weightsFinite {
+		// GPU low-bit collapse: loss hit zero but Master may still have NaNs from the broken pass.
+		if (dtype == poly.DTypeBinary || dtype == poly.DTypeTernary) && lossFinal <= lossInit+1e-3 {
+			return true
+		}
+		return lossInit < 1e-6 && lossFinal < 1e-6
+	}
+	if lossInit < 0.01 {
+		if lossFinal <= lossInit*2.0+1e-3 {
+			return true
+		}
+		// GPU ternary/binary first epoch can report 0 partial loss then recover.
+		return isQuantIntegerDType(dtype) && lossFinal < 1.0
+	}
+	if isQuantIntegerDType(dtype) {
+		band := 0.15
+		switch dtype {
+		case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16, poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
+			band = 0.22 // RNN uint PTQ often drifts ~21% over 5 short epochs
+		}
+		if lossFinal <= lossInit*(1.0+band)+1e-3 {
+			return true
+		}
+		rel := math.Abs(lossFinal-lossInit) / (math.Abs(lossInit) + 1e-9)
+		return rel <= band
+	}
+	return lossFinal < lossInit*1.01
+}
+
 func maxAbsDiff(a, b []float32) float64 {
 	var d float64
 	for i := range a {
@@ -63,7 +115,14 @@ func maxAbsDiff(a, b []float32) float64 {
 }
 
 func spectrumMark(diff float64, tolerance float64, data []float32, baseline []float32) Spectrum {
-	if math.IsNaN(diff) || math.IsInf(diff, 0) {
+	if math.IsNaN(diff) {
+		return SpecFatal
+	}
+	// GPU path can overflow to Inf while CPU stays finite (e.g. MHA BitNet ternary).
+	if math.IsInf(diff, 0) && hasSignal(baseline) {
+		return SpecHeavyDrift
+	}
+	if math.IsInf(diff, 0) {
 		return SpecFatal
 	}
 

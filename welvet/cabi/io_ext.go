@@ -169,9 +169,17 @@ func LoomSaveSafetensors(path *C.char, tensorsJSON *C.char) *C.char {
 func LoomGetMethodsJSON() *C.char {
 	methods := []string{
 		"LoomBuildNetworkFromJSON",
+		"LoomSerializeNetwork",
+		"LoomDeserializeNetwork",
+		"LoomLayerPersistenceFromJSON",
+		"LoomLayerNativePersistenceSnapshot",
 		"LoomLoadUniversal",
 		"LoomLoadSafetensors",
 		"LoomSaveSafetensors",
+		"LoomLoadSafetensorsSelectiveRawFromBytes",
+		"LoomSetLayerLoadedWeights",
+		"LoomSetNetworkUseAsmForward",
+		"LoomAsmEnabled",
 		"LoomSequentialForward",
 		"LoomApplyGradients",
 		"LoomMorphLayer",
@@ -199,7 +207,14 @@ func LoomGetMethodsJSON() *C.char {
 	_ = poly.SaveSafetensors
 	_ = poly.ExtractNetworkBlueprint
 	_ = poly.ExtractLayerTelemetry
-	
+	_ = poly.SerializeNetwork
+	_ = poly.DeserializeNetwork
+	_ = poly.LayerPersistenceFromJSON
+	_ = poly.LayerNativePersistenceSnapshot
+	_ = poly.StoredTensorNumElements
+	_ = poly.DecodeTensorBytesInto
+	_ = poly.LoadSafetensorsSelectiveRawFromBytes
+
 	data, _ := json.Marshal(methods)
 	return C.CString(string(data))
 }

@@ -20,7 +20,10 @@
 #   --clean    Remove dist/ before building
 #   --test     Run C verification after build (native only)
 #
-# Environment (optional — the Go builder also discovers these at runtime):
+# Environment (optional):
+#   LLVM_MINGW_HOME       llvm-mingw unpack root (Windows/arm64 only; not added to PATH)
+#   BUILD_TOOLCHAIN_PATH  extra bin dirs, colon-separated
+#   .build_env            local file in this dir (sourced if present)
 #   ANDROID_NDK_HOME   Explicit NDK root (must contain toolchains/llvm/prebuilt/)
 #   ANDROID_HOME / ANDROID_SDK_ROOT
 #                      If ANDROID_NDK_HOME is unset, newest $ROOT/ndk/<version> is used
@@ -35,6 +38,53 @@
 
 set -e
 cd "$(dirname "$0")"
+
+# ── Cross-compiler PATH (builder uses exec.LookPath; does not load your ~/.zshrc) ──
+_prepend_path() {
+  local d="$1"
+  [ -n "$d" ] && [ -d "$d" ] || return 0
+  case ":$PATH:" in
+    *":$d:"*) ;;
+    *) export PATH="$d:$PATH" ;;
+  esac
+}
+
+# Optional: copy .build_env.example → .build_env and set LLVM_MINGW_HOME / BUILD_TOOLCHAIN_PATH
+if [ -f ./.build_env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ./.build_env
+  set +a
+fi
+
+if command -v brew >/dev/null 2>&1; then
+  _prepend_path "$(brew --prefix 2>/dev/null)/bin"
+fi
+_prepend_path "/opt/homebrew/bin"
+_prepend_path "/usr/local/bin"
+
+# llvm-mingw is NOT prepended to PATH — its "clang" would break macOS/Linux/Android builds.
+# Set LLVM_MINGW_HOME in .build_env; builder.go resolves …/bin/aarch64-w64-mingw32-clang directly.
+if [ -z "${LLVM_MINGW_HOME:-}" ] && [ -d "$HOME/llvm-mingw/bin" ]; then
+  export LLVM_MINGW_HOME="$HOME/llvm-mingw"
+fi
+
+if [ -n "${BUILD_TOOLCHAIN_PATH:-}" ]; then
+  IFS=':' read -r -a _btp <<< "$BUILD_TOOLCHAIN_PATH"
+  for _d in "${_btp[@]}"; do
+    _prepend_path "$_d"
+  done
+fi
+
+echo "Cross-compilers:"
+for _c in x86_64-linux-gnu-gcc aarch64-linux-gnu-gcc x86_64-w64-mingw32-gcc; do
+  if command -v "$_c" >/dev/null 2>&1; then
+    echo "  ✓ $(command -v "$_c")"
+  fi
+done
+if [ -n "${LLVM_MINGW_HOME:-}" ] && [ -x "$LLVM_MINGW_HOME/bin/aarch64-w64-mingw32-clang" ]; then
+  echo "  ✓ $LLVM_MINGW_HOME/bin/aarch64-w64-mingw32-clang (Windows/arm64)"
+fi
 
 # Export ANDROID_NDK_HOME when Android Studio installed the NDK but only ANDROID_HOME is set.
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then

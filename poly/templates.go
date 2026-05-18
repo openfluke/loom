@@ -93,6 +93,52 @@ var (
 		},
 	}
 
+	// PlainCompletion is for base language models without chat/instruction
+	// markers. The current user text is used directly as the continuation prompt.
+	PlainCompletion = Template{
+		Name: "plain",
+		RolePrefixes: map[string]string{
+			"user":      "",
+			"assistant": "",
+		},
+		RoleSuffixes: map[string]string{
+			"user":      "",
+			"assistant": "",
+		},
+	}
+
+	// BitNetInstruction mirrors the default BitnetTokenizer chat template:
+	// <s>[INST] user [/INST] assistant </s><s>[INST] next [/INST]
+	// The checkpoint is still a base model, but this is the tokenizer-native
+	// instruction wrapper exposed by the HF tokenizer.
+	BitNetInstruction = Template{
+		Name: "bitnet-inst",
+		RolePrefixes: map[string]string{
+			"user":      "<s>[INST] ",
+			"assistant": " ",
+		},
+		RoleSuffixes: map[string]string{
+			"user":      " [/INST]",
+			"assistant": " </s>",
+		},
+	}
+
+	// MicrosoftBitNetChat mirrors microsoft/bitnet-b1.58-2B-4T's tokenizer
+	// chat_template: "User: ...<|eot_id|>Assistant: ".
+	MicrosoftBitNetChat = Template{
+		Name: "microsoft-bitnet",
+		RolePrefixes: map[string]string{
+			"system":    "System: ",
+			"user":      "User: ",
+			"assistant": "Assistant: ",
+		},
+		RoleSuffixes: map[string]string{
+			"system":    "<|eot_id|>",
+			"user":      "<|eot_id|>",
+			"assistant": "<|eot_id|>",
+		},
+	}
+
 	// Llama3 markers
 	Llama3 = Template{
 		Name: "llama3",

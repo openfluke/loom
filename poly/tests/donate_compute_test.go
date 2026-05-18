@@ -1,9 +1,11 @@
-package poly
+package poly_test
 
 import (
 	"fmt"
 	"testing"
 	"time"
+
+	. "github.com/openfluke/loom/poly"
 )
 
 func TestDonateComputeModelPushRoundTrip(t *testing.T) {

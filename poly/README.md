@@ -3,6 +3,22 @@
 
 M-POLY-VTD is a next-generation neural inference engine designed for high-performance, mixed-precision workloads. It treats the neural network not as a sequential stack, but as a **spatial 3D grid** where layers can morph their numerical precision on-the-fly.
 
+### The Loom stack (only three)
+
+**Loom runs on Go, WebGPU, and Plan 9 assembly — nothing else.** One volumetric dispatcher; pick the backend per device and layer.
+
+| Backend | Role | Status |
+| :--- | :--- | :--- |
+| **Go** | Portable CPU: SC/MC tiled loops, all layers, 21 dtypes | ✅ baseline |
+| **`poly/asm`** | Hot CPU inner loops (`.s`, not CGO) | 🚧 **Dense forward** (all 21 dtypes); more layers → more speed |
+| **WebGPU** | GPU forward / backward / training (WGSL from Go) | ✅ production |
+
+**CPU gets faster as asm lands.** Dense forward on Lucy (arm64 Metal, 8×1024→512) is ~**1.7–2.5×** Go SC for Int4/Ternary/low-bit and up to ~**3.2×** Go MC for Uint4/Ternary/FP4 (best MC **Uint4 ~3.55×**; best SC **Uint8 ~2.46×**). Float64 can still be slower than Go on SC/MC — tile tuning, not a dead asm path. Backward, SwiGLU, MHA, and CNN asm are the next wins. Internals: [`asm/README.md`](asm/README.md).
+
+### Where we are now — **v0.78.0 “ASM CPU”**
+
+**Device-aware** = **Go** vs **`poly/asm`** on CPU (`UseAsmForward`), or **WebGPU** when `UseGPU` is on.
+
 ## Core Pillars
 
 ### I. Multi-Numerical Architecture (M-POLY)
@@ -20,7 +36,7 @@ The engine provides a "Universal Dispatcher" supporting native forward and backw
 *   **Universal Softmax Engine**: Exhaustive **LayerSoftmax** support including Standard, Grid, Hierarchical, Gumbel, Masked, Sparsemax, and Entmax (1.5) across all 21 types.
 *   **Universal Nesting & Training**: Support for **LayerParallel** (add, avg, concat, filter/MoE) and **LayerSequential** with recursive **Activation/Gradient Trees** for deep, trainable hierarchies.
 *   **Embedding/KMeans Support**: Efficient **LayerEmbedding** lookups and differentiable **LayerKMeans** clustering.
-*   **Bandwidth Optimization**: Targets a 75-80% reduction in weight size, specifically designed to break the memory bandwidth bottleneck on consumer hardware (e.g., Turing/GTX 1650 Super).
+*   **Bandwidth Optimization**: Targets a 75-80% reduction in weight size to ease memory bandwidth limits on typical consumer GPUs via WebGPU.
 
 ### II. Polymorphic Layer-Morphing (POLY)
 Every layer is a polymorphic unit capable of **metamorphosis**.
@@ -46,9 +62,22 @@ The framework provides an **Idempotent Serialization Tunnel** designed for extre
 *   **Transparent Bit-Packing**: Low-bit models (`FP4`, `Binary`, etc.) are natively packed into bit-streams during I/O, achieving up to **98.4% compression** on disk.
 *   **Automated Unpacking**: Models are stored in their native DType but automatically `Unpack` into RAM-compatible formats during deserialization, ensuring high-speed inference.
 *   **Bit-Perfect Identity**: Verified across **378/378 permutations** (18 Layers x 21 DTypes) with **0.000000% mathematical divergence**. 
-*   **Idempotency Verified**: Serializing a reloaded model produces a byte-for-byte identical JSON to the original.
+*   **Per-dtype JSON checkpoints**: `SerializeNetwork` writes each layer’s **active `dtype`** plus **native-packed** Base64 (`Native: true`, `Scale` preserved) — not an FP32-only blob. Lucy Dense training reports **Save/Reload PASS** for all 21 types (see `File` KB column: Binary ~17 KB vs Float64 ~5.4 MB on the standard bench).
+*   **Idempotency Verified**: Serializing a reloaded model produces a byte-for-byte identical JSON to the original (when round-tripping the same dtype path).
 
-### VI. Tween (neural target propagation)
+### VI. ASM CPU (device-aware compute)
+Hand-written **Plan 9 assembly** (`.s` files, **not** CGO) for hot matmul/dot inner loops. One subpackage per layer: `poly/asm/dense/`, `poly/asm/mha/`, … — called from Go via `//go:noescape` stubs.
+
+*   **Toggle**: `VolumetricNetwork.UseAsmForward` or `VolumetricLayer.UseAsmForward` (copied on `SyncToCPU()`).
+*   **Tiling**: Same **SC** (single goroutine / serial tiles) and **MC** (`EnableMultiCoreTiling`, parallel output tiles) as Go.
+*   **Platforms**: **arm64** + **amd64** ship `.s` kernels; other `GOARCH` → Go fallback, no crash.
+*   **Lucy**: Dense → L1 / GPU Forward tables show **Go SC · Go MC · ASM SC · ASM MC · GPU SC · GPU MC** and **Go÷ASM** / **GPU÷ASM** speedup columns (`loom/lucy/lucy_testing_output/log.txt`).
+
+**Shipped in v0.78+:** `poly/asm/dense/` forward for **all 21 dtypes** — float tiled matmul (`f32`/`f64` acc) plus **native integer** dots (`IMUL` + int64 acc, no FP inside the kernel). Low-bit CPU dense uses morphed `[]uint8` weights (one quant byte per element), not packed bitstreams on the hot path. Training and backward still use Go/GPU paths.
+
+See **[ASM layer matrix](#asm-layer-matrix-status)** below and **[`asm/README.md`](asm/README.md)** for path matrix, codegen, and TODOs.
+
+### VII. Tween (neural target propagation)
 A bidirectional learning alternative to traditional backpropagation that bridges the gap between actual activations and idealized targets. **Tween** is our code name; papers often say *target propagation* or *difference target propagation*.
 *   **True Target Estimation**: Heuristically estimates what a layer *should* have produced by aggregating importance signals through weights (high-fidelity support for **RNN/LSTM** weight mappings).
 *   **Gap-Based Learning**: Updates weights using a Hebbian-style `delta = learningRate * input * gap` logic, bypassing the chain rule for localized, non-differentiable optimization.
@@ -72,6 +101,65 @@ C-ABI vs public `poly/` surface (export names):
 cd welvet/cabi/internal/check && go run check.go
 ```
 
+### Lucy ASM forward benchmarks (Dense)
+
+From repo root, run **`lucy/`** → **Dense** → **L1 Caching** or **GPU Forward Parity** (both include ASM timers). Logs land in `loom/lucy/lucy_testing_output/log.txt`.
+
+```bash
+cd loom/lucy && go run .
+```
+
+Read **Go/Asm↑** columns: values **> 1.0** mean assembly beat Go CPU for that mode. Latest full log (May 2026, Metal / arm64): **Uint8 ~2.46×** SC, **Uint4 ~3.55×** MC, **Ternary ~3.21×** MC, **FP4 ~3.25×** MC, **Int8 ~2.72×** MC; Float32 ~parity; Float64 asm **&lt; 1×** on this bench. Suite totals: **0 ❌ / 0 💀** across ~2992 classified rows. Forward parity vs float reference may show 🟤 **H-DRIFT** on native-int/low-bit — expected path difference, not a broken kernel. Training does not use asm yet; **Save/Reload** after training is native per dtype.
+
+---
+
+## ASM layer matrix (status)
+
+What exists in the repo **today** vs what Lucy exercises for **Go** and **WebGPU**.
+
+Legend: **✅** done · **—** not started · **~** Go/GPU only, no `.s` yet · **n/a** no matmul core
+
+| Layer | Fwd Go CPU | Fwd ASM CPU | Fwd GPU | Bwd Go CPU | Bwd ASM CPU | Bwd GPU |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Dense** | ✅ SC+MC | **✅ SC+MC** | ✅ SC+MC | ✅ MC tiled | — | ✅ |
+| CNN1 | ✅ SC+MC | — | ✅ SC+MC | ~ | — | ~ |
+| CNN2 | ✅ SC+MC | — | ✅ SC+MC | ~ | — | ~ |
+| CNN3 | ✅ SC+MC | — | ✅ SC+MC | ~ | — | ~ |
+| MHA | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | ~ |
+| SwiGLU | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | ~ |
+| RNN | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | — |
+| LSTM | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | — |
+| Embedding | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | — |
+| Residual | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | n/a |
+| RMSNorm / LayerNorm | ✅ | — | ✅ | ✅ | — | ✅ |
+| ConvTransposed 1/2/3 | ✅ | — | ✅ | ~ | — | ~ |
+| Softmax / KMeans / Parallel / Sequential | ✅ | — | varies | ~ | — | — |
+
+### ASM packages on disk
+
+| Package | Forward | Backward | Notes |
+| :--- | :---: | :---: | :--- |
+| [`asm/dot/`](asm/dot/) | shared | shared | `f32`/`f64`, `native_int_*`, legacy `native_packed_*` |
+| [`asm/matmul/`](asm/matmul/) | shared | — | tiled forward (float + native int), `OverOutputTiles` MC |
+| [`asm/dense/`](asm/dense/) | ✅ SC+MC | — | layer entry; poly routes float vs native in `dense_asm*.go` |
+| `asm/mha/` | — | — | planned |
+| `asm/swiglu/` | — | — | planned |
+| `asm/cnn/` | — | — | planned |
+
+Full layout, codegen, and checklist: **[`asm/README.md`](asm/README.md)**.
+
+**Training** does not call asm yet (forward-only).
+
+### ASM rollout queue (priority)
+
+1. **Dense** — forward ✅ (21 dtypes) · backward asm · buffer pooling · NEON/SIMD · Float64 SC tuning
+2. **SwiGLU** — three matmuls per block
+3. **MHA** — Q/K/V/O projections
+4. **CNN1/2/3** — conv inner loops
+5. Embedding / RNN / LSTM (lower priority)
+
+---
+
 ### TypeScript / WASM Implementation Verification
 To verify the **@openfluke/welvet** isomorphic (Browser/Node.js) bridge, a comprehensive 36-count diagnostic and performance suite is provided.
 
@@ -81,18 +169,20 @@ cd welvet/typescript
 npm test
 ```
 
-**Verified Results (Loom v0.76.0):**
+**Verified Results (Loom v0.78.0):**
 - **[PASS]** Internal WASM Exports (8/8)
 - **[PASS]** Network Wrapper Methods (16/16)
 - **[PASS]** NEAT Population Methods (8/8)
 - **[PASS]** Functional Smoke Tests (Sequential, DNA, SwiGLU, Transformers) (5/5)
 
-### IV. Numerical Tiling Profiles (SC vs MC)
-Loom v0.75.0 introduces **Numerical Tiling Profiles** to handle the disparate memory hierarchies of modern hardware.
-*   **SC (Single-Core) Tiling**: Optimized for low-cache, single-thread environments (WASM, small Edge NPUs). Minimizes register pressure by using smaller tiles (e.g., 4x4 or 8x8).
-*   **MC (Multi-Core) Tiling**: Designed for high-bandwidth L1/L2 caches (Ryzen, Apple M4, GTX/RTX). Maximizes throughput via data-level parallelism (SIMD) and larger tiles (e.g., 16x16 or 32x32), achieving an **80% reduction** in the memory bandwidth bottleneck.
+### Numerical Tiling Profiles (SC vs MC + ASM)
+**SC (single-core)** and **MC (multi-core)** tiled dispatch are the CPU baseline on all layers. **ASM** is an optional faster CPU path where a `poly/asm/*` kernel exists.
 
-### V. Step Mesh Stability
+*   **SC**: One worker, smaller tiles (e.g. 8×8) — WASM-friendly, deterministic, low overhead.
+*   **MC**: Parallel tiles across `runtime.NumCPU()` — Apple Silicon / Ryzen / desktop class.
+*   **ASM**: Same SC/MC orchestration; inner matmul/dot loops run from `.s` when `UseAsmForward` is set (Dense forward: float tiled + native integer paths).
+
+### VII. Step Mesh Stability
 The **step mesh engine** has been fundamentally stabilized in v0.75.0:
 *   **Volumetric Coordinate Guarding**: Fixed nil-pointer panics in sparse grids by implementing explicit `IsDisabled` flags for uninitialized cells.
 *   **Coordinate-Based Hopping**: Data flow is now strictly governed by 3D volumetric coordinates (`z, y, x, l`), ensuring stable "Neural Mesh" propagation even in complex recursive skip-connections.
@@ -148,7 +238,7 @@ All runs share a single pre-initialised `WGPUContext`. Weights are copied CPU→
 | RMSNorm MLP (128→Dense512→Norm→512→8)| 12.6s    | 711ms    | 17.7x   | –73.1%     | –72.6%     |
 | Deep Dense (128→512×4→8)             | 31.7s    | 1.23s    | 25.7x   | –69.8%     | –69.2%     |
 ```
-> Measured on GTX 1650 Super (Vulkan/WebGPU), Windows 10. Batch sizes: 64 (Dense/RMSNorm), 32 (CNN1D), 16 (CNN2D), 8 (CNN3D).
+> Measured on WebGPU (Vulkan), Windows 10. Batch sizes: 64 (Dense/RMSNorm), 32 (CNN1D), 16 (CNN2D), 8 (CNN3D).
 
 #### Per-Layer Gradient Correctness (DX / DW parity, CPU vs GPU)
 ```text
@@ -171,10 +261,11 @@ All runs share a single pre-initialised `WGPUContext`. Weights are copied CPU→
 ---
 
 ## The Bedrock Philosophy
-M-POLY-VTD is a **"Bedrock Edition"** neural engine. Unlike standard frameworks that build on top of high-level abstractions, this architecture is designed at the bit-level to bypass the physical memory limitations of consumer hardware.
+M-POLY-VTD is a **"Bedrock Edition"** neural engine: bit-level dtypes, volumetric dispatch, and **only** the Loom trio — **Go**, **`poly/asm`**, **WebGPU**.
 
-*   **Shader-First Design**: The Go implementation is a direct blueprint for GPU kernels.
-*   **Hardware-Agnostic**: By supporting 21 numerical types, we can run on anything from a GTX 1650 to an H100 by simply "Morphing" the precision to what the specific silicon prefers.
+*   **Go** owns correctness and portability; **`poly/asm`** peels off the hottest CPU matmuls; **WebGPU** owns the GPU.
+*   **Speed on CPU scales with asm rollout** — same SC/MC tiling, faster dots. GPU speed scales with WGSL fusion and graph work.
+*   **21-type morphing**: Same volumetric mesh can run FP32, INT8, FP4, Binary, etc., by swapping active weights in `WeightStore`.
 
 ## Architectural Design Choices
 
@@ -201,6 +292,46 @@ Unlike the standard sequential flow, the **step mesh engine** treats the 3D grid
 
 > [!TIP]
 > Use `poly.StepForward` and `poly.StepApplyTween` when you need a "living network" that evolves and learns over time rather than a static pipeline. o_O
+
+### 4b. HF decoder CPU forward schedules (Lucy / `Transformer`)
+
+The **3D step mesh** (`step.go`, `StepForward`) is a **volumetric-grid clock** for arbitrary `VolumetricNetwork` topologies. It is **not** what Lucy chat uses for HuggingFace decoder inference.
+
+For **Llama-style decoder stacks** (`InitHFDecoderBlocks`: RMSNorm → MHA → RMSNorm → SwiGLU per block), `poly.Transformer` exposes a separate **CPU forward schedule** selected by `ForwardMode` (configured in **`lucy/`** after model load):
+
+| Mode | Constant | Behavior |
+| :--- | :--- | :--- |
+| **1 Normal** | `TransformerForwardNormal` | Fused block loop — default, fastest on CPU. |
+| **2 Stepped** | `TransformerForwardSteppedCPU` | Same math; one **sub-layer** per internal step; auto-drains each `ForwardFull` / `forwardOne`. |
+| **3 Queued** | `TransformerForwardQueuedCPU` | Same as stepped; optional **Enter** pause per sub-layer (`QueueTickPause`). |
+| **4 Pipeline** | `TransformerForwardPipelineCPU` | **Wavefront scheduler**: multiple prompt tokens can sit at different decoder blocks; each `PipelineTick` is one global clock that advances every **ready** job by one sub-layer. |
+
+**Implementation files:** `transformer_forward.go` (modes 1–3), `transformer_pipeline.go` (mode 4), `transformer_layer_trace.go` (optional per-sub-layer recording during `Generate`).
+
+#### What “pipeline / wavefront” means here
+
+This is **classic wavefront / pipeline scheduling** (dependencies along token position and block depth; independence across the diagonal), applied to the HF decoder’s **six sub-steps per block** (pre-attn RMSNorm, MHA, attn residual, pre-MLP RMSNorm, SwiGLU, MLP residual) plus optional final RMSNorm.
+
+- **One `PipelineTick` ≠ one sampled vocabulary token.** A tick is one sub-layer pulse for each ready `(token position, block, phase)` job. A full new decode token still needs on the order of **`numBlocks × 6 + 1`** ticks (~181 for 30 blocks) before `ApplyLMHead` and sampling.
+- **Prefill** can overlap work: e.g. token 4 at block 8 while token 7 is at block 5 (turn on Lucy’s sub-layer log or interactive pipeline to see mixed `tok N block M/…` lines on the same tick).
+- **Autoregressive decode** (one new embedding per step) usually has **one token in flight**, so overlap does not beat fused forward on a single CPU thread — expect **similar tok/s** to mode 1, not “one word per tick.”
+
+**KV / position rules:** injection starts at `batchStartPos` (block-0 MHA `KVOffset` after prefill). MHA at block `b` uses **that block’s** MHA layer cursor (`Layers[b*4+1].KVOffset`), not block 0’s, so continuation after prefill does not deadlock when block 0 has already advanced.
+
+#### Honest scope (NLP industry)
+
+This is **not a new language-model algorithm** or paper claim. Serving stacks already use related ideas under other names (**pipeline parallelism**, **continuous batching**, **prefill/decode scheduling**, **speculative decoding**). Loom’s contribution is an **explicit, debuggable CPU scheduler** in-tree, aligned with the mesh/step mental model, and a stepping stone toward **multi-sequence / multi-token** overlap when parallel backends exist.
+
+**When to use which mode**
+
+| Goal | Mode |
+| :--- | :--- |
+| Fastest Lucy chat on CPU | **1 Normal** (GPU if enabled) |
+| Step through one token, one sub-layer | **2** or **3** |
+| See wavefront / debug KV order / prefill overlap | **4** + sub-layer logging or interactive pipeline ticks |
+| Record every sub-layer to a trace | **Layer trace** in Lucy (`GenOptions`; uses traced CPU path, not the pipeline scheduler) |
+
+**Tests:** `poly/tests/pipeline_forward_test.go` — prefill fused, pipeline decode, no stall (`TestPipelineDecodeAfterPrefillNoStall`).
 
 ### 5. Recursive Neural Trees (`Tensor.Nested`)
 **Decision**: Implementing a recursive `Nested` field in the `Tensor` struct.
@@ -250,34 +381,29 @@ Because the Dispatcher is decoupled from the 3D Coordinate loop, the GPU driver 
 
 ---
 
-## ⚡ Performance Roadmap: Bridging the "Ollama" Speed Gap
+## ⚡ Performance roadmap
 
-Currently, **M-POLY-VTD** utilizes **Naive Global Offloading**. This translates to massive volumetric speedups (like the ~7600x boost on CNN 3D) and blazing fast *prefill* speeds where thousands of tokens process simultaneously (e.g., 260+ tok/s on an Apple M4). 
+### CPU — **`poly/asm`** (rolling out)
 
-However, during *autoregressive decoding* (generating one token at a time), the engine is required to bounce back and forth between the Go CPU coordinator and the WebGPU driver to queue up over 100 individual kernels per token. This introduces CPU overhead that vendor-specific engines like `llama.cpp` bypass.
+1. **v0.78 (now):** `poly/asm/dense` forward SC+MC — **~1.5–2×** vs Go on Lucy MC (POC; more headroom with NEON/AVX blocks).
+2. **v0.79+:** Dense backward asm; block GEMM; optional fused ReLU.
+3. **v0.80+:** SwiGLU + MHA projection asm (largest matmul surface in decoders).
+4. **v0.81+:** CNN asm inner loops.
 
-### What is implemented today:
-*   **Zero-Dependency GPU Shaders**: No CUDA, no CGO, native hardware acceleration across Metal (Mac), Vulkan (Windows/Linux), and DX12 using WebGPU.
-*   **Massive Prefill Throughput**: Unleashes GPU bandwidth for prompt processing, far outperforming CPU implementations like `quick_talk.go`.
-*   **Workgroup / Register Tiling**: Explicit unrolling of logic directly into GPU registers to bypass shared memory barrier bottlenecks on heterogeneous WebGPU backends.
+Always fall back to **Go** when asm is off or the arch has no `.s` yet.
 
-### What is coming next to achieve 70+ Tok/s Decoding:
+### GPU — **WebGPU**
 
-1.  **True Kernel Fusion (DispatchQKV_And_Attention)**: Currently, Poly executes distinct shaders for Q, K, V, and Attention to maintain its morphic flexibility. Fusing these into a single monolithic shader will prevent the GPU from writing intermediate activations back to global VRAM, keeping data tightly locked in ultra-fast SRAM.
-2.  **FlashAttention Integration**: Rewriting the `attnOut` score calculation to calculate Softmax incrementally in tiny "tiles" inside the GPU's registers, mathematically eliminating the need to allocate the massive `(SeqLen * SeqLen)` attention matrix in global memory.
-3.  **Command Graph Buffering**: Refactoring the Go runtime queue to compile the *entire* forward pass into a single Command Graph (an executable GPU node tree). This allows Poly to submit a single dispatch call ("Render 1 token") and put the CPU to sleep, entirely eliminating the kernel submission driver bottleneck.
+Prefill-heavy wins, register tiling, **kernel fusion / FlashAttention / command graphs** for decode tok/s — see historical benchmarks below. Shaders stay in **Go + WGSL**; no second GPU stack.
 
 ---
 
-## The Path to 70+ Tokens/Sec
-This architecture is specifically optimized for Turing-class GPUs (like the GTX 1650 Super).
-1.  **Stage 1 (Current)**: Build the Universal Dispatcher, bit-logic in Go, and native WebGPU register tiling.
-2.  **Stage 2**: Implement True Kernel Fusion to merge linear projections with activation functions.
-3.  **Stage 3**: Move the "Unpacking Logic" (e.g., eight FP4 values per U32) entirely into WebGPU Shaders to break the memory wall.
-4.  **Stage 4**: Implement Command Graph Buffering to eliminate Go-to-Driver queue overhead, matching vendor-specific C++ inference speeds.
+## Historical GPU benchmarks (WebGPU track)
+
+CNN 3D and training showdown tables below remain valid for **GPU vs Go CPU** — they predate the asm POC and do not include **ASM SC/MC** columns (see Lucy Dense L1 for asm numbers).
 
 
-*M-POLY-VTD: Universal precision. Volumetric freedom. Bedrock performance.*
+*M-POLY-VTD: Go + asm + WebGPU. Universal precision. Volumetric freedom.*
 
 ---
 
@@ -303,7 +429,6 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] FP8 E4M3 (Activations / Weights)
 - [ ] INT8 WebGPU Inference Kernels (quantized matmul natively in WGSL shader)
 - [x] FP4 E2M1 (Standard Bitwise Extreme Compression)
-- [x] NVFP4 (NVIDIA-flavor FP4 Compatibility)
 
 ### 1.3 Integer & Fixed-Point Infrastructure
 - [x] INT64, INT32, INT16, INT8
@@ -332,11 +457,13 @@ Our semantic version number directly reflects our progress against this absolute
 - [ ] SwiGLU GPU Backward Wiring (resolve BROKEN status in benchmark table)
 - [ ] MHA GPU Backward Wiring (resolve PENDING status in benchmark table)
 
-### 1.7 Parallel Tiled Dispatch (Multi-Core Symphony)
-- [ ] Multi-Core CPU Tiling (All 18 Layers x 21 DTypes)
-- [ ] GPU Register Tiling (All 18 Layers x 21 DTypes)
+### 1.7 Parallel Tiled Dispatch & ASM CPU
+- [x] Multi-core CPU tiling (18 layers × 21 dtypes, Go paths)
+- [x] GPU register tiling (WebGPU, layer-dependent)
+- [x] Plan 9 asm — **Dense forward** SC+MC (arm64/amd64)
+- [ ] Plan 9 asm — remaining layers (see [ASM matrix](#asm-layer-matrix-status))
 
-**Numerical Progress: 19 / 29**
+**Numerical Progress: 23 / 32**
 
 ---
 
@@ -397,26 +524,35 @@ Our semantic version number directly reflects our progress against this absolute
 
 ---
 
-## 3. Edge-First Orchestration & Efficiency
+## 3. ASM CPU (Loom CPU fast path)
 
-### 3.1 Device-Aware Compute
-- [ ] Thermal-Throttling Aware Scheduling (Dynamic load balancing)
-- [ ] Power-Profile Execution Modes (Low-power / Balanced / Performance)
-- [ ] Background Task Lifecycle Management (Mobile OS compatibility)
+Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`poly/asm`** on CPU, or **WebGPU** on GPU.
 
-### 3.2 Memory & I/O Optimization
-- [ ] Unified Memory (UMA) Buffer Pinning (Apple Silicon/Snapdragon optimizations)
-- [ ] Memory-Mapped (mmap) Model Weights (Zero-copy loading)
-- [ ] Circular/Evicting KV-Cache (VRAM-efficient infinite context)
-- [ ] Asynchronous IO/Compute Overlap (UI responsiveness)
-- [x] Large-model load path with **reduced peak host RAM** via orchestrated tensor staging (representative Qwen-class loads ~27 GB → ~15 GB class)
+### 3.1 ASM infrastructure
+- [x] `poly/asm/<layer>/` layout (Plan 9 `.s`, not CGO)
+- [x] `UseAsmForward` on `VolumetricNetwork` / `VolumetricLayer`
+- [x] arm64 + amd64 build tags; stub fallback on other arches
+- [x] Lucy Dense benches: Go / ASM / GPU timers + speedup summary
 
-### 3.3 Hardware Acceleration & Adaptation
-- [ ] NPU / Apple Neural Engine (ANE) / NNAPI Backend support
-- [ ] On-Device Low-Rank Adaptation (LoRA-lite fine-tuning)
-- [ ] Low-Bit Inference Kernels (Non-standard 2-bit/1-bit targets)
+### 3.2 ASM kernels (by layer)
+- [x] **Dense forward** SC + MC (`asm/dense/`)
+- [ ] Dense forward — NEON/AVX block GEMM, fused ReLU
+- [ ] Dense backward SC + MC
+- [ ] SwiGLU forward (+ backward)
+- [ ] MHA forward projections (+ backward)
+- [ ] CNN1/2/3 forward (+ backward)
+- [ ] Embedding / RNN / LSTM
 
-**Edge Optimization Progress: 1 / 11**
+### 3.3 Host memory & I/O
+- [ ] mmap model weights
+- [ ] Circular / evicting KV-cache
+- [ ] Async IO/compute overlap
+- [x] Reduced peak host RAM on large HF loads (~27 GB → ~15 GB class, representative Qwen)
+
+### 3.4 Future (optional)
+- [ ] Asm-style kernels inside WebGPU shaders (separate from `poly/asm` CPU)
+
+**ASM / Device-Aware Progress: 5 / 17**
 
 ---
 
@@ -452,12 +588,10 @@ Our semantic version number directly reflects our progress against this absolute
 
 ## 5. Deployment, Compilation & Ecosystem
 
-### 5.1 Backends
-- [x] Deterministic Pure CPU Backend (Go framework)
-- [x] WebGPU JIT Compiled Backend (WGPU)
-- [ ] Native CUDA Backend
-- [ ] Metal / ROCm Backends
-- [ ] Specialized Edge/AI Accelerator / NPU Backend
+### 5.1 Backends (Loom only)
+- [x] **Go** — tiled CPU loops (all layers)
+- [x] **`poly/asm`** — Plan 9 `.s` (`UseAsmForward`) — **Dense forward** live; more layers in flight
+- [x] **WebGPU** — GPU via WGPU (Metal / Vulkan / DX12)
 
 ### 5.2 Compiler Integration
 - [ ] Kernel Fusion (Translating sequential operations into single SRAM-bound kernels to eliminate memory bottleneck)
@@ -500,6 +634,7 @@ Our semantic version number directly reflects our progress against this absolute
 
 ### 6.2 Generation Logic
 - [x] KV Cache Optimization (Stateful incremental inference)
+- [x] CPU forward schedules for HF decoder (normal / stepped / queued / **wavefront pipeline**) — see **§4b**
 - [x] Batched Prefill & Autoregressive Decoding
 - [x] Sampling Suite (Top-K, Temperature, Nucleus Placeholder)
 - [x] Repetition Penalty & Windowed Logit Bias
@@ -512,26 +647,21 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] WebGPU LM-Head Offloading
 - [x] VRAM Usage Profiling & Distribution Metrics
 
-**LLM Progress: 14 / 14**
+**LLM Progress: 15 / 15**
 
 ---
 
-## v0.76.0 — *Operation Mesh* (this release)
+## v0.78.0 — *ASM CPU* (current)
 
-These items shipped in the same wave as the **step mesh** / **tween** naming reset and the large poly refactor; each maps to a new `[x]` row above so the checklist stays honest.
+- **`poly/asm/dense/`** + **`asm/dot/`** + **`asm/matmul/`** — Plan 9 forward SC/MC on arm64/amd64 (float tiled + native integer / morphed-u8 quant paths).
+- **`UseAsmForward`** — network/layer toggle; training/backward unchanged (Go/GPU).
+- **Lucy Dense** — Generic suite prints **Go · ASM · GPU** timers and **Go/Asm↑** summary (best SC **Uint8 ~2.46×**, best MC **Uint4 ~3.55×** on latest `log.txt`).
+- **Native JSON save** — `SerializeNetwork` persists **packed weights for the layer’s active dtype** + `Scale`; Lucy Dense **Save/Reload PASS** all 21 dtypes after training.
+- **Validation** — latest full Lucy run: **0 broken / 0 fatal**; training matrix `File`/`RAM` columns fixed.
 
-- **True on-the-fly quantization** on the load / inference path (no mandatory FP32 mirror in RAM).
-- **Qwen3** support in the HuggingFace ingestion and LM pipeline.
-- **UDP layer-wise packet logging** — [walkthrough](https://www.youtube.com/watch?v=LuDGc1aQPl0).
-- **Reduced peak RAM** on representative large LMs via staging / dtypes (~27 GB → ~15 GB class on your measurements).
-- **Step + tween config** names restored where the engine exposes them.
-- **Non-FP32-native weights** — load and run from proper packed / native stores instead of always inflating a FP32 master.
-- **Donate Compute** — LAN-friendly TCP protocol for volunteer or remote jobs (`docs/donate_compute.md`).
-- **TANHI** — sparse UDP inspection for SoulGlitch and tooling (`docs/tanhi.md`, default port **17481**).
-- **Lucy** — model pull from the Hub, compile-on-the-go, and talking smoke (`lucy/README.md`).
-- **Go / runtime refresh** — `go.mod` baseline and allocator work (incremental quality).
-- **Single tiling truth** — prefer CPU/GPU tiled forward/backward over duplicate non-tiled paths.
-- **Memory footprint** surfacing across the stack for visibility while tuning.
+## v0.76.0 — *Operation Mesh* (previous)
+
+Step mesh stability, TANHI, Donate Compute, Lucy HF pipeline, on-the-fly quantization, Qwen3 ingest, tiled-first dispatch, memory footprint telemetry — see checklist rows marked in earlier releases.
 
 ---
 
@@ -541,20 +671,20 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 
 | Category | Completed | Total |
 | :--- | :---: | :---: |
-| 1. Numerical Core | 19 | 29 |
+| 1. Numerical Core | 23 | 32 |
 | 2. Architectural Layers | 32 | 37 |
-| 3. Edge Orchestration | 1 | 11 |
+| 3. ASM CPU | 5 | 17 |
 | 4. Training Automation | 14 | 18 |
 | 5. Deployment Ecosystem | 19 | 25 |
-| 6. LLM & Tokenization | 14 | 14 |
-| **GRAND TOTAL** | **99** | **134** |
+| 6. LLM & Tokenization | 15 | 15 |
+| **GRAND TOTAL** | **108** | **142** |
 
-### **Completion Ratio: 73.9%**
+### **Completion Ratio: 76.1%**
 
-## **Version 0.76.0 — CURRENT**
-*(Status: **v0.76.0 "Operation Mesh" is officially current.** Ships **Donate Compute**, **TANHI**, **Lucy**, **Qwen3-class** ingest, **true on-the-fly / non–FP32-master** quantization paths, **memory footprint** telemetry, and **tiled-first** dispatch on top of **v0.75.0 Multi-Core Symphony** (SC/MC tiling + stabilized step mesh + C-ABI parity). The checklist gained eight verified rows so the ratio retabulated honestly. **v0.8.0 "Edge-First Orchestration"** remains the next architectural focus: thermal-aware scheduling, UMA pinning, command-graph buffering.)*
+## **Version 0.78.0 — CURRENT**
+*(**v0.78.0 "ASM CPU"** — Loom stack = **Go + asm + WebGPU** only. **Dense forward** Plan 9 (~**2–3.5×** Go MC on quant dtypes; Float64 tuning pending). **Native JSON** per dtype on save. **Next:** more `poly/asm/*` layers (SwiGLU, MHA, CNN); optional Dense backward asm.)*
 
-## **v0.8.0 Roadmap — "Edge-First Orchestration"**
-*(Status: **In Research.** Focus moves to thermal-throttling aware scheduling and unified memory pinning for Apple Silicon and Snapdragon NPUs.)*
+## **v0.79–0.81 Roadmap — ASM rollout**
+*(Expand `poly/asm/*` layer-by-layer; block GEMM + fused ops on CPU. WebGPU track continues in parallel — fusion, graphs, attention kernels.)*
 
 

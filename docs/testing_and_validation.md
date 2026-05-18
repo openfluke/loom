@@ -37,6 +37,50 @@ Backward tables may label columns **INDUS** (industry tolerance) vs **H-DRIFT** 
 
 ---
 
+## May 2026 full-suite snapshot (`log.txt`)
+
+Recent **Run All Layer Tests** captures (Metal / arm64, ~2992 rows) show:
+
+| Metric | Value |
+|--------|--------|
+| **Broken (❌)** | **0** |
+| **Fatal / NaN (💀)** | **0** |
+| Bit-exact (💎) | ~75% of classified rows |
+| Heavy drift (🟤) | ~17% — mostly forward parity vs FP32 reference on native-int / low-bit paths |
+
+**Fixes reflected in this run (vs earlier transcripts):**
+
+- **Training matrix** — `File` / `RAM` columns print correctly (no `%!s(MISSING)`); every Dense training row **TrainOK PASS** and **Save/Reload PASS** for all 21 dtypes.
+- **Save/Reload** — CNN1/2/3, Dense, Embedding, LSTM, MHA, Residual, RNN, SwiGLU each end with `[Save/Reload <layer>] PASS`.
+- **Global manifest** — no hard failures across the full layer sweep.
+
+**Still classified as 🟤 (not ❌):** Dense forward parity rows where CPU uses true integer/low-bit math and the harness compares to a float-shaped reference; CNN backward **H-DRIFT** on Float16/BFloat16/Int4 (GPU vs CPU reference). Treat as tolerance bands — see parity legend above.
+
+---
+
+## Dense forward ASM (Plan 9)
+
+Lucy **Dense → Generic Layer Suite** prints **Go SC · Go MC · ASM SC · ASM MC · GPU SC · GPU MC** and speedup columns:
+
+- **Go/Asm↑** = Go wall time ÷ ASM wall time (**> 1.0** = assembly wins).
+- Toggle: `UseAsmForward` on the network/layer; kernels live under `poly/asm/` (see [`asm/README.md`](../poly/asm/README.md)).
+
+**Latest Dense bench (8×1024→512, Metal host, from `log.txt`):**
+
+| Highlight | Go/Asm↑ SC | Go/Asm↑ MC |
+|-----------|------------|------------|
+| Best single-core | **Uint8** ~**2.46×** | — |
+| Best multi-core | — | **Uint4** ~**3.55×** |
+| Strong quant MC | — | **Ternary** ~3.21×, **FP4** ~3.25×, **Binary** ~2.78×, **Int8** ~2.72× |
+| Float32 | ~1.11× SC, ~1.00× MC (parity) | |
+| Float64 | **&lt; 1×** (asm slower on this shape) | ~0.61× MC |
+
+Low-bit and morphed-`uint8` paths benefit most from native integer dots in Plan 9. Float64 SC/MC still favors Go tiled matmul on the current tile sizes — tuning item, not a broken toggle.
+
+**Backward / training:** asm is **forward-only** today; Dense backward parity uses Go CPU vs GPU; training does not call asm.
+
+---
+
 ## Interpreting a real log (examples)
 
 The following patterns show up in recent `log.txt` captures (Metal adapter, tiled CNN1 suite):
@@ -47,7 +91,7 @@ The following patterns show up in recent `log.txt` captures (Metal adapter, tile
 
 3. **Wide integer CNN1 backward** — **Int64 / Uint64 / Int32 / Uint32** rows may show **🟤 H-DRIFT** vs float reference in GPU backward parity: the harness compares against an FP32-shaped reference while the native path uses integer semantics — read those rows as **classification / tolerance**, not as “GPU kernel wrong.”
 
-4. **Save/Reload after training** — Several low-bit and float16-family rows show **Save/Reload FAIL** while **TrainOK PASS**. That usually means **training dynamics fit** but **round-trip persistence** for that dtype + layer combo still has gaps (format, unpack, or test expectation). Treat as a **tracking list** for serialization and `WeightStore` versioning, not as “training is broken.”
+4. **Save/Reload after training** — On the **Dense** suite (May 2026 log), **Save/Reload PASS** for all 21 dtypes after training. Older CNN-only rows or pre-native-save builds may still show FAIL on specific combos; diff against current `persistence.go` (`Native: true` + per-layer `dtype`) before treating as open bugs.
 
 5. **Uint CPU training** — **Uint64 / Uint32** (and sometimes **Uint16**) may show **TrainOK FAIL** on CPU-tiled modes while GPU modes **PASS**: that points at **CPU-side training / loss scaling** for unsigned paths, not at GPU correctness.
 

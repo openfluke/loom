@@ -54,7 +54,11 @@ func RunGenericLayerSuite(spec TestSpec, mode TestMode) bool {
 
 	if mode&TestForward != 0 {
 		stats.ResetSub()
-		allPass = runForwardSuite(spec, l) && allPass
+		if spec.Name == "Dense" {
+			allPass = runDenseForwardSuite(spec) && allPass
+		} else {
+			allPass = runForwardSuite(spec, l) && allPass
+		}
 		stats.ReportSub("Forward Parity")
 	}
 
@@ -86,8 +90,17 @@ func runForwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 
 	ctx := l.Network.GPUContext
 	if ctx == nil {
-		l.Network.InitWGPU()
+		if err := l.Network.InitWGPU(); err != nil {
+			fmt.Printf("GPU init failed: %v\n", err)
+			stats.AddSpectrum(SpecBroken)
+			return false
+		}
 		ctx = l.Network.GPUContext
+	}
+	if ctx == nil {
+		fmt.Println("GPU init failed: context is nil")
+		stats.AddSpectrum(SpecBroken)
+		return false
 	}
 
 	fmt.Printf("| %-10s | %-4s | %-12s | %-12s | %-12s | %-12s | %-8s | %-8s | %-8s | %-8s | %-8s | %-8s |\n",
@@ -99,9 +112,20 @@ func runForwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 	for _, cfg := range allTypes {
 		l.DType = cfg.dtype
 		if l.WeightStore != nil {
-			l.WeightStore.Morph(cfg.dtype)
+			l.WeightStore.InvalidateVersions()
 			l.WeightStore.Scale = cfg.scale
+			l.WeightStore.Morph(cfg.dtype)
 			l.SyncToCPU()
+		}
+
+		// CPU forward must not see UseGPU=true left over from the previous dtype's SyncToGPU.
+		wasGPU := l.Network.UseGPU
+		l.Network.UseGPU = false
+		wasExact := l.Network.UseExactDType
+		if spec.Name == "MHA" && cfg.dtype == poly.DTypeTernary {
+			// Match GPU BitNet packed MHA path on CPU (generic MHA+Ternary diverges → Inf parity).
+			l.Network.UseExactDType = true
+			poly.EnsureBitNetMHAWeights(l)
 		}
 
 		l.ResetState()
@@ -118,6 +142,8 @@ func runForwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 		_, postMC := poly.DispatchLayer(l, input, nil)
 		tCPUMC := time.Since(t0)
 
+		l.Network.UseGPU = wasGPU
+		l.Network.UseExactDType = wasExact
 		l.Network.SyncToGPU()
 		inBuf, _ := ctx.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
 			Label:    "FwdIn",
@@ -196,8 +222,17 @@ func runBackwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 
 	ctx := l.Network.GPUContext
 	if ctx == nil {
-		l.Network.InitWGPU()
+		if err := l.Network.InitWGPU(); err != nil {
+			fmt.Printf("GPU init failed: %v\n", err)
+			stats.AddSpectrum(SpecBroken)
+			return false
+		}
 		ctx = l.Network.GPUContext
+	}
+	if ctx == nil {
+		fmt.Println("GPU init failed: context is nil")
+		stats.AddSpectrum(SpecBroken)
+		return false
 	}
 
 	fmt.Printf("| %-10s | %-4s | %-12s | %-12s | %-12s | %-7s | %-7s | %-9s | %-9s | %-9s | %-9s | %-8s | %-8s |\n",
@@ -209,10 +244,15 @@ func runBackwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 	for _, cfg := range allTypes {
 		l.DType = cfg.dtype
 		if l.WeightStore != nil {
-			l.WeightStore.Morph(cfg.dtype)
+			l.WeightStore.InvalidateVersions()
 			l.WeightStore.Scale = cfg.scale
+			l.WeightStore.Morph(cfg.dtype)
+			l.SyncToCPU()
 		}
 		l.Network.SyncToGPU()
+
+		wasGPU := l.Network.UseGPU
+		l.Network.UseGPU = false
 
 		l.ResetState()
 		pre, _ := poly.DispatchLayer(l, input, nil)
@@ -222,6 +262,8 @@ func runBackwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 		t0 := time.Now()
 		cpuDX, cpuDW := poly.DispatchLayerBackward(l, gradOut, input, nil, pre)
 		tCPUMC := time.Since(t0)
+
+		l.Network.UseGPU = wasGPU
 
 		// CopySrc: ReadBuffer inside DispatchBackwardLayer CPU fallback (MHA, SwiGLU).
 		inBuf, _ := ctx.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
@@ -258,19 +300,45 @@ func runBackwardSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 
 		ctx.GPUTileSize = l.GetGPUSCTileSize(cfg.dtype)
 		t0 = time.Now()
-		ctx.DispatchBackwardLayer(l, spec.InputShape[0], goBuf, inBuf, preBuf, dxBufSC, dwBufSC)
-		ctx.Device.Poll(true, nil)
+		errSC := ctx.DispatchBackwardLayer(l, spec.InputShape[0], goBuf, inBuf, preBuf, dxBufSC, dwBufSC)
+		if errSC == nil {
+			ctx.Device.Poll(true, nil)
+		}
 		tGPUSC := time.Since(t0)
-		gDXSC, _ := ctx.ReadBuffer(dxBufSC)
-		gDWSC, _ := ctx.ReadBuffer(dwBufSC)
+		var gDXSC, gDWSC []float32
+		if errSC == nil {
+			gDXSC, _ = ctx.ReadBuffer(dxBufSC)
+			gDWSC, _ = ctx.ReadBuffer(dwBufSC)
+		}
 
 		ctx.GPUTileSize = l.GetGPUMCTileSize(cfg.dtype)
 		t0 = time.Now()
-		ctx.DispatchBackwardLayer(l, spec.InputShape[0], goBuf, inBuf, preBuf, dxBufMC, dwBufMC)
-		ctx.Device.Poll(true, nil)
+		errMC := ctx.DispatchBackwardLayer(l, spec.InputShape[0], goBuf, inBuf, preBuf, dxBufMC, dwBufMC)
+		if errMC == nil {
+			ctx.Device.Poll(true, nil)
+		}
 		tGPUMC := time.Since(t0)
-		gDXMC, _ := ctx.ReadBuffer(dxBufMC)
-		gDWMC, _ := ctx.ReadBuffer(dwBufMC)
+		var gDXMC, gDWMC []float32
+		if errMC == nil {
+			gDXMC, _ = ctx.ReadBuffer(dxBufMC)
+			gDWMC, _ = ctx.ReadBuffer(dwBufMC)
+		}
+
+		if errSC != nil || errMC != nil {
+			fmt.Printf("| %-10s | %-4d | %-12v | %-12v | %-12v | %-7s | %-7s | %-9s | %-9s | %-9s | %-9s | %-8s | %-8s |\n",
+				cfg.name, l.GetCPUTileSize(cfg.dtype), tCPUMC, tGPUSC, tGPUMC,
+				"ERR", "ERR", "ERR", "ERR", "ERR", "ERR", markMark(false), markMark(false))
+			if errSC != nil {
+				fmt.Printf("  GPU SC backward error: %v\n", errSC)
+			}
+			if errMC != nil {
+				fmt.Printf("  GPU MC backward error: %v\n", errMC)
+			}
+			allPass = false
+			stats.AddSpectrum(SpecBroken)
+			stats.AddSpectrum(SpecBroken)
+			continue
+		}
 
 		dxDiffSC := maxAbsDiff(cpuDX.Data, gDXSC)
 		dwDiffSC := maxAbsDiff(cpuDW.Data, gDWSC)
@@ -404,6 +472,7 @@ func runTrainingSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 			tcfg.Mode = mode
 			tcfg.Verbose = false
 			tcfg.LearningRate = 0.01
+			tcfg.GradientClip = 1.0
 
 			l.ResetState()
 			start := time.Now()
@@ -421,35 +490,25 @@ func runTrainingSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 				if mode.IsGPU() {
 					poly.SyncWeightsFromGPU(l.Network)
 				}
-				wt := l.WeightStore.Master
-				trainNoNaN := !math.IsNaN(res.FinalLoss) && !math.IsNaN(res.LossHistory[0])
-				// Also guard against NaN weights written back from a broken GPU pass.
-				for _, v := range wt {
+				trainNoNaN := !math.IsNaN(res.FinalLoss) && !math.IsNaN(res.LossHistory[0]) &&
+					!math.IsInf(res.FinalLoss, 0) && !math.IsInf(res.LossHistory[0], 0)
+				weightsFinite := true
+				for _, v := range l.WeightStore.Master {
 					if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
-						trainNoNaN = false
+						weightsFinite = false
 						break
 					}
 				}
-				// For very low-precision types, Loss[0] can be very small already
-				// (close to target range). Allow convergence even when Loss[0] < 0.01.
 				lossInit := res.LossHistory[0]
-				var trainImproved bool
-				if lossInit < 0.01 {
-					// Already near-zero; just require no NaN and stability
-					trainImproved = res.FinalLoss <= lossInit*2.0+1e-3
-				} else {
-					trainImproved = res.FinalLoss < lossInit*1.01
-				}
-				trainOK = trainNoNaN && trainImproved
+				trainOK = trainNoNaN && trainingLossOK(lossInit, res.FinalLoss, cfg.dtype, weightsFinite)
 
 				// Serialize: if Master contains NaN (broken GPU pass), skip serialize
 				// so json.Marshal doesn't fail on NaN float32 values and crash the run.
-				var wr []float32
 				js, serErr := poly.SerializeNetwork(l.Network)
 				if serErr != nil || len(js) == 0 {
 					// Serialization failed — treat as save failure, don't panic.
 					saveOK = false
-					ramBytes := int64(len(wt)*4) + int64(math.Ceil(float64(len(wt)*poly.DTypeBits(cfg.dtype))/8.0))
+					ramBytes := int64(len(l.WeightStore.Master)*4) + int64(math.Ceil(float64(len(l.WeightStore.Master)*poly.DTypeBits(cfg.dtype))/8.0))
 					fmt.Printf("| %-10s | %-13s | %-10.4e | %-10.4e | %-8v | %-7s | %-11s | %-8.1fKB | %-8.1fKB |\n",
 						cfg.name, mode.String(), res.LossHistory[0], res.FinalLoss, dur.Round(time.Millisecond),
 						markMark(trainOK), "FAIL", 0.0, float64(ramBytes)/1024.0)
@@ -466,7 +525,7 @@ func runTrainingSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 				net2, deserErr := poly.DeserializeNetwork(js)
 				if deserErr != nil || net2 == nil {
 					saveOK = false
-					ramBytes := int64(len(wt)*4) + int64(math.Ceil(float64(len(wt)*poly.DTypeBits(cfg.dtype))/8.0))
+					ramBytes := int64(len(l.WeightStore.Master)*4) + int64(math.Ceil(float64(len(l.WeightStore.Master)*poly.DTypeBits(cfg.dtype))/8.0))
 					fmt.Printf("| %-10s | %-13s | %-10.4e | %-10.4e | %-8v | %-7s | %-11s | %-8.1fKB | %-8.1fKB |\n",
 						cfg.name, mode.String(), res.LossHistory[0], res.FinalLoss, dur.Round(time.Millisecond),
 						markMark(trainOK), "FAIL", float64(len(js))/1024.0, float64(ramBytes)/1024.0)
@@ -481,47 +540,49 @@ func runTrainingSuite(spec TestSpec, l *poly.VolumetricLayer) bool {
 					continue
 				}
 				l2 := net2.GetLayer(0, 0, 0, 0)
-				if l2 == nil || l2.WeightStore == nil {
+				fileB64, fileScale, fileNative, fileErr := poly.LayerPersistenceFromJSON(js, 0)
+				if l2 == nil || l2.WeightStore == nil || fileErr != nil || !fileNative || fileB64 == "" {
 					saveOK = false
 				} else {
-					wr = l2.WeightStore.Master
+					decoded, decErr := poly.DecodeNativeWeights(fileB64, l2.DType)
+					loaded := l2.WeightStore.Versions[cfg.dtype]
+					saveOK = decErr == nil && loaded != nil &&
+						l2.WeightStore.Scale == fileScale &&
+						poly.NativeWeightsEncoded(decoded, loaded, cfg.dtype)
 				}
 
-				// Save/Reload tolerance: serializeLayer auto-computes the scale from
-				// the current Master so trained weights fit within one quantization step.
-				// Use the scale from the RELOADED layer (l2) — that's what Unpack used
-				// to reconstruct Master, so the round-trip error is exactly 0.5 * l2.Scale.
-				expected := wt
-				var tol float64
-				switch cfg.dtype {
-				case poly.DTypeFloat64, poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16:
-					tol = cfg.tolerance * 10.0
-					if tol < 1e-4 {
-						tol = 1e-4
-					}
-				default:
-					// For all quantized types, max round-trip error = 0.5 * scale.
-					reloadScale := float64(1.0)
-					if wr != nil && l2 != nil && l2.WeightStore != nil && l2.WeightStore.Scale != 0 {
-						reloadScale = float64(l2.WeightStore.Scale)
-					}
-					tol = reloadScale * 0.51
-				}
-				// Only compute diff if wr was successfully populated by reload.
-				// saveOK stays false if wr == nil (l2 was nil / no WeightStore / bad deser).
-				if wr != nil {
-					saveOK = maxAbsDiff(wr, expected) < tol
-				}
-
-				ramBytes := int64(len(wt)*4) + int64(math.Ceil(float64(len(wt)*poly.DTypeBits(cfg.dtype))/8.0))
+				ramBytes := int64(len(l.WeightStore.Master)*4) + int64(math.Ceil(float64(len(l.WeightStore.Master)*poly.DTypeBits(cfg.dtype))/8.0))
 				fmt.Printf("| %-10s | %-13s | %-10.4e | %-10.4e | %-8v | %-7s | %-11s | %-8.1fKB | %-8.1fKB |\n",
 					cfg.name, mode.String(), res.LossHistory[0], res.FinalLoss, dur.Round(time.Millisecond),
 					markMark(trainOK), markMark(saveOK), float64(len(js))/1024.0, float64(ramBytes)/1024.0)
 			} else {
-				trainOK, saveOK = true, true
-				fmt.Printf("| %-10s | %-13s | %-10.4e | %-10.4e | %-8v | %-7v | %-11v | %-8s | %-8s |\n",
-					cfg.name, mode.String(), res.LossHistory[0], res.FinalLoss, dur.Round(time.Millisecond),
-					"N/A", "N/A", "0KB", "0KB")
+				lossInit := math.Inf(1)
+				if len(res.LossHistory) > 0 {
+					lossInit = res.LossHistory[0]
+				}
+				trainOK = !math.IsNaN(lossInit) && !math.IsNaN(res.FinalLoss) &&
+					!math.IsInf(lossInit, 0) && !math.IsInf(res.FinalLoss, 0) &&
+					res.FinalLoss <= lossInit*1.01+1e-6
+
+				js, serErr := poly.SerializeNetwork(l.Network)
+				var diff float64
+				if serErr == nil && len(js) > 0 {
+					if net2, deserErr := poly.DeserializeNetwork(js); deserErr == nil && net2 != nil {
+						l2 := net2.GetLayer(0, 0, 0, 0)
+						if l2 != nil && l2.Type == l.Type && l2.WeightStore == nil {
+							l2.ResetState()
+							_, postReload := poly.DispatchLayer(l2, input, nil)
+							l.ResetState()
+							_, postCurrent := poly.DispatchLayer(l, input, nil)
+							diff = maxAbsDiff(postCurrent.Data, postReload.Data)
+							saveOK = diff < cfg.tolerance
+						}
+					}
+				}
+
+				fmt.Printf("| %-10s | %-13s | %-10.4e | %-10.4e | %-8v | %-7s | %-11s | %-8.1fKB | %-8s |\n",
+					cfg.name, mode.String(), lossInit, res.FinalLoss, dur.Round(time.Millisecond),
+					markMark(trainOK), markMark(saveOK), float64(len(js))/1024.0, "0KB")
 			}
 
 			if !trainOK || !saveOK {

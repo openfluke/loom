@@ -876,26 +876,27 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 					ctx.FlushFrame()
 					return 0, err
 				}
-				// Sync low-bit buffers if they are active
-				if l.DType == DTypeInt8 {
-					if native, ok := l.WeightStore.GPUWeights[DTypeInt8].(*wgpu.Buffer); ok && native != nil {
-						ctx.DispatchQuantizeI8(wSize, l.WeightStore.Scale, wBuf, native)
+				// Packed native → GPUPackedWeightsKey; GPUWeights[dtype] stays PTQ f32 for forward shaders.
+				switch l.DType {
+				case DTypeInt8:
+					if packedBuf, err := ensureGPUPackedNativeBuffer(ctx, l.WeightStore, l.DType, wSize); err == nil {
+						ctx.DispatchQuantizeI8(wSize, l.WeightStore.Scale, wBuf, packedBuf)
 					}
-				} else if l.DType == DTypeInt4 {
-					if native, ok := l.WeightStore.GPUWeights[DTypeInt4].(*wgpu.Buffer); ok && native != nil {
-						ctx.DispatchQuantizeI4(wSize, l.WeightStore.Scale, wBuf, native)
+				case DTypeInt4:
+					if packedBuf, err := ensureGPUPackedNativeBuffer(ctx, l.WeightStore, l.DType, wSize); err == nil {
+						ctx.DispatchQuantizeI4(wSize, l.WeightStore.Scale, wBuf, packedBuf)
 					}
-				} else if l.DType == DTypeFP4 {
-					if native, ok := l.WeightStore.GPUWeights[DTypeFP4].(*wgpu.Buffer); ok && native != nil {
-						ctx.DispatchQuantizeFP4(wSize, l.WeightStore.Scale, wBuf, native)
+				case DTypeFP4:
+					if packedBuf, err := ensureGPUPackedNativeBuffer(ctx, l.WeightStore, l.DType, wSize); err == nil {
+						ctx.DispatchQuantizeFP4(wSize, l.WeightStore.Scale, wBuf, packedBuf)
 					}
-				} else if l.DType == DTypeTernary {
-					if native, ok := l.WeightStore.GPUWeights[DTypeTernary].(*wgpu.Buffer); ok && native != nil {
-						ctx.DispatchQuantizeTernary(wSize, l.WeightStore.Scale, wBuf, native)
+				case DTypeTernary:
+					if packedBuf, err := ensureGPUPackedNativeBuffer(ctx, l.WeightStore, l.DType, wSize); err == nil {
+						ctx.DispatchQuantizeTernary(wSize, l.WeightStore.Scale, wBuf, packedBuf)
 					}
-				} else if l.DType == DTypeBinary {
-					if native, ok := l.WeightStore.GPUWeights[DTypeBinary].(*wgpu.Buffer); ok && native != nil {
-						ctx.DispatchQuantizeBinary(wSize, l.WeightStore.Scale, wBuf, native)
+				case DTypeBinary:
+					if packedBuf, err := ensureGPUPackedNativeBuffer(ctx, l.WeightStore, l.DType, wSize); err == nil {
+						ctx.DispatchQuantizeBinary(wSize, l.WeightStore.Scale, wBuf, packedBuf)
 					}
 				}
 				// SwiGLU and MHA store their weights in SPLIT GPU buffers
@@ -955,6 +956,30 @@ func trainBatchGPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], conf
 	return lossVal, nil
 }
 
+func ensureGPUPackedNativeBuffer(ctx *WGPUContext, ws *WeightStore, dtype DType, weightCount int) (*wgpu.Buffer, error) {
+	if ctx == nil || ws == nil || weightCount <= 0 {
+		return nil, fmt.Errorf("invalid packed buffer request")
+	}
+	key := GPUPackedWeightsKey(dtype)
+	if buf, ok := ws.GPUWeights[key].(*wgpu.Buffer); ok && buf != nil {
+		return buf, nil
+	}
+	byteLen := GPUPackedNativeByteSize(dtype, weightCount)
+	if byteLen <= 0 {
+		return nil, fmt.Errorf("packed native size 0 for %s", dtype.String())
+	}
+	buf, err := ctx.Device.CreateBuffer(&wgpu.BufferDescriptor{
+		Label: "Packed native " + dtype.String(),
+		Size:  uint64(byteLen),
+		Usage: wgpu.BufferUsageStorage | wgpu.BufferUsageCopySrc | wgpu.BufferUsageCopyDst,
+	})
+	if err != nil {
+		return nil, err
+	}
+	ws.GPUWeights[key] = buf
+	return buf, nil
+}
+
 func gpuTrainingNeedsCPUFallback(n *VolumetricNetwork) bool {
 	for i := range n.Layers {
 		l := &n.Layers[i]
@@ -976,6 +1001,16 @@ func gpuTrainingNeedsCPUFallback(n *VolumetricNetwork) bool {
 			// forward passes, not packed INT buffers. The generic Int8/Int4 GPU
 			// requantize kernels corrupt those buffers after an optimizer step.
 			if l.DType == DTypeInt8 || l.DType == DTypeInt4 {
+				return true
+			}
+			if l.DType == DTypeTernary || l.DType == DTypeBinary {
+				return true
+			}
+		case LayerCNN2, LayerCNN3, LayerEmbedding:
+			// Ternary/binary GPU training used to pack into the same buffer as PTQ-f32
+			// forward weights; even with a separate packed slot, multi-epoch GPU
+			// training still diverges from the stable CPU tiled path on these layers.
+			if l.DType == DTypeTernary || l.DType == DTypeBinary {
 				return true
 			}
 		}

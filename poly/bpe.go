@@ -18,6 +18,9 @@ type Tokenizer struct {
 	AddedTokens   map[string]int // added tokens
 	PreTokenizer  *PreTokenizer  // pre-tokenization rules
 	ByteFallback  bool           // use byte fallback for unknown chars
+	UseMetaspace  bool           // SentencePiece-style ▁ normalization/decoding
+	AddBOS        bool           // post-processor prepends BOS for single sequences
+	BOSTokenID    int
 }
 
 // MergePair represents a BPE merge rule
@@ -54,6 +57,8 @@ type TokenizerJSON struct {
 			} `json:"pattern,omitempty"`
 		} `json:"pretokenizers,omitempty"`
 	} `json:"pre_tokenizer"`
+	Normalizer    json.RawMessage `json:"normalizer"`
+	PostProcessor json.RawMessage `json:"post_processor"`
 }
 
 // LoadTokenizer loads a tokenizer from a HuggingFace tokenizer.json file
@@ -87,6 +92,13 @@ func newTokenizerFromParsedJSON(tokJSON TokenizerJSON) (*Tokenizer, error) {
 		SpecialTokens: make(map[string]int),
 		AddedTokens:   make(map[string]int),
 		ByteFallback:  tokJSON.Model.ByteFallback,
+	}
+	normalizerJSON := string(tokJSON.Normalizer)
+	if strings.Contains(normalizerJSON, `"prepend":"▁"`) ||
+		strings.Contains(normalizerJSON, `"prepend": "▁"`) ||
+		strings.Contains(normalizerJSON, `"content":"▁"`) ||
+		strings.Contains(normalizerJSON, `"content": "▁"`) {
+		t.UseMetaspace = true
 	}
 
 	// Build reverse vocab
@@ -128,11 +140,18 @@ func newTokenizerFromParsedJSON(tokJSON TokenizerJSON) (*Tokenizer, error) {
 			t.SpecialTokens[token.Content] = token.ID
 		}
 	}
+	if bosID, ok := t.SpecialTokens["<s>"]; ok && strings.Contains(string(tokJSON.PostProcessor), `"SpecialToken"`) && strings.Contains(string(tokJSON.PostProcessor), `"<s>"`) {
+		t.AddBOS = true
+		t.BOSTokenID = bosID
+	}
 
 	// Set up pre-tokenizer (GPT-2 style pattern)
 	pattern := `'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+`
 	t.PreTokenizer = &PreTokenizer{
 		Pattern: regexp.MustCompile(pattern),
+	}
+	if t.UseMetaspace && tokJSON.PreTokenizer.Type == "" && len(tokJSON.PreTokenizer.Pretokenizers) == 0 {
+		t.PreTokenizer.Pattern = nil
 	}
 
 	return t, nil
@@ -152,9 +171,12 @@ func (t *Tokenizer) Encode(text string, addSpecialTokens bool) []uint32 {
 		allSpecial[k] = v
 	}
 
-	words := t.PreTokenizer.SplitWithSpecialTokens(text, allSpecial)
+	words := t.PreTokenizer.SplitWithSpecialTokens(t.normalizeText(text), allSpecial)
 
 	var tokens []uint32
+	if addSpecialTokens && t.AddBOS {
+		tokens = append(tokens, uint32(t.BOSTokenID))
+	}
 	for _, word := range words {
 		if id, ok := t.SpecialTokens[word]; ok {
 			tokens = append(tokens, uint32(id))
@@ -175,8 +197,11 @@ func (t *Tokenizer) bpeEncode(word string) []uint32 {
 		return []uint32{}
 	}
 
-	gpt2Word := encodeToGPT2Chars(word)
-	chars := t.splitToChars(gpt2Word)
+	encodedWord := word
+	if !t.UseMetaspace {
+		encodedWord = encodeToGPT2Chars(word)
+	}
+	chars := t.splitToChars(encodedWord)
 	if len(chars) == 0 {
 		return []uint32{}
 	}
@@ -311,9 +336,24 @@ func (t *Tokenizer) Decode(ids []uint32, skipSpecialTokens bool) string {
 		tokens = append(tokens, token)
 	}
 	text := strings.Join(tokens, "")
-	text = decodeGPT2Bytes(text)
+	if t.UseMetaspace {
+		text = strings.ReplaceAll(text, "▁", " ")
+		text = strings.TrimPrefix(text, " ")
+	} else {
+		text = decodeGPT2Bytes(text)
+	}
 	text = t.decodeByteFallback(text)
 	return text
+}
+
+func (t *Tokenizer) normalizeText(text string) string {
+	if !t.UseMetaspace {
+		return text
+	}
+	if strings.HasPrefix(text, "<s>") {
+		return strings.ReplaceAll(text, " ", "▁")
+	}
+	return "▁" + strings.ReplaceAll(text, " ", "▁")
 }
 
 func encodeToGPT2Chars(text string) string {

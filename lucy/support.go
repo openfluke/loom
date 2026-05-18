@@ -19,6 +19,7 @@ var (
 	deterministic bool       = true
 	maxTokens                = 2048
 	maxSeqLen                = 512
+	forwardBenchOnly         = false
 )
 
 func applyGlitchTilingFlags(net *poly.VolumetricNetwork, useGPU, useTiling bool, tilingMode string) {
@@ -96,7 +97,9 @@ func printPostLoadMemorySnapshot(tr *poly.Transformer[float32]) {
 	if tr == nil || tr.Network == nil {
 		return
 	}
-	poly.PrintTransformerMemoryFootprint(tr, true)
+	m := poly.NewMemoryFootprintFromTransformer(tr)
+	fmt.Printf("📊 Memory: host weights %.2f MB | GPU weights %.2f MB | GPU KV %.2f MB\n",
+		m.HostWeightsMB, m.GPUWeightsMB, m.GPUKVMB)
 }
 
 func readInput(reader *bufio.Reader, prompt string, Default string) string {
@@ -115,6 +118,9 @@ func templateForModel(modelName string) poly.Template {
 
 func defaultSystemPromptForModel(modelName string) string {
 	name := strings.ToLower(modelName)
+	if strings.Contains(name, "bitnet") || strings.Contains(name, "1bit") {
+		return ""
+	}
 	if strings.Contains(name, "qwen") {
 		return "You are a helpful assistant. Respond directly with the final answer only. Do not expose internal reasoning or chain-of-thought."
 	}

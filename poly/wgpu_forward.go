@@ -164,7 +164,21 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 		sk := lMHA.WeightStore.GPUScales[DType(201)]
 		sv := lMHA.WeightStore.GPUScales[DType(202)]
 
-		if lMHA.DType == DTypeInt4 && sq != nil && sk != nil && sv != nil {
+		if lMHA.DType == DTypeTernary {
+			norm1Q, norm1Scale, err := bitNetQuantizeActivationGPU(ctx, fmt.Sprintf("b%d_n1_bitnet", b), numTokens, lMHA.DModel, norm1Out)
+			if err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMHA.DModel, qDim, norm1Q, norm1Scale, wqBuf, nil, qBuf, bitNetGPUScaleValue(lMHA.WeightStore, WeightMHAQuery, 0), ActivationLinear, tileSize); err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMHA.DModel, kvDim, norm1Q, norm1Scale, wkBuf, nil, kBuf, bitNetGPUScaleValue(lMHA.WeightStore, WeightMHAKey, qDim*lMHA.DModel), ActivationLinear, tileSize); err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMHA.DModel, kvDim, norm1Q, norm1Scale, wvBuf, nil, vBuf, bitNetGPUScaleValue(lMHA.WeightStore, WeightMHAValue, qDim*lMHA.DModel+kvDim*lMHA.DModel), ActivationLinear, tileSize); err != nil {
+				return nil, err
+			}
+		} else if lMHA.DType == DTypeInt4 && sq != nil && sk != nil && sv != nil {
 			if err := ctx.DispatchDenseQ4(numTokens, lMHA.DModel, qDim, norm1Out, sq, wqBuf, qBuf, tileSize); err != nil {
 				return nil, err
 			}
@@ -240,6 +254,15 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 		if err := ctx.DispatchMHA(lMHA.NumHeads, lMHA.NumKVHeads, lMHA.HeadDim, numTokens, lMHA.KVOffset, lMHA.MaxSeqLen, qBuf, kCacheBuf, vCacheBuf, attnOut, tileSize); err != nil {
 			return nil, err
 		}
+		if lMHA.DType == DTypeTernary {
+			if innerNorm, ok := lMHA.WeightStore.GPUWeights[WeightMHAInnerNorm].(*wgpu.Buffer); ok && innerNorm != nil {
+				attnNormOut := ctx.GetActivationBuffer(fmt.Sprintf("b%d_ao_norm", b), uint64(numTokens*qDim*4), wgpu.BufferUsageStorage)
+				if err := ctx.DispatchRMSNorm(numTokens, qDim, qkEps, attnOut, innerNorm, attnNormOut); err != nil {
+					return nil, err
+				}
+				attnOut = attnNormOut
+			}
+		}
 
 		woBuf, errO := getGPUBuffer(lMHA.WeightStore, DType(203))
 		if errO != nil {
@@ -247,7 +270,16 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 		}
 		mhaOut := ctx.GetActivationBuffer(fmt.Sprintf("b%d_hb", b), uint64(numTokens*lMHA.DModel*4), wgpu.BufferUsageStorage)
 		so := lMHA.WeightStore.GPUScales[DType(203)]
-		if lMHA.DType == DTypeInt4 && so != nil {
+		if lMHA.DType == DTypeTernary {
+			owStart := qDim*lMHA.DModel + kvDim*lMHA.DModel + kvDim*lMHA.DModel
+			attnQ, attnScale, err := bitNetQuantizeActivationGPU(ctx, fmt.Sprintf("b%d_attn_bitnet", b), numTokens, qDim, attnOut)
+			if err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, qDim, lMHA.DModel, attnQ, attnScale, woBuf, nil, mhaOut, bitNetGPUScaleValue(lMHA.WeightStore, WeightMHAProjection, owStart), ActivationLinear, tileSize); err != nil {
+				return nil, err
+			}
+		} else if lMHA.DType == DTypeInt4 && so != nil {
 			if err := ctx.DispatchDenseQ4(numTokens, qDim, lMHA.DModel, attnOut, so, woBuf, mhaOut, tileSize); err != nil {
 				return nil, err
 			}
@@ -332,7 +364,30 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 			uB = ctx.BlankBuffer
 		}
 
-		if lMLP.DType == DTypeInt4 {
+		if lMLP.DType == DTypeTernary {
+			gatePre := ctx.GetActivationBuffer(fmt.Sprintf("b%d_gate_bitnet", b), uint64(numTokens*lMLP.OutputHeight*4), wgpu.BufferUsageStorage)
+			upPre := ctx.GetActivationBuffer(fmt.Sprintf("b%d_up_bitnet", b), uint64(numTokens*lMLP.OutputHeight*4), wgpu.BufferUsageStorage)
+			norm2Q, norm2Scale, err := bitNetQuantizeActivationGPU(ctx, fmt.Sprintf("b%d_n2_bitnet", b), numTokens, lMLP.InputHeight, norm2Out)
+			if err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMLP.InputHeight, lMLP.OutputHeight, norm2Q, norm2Scale, gW, nil, gatePre, bitNetGPUScaleValue(lMLP.WeightStore, DType(100), 0), ActivationLinear, tileSize); err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMLP.InputHeight, lMLP.OutputHeight, norm2Q, norm2Scale, uW, nil, upPre, bitNetGPUScaleValue(lMLP.WeightStore, DType(101), lMLP.InputHeight*lMLP.OutputHeight), ActivationLinear, tileSize); err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchBitNetGateProduct(numTokens, lMLP.OutputHeight, lMLP.Activation, gatePre, upPre, interOut); err != nil {
+				return nil, err
+			}
+			if innerNorm, ok := lMLP.WeightStore.GPUWeights[WeightSwiGLUInnerNorm].(*wgpu.Buffer); ok && innerNorm != nil {
+				innerOut := ctx.GetActivationBuffer(fmt.Sprintf("b%d_mi_norm", b), uint64(numTokens*lMLP.OutputHeight*4), wgpu.BufferUsageStorage)
+				if err := ctx.DispatchRMSNorm(numTokens, lMLP.OutputHeight, eps2, interOut, innerNorm, innerOut); err != nil {
+					return nil, err
+				}
+				interOut = innerOut
+			}
+		} else if lMLP.DType == DTypeInt4 {
 			sg := lMLP.WeightStore.GPUScales[DType(100)]
 			su := lMLP.WeightStore.GPUScales[DType(101)]
 			if sg != nil && su != nil {
@@ -362,7 +417,16 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 			dB = ctx.BlankBuffer
 		}
 
-		if lMLP.DType == DTypeInt4 && sd != nil {
+		if lMLP.DType == DTypeTernary {
+			downStart := 2 * lMLP.InputHeight * lMLP.OutputHeight
+			interQ, interScale, err := bitNetQuantizeActivationGPU(ctx, fmt.Sprintf("b%d_mi_bitnet", b), numTokens, lMLP.OutputHeight, interOut)
+			if err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMLP.OutputHeight, lMLP.InputHeight, interQ, interScale, dW, nil, mlpOut, bitNetGPUScaleValue(lMLP.WeightStore, DType(102), downStart), ActivationLinear, tileSize); err != nil {
+				return nil, err
+			}
+		} else if lMLP.DType == DTypeInt4 && sd != nil {
 			if err := ctx.DispatchDenseQ4(numTokens, lMLP.OutputHeight, lMLP.InputHeight, interOut, sd, dW, mlpOut, tileSize); err != nil {
 				return nil, err
 			}

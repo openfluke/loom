@@ -12,12 +12,39 @@ import (
 // as the primary execution state, while the Master and Versions serve as
 // secondary sync points for persistence, I/O, and CPU fallbacks.
 type WeightStore struct {
-	Master     []float32              // Secondary sync body (Source of Truth for Persistence/IO)
-	Versions   map[DType]any          // CPU-side cached versions (e.g., map[DTypeFP4][]byte)
-	CPUPacked  map[DType]any          // CPU-side packed caches for exact low-bit kernels
-	GPUWeights map[DType]any          // Primary Execution Store (VRAM-resident wgpu.Buffer)
-	GPUScales  map[DType]*wgpu.Buffer // VRAM-resident scales for quantized types
-	Scale      float32                // Dynamic quantization scale factor
+	Master         []float32              // Secondary sync body (Source of Truth for Persistence/IO)
+	Versions       map[DType]any          // CPU-side cached versions (e.g., map[DTypeFP4][]byte)
+	CPUPacked      map[DType]any          // CPU-side packed caches for exact low-bit kernels
+	GPUWeights     map[DType]any          // Primary Execution Store (VRAM-resident wgpu.Buffer)
+	GPUScales      map[DType]*wgpu.Buffer // VRAM-resident scales for quantized types
+	GPUScaleValues map[DType]float32      // CPU metadata for VRAM-resident packed kernels
+	Scale          float32                // Dynamic quantization scale factor
+}
+
+// gpuPackedWeightsKeyBase offsets GPUWeights keys for packed post-optimizer quantize.
+// GPUWeights[dtype] holds PTQ-dequantized f32 for forward; packed output must use another slot.
+const gpuPackedWeightsKeyBase DType = 31000
+
+func GPUPackedWeightsKey(dtype DType) DType {
+	return gpuPackedWeightsKeyBase + dtype
+}
+
+func GPUPackedNativeByteSize(dtype DType, weightCount int) int {
+	if weightCount <= 0 {
+		return 0
+	}
+	switch dtype {
+	case DTypeTernary:
+		return ((weightCount + 15) / 16) * 4
+	case DTypeBinary:
+		return ((weightCount + 31) / 32) * 4
+	case DTypeInt8, DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2:
+		return weightCount
+	case DTypeInt4, DTypeUint4, DTypeFP4:
+		return (weightCount + 1) / 2
+	default:
+		return weightCount * 4
+	}
 }
 
 func isCNN1NativeQuantDType(dtype DType) bool {
@@ -85,18 +112,30 @@ func nativeQuantValue(dtype DType, v float32) uint8 {
 		return 255 // -1 for int8
 	case DTypeUint8:
 		q := int(math.Round(float64(v)))
-		if q < 0 { q = 0 }
-		if q > 255 { q = 255 }
+		if q < 0 {
+			q = 0
+		}
+		if q > 255 {
+			q = 255
+		}
 		return uint8(q)
 	case DTypeUint4:
 		q := int(math.Round(float64(v)))
-		if q < 0 { q = 0 }
-		if q > 15 { q = 15 }
+		if q < 0 {
+			q = 0
+		}
+		if q > 15 {
+			q = 15
+		}
 		return uint8(q)
 	case DTypeUint2:
 		q := int(math.Round(float64(v)))
-		if q < 0 { q = 0 }
-		if q > 3 { q = 3 }
+		if q < 0 {
+			q = 0
+		}
+		if q > 3 {
+			q = 3
+		}
 		return uint8(q)
 	default:
 		return uint8(math.Round(float64(v)))
@@ -139,7 +178,7 @@ func e4m3ToFloat32(v uint8) float32 {
 	}
 	if exp == 0 {
 		// Subnormal approximation
-		return math.Float32frombits((sign << 31) | (127-7)<<23 | (mant << 20)) * 0.125
+		return math.Float32frombits((sign<<31)|(127-7)<<23|(mant<<20)) * 0.125
 	}
 
 	resExp := exp + 127 - 7
@@ -379,12 +418,13 @@ morphSwitch:
 // NewWeightStore creates a new storage for weights.
 func NewWeightStore(size int) *WeightStore {
 	return &WeightStore{
-		Master:     AlignedFloat32(size),
-		Versions:   make(map[DType]any),
-		CPUPacked:  make(map[DType]any),
-		GPUWeights: make(map[DType]any),
-		GPUScales:  make(map[DType]*wgpu.Buffer),
-		Scale:      1.0,
+		Master:         AlignedFloat32(size),
+		Versions:       make(map[DType]any),
+		CPUPacked:      make(map[DType]any),
+		GPUWeights:     make(map[DType]any),
+		GPUScales:      make(map[DType]*wgpu.Buffer),
+		GPUScaleValues: make(map[DType]float32),
+		Scale:          1.0,
 	}
 }
 
@@ -478,6 +518,54 @@ func (ws *WeightStore) GetActive(dtype DType) any {
 			}
 		}
 		return out
+	case DTypeInt64:
+		if raw, ok := v.([]int64); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
+	case DTypeUint64:
+		if raw, ok := v.([]uint64); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
+	case DTypeInt32:
+		if raw, ok := v.([]int32); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
+	case DTypeUint32:
+		if raw, ok := v.([]uint32); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
+	case DTypeInt16:
+		if raw, ok := v.([]int16); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
+	case DTypeUint16:
+		if raw, ok := v.([]uint16); ok {
+			out := make([]float32, len(raw))
+			for i, r := range raw {
+				out[i] = float32(r) * ws.Scale
+			}
+			return out
+		}
 	}
 	return v
 }
@@ -493,6 +581,41 @@ func (ws *WeightStore) GetNative(dtype DType) any {
 		ws.Morph(dtype)
 	}
 	return ws.Versions[dtype]
+}
+
+// SetLoadedWeights installs weights from disk as the canonical native store for dtype.
+// Execution and save both use this representation; Master is refreshed for training fallbacks.
+func (ws *WeightStore) SetLoadedWeights(dtype DType, data any) {
+	if ws == nil || data == nil {
+		return
+	}
+	if ws.Versions == nil {
+		ws.Versions = make(map[DType]any)
+	}
+	ws.Versions[dtype] = data
+	ws.CPUPacked = make(map[DType]any)
+	ws.GPUWeights = make(map[DType]any)
+	ws.Unpack(dtype)
+}
+
+// ActiveWeightsFloat32 returns a float32 view of the layer weights at dtype (for loss/parity).
+func ActiveWeightsFloat32(ws *WeightStore, dtype DType) []float32 {
+	if ws == nil {
+		return nil
+	}
+	ws.Morph(dtype)
+	active := ws.GetActive(dtype)
+	if active == nil {
+		return nil
+	}
+	switch w := active.(type) {
+	case []float32:
+		out := make([]float32, len(w))
+		copy(out, w)
+		return out
+	default:
+		return CastWeights[float32](active)
+	}
 }
 
 // GetNativePackedCPU returns a CPU-side packed cache for exact low-bit kernels.
@@ -562,6 +685,31 @@ func (ws *WeightStore) GetNativePackedCPU(dtype DType) any {
 	}
 	ws.CPUPacked[dtype] = p
 	return p
+}
+
+// MorphToFloat32ForGPUMasterSlice is like MorphToFloat32ForGPU but uses a temporary
+// master slice (e.g. GPU readback) without permanently invalidating Versions[dtype].
+func (ws *WeightStore) MorphToFloat32ForGPUMasterSlice(master []float32, dtype DType) []float32 {
+	if ws == nil || len(master) == 0 {
+		return nil
+	}
+	if dtype == DTypeFloat32 || dtype == DTypeFloat64 {
+		out := make([]float32, len(master))
+		copy(out, master)
+		return out
+	}
+	savedMaster := ws.Master
+	savedVer, hadVer := ws.Versions[dtype]
+	ws.Master = master
+	delete(ws.Versions, dtype)
+	out := ws.MorphToFloat32ForGPU(dtype)
+	ws.Master = savedMaster
+	if hadVer {
+		ws.Versions[dtype] = savedVer
+	} else {
+		delete(ws.Versions, dtype)
+	}
+	return out
 }
 
 // MorphToFloat32ForGPU returns a float32 slice that represents the master weights
@@ -661,6 +809,17 @@ func (ws *WeightStore) Int8Slice(dtype DType) []int8 {
 // SizeInBytes calculates the memory footprint of the currently active version.
 func (ws *WeightStore) SizeInBytes(dtype DType) int {
 	count := len(ws.Master)
+	if count == 0 && dtype == DTypeTernary && len(ws.CPUPacked) > 0 {
+		total := 0
+		for _, packed := range ws.CPUPacked {
+			if matrix, ok := packed.(*BitNetTernaryMatrix); ok && matrix != nil {
+				total += len(matrix.Words) * 4
+			}
+		}
+		if total > 0 {
+			return total
+		}
+	}
 	switch dtype {
 	case DTypeFloat64, DTypeInt64, DTypeUint64:
 		return count * 8
@@ -744,11 +903,15 @@ func (ws *WeightStore) Unpack(dtype DType) {
 		}
 	case DTypeFloat16:
 		if w, ok := data.([]uint16); ok {
-			for i, v := range w { ws.Master[i] = float16ToFloat32(v) }
+			for i, v := range w {
+				ws.Master[i] = float16ToFloat32(v)
+			}
 		}
 	case DTypeBFloat16:
 		if w, ok := data.([]uint16); ok {
-			for i, v := range w { ws.Master[i] = bfloat16ToFloat32(v) }
+			for i, v := range w {
+				ws.Master[i] = bfloat16ToFloat32(v)
+			}
 		}
 	case DTypeFP4:
 		if w, ok := data.([]uint8); ok {
@@ -757,17 +920,48 @@ func (ws *WeightStore) Unpack(dtype DType) {
 		}
 	case DTypeFP8E4M3:
 		if w, ok := data.([]uint8); ok {
-			for i, v := range w { ws.Master[i] = e4m3ToFloat32(v) * ws.Scale }
+			limit := len(ws.Master)
+			if len(w) < limit {
+				limit = len(w)
+			}
+			for i := 0; i < limit; i++ {
+				ws.Master[i] = e4m3ToFloat32(w[i]) * ws.Scale
+			}
 		}
 	case DTypeFP8E5M2:
 		if w, ok := data.([]uint8); ok {
-			for i, v := range w { ws.Master[i] = e5m2ToFloat32(v) * ws.Scale }
+			limit := len(ws.Master)
+			if len(w) < limit {
+				limit = len(w)
+			}
+			for i := 0; i < limit; i++ {
+				ws.Master[i] = e5m2ToFloat32(w[i]) * ws.Scale
+			}
 		}
-	case DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32, DTypeInt16, DTypeUint16, DTypeInt8, DTypeUint8, DTypeInt4, DTypeUint4, DTypeInt2, DTypeUint2, DTypeTernary, DTypeBinary:
-		// These are already unpacked slices (int8/int16/etc) in Versions during I/O
+	case DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32, DTypeInt16, DTypeUint16, DTypeUint8, DTypeUint4, DTypeUint2:
 		packed := CastWeights[float32](data)
 		for i := 0; i < len(ws.Master) && i < len(packed); i++ {
 			ws.Master[i] = packed[i] * ws.Scale
+		}
+	case DTypeInt8, DTypeInt4, DTypeInt2, DTypeTernary, DTypeBinary:
+		scale := ws.Scale
+		if scale == 0 {
+			scale = 1.0
+		}
+		switch packed := data.(type) {
+		case []uint8:
+			for i := 0; i < len(ws.Master) && i < len(packed); i++ {
+				ws.Master[i] = float32(int8(packed[i])) * scale
+			}
+		case []int8:
+			for i := 0; i < len(ws.Master) && i < len(packed); i++ {
+				ws.Master[i] = float32(packed[i]) * scale
+			}
+		default:
+			converted := CastWeights[float32](data)
+			for i := 0; i < len(ws.Master) && i < len(converted); i++ {
+				ws.Master[i] = converted[i] * scale
+			}
 		}
 	}
 }
@@ -971,5 +1165,8 @@ func (ws *WeightStore) Release() {
 			b.Destroy()
 		}
 		delete(ws.GPUScales, dt)
+	}
+	for dt := range ws.GPUScaleValues {
+		delete(ws.GPUScaleValues, dt)
 	}
 }

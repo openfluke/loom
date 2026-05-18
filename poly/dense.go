@@ -3,10 +3,15 @@ package poly
 import (
 	"runtime"
 	"sync"
+
+	"github.com/openfluke/loom/poly/asm"
 )
 
 // DenseForwardPolymorphic performs a forward pass through a dense layer.
 func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if layerUseAsmForward(layer) && asm.Enabled() {
+		return denseForwardAsm(layer, input)
+	}
 	return DenseForwardTiled(layer, input)
 }
 
@@ -17,6 +22,10 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 
 // DenseForwardTiled performs a tiled forward pass for the dense layer (multi-core).
 func DenseForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if usePackedTernaryCPU(layer) {
+		return DenseForwardPackedTernaryCPU(layer, input)
+	}
+
 	batchSize := input.Shape[0]
 	outputSize := layer.OutputHeight
 	tileSize := layer.GetCPUTileSize(layer.DType)
@@ -33,12 +42,85 @@ func DenseForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (pre
 	}
 	wData := CastWeights[T](weights)
 
-	denseForwardTiledParallel(layer, input, preAct, wData, tileSize)
+	if layer.EnableMultiCoreTiling {
+		denseForwardTiledParallel(layer, input, preAct, wData, tileSize)
+	} else {
+		denseForwardTiledSerial(layer, input, preAct, wData, tileSize)
+	}
 
 	for i := range postAct.Data {
 		postAct.Data[i] = Activate(preAct.Data[i], layer.Activation)
 	}
 	return preAct, postAct
+}
+
+func DenseForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	batchSize := input.Shape[0]
+	inputSize := layer.InputHeight
+	outputSize := layer.OutputHeight
+	matrix, ok := layer.WeightStore.GetBitNetTernaryMatrix(0, outputSize, inputSize)
+	if !ok {
+		exact := layer.Network.UseExactDType
+		layer.Network.UseExactDType = false
+		pre, post := DenseForwardTiled(layer, input)
+		layer.Network.UseExactDType = exact
+		return pre, post
+	}
+
+	preAct = NewTensor[T](batchSize, outputSize)
+	postAct = NewTensor[T](batchSize, outputSize)
+	tmp := make([]float64, outputSize)
+	xq := make([]int8, inputSize)
+	for b := 0; b < batchSize; b++ {
+		row := input.Data[b*inputSize : (b+1)*inputSize]
+		var activationMax float32
+		xq, activationMax = bitNetQuantizeActivationNumeric(row, xq)
+		if !bitNetTernaryMatVecQuantized(matrix, xq, activationMax, tmp) {
+			exact := layer.Network.UseExactDType
+			layer.Network.UseExactDType = false
+			pre, post := DenseForwardTiled(layer, input)
+			layer.Network.UseExactDType = exact
+			return pre, post
+		}
+		for o := 0; o < outputSize; o++ {
+			v := T(tmp[o])
+			preAct.Data[b*outputSize+o] = v
+			postAct.Data[b*outputSize+o] = Activate(v, layer.Activation)
+		}
+	}
+	return preAct, postAct
+}
+
+func denseForwardTiledSerial[T Numeric](layer *VolumetricLayer, input *Tensor[T], preAct *Tensor[T], weights []T, tileSize int) {
+	batchSize := input.Shape[0]
+	inputSize := layer.InputHeight
+	outputSize := layer.OutputHeight
+
+	for oTile := 0; oTile < outputSize; oTile += tileSize {
+		oEnd := oTile + tileSize
+		if oEnd > outputSize {
+			oEnd = outputSize
+		}
+		for iTile := 0; iTile < inputSize; iTile += tileSize {
+			iEnd := iTile + tileSize
+			if iEnd > inputSize {
+				iEnd = inputSize
+			}
+			for b := 0; b < batchSize; b++ {
+				for o := oTile; o < oEnd; o++ {
+					var sum float64
+					if iTile > 0 {
+						sum = float64(preAct.Data[b*outputSize+o])
+					}
+					rowOff := o * inputSize
+					for i := iTile; i < iEnd; i++ {
+						sum += float64(input.Data[b*inputSize+i]) * float64(weights[rowOff+i])
+					}
+					preAct.Data[b*outputSize+o] = T(sum)
+				}
+			}
+		}
+	}
 }
 
 func denseForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T], preAct *Tensor[T], weights []T, tileSize int) {

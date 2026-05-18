@@ -23,6 +23,17 @@ type lucyHFModelSpec struct {
 // same repo IDs and requiredFiles lists; same URL pattern and hub layout (snapshots/manual-download + refs/main).
 var lucyApprovedHFSpecs = []lucyHFModelSpec{
 	{
+		Repo: "microsoft/bitnet-b1.58-2B-4T",
+		Files: []string{
+			"config.json",
+			"generation_config.json",
+			"model.safetensors",
+			"special_tokens_map.json",
+			"tokenizer.json",
+			"tokenizer_config.json",
+		},
+	},
+	{
 		Repo: "Qwen/Qwen3-0.6B",
 		Files: []string{
 			"config.json",

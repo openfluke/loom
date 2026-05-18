@@ -92,6 +92,7 @@ const (
 	ActivationTanh      ActivationType = 3
 	ActivationSigmoid   ActivationType = 4
 	ActivationLeakyReLU ActivationType = 5
+	ActivationReLU2     ActivationType = 6
 	ActivationLinear    ActivationType = -1
 )
 
@@ -125,6 +126,8 @@ func (a ActivationType) String() string {
 		return "Sigmoid"
 	case ActivationLeakyReLU:
 		return "LeakyReLU"
+	case ActivationReLU2:
+		return "ReLU2"
 	case ActivationLinear:
 		return "Linear"
 	default:
@@ -183,6 +186,11 @@ func Activate[T Numeric](v T, act ActivationType) T {
 			return T(float64(v) * 0.01)
 		}
 		return v
+	case ActivationReLU2:
+		if v < 0 {
+			return 0
+		}
+		return v * v
 	case ActivationLinear:
 		return v
 	default:
@@ -222,6 +230,11 @@ func ActivateDerivative[T Numeric](v T, act ActivationType) T {
 			return T(1) / 100
 		}
 		return T(1)
+	case ActivationReLU2:
+		if v <= 0 {
+			return 0
+		}
+		return 2 * v
 	case ActivationLinear:
 		return 1
 	default:
@@ -306,12 +319,14 @@ const (
 	DTypeBinary   DType = 20 // 1-bit (XNOR-Net)
 
 	// Sub-weight identifiers for specific layer types (used as keys in GPUWeights map)
-	WeightMHAQuery      DType = 200
-	WeightMHAKey        DType = 201
-	WeightMHAValue      DType = 202
-	WeightMHAProjection DType = 203
-	WeightMHAQNorm      DType = 204
-	WeightMHAKNorm      DType = 205
+	WeightMHAQuery        DType = 200
+	WeightMHAKey          DType = 201
+	WeightMHAValue        DType = 202
+	WeightMHAProjection   DType = 203
+	WeightMHAQNorm        DType = 204
+	WeightMHAKNorm        DType = 205
+	WeightMHAInnerNorm    DType = 206
+	WeightSwiGLUInnerNorm DType = 120
 )
 
 func (d DType) String() string {
@@ -515,6 +530,7 @@ type VolumetricNetwork struct {
 	// Global Tiling & GPU Switches
 	UseTiling             bool
 	EnableMultiCoreTiling bool
+	UseAsmForward         bool // Plan 9 assembly CPU kernels (see poly/asm)
 	UseGPU                bool
 	UseExactDType         bool
 
@@ -574,6 +590,9 @@ type VolumetricLayer struct {
 	QNormWeight []float32
 	KNormWeight []float32
 
+	// Optional BitNet inner RMSNorm scales used inside attention and MLP blocks.
+	InnerNormWeight []float32
+
 	VocabSize    int
 	EmbeddingDim int
 
@@ -606,6 +625,7 @@ type VolumetricLayer struct {
 	// Tiling & GPU Config
 	UseTiling             bool
 	EnableMultiCoreTiling bool
+	UseAsmForward         bool
 	TileSize              int           // legacy fallback; prefer per-dtype maps below
 	CPUTileSizes          map[DType]int // CPU tile size per numerical type
 	GPUSCTileSizes        map[DType]int // GPU single-core tile size per numerical type
@@ -797,7 +817,7 @@ func volumetricLayerCPUSizeRecursive(l *VolumetricLayer) int {
 	return n
 }
 
-func volumetricLayerVRAMRecursive(l *VolumetricLayer) int64 {
+func volumetricLayerVRAMWeightsRecursive(l *VolumetricLayer) int64 {
 	if l == nil {
 		return 0
 	}
@@ -815,6 +835,21 @@ func volumetricLayerVRAMRecursive(l *VolumetricLayer) int64 {
 			}
 		}
 	}
+	for i := range l.ParallelBranches {
+		total += volumetricLayerVRAMWeightsRecursive(&l.ParallelBranches[i])
+	}
+	for i := range l.SequentialLayers {
+		total += volumetricLayerVRAMWeightsRecursive(&l.SequentialLayers[i])
+	}
+	return total
+}
+
+func volumetricLayerVRAMKVRecursive(l *VolumetricLayer) int64 {
+	if l == nil {
+		return 0
+	}
+	type sizer interface{ GetSize() uint64 }
+	var total int64
 	if buf, ok := l.GPUKVCacheK.(sizer); ok && buf != nil {
 		total += int64(buf.GetSize())
 	}
@@ -822,10 +857,10 @@ func volumetricLayerVRAMRecursive(l *VolumetricLayer) int64 {
 		total += int64(buf.GetSize())
 	}
 	for i := range l.ParallelBranches {
-		total += volumetricLayerVRAMRecursive(&l.ParallelBranches[i])
+		total += volumetricLayerVRAMKVRecursive(&l.ParallelBranches[i])
 	}
 	for i := range l.SequentialLayers {
-		total += volumetricLayerVRAMRecursive(&l.SequentialLayers[i])
+		total += volumetricLayerVRAMKVRecursive(&l.SequentialLayers[i])
 	}
 	return total
 }
@@ -839,37 +874,52 @@ func (n *VolumetricNetwork) CalculateTotalMemory() int {
 	return total
 }
 
+// GetVRAMWeightsBytes returns GPU bytes for embeddings, LM head (if distinct), layer weights/scales,
+// and nested stacks. It excludes KV cache buffers and internal activation/uniform pools.
+func (n *VolumetricNetwork) GetVRAMWeightsBytes() int64 {
+	if n.GPUContext == nil {
+		return 0
+	}
+	type sizer interface{ GetSize() uint64 }
+	var total int64
+	if buf, ok := n.GPUEmbeddings.(sizer); ok && buf != nil {
+		total += int64(buf.GetSize())
+	}
+	if buf, ok := n.GPULMHead.(sizer); ok && buf != nil {
+		if n.GPULMHead != n.GPUEmbeddings {
+			total += int64(buf.GetSize())
+		}
+	}
+	for i := range n.Layers {
+		total += volumetricLayerVRAMWeightsRecursive(&n.Layers[i])
+	}
+	return total
+}
+
+// GetVRAMKVCacheBytes returns GPU bytes for per-layer K/V cache buffers only.
+func (n *VolumetricNetwork) GetVRAMKVCacheBytes() int64 {
+	if n.GPUContext == nil {
+		return 0
+	}
+	var total int64
+	for i := range n.Layers {
+		total += volumetricLayerVRAMKVRecursive(&n.Layers[i])
+	}
+	return total
+}
+
 // GetVRAMUsage calculates the total GPU memory allocated by the network in bytes.
 func (n *VolumetricNetwork) GetVRAMUsage() int64 {
 	if n.GPUContext == nil {
 		return 0
 	}
-	var total int64 = 0
-
-	// 1. Embeddings & LM Head
-	type sizer interface{ GetSize() uint64 }
-	if buf, ok := n.GPUEmbeddings.(sizer); ok && buf != nil {
-		total += int64(buf.GetSize())
-	}
-	if buf, ok := n.GPULMHead.(sizer); ok && buf != nil {
-		if n.GPULMHead != n.GPUEmbeddings { // Avoid double-counting tied weights
-			total += int64(buf.GetSize())
-		}
-	}
-
-	// 2. Layers (Weights, Scales, KV Cache), including nested parallel/sequential stacks.
-	for i := range n.Layers {
-		total += volumetricLayerVRAMRecursive(&n.Layers[i])
-	}
-
-	// 3. Internal Context Buffers (Activation, Uniforms)
+	total := n.GetVRAMWeightsBytes() + n.GetVRAMKVCacheBytes()
 	for _, buf := range n.GPUContext.ActivationPool {
 		total += int64(buf.GetSize())
 	}
 	for _, buf := range n.GPUContext.UniformPool {
 		total += int64(buf.GetSize())
 	}
-
 	return total
 }
 
@@ -1023,13 +1073,28 @@ func (l *VolumetricLayer) SyncToGPU() error {
 		hasCNN1NativePackedPath := l.Type == LayerCNN1 && isCNN1NativeGPUQuantDType(l.DType)
 		if l.Type == LayerRMSNorm {
 			// RMSNorm MUST stay in FP32
+		} else if hasQuantizedShader && l.DType == DTypeTernary {
+			if l.Type == LayerSwiGLU {
+				if err := l.syncBitNetPackedSwiGLU(ctx); err != nil {
+					return err
+				}
+			} else if l.Type == LayerMultiHeadAttention {
+				if err := l.syncBitNetPackedMHA(ctx); err != nil {
+					return err
+				}
+			} else {
+				if err := l.syncBitNetPackedDense(ctx); err != nil {
+					return err
+				}
+			}
 		} else if hasQuantizedShader && DTypeBits(l.DType) == 8 {
 			if l.Type == LayerSwiGLU {
 				h, inter := l.InputHeight, l.OutputHeight
 				l.syncQuantizedSwiGLU_I8(ctx, h, inter)
 			} else if l.Type == LayerMultiHeadAttention {
 				l.syncQuantizedMHA_I8(ctx)
-			} else {
+			} else if l.Type == LayerDense && l.DType == DTypeInt8 {
+				// Packed INT8 dense path only — Uint8/FP8 use PTQ→F32 buffers like F16.
 				l.syncQuantizedDenseI8(ctx, "Layer Weights")
 			}
 		} else if hasQuantizedShader && DTypeBits(l.DType) <= 4 {
@@ -1070,11 +1135,16 @@ func (l *VolumetricLayer) SyncToGPU() error {
 				fwdDType = DTypeFloat32
 			}
 
-			// SwiGLU, MHA, and Dense have dedicated syncQuantized* functions above that
-			// already filled GPUWeights with the right quantized buffers. Skip uploading
-			// a second copy to avoid doubling VRAM on LLM models.
+			// Dense: skip redundant PTQ→native-key upload only when forward uses a packed
+			// native buffer (BitNet, signed INT8, or ≤4-bit / Q4-style). Uint8/FP8 are not
+			// the INT8 packed dense path; they use dequantized F32 in the generic upload.
+			denseUsedNativeQuantGPU := l.Type == LayerDense &&
+				(l.DType == DTypeTernary || l.DType == DTypeInt8 || DTypeBits(l.DType) <= 4)
 			hasSpecialPath := fwdDType != DTypeFloat32 &&
-				(l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerDense || hasCNN1NativePackedPath)
+				(hasCNN1NativePackedPath ||
+					l.Type == LayerSwiGLU ||
+					l.Type == LayerMultiHeadAttention ||
+					denseUsedNativeQuantGPU)
 
 			if !hasSpecialPath {
 				gpuData := l.WeightStore.MorphToFloat32ForGPU(fwdDType)
@@ -1089,6 +1159,14 @@ func (l *VolumetricLayer) SyncToGPU() error {
 					}
 					l.WeightStore.GPUWeights[fwdDType] = buf
 				}
+			}
+		}
+
+		// Dense backward tiled kernels always read dequantized float32 coefficients (same
+		// PTQ simulation as MorphToFloat32ForGPU), not packed INT8/Q4 payloads.
+		if l.Type == LayerDense {
+			if err := l.syncDenseFloat32CoefForBackward(ctx); err != nil {
+				return err
 			}
 		}
 	}
@@ -1145,12 +1223,45 @@ func (l *VolumetricLayer) ReleaseInferenceHostWeights() {
 	}
 	l.QNormWeight = nil
 	l.KNormWeight = nil
+	l.InnerNormWeight = nil
 	for i := range l.ParallelBranches {
 		l.ParallelBranches[i].ReleaseInferenceHostWeights()
 	}
 	for i := range l.SequentialLayers {
 		l.SequentialLayers[i].ReleaseInferenceHostWeights()
 	}
+}
+
+// syncDenseFloat32CoefForBackward uploads dequantized float32 weights for Dense layers.
+// Forward may use packed INT8/Q4/BitNet buffers; tiled backward (DispatchDenseBackward*)
+// always consumes the same PTQ-simulated f32 matrix as MorphToFloat32ForGPU.
+func (l *VolumetricLayer) syncDenseFloat32CoefForBackward(ctx *WGPUContext) error {
+	ws := l.WeightStore
+	if ws == nil || len(ws.Master) == 0 {
+		return nil
+	}
+	gpuData := ws.MorphToFloat32ForGPU(l.DType)
+	if len(gpuData) == 0 {
+		return nil
+	}
+	wantBytes := uint64(len(gpuData) * 4)
+	type sizer interface{ GetSize() uint64 }
+	if existingAny, ok := ws.GPUWeights[DTypeFloat32]; ok {
+		if wBuf, ok2 := existingAny.(*wgpu.Buffer); ok2 && wBuf != nil {
+			if sz, ok3 := interface{}(wBuf).(sizer); ok3 && sz.GetSize() >= wantBytes {
+				ctx.Queue.WriteBuffer(wBuf, 0, wgpu.ToBytes(gpuData))
+				return nil
+			}
+			wBuf.Release()
+			delete(ws.GPUWeights, DTypeFloat32)
+		}
+	}
+	buf, err := ctx.CreatePersistentBuffer(gpuData, "Dense coef F32 (backward)")
+	if err != nil {
+		return err
+	}
+	ws.GPUWeights[DTypeFloat32] = buf
+	return nil
 }
 
 // syncQuantizedDense handles the quantization and upload of a single weight buffer.
@@ -1716,6 +1827,7 @@ func (l *VolumetricLayer) syncQuantizedMHA(ctx *WGPUContext) {
 // Per-dtype CPU tile sizes are computed for all 21 numerical types.
 func (l *VolumetricLayer) SyncToCPU() {
 	l.EnableMultiCoreTiling = l.Network.EnableMultiCoreTiling
+	l.UseAsmForward = l.Network.UseAsmForward
 
 	if l.UseTiling {
 		l.refreshRuntimeCPUTileSizes()

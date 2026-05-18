@@ -40,10 +40,23 @@ type PersistenceNetworkSpec struct {
 Each `PersistenceLayerSpec` contains all configuration fields plus:
 
 ```go
-Weights string   `json:"weights,omitempty"`  // Base64-encoded weight bytes
-Native  bool     `json:"native,omitempty"`   // true = target DType, false = FP32 master
-Scale   float32  `json:"scale,omitempty"`    // quantization scale
+DType   string   `json:"dtype"`              // active numerical type for this layer (e.g. "Uint8", "FP4")
+Weights string   `json:"weights,omitempty"`  // Base64-encoded **native-packed** payload for that dtype
+Native  bool     `json:"native,omitempty"`   // true = weights are native-packed (current default on save)
+Scale   float32  `json:"scale,omitempty"`    // morph/quant scale used when the checkpoint was written
 ```
+
+### Native JSON per dtype (not FP32-only)
+
+`SerializeNetwork` no longer dumps a single FP32 master blob for every layer. On save it:
+
+1. Reads each layer’s live `DType` and writes it to `PersistenceLayerSpec.DType`.
+2. Calls `WeightStore.Morph(dt)` for that dtype and `encodeNativeWeights(active, dt)` — Int8 as 1 byte/weight, FP4/Int4 as nibbles, Binary as bit-packs, Float64 as LE uint64, etc.
+3. Sets `Native: true` and persists `Scale` so reload uses the same quant mapping training saw.
+
+**Implication:** a **Uint8** Dense checkpoint is ~**0.8 KB** on disk for the Lucy 8×1024→512 bench; **Float64** is ~**5.4 MB** for the same topology — see the **File** column in Lucy’s training matrix (`lucy/lucy_testing_output/log.txt`). You can train, save, and reload **each of the 21 dtypes** independently; Lucy’s Dense suite reports **Save/Reload PASS** on all of them in the latest full run.
+
+Older checkpoints with `Native: false` (FP32 master only) still load via `decodeWeights`; new saves prefer native packing.
 
 ### Loading
 
@@ -57,7 +70,7 @@ network, err := poly.DeserializeNetwork(jsonData)
 1. Parses all config fields
 2. Calls `initializeWeights(l)` to allocate the correct `WeightStore` size
 3. Decodes the `Weights` string — using `decodeNativeWeights` if `Native=true`, or `decodeWeights` (FP32 master) if `Native=false`
-4. If native format: stores in `Versions[dtype]`, then calls `Unpack(dtype)` to reconstruct the FP32 master
+4. If native format (`Native=true`): stores in `Versions[dtype]`, then calls `Unpack(dtype)` to reconstruct the FP32 master for training paths that still use master weights
 5. Recursively applies the same process to `ParallelBranches` and `SequentialLayers`
 
 ---

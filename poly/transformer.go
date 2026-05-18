@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"sync"
 	"time"
 )
 
@@ -17,11 +18,42 @@ type Transformer[T Numeric] struct {
 	VocabSize  int
 	Template   Template
 
+	// ForwardMode controls CPU decoder execution (normal / stepped / queued).
+	ForwardMode TransformerForwardMode
+
+	// ForwardStepDebug prints or callbacks each sub-layer step in stepped/queued modes.
+	ForwardStepDebug bool
+
+	forwardStepCb func(step, total int, label string)
+
+	// cpuFQ holds partial forward state when ForwardMode == TransformerForwardQueuedCPU.
+	cpuFQ *cpuForwardQueueState[T]
+
+	// QueueTickPause is called after each CPUForwardQueueTick when draining the queue
+	// (e.g. Lucy waits for Enter between sub-layers). Nil = no pause.
+	QueueTickPause func(step, total int, label string)
+
+	// PipelineTickPause is called after each PipelineTick (macro wavefront clock). Nil = no pause.
+	PipelineTickPause func(tick, total int, summary string)
+
+	// pipe holds macro pipeline state when ForwardMode == TransformerForwardPipelineCPU.
+	pipe *decoderPipelineState[T]
+
+	// pipeStatsCur accumulates during forwardCPUHiddenPipeline; copied to lastPipelineStats at end.
+	pipeStatsCur      PipelineForwardStats
+	lastPipelineStats PipelineForwardStats
+
 	// Internal RMSNorm config for final norm if needed
 	finalNormLayer *VolumetricLayer
 
 	// hostWeightsReleased is set after ReleaseInferenceHostWeights; CPU fallback paths are unsafe.
 	hostWeightsReleased bool
+
+	lmHeadPackedTernary *BitNetTernaryMatrix
+	lmHeadPackedLen     int
+
+	// layerTrace is non-nil during Generate when GenOptions.LayerTrace is set.
+	layerTrace *layerTraceState
 }
 
 // NewTransformer creates a new polymorphic transformer
@@ -80,6 +112,7 @@ func NewTransformer[T Numeric](network *VolumetricNetwork, embeddings, lmHead, f
 
 // Reset clears the KV cache for all layers
 func (t *Transformer[T]) Reset() {
+	t.PipelineReset()
 	for i := range t.Network.Layers {
 		t.Network.Layers[i].KVOffset = 0
 		// Optional: Clear tensors to save memory if needed
@@ -207,8 +240,8 @@ type GenMetrics struct {
 	DecodeTokPerSec  float64
 	TotalTokPerSec   float64
 	FirstLogit       float32
-	// RAMUsageMB is kept for backward compatibility and now represents
-	// approximate current process RAM (not just static layer weights).
+	// RAMUsageMB is host-side Poly model tensors (same as ModelRAMUsageMB).
+	// It is not Go runtime MemStats.Sys and not OS RSS.
 	RAMUsageMB float64
 	// ModelRAMUsageMB is host-side model memory tracked by Loom (weights/tensors).
 	ModelRAMUsageMB float64
@@ -223,6 +256,18 @@ func (t *Transformer[T]) Generate(
 	systemPrompt, userMsg string,
 	opts GenOptions,
 ) (string, GenMetrics) {
+	traceOpts := opts
+	if opts.LayerTrace && opts.LayerTraceMaxTokens > 0 {
+		traceOpts.MaxTokens = opts.LayerTraceMaxTokens
+		if traceOpts.MinTokens > traceOpts.MaxTokens {
+			traceOpts.MinTokens = traceOpts.MaxTokens
+		}
+	}
+	t.beginLayerTrace(traceOpts)
+	defer t.endLayerTrace()
+	tracePrefill := traceOpts.LayerTrace && traceOpts.LayerTracePrefill
+	traceDecode := traceOpts.LayerTrace
+
 	prompt := t.Template.BuildPrompt(turns, systemPrompt, userMsg)
 	inputIDs := encode(prompt)
 
@@ -234,7 +279,17 @@ func (t *Transformer[T]) Generate(
 	prefillStart := time.Now()
 	var logits []float32
 	if len(tokens) > 0 {
-		if t.Network.UseGPU && t.Network.GPUEmbeddings != nil {
+		if traceOpts.LayerTrace && !traceOpts.LayerTracePrefill {
+			t.printLayerTraceBanner("prefill-skip", len(tokens), traceOpts.MaxTokens)
+		}
+		if tracePrefill {
+			t.setLayerTraceRecording(true)
+			t.printLayerTraceBanner("prefill", len(tokens), traceOpts.MaxTokens)
+		} else {
+			t.setLayerTraceRecording(false)
+		}
+		useGPUPrefill := !tracePrefill && !t.forwardModeSkipsGPU() && t.Network.UseGPU && t.Network.GPUEmbeddings != nil
+		if useGPUPrefill {
 			// Optimization: compute and download ONLY the last token's logits
 			logitTensor, err := t.ForwardTokenIDsWGPU(tokens, nil, true, true)
 			if err == nil {
@@ -253,11 +308,17 @@ func (t *Transformer[T]) Generate(
 					}
 				}
 				allEmbeds := t.TokensToTensor(tokens)
+				if tracePrefill {
+					t.layerTraceSetTokenOrdinal(-1)
+				}
 				hidden := t.ForwardFull(allEmbeds)
 				logits = t.ApplyLMHead(t.lastHiddenRow(hidden))
 			}
 		} else {
 			allEmbeds := t.TokensToTensor(tokens)
+			if tracePrefill {
+				t.layerTraceSetTokenOrdinal(-1)
+			}
 			hidden := t.ForwardFull(allEmbeds)
 			logits = t.ApplyLMHead(t.lastHiddenRow(hidden))
 		}
@@ -276,24 +337,34 @@ func (t *Transformer[T]) Generate(
 	decodeStart := time.Now()
 	generatedCount := 0
 
-	for i := 0; i < opts.MaxTokens; i++ {
-		t.applyRepetitionPenalty(logits, tokens, opts)
-		t.applyBannedTokenMask(logits, opts)
-		t.applyConsecutiveRepeatMask(logits, tokens, opts)
-		t.applyNoRepeatNGramMask(logits, tokens, opts)
+	if traceDecode {
+		t.setLayerTraceRecording(true)
+		t.printLayerTraceBanner("decode", len(inputIDs), traceOpts.MaxTokens)
+	}
 
-		nextToken := SampleTopK(logits, opts.TopK, opts.Temperature, opts.Deterministic)
+	for i := 0; i < traceOpts.MaxTokens; i++ {
+		t.applyRepetitionPenalty(logits, tokens, traceOpts)
+		t.applyBannedTokenMask(logits, traceOpts)
+		t.applyConsecutiveRepeatMask(logits, tokens, traceOpts)
+		t.applyNoRepeatNGramMask(logits, tokens, traceOpts)
+
+		nextToken := SampleTopK(logits, traceOpts.TopK, traceOpts.Temperature, traceOpts.Deterministic)
 
 		tokens = append(tokens, uint32(nextToken))
-		stream.Push(tokens, opts.Silent, opts.StreamCallback)
+		stream.Push(tokens, traceOpts.Silent, traceOpts.StreamCallback)
 		generatedCount++
 
-		if (generatedCount >= opts.MinTokens && t.isEOS(nextToken, opts.EOSTokens)) || (opts.UseKVCache && stream.HasNewUserTurn(tokens)) {
+		if traceDecode {
+			fmt.Printf("→ sampled token id=%d\n", nextToken)
+		}
+
+		if (generatedCount >= traceOpts.MinTokens && t.isEOS(nextToken, traceOpts.EOSTokens)) || (traceOpts.UseKVCache && stream.HasNewUserTurn(tokens)) {
 			break
 		}
 
 		// Forward next token (Incremental)
-		if t.Network.UseGPU && t.Network.GPUEmbeddings != nil {
+		useGPUDecode := !traceDecode && !t.forwardModeSkipsGPU() && t.Network.UseGPU && t.Network.GPUEmbeddings != nil
+		if useGPUDecode {
 			logitTensor, err := t.ForwardTokenIDsWGPU([]uint32{uint32(nextToken)}, nil, true, true)
 			if err == nil {
 				rawLogits := logitTensor.Data
@@ -310,6 +381,7 @@ func (t *Transformer[T]) Generate(
 				nextEmbed := t.getEmbedding(nextToken)
 				input := NewTensor[T](1, t.HiddenSize)
 				copy(input.Data, nextEmbed)
+				t.layerTraceSetTokenOrdinal(generatedCount - 1)
 				hidden := t.forwardOne(input)
 				logits = t.ApplyLMHead(t.lastHiddenRow(hidden))
 			}
@@ -317,9 +389,20 @@ func (t *Transformer[T]) Generate(
 			nextEmbed := t.getEmbedding(nextToken)
 			input := NewTensor[T](1, t.HiddenSize)
 			copy(input.Data, nextEmbed)
+			t.layerTraceSetTokenOrdinal(generatedCount - 1)
 			hidden := t.forwardOne(input)
 			logits = t.ApplyLMHead(t.lastHiddenRow(hidden))
 		}
+	}
+
+	if traceDecode {
+		n := len(t.LayerTraceRecords())
+		perTok := t.cpuLayerTraceStepTotal()
+		fmt.Printf("📼 Layer trace complete: %d recorded sub-layer steps", n)
+		if generatedCount > 0 && n > 0 {
+			fmt.Printf(" (~%d per decode token)", perTok)
+		}
+		fmt.Println()
 	}
 
 	decodeElapsed := time.Since(decodeStart)
@@ -327,10 +410,10 @@ func (t *Transformer[T]) Generate(
 	metrics.GeneratedTokens = generatedCount
 
 	modelRAMBytes := t.calculateHostModelBytes()
-	processRAMBytes := currentProcessRAMBytes()
 	vramBytes := t.Network.GetVRAMUsage()
-	metrics.RAMUsageMB = float64(processRAMBytes) / (1024 * 1024)
-	metrics.ModelRAMUsageMB = float64(modelRAMBytes) / (1024 * 1024)
+	hostModelMB := float64(modelRAMBytes) / (1024 * 1024)
+	metrics.ModelRAMUsageMB = hostModelMB
+	metrics.RAMUsageMB = hostModelMB
 	metrics.VRAMUsageMB = float64(vramBytes) / (1024 * 1024)
 
 	if generatedCount > 0 {
@@ -356,14 +439,6 @@ func (t *Transformer[T]) Generate(
 	}
 
 	return stream.String(), metrics
-}
-
-func currentProcessRAMBytes() uint64 {
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	// Sys is bytes obtained from the OS and generally tracks real process
-	// memory far better than Alloc for large model loads.
-	return ms.Sys
 }
 
 func (t *Transformer[T]) calculateHostModelBytes() uint64 {
@@ -415,42 +490,10 @@ func (t *Transformer[T]) TokensToTensor(tokens []uint32) *Tensor[T] {
 // forwardOnCPU runs transformer blocks on the host (polymorphic RMSNorm / MHA / SwiGLU only).
 // Generate and ForwardFull use this whenever WGPU is not serving the forward.
 func (t *Transformer[T]) forwardOnCPU(input *Tensor[T]) *Tensor[T] {
-	if t.hostWeightsReleased {
-		fmt.Println("⚠️  CPU forward skipped (host weights released after GPU upload).")
-		return NewTensor[T](input.Shape...)
+	if t.layerTraceRecording() {
+		return t.forwardOnCPUTraced(input)
 	}
-	current := input
-	numBlocks := len(t.Network.Layers) / 4
-
-	for b := 0; b < numBlocks; b++ {
-		base := b * 4
-
-		residual := current.Clone()
-
-		lNorm1 := &t.Network.Layers[base+0]
-		_, current = RMSNormForwardPolymorphic(lNorm1, current)
-
-		lMHA := &t.Network.Layers[base+1]
-		_, current = MHAForwardPolymorphic(lMHA, current)
-
-		current.Add(residual)
-
-		residual = current.Clone()
-
-		lNorm2 := &t.Network.Layers[base+2]
-		_, current = RMSNormForwardPolymorphic(lNorm2, current)
-
-		lMLP := &t.Network.Layers[base+3]
-		_, current = SwiGLUForwardPolymorphic(lMLP, current)
-
-		current.Add(residual)
-	}
-
-	if t.finalNormLayer != nil {
-		_, current = RMSNormForwardPolymorphic(t.finalNormLayer, current)
-	}
-
-	return current
+	return t.forwardCPUHidden(input)
 }
 
 // lastHiddenRow returns activations for the last sequence position [HiddenSize].
@@ -472,7 +515,7 @@ func (t *Transformer[T]) lastHiddenRow(hidden *Tensor[T]) []T {
 }
 
 func (t *Transformer[T]) forwardOne(input *Tensor[T]) *Tensor[T] {
-	if t.Network.UseGPU && t.Network.GPUContext != nil {
+	if !t.layerTraceRecording() && !t.forwardModeSkipsGPU() && t.Network.UseGPU && t.Network.GPUContext != nil {
 		res, err := t.ForwardWGPU(input)
 		if err == nil {
 			if t.finalNormLayer != nil {
@@ -486,7 +529,7 @@ func (t *Transformer[T]) forwardOne(input *Tensor[T]) *Tensor[T] {
 }
 
 func (t *Transformer[T]) ForwardFull(input *Tensor[T]) *Tensor[T] {
-	if t.Network.UseGPU && t.Network.GPUContext != nil {
+	if !t.layerTraceRecording() && !t.forwardModeSkipsGPU() && t.Network.UseGPU && t.Network.GPUContext != nil {
 		res, err := t.ForwardWGPU(input)
 		if err == nil {
 			if t.finalNormLayer != nil {
@@ -516,16 +559,92 @@ func (t *Transformer[T]) ApplyLMHead(hidden []T) []float32 {
 		return out
 	}
 
+	if t.usePackedTernaryLMHead() {
+		if logits := t.applyPackedTernaryLMHead(hidden); logits != nil {
+			return logits
+		}
+	}
+
 	normalized := hidden
 
 	logits := make([]float32, t.VocabSize)
-	for v := 0; v < t.VocabSize; v++ {
-		var sum float64
-		offset := v * t.HiddenSize
-		for d := 0; d < t.HiddenSize; d++ {
-			sum += float64(normalized[d]) * float64(t.LMHead[offset+d])
+	t.applyFP32LMHeadRows(normalized, logits)
+	return logits
+}
+
+func (t *Transformer[T]) applyFP32LMHeadRows(hidden []T, logits []float32) {
+	worker := func(start, end int) {
+		for v := start; v < end; v++ {
+			var sum float64
+			offset := v * t.HiddenSize
+			for d := 0; d < t.HiddenSize; d++ {
+				sum += float64(hidden[d]) * float64(t.LMHead[offset+d])
+			}
+			logits[v] = float32(sum)
 		}
-		logits[v] = float32(sum)
+	}
+
+	work := t.VocabSize * t.HiddenSize
+	if work < 262144 || t.VocabSize < 4 {
+		worker(0, t.VocabSize)
+		return
+	}
+	workers := runtime.GOMAXPROCS(0)
+	if workers > t.VocabSize {
+		workers = t.VocabSize
+	}
+	if workers <= 1 {
+		worker(0, t.VocabSize)
+		return
+	}
+	chunk := (t.VocabSize + workers - 1) / workers
+	var wg sync.WaitGroup
+	for start := 0; start < t.VocabSize; start += chunk {
+		end := start + chunk
+		if end > t.VocabSize {
+			end = t.VocabSize
+		}
+		wg.Add(1)
+		go func(start, end int) {
+			defer wg.Done()
+			worker(start, end)
+		}(start, end)
+	}
+	wg.Wait()
+}
+
+func (t *Transformer[T]) usePackedTernaryLMHead() bool {
+	if t == nil || t.Network == nil || !t.Network.UseExactDType || t.Network.UseGPU {
+		return false
+	}
+	if slicesShareBackingStoreFloat32(t.LMHead, t.Embeddings) {
+		return false
+	}
+	for i := range t.Network.Layers {
+		if t.Network.Layers[i].DType == DTypeTernary {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *Transformer[T]) applyPackedTernaryLMHead(hidden []T) []float32 {
+	if t.lmHeadPackedTernary == nil || t.lmHeadPackedLen != len(t.LMHead) ||
+		t.lmHeadPackedTernary.Rows != t.VocabSize || t.lmHeadPackedTernary.Cols != t.HiddenSize {
+		packed, ok := packFloat32AsBitNetTernaryMatrix(t.LMHead, t.VocabSize, t.HiddenSize)
+		if !ok {
+			return nil
+		}
+		t.lmHeadPackedTernary = packed
+		t.lmHeadPackedLen = len(t.LMHead)
+	}
+	logits64 := make([]float64, t.VocabSize)
+	if !bitNetTernaryMatVecNumeric(t.lmHeadPackedTernary, hidden, logits64) {
+		return nil
+	}
+	logits := make([]float32, t.VocabSize)
+	for i, v := range logits64 {
+		logits[i] = float32(v)
 	}
 	return logits
 }

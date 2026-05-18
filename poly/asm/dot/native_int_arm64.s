@@ -1,0 +1,437 @@
+#include "textflag.h"
+
+TEXT ·dotI8NativeI64(SB), NOSPLIT, $0-32
+	MOVD	x+0(FP), R0
+	MOVD	w+8(FP), R1
+	MOVD	n+16(FP), R2
+	MOVD	$0, R10
+	CMP	$4, R2
+	BLT	tail
+
+loop4:
+	MOVB 0(R0), R3
+	SXTB R3, R3
+	MOVB 0(R1), R4
+	SXTB R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVB 1(R0), R3
+	SXTB R3, R3
+	MOVB 1(R1), R4
+	SXTB R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVB 2(R0), R3
+	SXTB R3, R3
+	MOVB 2(R1), R4
+	SXTB R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVB 3(R0), R3
+	SXTB R3, R3
+	MOVB 3(R1), R4
+	SXTB R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$4, R0
+	ADD	$4, R1
+	SUB	$4, R2
+	CMP	$4, R2
+	BGE	loop4
+
+tail:
+	CMP	$0, R2
+	BEQ	done
+	MOVB 0(R0), R3
+	SXTB R3, R3
+	MOVB 0(R1), R4
+	SXTB R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$1, R0
+	ADD	$1, R1
+	SUB	$1, R2
+	B	tail
+
+done:
+	MOVD	R10, ret+24(FP)
+	RET
+
+TEXT ·dotI16NativeI64(SB), NOSPLIT, $0-32
+	MOVD	x+0(FP), R0
+	MOVD	w+8(FP), R1
+	MOVD	n+16(FP), R2
+	MOVD	$0, R10
+	CMP	$4, R2
+	BLT	tail
+
+loop4:
+	MOVH 0(R0), R3
+	SXTH R3, R3
+	MOVH 0(R1), R4
+	SXTH R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVH 2(R0), R3
+	SXTH R3, R3
+	MOVH 2(R1), R4
+	SXTH R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVH 4(R0), R3
+	SXTH R3, R3
+	MOVH 4(R1), R4
+	SXTH R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVH 6(R0), R3
+	SXTH R3, R3
+	MOVH 6(R1), R4
+	SXTH R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$8, R0
+	ADD	$8, R1
+	SUB	$4, R2
+	CMP	$4, R2
+	BGE	loop4
+
+tail:
+	CMP	$0, R2
+	BEQ	done
+	MOVH 0(R0), R3
+	SXTH R3, R3
+	MOVH 0(R1), R4
+	SXTH R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$2, R0
+	ADD	$2, R1
+	SUB	$1, R2
+	B	tail
+
+done:
+	MOVD	R10, ret+24(FP)
+	RET
+
+TEXT ·dotI32NativeI64(SB), NOSPLIT, $0-32
+	MOVD	x+0(FP), R0
+	MOVD	w+8(FP), R1
+	MOVD	n+16(FP), R2
+	MOVD	$0, R10
+	CMP	$4, R2
+	BLT	tail
+
+loop4:
+	MOVW 0(R0), R3
+	SXTW R3, R3
+	MOVW 0(R1), R4
+	SXTW R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVW 4(R0), R3
+	SXTW R3, R3
+	MOVW 4(R1), R4
+	SXTW R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVW 8(R0), R3
+	SXTW R3, R3
+	MOVW 8(R1), R4
+	SXTW R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVW 12(R0), R3
+	SXTW R3, R3
+	MOVW 12(R1), R4
+	SXTW R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$16, R0
+	ADD	$16, R1
+	SUB	$4, R2
+	CMP	$4, R2
+	BGE	loop4
+
+tail:
+	CMP	$0, R2
+	BEQ	done
+	MOVW 0(R0), R3
+	SXTW R3, R3
+	MOVW 0(R1), R4
+	SXTW R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$4, R0
+	ADD	$4, R1
+	SUB	$1, R2
+	B	tail
+
+done:
+	MOVD	R10, ret+24(FP)
+	RET
+
+TEXT ·dotI64NativeI64(SB), NOSPLIT, $0-32
+	MOVD	x+0(FP), R0
+	MOVD	w+8(FP), R1
+	MOVD	n+16(FP), R2
+	MOVD	$0, R10
+	CMP	$4, R2
+	BLT	tail
+
+loop4:
+	MOVD 0(R0), R3
+	MOVD 0(R1), R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVD 8(R0), R3
+	MOVD 8(R1), R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVD 16(R0), R3
+	MOVD 16(R1), R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVD 24(R0), R3
+	MOVD 24(R1), R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$32, R0
+	ADD	$32, R1
+	SUB	$4, R2
+	CMP	$4, R2
+	BGE	loop4
+
+tail:
+	CMP	$0, R2
+	BEQ	done
+	MOVD 0(R0), R3
+	MOVD 0(R1), R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$8, R0
+	ADD	$8, R1
+	SUB	$1, R2
+	B	tail
+
+done:
+	MOVD	R10, ret+24(FP)
+	RET
+
+TEXT ·dotU8NativeI64(SB), NOSPLIT, $0-32
+	MOVD	x+0(FP), R0
+	MOVD	w+8(FP), R1
+	MOVD	n+16(FP), R2
+	MOVD	$0, R10
+	CMP	$4, R2
+	BLT	tail
+
+loop4:
+	MOVB 0(R0), R3
+	UXTB R3, R3
+	MOVB 0(R1), R4
+	UXTB R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVB 1(R0), R3
+	UXTB R3, R3
+	MOVB 1(R1), R4
+	UXTB R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVB 2(R0), R3
+	UXTB R3, R3
+	MOVB 2(R1), R4
+	UXTB R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVB 3(R0), R3
+	UXTB R3, R3
+	MOVB 3(R1), R4
+	UXTB R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$4, R0
+	ADD	$4, R1
+	SUB	$4, R2
+	CMP	$4, R2
+	BGE	loop4
+
+tail:
+	CMP	$0, R2
+	BEQ	done
+	MOVB 0(R0), R3
+	UXTB R3, R3
+	MOVB 0(R1), R4
+	UXTB R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$1, R0
+	ADD	$1, R1
+	SUB	$1, R2
+	B	tail
+
+done:
+	MOVD	R10, ret+24(FP)
+	RET
+
+TEXT ·dotU16NativeI64(SB), NOSPLIT, $0-32
+	MOVD	x+0(FP), R0
+	MOVD	w+8(FP), R1
+	MOVD	n+16(FP), R2
+	MOVD	$0, R10
+	CMP	$4, R2
+	BLT	tail
+
+loop4:
+	MOVH 0(R0), R3
+	UXTH R3, R3
+	MOVH 0(R1), R4
+	UXTH R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVH 2(R0), R3
+	UXTH R3, R3
+	MOVH 2(R1), R4
+	UXTH R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVH 4(R0), R3
+	UXTH R3, R3
+	MOVH 4(R1), R4
+	UXTH R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVH 6(R0), R3
+	UXTH R3, R3
+	MOVH 6(R1), R4
+	UXTH R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$8, R0
+	ADD	$8, R1
+	SUB	$4, R2
+	CMP	$4, R2
+	BGE	loop4
+
+tail:
+	CMP	$0, R2
+	BEQ	done
+	MOVH 0(R0), R3
+	UXTH R3, R3
+	MOVH 0(R1), R4
+	UXTH R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$2, R0
+	ADD	$2, R1
+	SUB	$1, R2
+	B	tail
+
+done:
+	MOVD	R10, ret+24(FP)
+	RET
+
+TEXT ·dotU32NativeI64(SB), NOSPLIT, $0-32
+	MOVD	x+0(FP), R0
+	MOVD	w+8(FP), R1
+	MOVD	n+16(FP), R2
+	MOVD	$0, R10
+	CMP	$4, R2
+	BLT	tail
+
+loop4:
+	MOVW 0(R0), R3
+	UXTW R3, R3
+	MOVW 0(R1), R4
+	UXTW R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVW 4(R0), R3
+	UXTW R3, R3
+	MOVW 4(R1), R4
+	UXTW R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVW 8(R0), R3
+	UXTW R3, R3
+	MOVW 8(R1), R4
+	UXTW R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVW 12(R0), R3
+	UXTW R3, R3
+	MOVW 12(R1), R4
+	UXTW R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$16, R0
+	ADD	$16, R1
+	SUB	$4, R2
+	CMP	$4, R2
+	BGE	loop4
+
+tail:
+	CMP	$0, R2
+	BEQ	done
+	MOVW 0(R0), R3
+	UXTW R3, R3
+	MOVW 0(R1), R4
+	UXTW R4, R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$4, R0
+	ADD	$4, R1
+	SUB	$1, R2
+	B	tail
+
+done:
+	MOVD	R10, ret+24(FP)
+	RET
+
+TEXT ·dotU64NativeI64(SB), NOSPLIT, $0-32
+	MOVD	x+0(FP), R0
+	MOVD	w+8(FP), R1
+	MOVD	n+16(FP), R2
+	MOVD	$0, R10
+	CMP	$4, R2
+	BLT	tail
+
+loop4:
+	MOVD 0(R0), R3
+	MOVD 0(R1), R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVD 8(R0), R3
+	MOVD 8(R1), R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVD 16(R0), R3
+	MOVD 16(R1), R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	MOVD 24(R0), R3
+	MOVD 24(R1), R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$32, R0
+	ADD	$32, R1
+	SUB	$4, R2
+	CMP	$4, R2
+	BGE	loop4
+
+tail:
+	CMP	$0, R2
+	BEQ	done
+	MOVD 0(R0), R3
+	MOVD 0(R1), R4
+	MUL R4, R3, R3
+	ADD R3, R10, R10
+	ADD	$8, R0
+	ADD	$8, R1
+	SUB	$1, R2
+	B	tail
+
+done:
+	MOVD	R10, ret+24(FP)
+	RET

@@ -27,6 +27,17 @@ func SwiGLUForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (pr
 	return swigluForwardTiledParallel(layer, input)
 }
 
+func swigluGateProduct(g, u float64, activation ActivationType) float64 {
+	if activation == ActivationReLU2 {
+		if g < 0 {
+			g = 0
+		}
+		return (g * g) * u
+	}
+	sig := 1.0 / (1.0 + math.Exp(-g))
+	return (g * sig) * u
+}
+
 func swigluTiledProjectGateUp[TIn Numeric, TOut Numeric, TW Numeric](input []TIn, wData []TW, gWStart, uWStart, gBStart, uBStart int, output []TOut, inDim, outDim, seqLen int, tileSize int) {
 	gW := wData[gWStart:]
 	uW := wData[uWStart:]
@@ -44,11 +55,15 @@ func swigluTiledProjectGateUp[TIn Numeric, TOut Numeric, TW Numeric](input []TIn
 
 		for iTile := 0; iTile < inDim; iTile += tileSize {
 			iEnd := iTile + tileSize
-			if iEnd > inDim { iEnd = inDim }
+			if iEnd > inDim {
+				iEnd = inDim
+			}
 
 			for oTile := 0; oTile < outDim; oTile += tileSize {
 				oEnd := oTile + tileSize
-				if oEnd > outDim { oEnd = outDim }
+				if oEnd > outDim {
+					oEnd = outDim
+				}
 
 				for o := oTile; o < oEnd; o++ {
 					sG := sumG[o]
@@ -65,9 +80,7 @@ func swigluTiledProjectGateUp[TIn Numeric, TOut Numeric, TW Numeric](input []TIn
 		}
 
 		for o := 0; o < outDim; o++ {
-			sig := 1.0 / (1.0 + math.Exp(-sumG[o]))
-			silu := sumG[o] * sig
-			output[s*outDim+o] = TOut(silu * sumU[o])
+			output[s*outDim+o] = TOut(swigluGateProduct(sumG[o], sumU[o], ActivationSilu))
 		}
 	}
 }
@@ -79,11 +92,15 @@ func swigluTiledProjectDown[TIn Numeric, TOut Numeric, TW Numeric](input []TIn, 
 	for s := 0; s < seqLen; s++ {
 		for oTile := 0; oTile < outDim; oTile += tileSize {
 			oEnd := oTile + tileSize
-			if oEnd > outDim { oEnd = outDim }
+			if oEnd > outDim {
+				oEnd = outDim
+			}
 
 			for iTile := 0; iTile < inDim; iTile += tileSize {
 				iEnd := iTile + tileSize
-				if iEnd > inDim { iEnd = inDim }
+				if iEnd > inDim {
+					iEnd = inDim
+				}
 
 				for o := oTile; o < oEnd; o++ {
 					sum := float64(0)
@@ -109,23 +126,27 @@ func SwiGLUBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, p
 
 func swigluTiledProjectDownBackward[T Numeric](gradInter []float64, gradOutput []T, preAct []T, wData []T, gradWeights []float64, inDim, outDim, seqLen, dWStart, dBStart, tileSize int) {
 	dW := wData[dWStart:]
-	
+
 	for s := 0; s < seqLen; s++ {
 		for oTile := 0; oTile < outDim; oTile += tileSize {
 			oEnd := oTile + tileSize
-			if oEnd > outDim { oEnd = outDim }
+			if oEnd > outDim {
+				oEnd = outDim
+			}
 
 			for o := oTile; o < oEnd; o++ {
 				dy := float64(gradOutput[s*outDim+o])
 				gradWeights[dBStart+o] += dy
-				
+
 				for iTile := 0; iTile < inDim; iTile += tileSize {
 					iEnd := iTile + tileSize
-					if iEnd > inDim { iEnd = inDim }
-					
+					if iEnd > inDim {
+						iEnd = inDim
+					}
+
 					for i := iTile; i < iEnd; i++ {
 						act := float64(preAct[s*inDim+i])
-						gradWeights[dWStart + i*outDim+o] += act * dy
+						gradWeights[dWStart+i*outDim+o] += act * dy
 						gradInter[s*inDim+i] += dy * float64(dW[i*outDim+o])
 					}
 				}
@@ -158,32 +179,36 @@ func swigluTiledProjectGateUpBackward[T Numeric](gradInter []float64, input []T,
 
 		for oTile := 0; oTile < outDim; oTile += tileSize {
 			oEnd := oTile + tileSize
-			if oEnd > outDim { oEnd = outDim }
+			if oEnd > outDim {
+				oEnd = outDim
+			}
 
 			for o := oTile; o < oEnd; o++ {
 				gi := gradInter[s*outDim+o]
-				
+
 				x := sumSigG[o]
 				sig := 1.0 / (1.0 + math.Exp(-x))
 				silu := x * sig
 				dSilu := sig * (1.0 + x*(1.0-sig))
-				
+
 				dUp := gi * silu
 				dGate := gi * sumUp[o] * dSilu
-				
+
 				gradWeights[upBStart+o] += dUp
 				gradWeights[gateBStart+o] += dGate
 
 				for iTile := 0; iTile < inDim; iTile += tileSize {
 					iEnd := iTile + tileSize
-					if iEnd > inDim { iEnd = inDim }
-					
+					if iEnd > inDim {
+						iEnd = inDim
+					}
+
 					for i := iTile; i < iEnd; i++ {
 						inVal := float64(input[s*inDim+i])
-						gradWeights[upWStart + o*inDim+i] += inVal * dUp
-						gradWeights[gateWStart + o*inDim+i] += inVal * dGate
-						
-						gradInput[s*inDim+i] += dUp * float64(uW[o*inDim+i]) + dGate * float64(gW[o*inDim+i])
+						gradWeights[upWStart+o*inDim+i] += inVal * dUp
+						gradWeights[gateWStart+o*inDim+i] += inVal * dGate
+
+						gradInput[s*inDim+i] += dUp*float64(uW[o*inDim+i]) + dGate*float64(gW[o*inDim+i])
 					}
 				}
 			}
@@ -194,6 +219,10 @@ func swigluTiledProjectGateUpBackward[T Numeric](gradInter []float64, input []T,
 // ── SwiGLU CPU forward (sequential across sequence positions) ────────────────────
 
 func swigluForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if usePackedTernaryCPU(layer) {
+		return SwiGLUForwardPackedTernaryCPU(layer, input)
+	}
+
 	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
 	seqLen := len(input.Data) / inputSize
 	tileSize := layer.GetCPUTileSize(layer.DType)
@@ -228,23 +257,81 @@ func swigluForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor
 	return preAct, postAct
 }
 
+func SwiGLUForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
+	seqLen := len(input.Data) / inputSize
+	wSize := inputSize * intermediateSize
+
+	gateWStart := 0
+	upWStart := wSize
+	downWStart := 2 * wSize
+	gateBStart := 3 * wSize
+	upBStart := gateBStart + intermediateSize
+	downBStart := upBStart + intermediateSize
+
+	gateW, okG := layer.WeightStore.GetBitNetTernaryMatrix(gateWStart, intermediateSize, inputSize)
+	upW, okU := layer.WeightStore.GetBitNetTernaryMatrix(upWStart, intermediateSize, inputSize)
+	downW, okD := layer.WeightStore.GetBitNetTernaryMatrix(downWStart, inputSize, intermediateSize)
+	if !okG || !okU || !okD {
+		exact := layer.Network.UseExactDType
+		layer.Network.UseExactDType = false
+		pre, post := swigluForwardTiledParallel(layer, input)
+		layer.Network.UseExactDType = exact
+		return pre, post
+	}
+
+	preAct = NewTensor[T](seqLen, intermediateSize)
+	postAct = NewTensor[T](seqLen, inputSize)
+	gate := make([]float64, intermediateSize)
+	up := make([]float64, intermediateSize)
+	down := make([]float64, inputSize)
+	inputQ := make([]int8, inputSize)
+	preQ := make([]int8, intermediateSize)
+
+	for s := 0; s < seqLen; s++ {
+		row := input.Data[s*inputSize : (s+1)*inputSize]
+		inputQ, activationMax := bitNetQuantizeActivationNumeric(row, inputQ)
+		bitNetTernaryMatVecQuantized(gateW, inputQ, activationMax, gate)
+		bitNetTernaryMatVecQuantized(upW, inputQ, activationMax, up)
+		for o := 0; o < intermediateSize; o++ {
+			g := gate[o] + bitNetTernaryBias(layer.WeightStore, gateBStart+o)
+			u := up[o] + bitNetTernaryBias(layer.WeightStore, upBStart+o)
+			preAct.Data[s*intermediateSize+o] = T(swigluGateProduct(g, u, layer.Activation))
+		}
+
+		preRow := preAct.Data[s*intermediateSize : (s+1)*intermediateSize]
+		bitNetRMSNormTensorRowWeighted(preRow, layer.InnerNormWeight, layer.RMSNormEps)
+		preQ, activationMax = bitNetQuantizeActivationNumeric(preRow, preQ)
+		bitNetTernaryMatVecQuantized(downW, preQ, activationMax, down)
+		for i := 0; i < inputSize; i++ {
+			postAct.Data[s*inputSize+i] = T(down[i] + bitNetTernaryBias(layer.WeightStore, downBStart+i))
+		}
+	}
+
+	return preAct, postAct
+}
+
 func swigluBackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
 	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
 	seqLen := len(input.Data) / inputSize
 	tileSize := layer.GetCPUTileSize(layer.DType)
-	if tileSize <= 0 { tileSize = 32 }
+	if tileSize <= 0 {
+		tileSize = 32
+	}
 
 	gradInput = NewTensor[T](input.Shape...)
 	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
 
 	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil { weights = layer.WeightStore.Master }
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
 	wData := CastWeights[T](weights)
 
 	gateWStart := 0
 	upWStart := inputSize * intermediateSize
 	downWStart := 2 * inputSize * intermediateSize
-	gateBStart := 2 * inputSize * intermediateSize + intermediateSize * inputSize
+	gateBStart := 2*inputSize*intermediateSize + intermediateSize*inputSize
 	upBStart := gateBStart + intermediateSize
 	downBStart := upBStart + intermediateSize
 
@@ -292,8 +379,12 @@ func swigluBackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, 
 		}
 	}
 
-	for i := range gradInput.Data { gradInput.Data[i] = T(gi64[i]) }
-	for i := range gradWeights.Data { gradWeights.Data[i] = T(gw64[i]) }
+	for i := range gradInput.Data {
+		gradInput.Data[i] = T(gi64[i])
+	}
+	for i := range gradWeights.Data {
+		gradWeights.Data[i] = T(gw64[i])
+	}
 
 	return gradInput, gradWeights
 }

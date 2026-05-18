@@ -22,6 +22,10 @@ fn activate(v: f32, act: u32) -> f32 {
         if (v < 0.0) { return v * 0.01; } // LeakyReLU
         return v;
     }
+    if (act == 6u) {
+        let r = max(0.0, v);
+        return r * r; // ReLU2
+    }
     return v; // Linear/Default
 }
 `
@@ -267,6 +271,399 @@ fn main(
 }
 `, tileSize)
 }
+
+// ShaderTiledDenseBitNetTernary generates a dense kernel for BitNet packed
+// ternary matrices. Each u32 stores 16 weights as 2-bit codes:
+// 0 -> -1, 1 -> 0, 2 -> +1. Activations are quantized per token/row.
+func ShaderTiledDenseBitNetTernary(tileSize int) string {
+	return fmt.Sprintf(`
+struct Params {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    rowWords: u32,
+    weightScale: f32,
+    activation: u32,
+    hasBias: u32,
+    pad0: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read> weights: array<u32>;
+@group(0) @binding(3) var<storage, read> bias: array<f32>;
+@group(0) @binding(4) var<storage, read_write> output: array<f32>;
+
+`+wgslActivate+`
+
+fn ternary_value(code: u32) -> f32 {
+    if (code == 0u) { return -1.0; }
+    if (code == 2u) { return 1.0; }
+    return 0.0;
+}
+
+fn quantize_activation(v: f32, maxAbs: f32) -> f32 {
+    let scale = 127.0 / max(maxAbs, 0.00001);
+    return clamp(round(v * scale), -128.0, 127.0);
+}
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>
+) {
+    let o = global_id.x;
+    let b = wg_id.y;
+    if (o >= params.outputSize || b >= params.batchSize) { return; }
+
+    let baseIn = b * params.inputSize;
+    var maxAbs = 0.0;
+    for (var i: u32 = 0u; i < params.inputSize; i++) {
+        maxAbs = max(maxAbs, abs(input[baseIn + i]));
+    }
+    maxAbs = max(maxAbs, 0.00001);
+
+    let rowBase = o * params.rowWords;
+    var sum = 0.0;
+    for (var i: u32 = 0u; i < params.inputSize; i++) {
+        let word = weights[rowBase + (i / 16u)];
+        let shift = (i %% 16u) * 2u;
+        let code = (word >> shift) & 0x3u;
+        let q = quantize_activation(input[baseIn + i], maxAbs);
+        sum += q * ternary_value(code);
+    }
+
+    var res = sum * params.weightScale * (maxAbs / 127.0);
+    if (params.hasBias != 0u) {
+        res += bias[o];
+    }
+    output[b * params.outputSize + o] = activate(res, params.activation);
+}
+`, tileSize)
+}
+
+const ShaderBitNetQuantizeActivation = `
+struct Params {
+    batchSize: u32,
+    inputSize: u32,
+    qWords: u32,
+    pad0: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> input: array<f32>;
+@group(0) @binding(2) var<storage, read_write> qPacked: array<u32>;
+@group(0) @binding(3) var<storage, read_write> scales: array<f32>;
+
+fn quant_byte(v: f32, maxAbs: f32) -> u32 {
+    let scale = 127.0 / max(maxAbs, 0.00001);
+    let q = i32(clamp(round(v * scale), -128.0, 127.0));
+    return u32(q) & 0xFFu;
+}
+
+@compute @workgroup_size(1, 1, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let b = gid.x;
+    if (b >= params.batchSize) { return; }
+
+    let baseIn = b * params.inputSize;
+    var maxAbs = 0.0;
+    for (var i: u32 = 0u; i < params.inputSize; i++) {
+        maxAbs = max(maxAbs, abs(input[baseIn + i]));
+    }
+    maxAbs = max(maxAbs, 0.00001);
+    scales[b] = maxAbs / 127.0;
+
+    let baseQ = b * params.qWords;
+    for (var w: u32 = 0u; w < params.qWords; w++) {
+        var packed = 0u;
+        for (var lane: u32 = 0u; lane < 4u; lane++) {
+            let i = w * 4u + lane;
+            if (i < params.inputSize) {
+                let qb = quant_byte(input[baseIn + i], maxAbs);
+                packed |= qb << (lane * 8u);
+            }
+        }
+        qPacked[baseQ + w] = packed;
+    }
+}
+`
+
+// ShaderTiledDenseBitNetTernaryQuantized consumes activations already quantized
+// and packed as 4 signed int8 lanes per u32, one activation scale per row.
+func ShaderTiledDenseBitNetTernaryQuantized(tileSize int) string {
+	return fmt.Sprintf(`
+struct Params {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    rowWords: u32,
+    qWords: u32,
+    activation: u32,
+    hasBias: u32,
+    pad0: u32,
+    weightScale: f32,
+    pad1: f32,
+    pad2: f32,
+    pad3: f32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> qPacked: array<u32>;
+@group(0) @binding(2) var<storage, read> inputScales: array<f32>;
+@group(0) @binding(3) var<storage, read> weights: array<u32>;
+@group(0) @binding(4) var<storage, read> bias: array<f32>;
+@group(0) @binding(5) var<storage, read_write> output: array<f32>;
+
+`+wgslActivate+`
+
+fn ternary_value(code: u32) -> f32 {
+    if (code == 0u) { return -1.0; }
+    if (code == 2u) { return 1.0; }
+    return 0.0;
+}
+
+fn q_i8(word: u32, lane: u32) -> i32 {
+    var q = i32((word >> (lane * 8u)) & 0xFFu);
+    if (q > 127) { q -= 256; }
+    return q;
+}
+
+fn add_lane(acc: i32, qWord: u32, qLane: u32, wWord: u32, wLane: u32) -> i32 {
+    let q = q_i8(qWord, qLane);
+    let code = (wWord >> (wLane * 2u)) & 0x3u;
+    if (code == 0u) {
+        return acc - q;
+    }
+    if (code == 2u) {
+        return acc + q;
+    }
+    return acc;
+}
+
+fn dot16(acc0: i32, q0: u32, q1: u32, q2: u32, q3: u32, w: u32) -> i32 {
+    var acc = acc0;
+    acc = add_lane(acc, q0, 0u, w, 0u);
+    acc = add_lane(acc, q0, 1u, w, 1u);
+    acc = add_lane(acc, q0, 2u, w, 2u);
+    acc = add_lane(acc, q0, 3u, w, 3u);
+    acc = add_lane(acc, q1, 0u, w, 4u);
+    acc = add_lane(acc, q1, 1u, w, 5u);
+    acc = add_lane(acc, q1, 2u, w, 6u);
+    acc = add_lane(acc, q1, 3u, w, 7u);
+    acc = add_lane(acc, q2, 0u, w, 8u);
+    acc = add_lane(acc, q2, 1u, w, 9u);
+    acc = add_lane(acc, q2, 2u, w, 10u);
+    acc = add_lane(acc, q2, 3u, w, 11u);
+    acc = add_lane(acc, q3, 0u, w, 12u);
+    acc = add_lane(acc, q3, 1u, w, 13u);
+    acc = add_lane(acc, q3, 2u, w, 14u);
+    acc = add_lane(acc, q3, 3u, w, 15u);
+    return acc;
+}
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>
+) {
+    let o = global_id.x;
+    let b = wg_id.y;
+    if (o >= params.outputSize || b >= params.batchSize) { return; }
+
+    let qBase = b * params.qWords;
+    let wBase = o * params.rowWords;
+    var sum: i32 = 0;
+    let fullWords = params.inputSize / 16u;
+    for (var wIdx: u32 = 0u; wIdx < fullWords; wIdx++) {
+        let qOff = wIdx * 4u;
+        sum = dot16(
+            sum,
+            qPacked[qBase + qOff],
+            qPacked[qBase + qOff + 1u],
+            qPacked[qBase + qOff + 2u],
+            qPacked[qBase + qOff + 3u],
+            weights[wBase + wIdx],
+        );
+    }
+
+    for (var i: u32 = fullWords * 16u; i < params.inputSize; i++) {
+        let q = q_i8(qPacked[qBase + (i / 4u)], i %% 4u);
+        let code = (weights[wBase + (i / 16u)] >> ((i %% 16u) * 2u)) & 0x3u;
+        if (code == 0u) {
+            sum -= q;
+        } else if (code == 2u) {
+            sum += q;
+        }
+    }
+
+    var res = f32(sum) * params.weightScale * inputScales[b];
+    if (params.hasBias != 0u) {
+        res += bias[o];
+    }
+    output[b * params.outputSize + o] = activate(res, params.activation);
+}
+`, tileSize)
+}
+
+// ShaderTiledDenseBitNetTernaryQuantizedReduce uses a full workgroup to compute
+// one output row. Each lane walks a strided subset of packed 16-column ternary
+// words, then a workgroup reduction combines the partial int32 dot products.
+func ShaderTiledDenseBitNetTernaryQuantizedReduce(tileSize int) string {
+	return fmt.Sprintf(`
+struct Params {
+    batchSize: u32,
+    inputSize: u32,
+    outputSize: u32,
+    rowWords: u32,
+    qWords: u32,
+    activation: u32,
+    hasBias: u32,
+    pad0: u32,
+    weightScale: f32,
+    pad1: f32,
+    pad2: f32,
+    pad3: f32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> qPacked: array<u32>;
+@group(0) @binding(2) var<storage, read> inputScales: array<f32>;
+@group(0) @binding(3) var<storage, read> weights: array<u32>;
+@group(0) @binding(4) var<storage, read> bias: array<f32>;
+@group(0) @binding(5) var<storage, read_write> output: array<f32>;
+
+var<workgroup> partials: array<i32, %d>;
+
+`+wgslActivate+`
+
+fn q_i8(word: u32, lane: u32) -> i32 {
+    var q = i32((word >> (lane * 8u)) & 0xFFu);
+    if (q > 127) { q -= 256; }
+    return q;
+}
+
+fn add_lane(acc: i32, qWord: u32, qLane: u32, wWord: u32, wLane: u32) -> i32 {
+    let q = q_i8(qWord, qLane);
+    let code = (wWord >> (wLane * 2u)) & 0x3u;
+    if (code == 0u) {
+        return acc - q;
+    }
+    if (code == 2u) {
+        return acc + q;
+    }
+    return acc;
+}
+
+fn dot16(acc0: i32, q0: u32, q1: u32, q2: u32, q3: u32, w: u32) -> i32 {
+    var acc = acc0;
+    acc = add_lane(acc, q0, 0u, w, 0u);
+    acc = add_lane(acc, q0, 1u, w, 1u);
+    acc = add_lane(acc, q0, 2u, w, 2u);
+    acc = add_lane(acc, q0, 3u, w, 3u);
+    acc = add_lane(acc, q1, 0u, w, 4u);
+    acc = add_lane(acc, q1, 1u, w, 5u);
+    acc = add_lane(acc, q1, 2u, w, 6u);
+    acc = add_lane(acc, q1, 3u, w, 7u);
+    acc = add_lane(acc, q2, 0u, w, 8u);
+    acc = add_lane(acc, q2, 1u, w, 9u);
+    acc = add_lane(acc, q2, 2u, w, 10u);
+    acc = add_lane(acc, q2, 3u, w, 11u);
+    acc = add_lane(acc, q3, 0u, w, 12u);
+    acc = add_lane(acc, q3, 1u, w, 13u);
+    acc = add_lane(acc, q3, 2u, w, 14u);
+    acc = add_lane(acc, q3, 3u, w, 15u);
+    return acc;
+}
+
+@compute @workgroup_size(%d, 1, 1)
+fn main(
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) wg_id: vec3<u32>
+) {
+    let o = wg_id.x;
+    let b = wg_id.y;
+    let lid = local_id.x;
+    if (o >= params.outputSize || b >= params.batchSize) { return; }
+
+    let qBase = b * params.qWords;
+    let wBase = o * params.rowWords;
+    let fullWords = params.inputSize / 16u;
+    var sum: i32 = 0;
+
+    for (var wIdx = lid; wIdx < fullWords; wIdx += %du) {
+        let qOff = wIdx * 4u;
+        sum = dot16(
+            sum,
+            qPacked[qBase + qOff],
+            qPacked[qBase + qOff + 1u],
+            qPacked[qBase + qOff + 2u],
+            qPacked[qBase + qOff + 3u],
+            weights[wBase + wIdx]
+        );
+    }
+
+    if (lid == 0u) {
+        for (var i: u32 = fullWords * 16u; i < params.inputSize; i++) {
+            let q = q_i8(qPacked[qBase + (i / 4u)], i %% 4u);
+            let code = (weights[wBase + (i / 16u)] >> ((i %% 16u) * 2u)) & 0x3u;
+            if (code == 0u) {
+                sum -= q;
+            } else if (code == 2u) {
+                sum += q;
+            }
+        }
+    }
+
+    partials[lid] = sum;
+    workgroupBarrier();
+
+    var stride = %du / 2u;
+    loop {
+        if (lid < stride) {
+            partials[lid] = partials[lid] + partials[lid + stride];
+        }
+        workgroupBarrier();
+        if (stride == 1u) {
+            break;
+        }
+        stride = stride / 2u;
+    }
+
+    if (lid == 0u) {
+        var res = f32(partials[0]) * params.weightScale * inputScales[b];
+        if (params.hasBias != 0u) {
+            res += bias[o];
+        }
+        output[b * params.outputSize + o] = activate(res, params.activation);
+    }
+}
+`, tileSize, tileSize, tileSize, tileSize)
+}
+
+const ShaderBitNetGateProduct = `
+struct Params {
+    batchSize: u32,
+    hiddenSize: u32,
+    activation: u32,
+    pad0: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> gate: array<f32>;
+@group(0) @binding(2) var<storage, read> up: array<f32>;
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+
+` + wgslActivate + `
+
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let total = params.batchSize * params.hiddenSize;
+    if (idx >= total) { return; }
+    output[idx] = activate(gate[idx], params.activation) * up[idx];
+}
+`
 
 func ShaderTiledDenseN(tileSize int) string {
 	return ShaderTiledDense(tileSize)

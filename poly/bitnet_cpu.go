@@ -1,0 +1,831 @@
+package poly
+
+import (
+	"math"
+	"runtime"
+	"sync"
+)
+
+const bitNetTernaryPackedKeyBase DType = 10000
+const bitNetTernaryPackedScaleKeyBase DType = 20000
+
+// BitNetTernaryMatrix is a row-major {-1, 0, +1} matrix packed as 16 weights
+// per u32. Scale is applied once after the add/subtract-only dot product.
+type BitNetTernaryMatrix struct {
+	Rows     int
+	Cols     int
+	RowWords int
+	Offset   int
+	Scale    float32
+	Words    []uint32
+}
+
+func bitNetActivationMaxAbs[T Numeric](input []T) float32 {
+	maxAbs := float32(0)
+	for _, v := range input {
+		a := float32(math.Abs(float64(v)))
+		if a > maxAbs {
+			maxAbs = a
+		}
+	}
+	if maxAbs < 1e-5 {
+		return 1e-5
+	}
+	return maxAbs
+}
+
+func bitNetActivationMaxAbsFloat64(input []float64) float32 {
+	maxAbs := float32(0)
+	for _, v := range input {
+		a := float32(math.Abs(v))
+		if a > maxAbs {
+			maxAbs = a
+		}
+	}
+	if maxAbs < 1e-5 {
+		return 1e-5
+	}
+	return maxAbs
+}
+
+func bitNetQuantizedActivation[T Numeric](v T, maxAbs float32) int8 {
+	scale := 127.0 / float64(maxAbs)
+	q := int(math.Round(float64(v) * scale))
+	if q < -128 {
+		q = -128
+	}
+	if q > 127 {
+		q = 127
+	}
+	return int8(q)
+}
+
+func bitNetQuantizedActivationFloat64(v float64, maxAbs float32) int8 {
+	scale := 127.0 / float64(maxAbs)
+	q := int(math.Round(v * scale))
+	if q < -128 {
+		q = -128
+	}
+	if q > 127 {
+		q = 127
+	}
+	return int8(q)
+}
+
+func bitNetQuantizeActivationNumeric[T Numeric](input []T, buf []int8) ([]int8, float32) {
+	if len(buf) < len(input) {
+		buf = make([]int8, len(input))
+	}
+	activationMax := bitNetActivationMaxAbs(input)
+	for i, v := range input {
+		buf[i] = bitNetQuantizedActivation(v, activationMax)
+	}
+	return buf[:len(input)], activationMax
+}
+
+func bitNetQuantizeActivationFloat64(input []float64, buf []int8) ([]int8, float32) {
+	if len(buf) < len(input) {
+		buf = make([]int8, len(input))
+	}
+	activationMax := bitNetActivationMaxAbsFloat64(input)
+	for i, v := range input {
+		buf[i] = bitNetQuantizedActivationFloat64(v, activationMax)
+	}
+	return buf[:len(input)], activationMax
+}
+
+func bitNetTernaryScale(weights []float32) float32 {
+	if len(weights) == 0 {
+		return 1.0
+	}
+	var sumAbs float64
+	for _, v := range weights {
+		sumAbs += math.Abs(float64(v))
+	}
+	scale := float32(sumAbs / float64(len(weights)))
+	if scale == 0 {
+		return 1.0
+	}
+	return scale
+}
+
+func bitNetQuantValue(v, scale float32) uint8 {
+	if scale == 0 {
+		scale = 1.0
+	}
+	q := int(math.Round(float64(v / scale)))
+	if q > 1 {
+		q = 1
+	}
+	if q < -1 {
+		q = -1
+	}
+	return uint8(int8(q))
+}
+
+// MorphBitNetTernary converts this weight store to the BitNet b1.58 absmean
+// ternary representation. It is explicit so existing DTypeTernary behavior does
+// not change for callers that rely on the older max-abs morphing path.
+func (ws *WeightStore) MorphBitNetTernary() {
+	if ws == nil {
+		return
+	}
+	scale := bitNetTernaryScale(ws.Master)
+	w := make([]uint8, len(ws.Master))
+	for i, v := range ws.Master {
+		w[i] = bitNetQuantValue(v, scale)
+	}
+	ws.Scale = scale
+	ws.Versions[DTypeTernary] = w
+	if ws.CPUPacked != nil {
+		ws.CPUPacked = make(map[DType]any)
+	}
+	ws.GPUWeights = make(map[DType]any)
+}
+
+// MorphLayerBitNetTernary applies BitNet b1.58 ternary quantization to one
+// layer and switches its execution dtype to DTypeTernary.
+func MorphLayerBitNetTernary(layer *VolumetricLayer) error {
+	if layer == nil || layer.WeightStore == nil {
+		return nil
+	}
+	layer.WeightStore.MorphBitNetTernary()
+	layer.DType = DTypeTernary
+	return nil
+}
+
+// MorphLayerBitNetNativeTernary preserves the older unit-scale ternary path for
+// experiments. BitNet HF checkpoints should use MorphLayerBitNetTernary instead
+// because their BitLinear code dequantizes by absmean scale.
+func MorphLayerBitNetNativeTernary(layer *VolumetricLayer) error {
+	if layer == nil || layer.WeightStore == nil {
+		return nil
+	}
+	layer.WeightStore.MorphBitNetTernary()
+	if raw, ok := layer.WeightStore.Versions[DTypeTernary].([]uint8); ok {
+		for i, v := range raw {
+			layer.WeightStore.Master[i] = float32(int8(v))
+		}
+		layer.WeightStore.Scale = 1.0
+		layer.WeightStore.Versions = make(map[DType]any)
+		layer.WeightStore.CPUPacked = make(map[DType]any)
+		layer.WeightStore.GPUWeights = make(map[DType]any)
+	}
+	layer.DType = DTypeTernary
+	return nil
+}
+
+// MorphNetworkBitNetTernary quantizes linear/attention/MLP style weights while
+// leaving normalization parameters in float32, matching common BitNet layouts.
+func MorphNetworkBitNetTernary(n *VolumetricNetwork) error {
+	if n == nil {
+		return nil
+	}
+	for i := range n.Layers {
+		if err := morphLayerTreeBitNetTernary(&n.Layers[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// MorphNetworkBitNetNativeTernary preserves the older unit-scale ternary path
+// for experiments. BitNet HF checkpoints should use MorphNetworkBitNetTernary.
+func MorphNetworkBitNetNativeTernary(n *VolumetricNetwork) error {
+	if n == nil {
+		return nil
+	}
+	for i := range n.Layers {
+		if err := morphLayerTreeBitNetNativeTernary(&n.Layers[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func morphLayerTreeBitNetTernary(l *VolumetricLayer) error {
+	if l == nil {
+		return nil
+	}
+	switch l.Type {
+	case LayerRMSNorm, LayerLayerNorm, LayerSoftmax, LayerResidual:
+		// Keep scale-only/non-weight projection layers in their existing dtype.
+	default:
+		if err := MorphLayerBitNetTernary(l); err != nil {
+			return err
+		}
+	}
+	for i := range l.ParallelBranches {
+		if err := morphLayerTreeBitNetTernary(&l.ParallelBranches[i]); err != nil {
+			return err
+		}
+	}
+	for i := range l.SequentialLayers {
+		if err := morphLayerTreeBitNetTernary(&l.SequentialLayers[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func morphLayerTreeBitNetNativeTernary(l *VolumetricLayer) error {
+	if l == nil {
+		return nil
+	}
+	switch l.Type {
+	case LayerRMSNorm, LayerLayerNorm, LayerSoftmax, LayerResidual:
+	default:
+		if err := MorphLayerBitNetNativeTernary(l); err != nil {
+			return err
+		}
+	}
+	for i := range l.ParallelBranches {
+		if err := morphLayerTreeBitNetNativeTernary(&l.ParallelBranches[i]); err != nil {
+			return err
+		}
+	}
+	for i := range l.SequentialLayers {
+		if err := morphLayerTreeBitNetNativeTernary(&l.SequentialLayers[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func usePackedTernaryCPU(layer *VolumetricLayer) bool {
+	return layer != nil &&
+		layer.Network != nil &&
+		layer.Network.UseExactDType &&
+		!layer.Network.UseGPU &&
+		layer.DType == DTypeTernary &&
+		layer.WeightStore != nil
+}
+
+func bitNetPackedKey(offset int) DType {
+	return bitNetTernaryPackedKeyBase + DType(offset)
+}
+
+func bitNetPackedScaleKey(offset int) DType {
+	return bitNetTernaryPackedScaleKeyBase + DType(offset)
+}
+
+func (ws *WeightStore) lookupBitNetTernaryPacked(offset, rows, cols int) *BitNetTernaryMatrix {
+	if ws == nil || ws.CPUPacked == nil || rows <= 0 || cols <= 0 || offset < 0 {
+		return nil
+	}
+	key := bitNetPackedKey(offset)
+	if m, ok := ws.CPUPacked[key].(*BitNetTernaryMatrix); ok && m != nil &&
+		m.Offset == offset && m.Rows == rows && m.Cols == cols {
+		return m
+	}
+	for _, v := range ws.CPUPacked {
+		if m, ok := v.(*BitNetTernaryMatrix); ok && m != nil &&
+			m.Offset == offset && m.Rows == rows && m.Cols == cols {
+			return m
+		}
+	}
+	return nil
+}
+
+func (ws *WeightStore) GetBitNetTernaryMatrix(offset, rows, cols int) (*BitNetTernaryMatrix, bool) {
+	if ws == nil || rows <= 0 || cols <= 0 || offset < 0 {
+		return nil, false
+	}
+	total := rows * cols
+	if ws.CPUPacked == nil {
+		ws.CPUPacked = make(map[DType]any)
+	}
+	key := bitNetPackedKey(offset)
+	// Prefer slabs installed directly from safetensors (microsoft/bitnet-b1.58
+	// offline packed layout via SetMicrosoftBitNetPackedMatrix) — those never
+	// populate Master[offset:offset+total] with a dense FP32 unfold.
+	if m := ws.lookupBitNetTernaryPacked(offset, rows, cols); m != nil {
+		return m, true
+	}
+
+	if ws.Master == nil || offset+total > len(ws.Master) {
+		return nil, false
+	}
+	matrix, ok := packFloat32AsBitNetTernaryMatrix(ws.Master[offset:offset+total], rows, cols)
+	if !ok {
+		return nil, false
+	}
+	matrix.Offset = offset
+	ws.CPUPacked[key] = matrix
+	return matrix, true
+}
+
+// PrepareNetworkBitNetTernaryCPU prepares decoder BitLinear weights for CPU
+// inference: either packs from FP32 Master (HF float weights) or keeps slabs
+// already decoded from microsoft/bitnet-b1.58 offline safetensors via
+// SetMicrosoftBitNetPackedMatrix. Embeddings / RMSNorm stay as loaded.
+func PrepareNetworkBitNetTernaryCPU(n *VolumetricNetwork) error {
+	if n == nil {
+		return nil
+	}
+	for i := range n.Layers {
+		if err := prepareLayerTreeBitNetTernaryCPU(&n.Layers[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PrepareDecoderBlockBitNetTernaryCPU prepares one 4-layer HF decoder block
+// (RMSNorm, MHA, RMSNorm, SwiGLU). Releases FP32 Master only after successful pack
+// so offline-packed weights never get re-quantized from an empty Master span.
+func PrepareDecoderBlockBitNetTernaryCPU(n *VolumetricNetwork, blockIdx int) error {
+	if n == nil || blockIdx < 0 {
+		return nil
+	}
+	base := blockIdx * 4
+	if base >= len(n.Layers) {
+		return nil
+	}
+	end := base + 4
+	if end > len(n.Layers) {
+		end = len(n.Layers)
+	}
+	for i := base; i < end; i++ {
+		if err := prepareLayerTreeBitNetTernaryCPU(&n.Layers[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func prepareLayerTreeBitNetTernaryCPU(l *VolumetricLayer) error {
+	if l == nil {
+		return nil
+	}
+	switch l.Type {
+	case LayerDense:
+		if l.WeightStore != nil {
+			if _, ok := l.WeightStore.GetBitNetTernaryMatrix(0, l.OutputHeight, l.InputHeight); ok {
+				l.DType = DTypeTernary
+				releaseBitNetPackedProjectionMaster(l.WeightStore)
+			}
+		}
+	case LayerMultiHeadAttention:
+		prepareBitNetMHA(l)
+	case LayerSwiGLU:
+		prepareBitNetSwiGLU(l)
+	case LayerRMSNorm, LayerLayerNorm, LayerSoftmax, LayerResidual:
+		// Keep non-BitLinear layers as-is.
+	default:
+		if l.WeightStore != nil {
+			l.DType = DTypeTernary
+		}
+	}
+	for i := range l.ParallelBranches {
+		if err := prepareLayerTreeBitNetTernaryCPU(&l.ParallelBranches[i]); err != nil {
+			return err
+		}
+	}
+	for i := range l.SequentialLayers {
+		if err := prepareLayerTreeBitNetTernaryCPU(&l.SequentialLayers[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// EnsureBitNetMHAWeights builds packed ternary matrices for MHA Q/K/V/O (CPU/GPU BitNet paths).
+func EnsureBitNetMHAWeights(l *VolumetricLayer) {
+	prepareBitNetMHA(l)
+}
+
+func prepareBitNetMHA(l *VolumetricLayer) {
+	if l == nil || l.WeightStore == nil {
+		return
+	}
+	dModel := l.DModel
+	numHeads := l.NumHeads
+	numKVHeads := l.NumKVHeads
+	if numKVHeads == 0 {
+		numKVHeads = numHeads
+	}
+	headDim := l.HeadDim
+	qDim := l.QueryDim
+	if qDim == 0 {
+		qDim = numHeads * headDim
+	}
+	kvDim := numKVHeads * headDim
+	qwStart := 0
+	kwStart := qwStart + qDim*dModel
+	vwStart := kwStart + kvDim*dModel
+	owStart := vwStart + kvDim*dModel
+	qbStart := owStart + dModel*qDim
+	obEnd := qbStart + qDim + kvDim + kvDim + dModel
+	l.DType = DTypeTernary
+	l.WeightStore.GetBitNetTernaryMatrix(qwStart, qDim, dModel)
+	l.WeightStore.GetBitNetTernaryMatrix(kwStart, kvDim, dModel)
+	l.WeightStore.GetBitNetTernaryMatrix(vwStart, kvDim, dModel)
+	l.WeightStore.GetBitNetTernaryMatrix(owStart, dModel, qDim)
+	if bitNetBiasTailIsZero(l.WeightStore, qbStart, obEnd) {
+		releaseBitNetPackedProjectionMaster(l.WeightStore)
+	}
+}
+
+func prepareBitNetSwiGLU(l *VolumetricLayer) {
+	if l == nil || l.WeightStore == nil {
+		return
+	}
+	inputSize, intermediateSize := l.InputHeight, l.OutputHeight
+	wSize := inputSize * intermediateSize
+	gateWStart := 0
+	upWStart := wSize
+	downWStart := 2 * wSize
+	gateBStart := 3 * wSize
+	downBEnd := gateBStart + intermediateSize + intermediateSize + inputSize
+	l.DType = DTypeTernary
+	l.WeightStore.GetBitNetTernaryMatrix(gateWStart, intermediateSize, inputSize)
+	l.WeightStore.GetBitNetTernaryMatrix(upWStart, intermediateSize, inputSize)
+	l.WeightStore.GetBitNetTernaryMatrix(downWStart, inputSize, intermediateSize)
+	if bitNetBiasTailIsZero(l.WeightStore, gateBStart, downBEnd) {
+		releaseBitNetPackedProjectionMaster(l.WeightStore)
+	}
+}
+
+func bitNetBiasTailIsZero(ws *WeightStore, start, end int) bool {
+	if ws == nil || start < 0 || end > len(ws.Master) || start > end {
+		return false
+	}
+	for _, v := range ws.Master[start:end] {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func releaseBitNetPackedProjectionMaster(ws *WeightStore) {
+	if ws == nil {
+		return
+	}
+	ws.Master = nil
+	ws.Versions = make(map[DType]any)
+	ws.GPUWeights = make(map[DType]any)
+}
+
+func ternaryStorageToCode(v uint8) uint8 {
+	switch int8(v) {
+	case -1:
+		return 0
+	case 1:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func bitNetTernaryBias(ws *WeightStore, idx int) float64 {
+	if ws == nil || idx < 0 || idx >= len(ws.Master) {
+		return 0
+	}
+	return float64(ws.Master[idx])
+}
+
+func bitNetTernaryMatVecNumeric[T Numeric](matrix *BitNetTernaryMatrix, input []T, out []float64) bool {
+	if matrix == nil || len(input) < matrix.Cols || len(out) < matrix.Rows {
+		return false
+	}
+	xq, activationMax := bitNetQuantizeActivationNumeric(input[:matrix.Cols], nil)
+	return bitNetTernaryMatVecQuantized(matrix, xq, activationMax, out)
+}
+
+func bitNetTernaryMatVecQuantized(matrix *BitNetTernaryMatrix, xq []int8, activationMax float32, out []float64) bool {
+	if matrix == nil || len(xq) < matrix.Cols || len(out) < matrix.Rows {
+		return false
+	}
+	outputScale := float64(matrix.Scale) * float64(activationMax) / 127.0
+	if outputScale == 0 {
+		outputScale = 1.0
+	}
+	bitNetTernaryMatVecInt8(matrix, xq, outputScale, out)
+	return true
+}
+
+func bitNetTernaryMatVecInt8(matrix *BitNetTernaryMatrix, xq []int8, outputScale float64, out []float64) {
+	rowWords := matrix.RowWords
+	if rowWords <= 0 {
+		rowWords = (matrix.Cols + 15) / 16
+	}
+	fullWords := matrix.Cols / 16
+	tailCols := matrix.Cols % 16
+
+	worker := func(start, end int) {
+		for r := start; r < end; r++ {
+			var sum int32
+			wordBase := r * rowWords
+			xOff := 0
+			for w := 0; w < fullWords; w++ {
+				sum += bitNetTernaryWordDot16(matrix.Words[wordBase+w], xq[xOff:xOff+16])
+				xOff += 16
+			}
+			if tailCols > 0 {
+				sum += bitNetTernaryWordDotTail(matrix.Words[wordBase+fullWords], xq[xOff:xOff+tailCols], tailCols)
+			}
+			out[r] = float64(sum) * outputScale
+		}
+	}
+
+	work := matrix.Rows * matrix.Cols
+	if work < 262144 || matrix.Rows < 4 {
+		worker(0, matrix.Rows)
+		return
+	}
+	workers := runtime.GOMAXPROCS(0)
+	if workers > matrix.Rows {
+		workers = matrix.Rows
+	}
+	if workers <= 1 {
+		worker(0, matrix.Rows)
+		return
+	}
+	chunk := (matrix.Rows + workers - 1) / workers
+	var wg sync.WaitGroup
+	for start := 0; start < matrix.Rows; start += chunk {
+		end := start + chunk
+		if end > matrix.Rows {
+			end = matrix.Rows
+		}
+		wg.Add(1)
+		go func(start, end int) {
+			defer wg.Done()
+			worker(start, end)
+		}(start, end)
+	}
+	wg.Wait()
+}
+
+func bitNetTernaryWordDot16(word uint32, xq []int8) int32 {
+	var sum int32
+	code := word & 0x03
+	sum += int32(xq[0]) * (int32(code) - 1)
+	code = (word >> 2) & 0x03
+	sum += int32(xq[1]) * (int32(code) - 1)
+	code = (word >> 4) & 0x03
+	sum += int32(xq[2]) * (int32(code) - 1)
+	code = (word >> 6) & 0x03
+	sum += int32(xq[3]) * (int32(code) - 1)
+	code = (word >> 8) & 0x03
+	sum += int32(xq[4]) * (int32(code) - 1)
+	code = (word >> 10) & 0x03
+	sum += int32(xq[5]) * (int32(code) - 1)
+	code = (word >> 12) & 0x03
+	sum += int32(xq[6]) * (int32(code) - 1)
+	code = (word >> 14) & 0x03
+	sum += int32(xq[7]) * (int32(code) - 1)
+	code = (word >> 16) & 0x03
+	sum += int32(xq[8]) * (int32(code) - 1)
+	code = (word >> 18) & 0x03
+	sum += int32(xq[9]) * (int32(code) - 1)
+	code = (word >> 20) & 0x03
+	sum += int32(xq[10]) * (int32(code) - 1)
+	code = (word >> 22) & 0x03
+	sum += int32(xq[11]) * (int32(code) - 1)
+	code = (word >> 24) & 0x03
+	sum += int32(xq[12]) * (int32(code) - 1)
+	code = (word >> 26) & 0x03
+	sum += int32(xq[13]) * (int32(code) - 1)
+	code = (word >> 28) & 0x03
+	sum += int32(xq[14]) * (int32(code) - 1)
+	code = (word >> 30) & 0x03
+	sum += int32(xq[15]) * (int32(code) - 1)
+	return sum
+}
+
+func bitNetTernaryWordDotTail(word uint32, xq []int8, n int) int32 {
+	var sum int32
+	for i := 0; i < n; i++ {
+		code := (word >> uint(i*2)) & 0x03
+		sum += int32(xq[i]) * (int32(code) - 1)
+	}
+	return sum
+}
+
+func bitNetTernaryMatVecFloat64(matrix *BitNetTernaryMatrix, input []float64, out []float64) bool {
+	if matrix == nil || len(input) < matrix.Cols || len(out) < matrix.Rows {
+		return false
+	}
+	xq, activationMax := bitNetQuantizeActivationFloat64(input[:matrix.Cols], nil)
+	return bitNetTernaryMatVecQuantized(matrix, xq, activationMax, out)
+}
+
+func bitNetRMSNormFloat64(data []float64, eps float64) {
+	bitNetRMSNormFloat64Weighted(data, nil, eps)
+}
+
+func bitNetRMSNormFloat64Weighted(data []float64, weight []float32, eps float64) {
+	if len(data) == 0 {
+		return
+	}
+	if eps <= 0 {
+		eps = 1e-5
+	}
+	var sumSq float64
+	for _, v := range data {
+		sumSq += v * v
+	}
+	scale := 1.0 / math.Sqrt(sumSq/float64(len(data))+eps)
+	for i := range data {
+		w := 1.0
+		if i < len(weight) {
+			w = float64(weight[i])
+		}
+		data[i] *= scale * w
+	}
+}
+
+func bitNetRMSNormTensorRow[T Numeric](data []T, eps float64) {
+	bitNetRMSNormTensorRowWeighted(data, nil, eps)
+}
+
+func bitNetRMSNormTensorRowWeighted[T Numeric](data []T, weight []float32, eps float64) {
+	if len(data) == 0 {
+		return
+	}
+	if eps <= 0 {
+		eps = 1e-5
+	}
+	var sumSq float64
+	for _, v := range data {
+		f := float64(v)
+		sumSq += f * f
+	}
+	scale := 1.0 / math.Sqrt(sumSq/float64(len(data))+eps)
+	for i, v := range data {
+		w := 1.0
+		if i < len(weight) {
+			w = float64(weight[i])
+		}
+		data[i] = T(float64(v) * scale * w)
+	}
+}
+
+func packFloat32AsBitNetTernaryMatrix(weights []float32, rows, cols int) (*BitNetTernaryMatrix, bool) {
+	if rows <= 0 || cols <= 0 || rows*cols > len(weights) {
+		return nil, false
+	}
+	total := rows * cols
+	scale := bitNetTernaryScale(weights[:total])
+	raw := make([]uint8, total)
+	alreadyTernary := true
+	for i := 0; i < total; i++ {
+		v := weights[i]
+		if !(math.Abs(float64(v)) < 1e-6 || math.Abs(float64(v-1)) < 1e-6 || math.Abs(float64(v+1)) < 1e-6) {
+			alreadyTernary = false
+		}
+		raw[i] = bitNetQuantValue(v, scale)
+	}
+	if alreadyTernary {
+		scale = 1.0
+		for i := 0; i < total; i++ {
+			raw[i] = bitNetQuantValue(weights[i], 1.0)
+		}
+	}
+	return &BitNetTernaryMatrix{
+		Rows:     rows,
+		Cols:     cols,
+		RowWords: (cols + 15) / 16,
+		Scale:    scale,
+		Words:    packTernaryRowsToU32(raw, rows, cols),
+	}, true
+}
+
+func packTernaryRowsToU32(data []uint8, rows, cols int) []uint32 {
+	rowWords := (cols + 15) / 16
+	packed := make([]uint32, rows*rowWords)
+	for r := 0; r < rows; r++ {
+		rowOff := r * cols
+		wordOff := r * rowWords
+		for c := 0; c < cols; c++ {
+			code := ternaryStorageToCode(data[rowOff+c])
+			shift := uint((c % 16) * 2)
+			packed[wordOff+c/16] |= uint32(code) << shift
+		}
+	}
+	return packed
+}
+
+func (ws *WeightStore) SetBitNetPackedScale(offset int, scale float32) {
+	if ws == nil {
+		return
+	}
+	if scale == 0 {
+		scale = 1.0
+	}
+	if ws.CPUPacked == nil {
+		ws.CPUPacked = make(map[DType]any)
+	}
+	ws.CPUPacked[bitNetPackedScaleKey(offset)] = scale
+	if matrix, ok := ws.CPUPacked[bitNetPackedKey(offset)].(*BitNetTernaryMatrix); ok && matrix != nil {
+		matrix.Scale = scale
+	}
+}
+
+func (ws *WeightStore) bitNetPackedScale(offset int) float32 {
+	if ws == nil || ws.CPUPacked == nil {
+		return 1.0
+	}
+	if scale, ok := ws.CPUPacked[bitNetPackedScaleKey(offset)].(float32); ok && scale != 0 {
+		return scale
+	}
+	return 1.0
+}
+
+func (ws *WeightStore) SetMicrosoftBitNetPackedMatrix(offset, rows, cols int, packed []float32) bool {
+	if ws == nil || rows <= 0 || cols <= 0 || offset < 0 || len(packed) == 0 {
+		return false
+	}
+	if rows%4 != 0 || len(packed) != (rows/4)*cols {
+		return false
+	}
+	if ws.CPUPacked == nil {
+		ws.CPUPacked = make(map[DType]any)
+	}
+	words := packMicrosoftOfflineBitNetRowsToU32FromFloatU8Slots(packed, rows, cols)
+	matrix := &BitNetTernaryMatrix{
+		Rows:     rows,
+		Cols:     cols,
+		RowWords: (cols + 15) / 16,
+		Offset:   offset,
+		Scale:    ws.bitNetPackedScale(offset),
+		Words:    words,
+	}
+	ws.CPUPacked[bitNetPackedKey(offset)] = matrix
+	return true
+}
+
+// SetMicrosoftBitNetPackedMatrixBytes installs microsoft/bitnet-b1.58 offline-packed
+// weights from raw U8 (or any per-cell byte payload) without an intermediate []float32.
+// len(packed) must equal (rows/4)*cols and rows must be divisible by 4.
+func (ws *WeightStore) SetMicrosoftBitNetPackedMatrixBytes(offset, rows, cols int, packed []byte) bool {
+	if ws == nil || rows <= 0 || cols <= 0 || offset < 0 || len(packed) == 0 {
+		return false
+	}
+	if rows%4 != 0 || len(packed) != (rows/4)*cols {
+		return false
+	}
+	if ws.CPUPacked == nil {
+		ws.CPUPacked = make(map[DType]any)
+	}
+	words := packMicrosoftOfflineBitNetRowsToU32FromBytes(packed, rows, cols)
+	matrix := &BitNetTernaryMatrix{
+		Rows:     rows,
+		Cols:     cols,
+		RowWords: (cols + 15) / 16,
+		Offset:   offset,
+		Scale:    ws.bitNetPackedScale(offset),
+		Words:    words,
+	}
+	ws.CPUPacked[bitNetPackedKey(offset)] = matrix
+	return true
+}
+
+// packMicrosoftOfflineBitNetRowsToU32FromFloatU8Slots matches HF checkpoints that decode
+// U8 tensors into []float32 (values 0–255) before packing.
+func packMicrosoftOfflineBitNetRowsToU32FromFloatU8Slots(packed []float32, rows, cols int) []uint32 {
+	rowWords := (cols + 15) / 16
+	out := make([]uint32, rows*rowWords)
+	packedRows := rows / 4
+	for pr := 0; pr < packedRows; pr++ {
+		for c := 0; c < cols; c++ {
+			b := uint8(packed[pr*cols+c])
+			for lane := 0; lane < 4; lane++ {
+				code := (b >> uint(lane*2)) & 0x03
+				if code > 2 {
+					code = 1
+				}
+				row := lane*packedRows + pr
+				wordOff := row*rowWords + c/16
+				shift := uint((c % 16) * 2)
+				out[wordOff] |= uint32(code) << shift
+			}
+		}
+	}
+	return out
+}
+
+func packMicrosoftOfflineBitNetRowsToU32FromBytes(packed []byte, rows, cols int) []uint32 {
+	rowWords := (cols + 15) / 16
+	out := make([]uint32, rows*rowWords)
+	packedRows := rows / 4
+	for pr := 0; pr < packedRows; pr++ {
+		for c := 0; c < cols; c++ {
+			b := packed[pr*cols+c]
+			for lane := 0; lane < 4; lane++ {
+				code := (b >> uint(lane*2)) & 0x03
+				if code > 2 {
+					code = 1
+				}
+				row := lane*packedRows + pr
+				wordOff := row*rowWords + c/16
+				shift := uint((c % 16) * 2)
+				out[wordOff] |= uint32(code) << shift
+			}
+		}
+	}
+	return out
+}

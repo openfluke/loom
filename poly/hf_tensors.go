@@ -39,6 +39,18 @@ func ReleaseTransientSafetensorMap(tensors map[string][]float32, keep ...[]float
 	debug.FreeOSMemory()
 }
 
+// ReleaseTransientHFStoredMap drops raw safetensors tensor payloads (BitNet / staged loads).
+func ReleaseTransientHFStoredMap(tensors map[string]HFStoredTensor) {
+	if len(tensors) == 0 {
+		return
+	}
+	for k := range tensors {
+		delete(tensors, k)
+	}
+	runtime.GC()
+	debug.FreeOSMemory()
+}
+
 // CloneMappedGlobalWeights copies slices returned from PrefixWeightMapper.MapWeights
 // so a temporary global tensor map can be freed before loading layers sequentially.
 func CloneMappedGlobalWeights(embeddings, lmHead, finalNorm []float32) (embOut, lmOut, fnOut []float32) {

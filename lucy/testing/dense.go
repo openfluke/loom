@@ -21,7 +21,7 @@ func init() {
 	})
 }
 
-func RunDenseL1Caching()  { RunGenericLayerSuite(denseSpec, TestForward) }
-func RunDenseTraining()   { RunGenericLayerSuite(denseSpec, TestTraining|TestSaveLoad) }
-func RunDenseGPUForward() { RunGenericLayerSuite(denseSpec, TestForward) }
+// RunDenseL1Caching is defined in dense_forward.go (includes ASM SC/MC columns).
+func RunDenseTraining()    { RunGenericLayerSuite(denseSpec, TestTraining|TestSaveLoad) }
 func RunDenseGPUBackward() { RunGenericLayerSuite(denseSpec, TestBackward) }
+// RunDenseGPUForward is in dense_forward.go (ASM timer columns).

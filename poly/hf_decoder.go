@@ -12,6 +12,7 @@ type HFDecoderDims struct {
 	IntermediateSize int
 	RMSNormEps       float64
 	RoPEFreqBase     float64
+	Activation       ActivationType
 }
 
 // InitHFDecoderBlocks wires numLayers transformer blocks (4 poly layers each):
@@ -61,6 +62,7 @@ func InitHFDecoderBlocks(net *VolumetricNetwork, d HFDecoderDims) {
 		l3.Type = LayerSwiGLU
 		l3.InputHeight = hiddenSize
 		l3.OutputHeight = intermediateSize
+		l3.Activation = d.Activation
 		l3.WeightStore = NewWeightStore(mlpSize)
 	}
 }

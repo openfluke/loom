@@ -34,6 +34,44 @@ type WGPUSwiGLUI8Params struct {
 	_          [2]uint32 // Padding
 }
 
+type WGPUDenseBitNetTernaryParams struct {
+	BatchSize   uint32
+	InputSize   uint32
+	OutputSize  uint32
+	RowWords    uint32
+	WeightScale float32
+	Activation  uint32
+	HasBias     uint32
+	_           uint32
+}
+
+type WGPUBitNetQuantizeActivationParams struct {
+	BatchSize uint32
+	InputSize uint32
+	QWords    uint32
+	_         uint32
+}
+
+type WGPUDenseBitNetTernaryQuantizedParams struct {
+	BatchSize   uint32
+	InputSize   uint32
+	OutputSize  uint32
+	RowWords    uint32
+	QWords      uint32
+	Activation  uint32
+	HasBias     uint32
+	_           uint32
+	WeightScale float32
+	_           [3]float32
+}
+
+type WGPUBitNetGateProductParams struct {
+	BatchSize  uint32
+	HiddenSize uint32
+	Activation uint32
+	_          uint32
+}
+
 type WGPUApplyGradientsParams struct {
 	Size    uint32
 	LR      float32
@@ -290,6 +328,179 @@ func (c *WGPUContext) DispatchDenseI8(
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, bindGroup, nil)
 	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+func (c *WGPUContext) DispatchDenseBitNetTernary(
+	batchSize, inputSize, outputSize int,
+	inputBuf, weightBuf, biasBuf, outputBuf *wgpu.Buffer,
+	weightScale float32,
+	activation ActivationType,
+	tileSize int,
+) error {
+	if tileSize <= 0 {
+		tileSize = 32
+	}
+	if biasBuf == nil {
+		biasBuf = c.BlankBuffer
+	}
+	shaderSrc := ShaderTiledDenseBitNetTernary(tileSize)
+	pipeline, err := c.CreateComputePipeline(shaderSrc)
+	if err != nil {
+		return err
+	}
+	rowWords := (inputSize + 15) / 16
+	params := WGPUDenseBitNetTernaryParams{
+		BatchSize:   uint32(batchSize),
+		InputSize:   uint32(inputSize),
+		OutputSize:  uint32(outputSize),
+		RowWords:    uint32(rowWords),
+		WeightScale: weightScale,
+		Activation:  mapActivation(activation),
+	}
+	if biasBuf != c.BlankBuffer {
+		params.HasBias = 1
+	}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseBitNetTernaryParams{params}))
+
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, weightBuf, biasBuf, outputBuf)
+	if err != nil {
+		return err
+	}
+
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+func (c *WGPUContext) DispatchBitNetQuantizeActivation(
+	batchSize, inputSize int,
+	inputBuf, qPackedBuf, scaleBuf *wgpu.Buffer,
+) error {
+	pipeline, err := c.CreateComputePipeline(ShaderBitNetQuantizeActivation)
+	if err != nil {
+		return err
+	}
+	qWords := (inputSize + 3) / 4
+	params := WGPUBitNetQuantizeActivationParams{
+		BatchSize: uint32(batchSize),
+		InputSize: uint32(inputSize),
+		QWords:    uint32(qWords),
+	}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUBitNetQuantizeActivationParams{params}))
+
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, qPackedBuf, scaleBuf)
+	if err != nil {
+		return err
+	}
+
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups(uint32(batchSize), 1, 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+func (c *WGPUContext) DispatchDenseBitNetTernaryQuantized(
+	batchSize, inputSize, outputSize int,
+	qPackedBuf, scaleBuf, weightBuf, biasBuf, outputBuf *wgpu.Buffer,
+	weightScale float32,
+	activation ActivationType,
+	tileSize int,
+) error {
+	tileSize = bitNetReductionTileSize(tileSize)
+	if biasBuf == nil {
+		biasBuf = c.BlankBuffer
+	}
+	shaderSrc := ShaderTiledDenseBitNetTernaryQuantizedReduce(tileSize)
+	pipeline, err := c.CreateComputePipeline(shaderSrc)
+	if err != nil {
+		return err
+	}
+	rowWords := (inputSize + 15) / 16
+	qWords := (inputSize + 3) / 4
+	params := WGPUDenseBitNetTernaryQuantizedParams{
+		BatchSize:   uint32(batchSize),
+		InputSize:   uint32(inputSize),
+		OutputSize:  uint32(outputSize),
+		RowWords:    uint32(rowWords),
+		QWords:      uint32(qWords),
+		Activation:  mapActivation(activation),
+		WeightScale: weightScale,
+	}
+	if biasBuf != c.BlankBuffer {
+		params.HasBias = 1
+	}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseBitNetTernaryQuantizedParams{params}))
+
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, qPackedBuf, scaleBuf, weightBuf, biasBuf, outputBuf)
+	if err != nil {
+		return err
+	}
+
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups(uint32(outputSize), uint32(batchSize), 1)
+	pass.End()
+	ctxSubmit(c, enc, owned)
+	return nil
+}
+
+func bitNetReductionTileSize(tileSize int) int {
+	if tileSize <= 0 {
+		return 64
+	}
+	if tileSize < 64 {
+		return 64
+	}
+	if tileSize >= 128 {
+		return 128
+	}
+	return 64
+}
+
+func (c *WGPUContext) DispatchBitNetGateProduct(
+	batchSize, hiddenSize int,
+	activation ActivationType,
+	gateBuf, upBuf, outputBuf *wgpu.Buffer,
+) error {
+	pipeline, err := c.CreateComputePipeline(ShaderBitNetGateProduct)
+	if err != nil {
+		return err
+	}
+	params := WGPUBitNetGateProductParams{
+		BatchSize:  uint32(batchSize),
+		HiddenSize: uint32(hiddenSize),
+		Activation: mapActivation(activation),
+	}
+	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
+	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUBitNetGateProductParams{params}))
+
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gateBuf, upBuf, outputBuf)
+	if err != nil {
+		return err
+	}
+
+	enc, owned, _ := ctxEncoder(c)
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups((uint32(batchSize*hiddenSize)+63)/64, 1, 1)
 	pass.End()
 	ctxSubmit(c, enc, owned)
 	return nil
@@ -1550,6 +1761,10 @@ func mapActivation(act ActivationType) uint32 {
 		return 3
 	case ActivationSigmoid:
 		return 4
+	case ActivationLeakyReLU:
+		return 5
+	case ActivationReLU2:
+		return 6
 	default:
 		return 99
 	}
@@ -1914,6 +2129,17 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 	}
 	switch l.Type {
 	case LayerDense:
+		if l.DType == DTypeTernary {
+			wBuf, _ := l.WeightStore.GPUWeights[DTypeTernary].(*wgpu.Buffer)
+			if wBuf == nil {
+				return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing BitNet ternary GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+			}
+			qBuf, scaleBuf, err := bitNetQuantizeActivationGPU(c, fmt.Sprintf("dense_bitnet_%p", l), batchSize, l.InputHeight, inputBuf)
+			if err != nil {
+				return err
+			}
+			return c.DispatchDenseBitNetTernaryQuantized(batchSize, l.InputHeight, l.OutputHeight, qBuf, scaleBuf, wBuf, nil, outBuf, bitNetGPUScaleValue(l.WeightStore, DTypeTernary, 0), l.Activation, tileSize)
+		}
 		if l.DType == DTypeInt4 {
 			if scaleBuf, ok := l.WeightStore.GPUScales[DTypeInt4]; ok && scaleBuf != nil {
 				if weightBuf, ok := l.WeightStore.GPUWeights[DTypeInt4].(*wgpu.Buffer); ok {
@@ -2214,9 +2440,14 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 
 	switch l.Type {
 	case LayerDense:
-		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		var wBuf *wgpu.Buffer
+		if l.WeightStore != nil {
+			if b, ok := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer); ok && b != nil {
+				wBuf = b
+			}
+		}
 		if wBuf == nil {
-			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights (dense backward requires Float32 coef buffer)", l.Type.String(), l.Z, l.Y, l.X, l.L)
 		}
 		// Call the premium tiled backward dispatchers in wgpu_dense_tiled.go
 		if err := c.DispatchDenseBackwardDXTiled(tileSize, batchSize, l.InputHeight, l.OutputHeight, uint32(l.Activation), gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
@@ -2230,32 +2461,55 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 		rmsBuf := c.GetActivationBuffer(fmt.Sprintf("rms_%p", l), uint64(batchSize*4), wgpu.BufferUsageStorage)
 		// Provide 1.0 for dummy validation
 		c.Queue.WriteBuffer(rmsBuf, 0, wgpu.ToBytes([]float32{1.0}))
-		return c.DispatchRMSNormBackward(batchSize, l.InputHeight, 1e-5, gradOutBuf, inputBuf, rmsBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), dxBuf, dwBuf)
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
+		return c.DispatchRMSNormBackward(batchSize, l.InputHeight, 1e-5, gradOutBuf, inputBuf, rmsBuf, wBuf, dxBuf, dwBuf)
 	case LayerCNN1:
 		if isCNN1NativeGPUQuantDType(l.DType) {
-			if err := c.DispatchCNN1PackedBackwardDX(l.DType, batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, cnn1PackedGPUScale(l), gradOutBuf, GetGPUWeightBuffer(l), preActBuf, dxBuf); err != nil {
+			wBuf := GetGPUWeightBuffer(l)
+			if wBuf == nil {
+				return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+			}
+			if err := c.DispatchCNN1PackedBackwardDX(l.DType, batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, cnn1PackedGPUScale(l), gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
 				return err
 			}
 			return c.DispatchCNN1BackwardDW(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, inputBuf, preActBuf, dwBuf)
 		}
-		if err := c.DispatchCNN1BackwardDX(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), preActBuf, dxBuf); err != nil {
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
+		if err := c.DispatchCNN1BackwardDX(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
 			return err
 		}
 		return c.DispatchCNN1BackwardDW(batchSize, l.InputChannels, l.InputHeight, l.Filters, l.OutputHeight, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, inputBuf, preActBuf, dwBuf)
 	case LayerCNN2:
-		if err := c.DispatchCNN2BackwardDX(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), preActBuf, dxBuf); err != nil {
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
+		if err := c.DispatchCNN2BackwardDX(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
 			return err
 		}
 		return c.DispatchCNN2BackwardDW(batchSize, l.InputChannels, l.InputHeight, l.InputWidth, l.Filters, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, inputBuf, preActBuf, dwBuf)
 	case LayerCNN3:
-		if err := c.DispatchCNN3BackwardDX(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer), preActBuf, dxBuf); err != nil {
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
+		if err := c.DispatchCNN3BackwardDX(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, wBuf, preActBuf, dxBuf); err != nil {
 			return err
 		}
 		return c.DispatchCNN3BackwardDW(batchSize, l.InputChannels, l.InputDepth, l.InputHeight, l.InputWidth, l.Filters, l.OutputDepth, l.OutputHeight, l.OutputWidth, l.KernelSize, l.Stride, l.Padding, l.Activation, gradOutBuf, inputBuf, preActBuf, dwBuf)
 	case LayerSwiGLU:
 		return c.dispatchBackwardLayerCPUFallback(l, batchSize, gradOutBuf, inputBuf, dxBuf, dwBuf)
 	case LayerRNN:
-		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
 		// hCurrBuf = histPreBuf[i] = post-tanh output; backward uses 1-hCurr^2 for tanh derivative.
 		// wBuf starts with wIH at offset 0, so DX can read wIH[h*I+i] correctly from the full buffer.
 		hPrevBuf := c.GetActivationBuffer(fmt.Sprintf("rnn_hprev_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
@@ -2264,7 +2518,10 @@ func (c *WGPUContext) DispatchBackwardLayer(l *VolumetricLayer, batchSize int, g
 		}
 		return c.DispatchRNNBackwardDW(tileSize, batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, inputBuf, preActBuf, hPrevBuf, dwBuf)
 	case LayerLSTM:
-		wBuf, _ := l.WeightStore.GPUWeights[DTypeFloat32].(*wgpu.Buffer)
+		wBuf := GetGPUWeightBuffer(l)
+		if wBuf == nil {
+			return fmt.Errorf("layer %s at [%d,%d,%d,%d]: missing GPU weights", l.Type.String(), l.Z, l.Y, l.X, l.L)
+		}
 		lstmPreAct := c.GetActivationBuffer(fmt.Sprintf("lstm_preact_%p", l), uint64(batchSize*5*l.OutputHeight*4), wgpu.BufferUsageStorage)
 		hPrevBuf := c.GetActivationBuffer(fmt.Sprintf("lstm_hprev_%p", l), uint64(batchSize*l.OutputHeight*4), wgpu.BufferUsageStorage)
 		if err := c.DispatchLSTMBackwardDX(tileSize, batchSize, l.InputHeight, l.OutputHeight, gradOutBuf, wBuf, lstmPreAct, dxBuf); err != nil {

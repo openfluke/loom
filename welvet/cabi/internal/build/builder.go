@@ -163,7 +163,7 @@ func buildLucyInto(p Platform, outPath, cc string) error {
 	fmt.Printf("  compiling lucy → %s...\n", filepath.Base(outExe))
 	cmd := exec.Command("go", "build", "-o", outExe, ".")
 	cmd.Dir = lucyDir
-	env := append(os.Environ(),
+	env := append(cleanBuildEnv(),
 		"GOOS="+p.GOOS,
 		"GOARCH="+p.GOARCH,
 		"CGO_ENABLED=1",
@@ -173,6 +173,9 @@ func buildLucyInto(p Platform, outPath, cc string) error {
 	}
 	if cc != "" {
 		env = append(env, "CC="+cc)
+	}
+	if p.GOOS == "windows" && p.GOARCH == "arm64" {
+		env = append(env, "CGO_LDFLAGS=-loleaut32 -lole32 -luuid")
 	}
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
@@ -243,6 +246,9 @@ func buildPlatform(p Platform, outBase string) error {
 	outFile := filepath.Join(outPath, libName)
 
 	cc := crossCC(p)
+	if p.GOOS == "windows" && cc == "" {
+		return fmt.Errorf("windows/%s: no mingw cross-compiler (install llvm-mingw to ~/llvm-mingw and set LLVM_MINGW_HOME in .build_env)", p.GOARCH)
+	}
 
 	cmd := exec.Command("go", "build",
 		"-buildmode="+p.BuildMode,
@@ -250,7 +256,7 @@ func buildPlatform(p Platform, outBase string) error {
 		"../../",
 	)
 
-	env := append(os.Environ(),
+	env := append(cleanBuildEnv(),
 		"GOOS="+p.GOOS,
 		"GOARCH="+p.GOARCH,
 		"CGO_ENABLED=1",
@@ -262,6 +268,9 @@ func buildPlatform(p Platform, outBase string) error {
 		// CC may contain flags (e.g. "clang -arch x86_64"); pass as-is — the
 		// Go toolchain splits it correctly when it invokes the C compiler.
 		env = append(env, "CC="+cc)
+	}
+	if p.GOOS == "windows" && p.GOARCH == "arm64" {
+		env = append(env, "CGO_LDFLAGS=-loleaut32 -lole32 -luuid")
 	}
 
 	cmd.Env = env
@@ -356,6 +365,47 @@ func firstPathCC(names ...string) string {
 	return ""
 }
 
+// firstLLVMMinGWCC finds a Windows cross-compiler under LLVM_MINGW_HOME (not global PATH).
+func firstLLVMMinGWCC(names ...string) string {
+	var roots []string
+	if v := strings.TrimSpace(os.Getenv("LLVM_MINGW_HOME")); v != "" {
+		roots = append(roots, v)
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		roots = append(roots, filepath.Join(h, "llvm-mingw"))
+	}
+	seen := map[string]struct{}{}
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if root == "" {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		bin := filepath.Join(root, "bin")
+		for _, name := range names {
+			p := filepath.Join(bin, name)
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				return p
+			}
+		}
+	}
+	return firstPathCC(names...)
+}
+
+func cleanBuildEnv() []string {
+	out := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "CC=") || strings.HasPrefix(e, "CGO_LDFLAGS=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // crossCC returns the C compiler (and any required flags) needed to
 // cross-compile for p.  Returns "" to use the default CC in the environment.
 // NOTE: the returned string may contain spaces (e.g. "clang -arch x86_64");
@@ -385,14 +435,8 @@ func crossCC(p Platform) string {
 			return "aarch64-linux-gnu-gcc"
 		}
 	case "darwin":
-		// On Apple Silicon building for Intel (or vice-versa), Xcode's clang
-		// supports cross-arch via -arch; no separate toolchain needed.
-		if host == "darwin" && p.GOARCH != hostArch {
-			clangArch := p.GOARCH
-			if clangArch == "amd64" {
-				clangArch = "x86_64"
-			}
-			return "clang -arch " + clangArch
+		if host == "darwin" {
+			return darwinCC(p, hostArch)
 		}
 	case "windows":
 		switch p.GOARCH {
@@ -402,19 +446,42 @@ func crossCC(p Platform) string {
 			}
 			return "x86_64-w64-mingw32-gcc"
 		case "arm64":
-			// Homebrew mingw-w64 only ships x86_64 + i686 GCC; Windows/arm64 often uses llvm-mingw clang.
-			if cc := firstPathCC(
-				"aarch64-w64-mingw32-gcc",
+			if cc := firstLLVMMinGWCC(
 				"aarch64-w64-mingw32-clang",
+				"aarch64-w64-mingw32-gcc",
 			); cc != "" {
 				return cc
 			}
-			return "aarch64-w64-mingw32-gcc"
+			return ""
 		}
 	case "android":
 		return androidCC(p)
 	}
 	return ""
+}
+
+// darwinCC returns macOS SDK clang with -isysroot (and -arch when cross-compiling on Apple Silicon/Intel).
+func darwinCC(p Platform, hostArch string) string {
+	sdkPath, err := runOutput("xcrun", "--show-sdk-path")
+	if err != nil {
+		sdkPath = ""
+	}
+	clangBin, err := runOutput("xcrun", "--find", "clang")
+	if err != nil {
+		clangBin = "/usr/bin/clang"
+	}
+	cc := strings.TrimSpace(clangBin)
+	if sdkPath != "" {
+		cc += " -isysroot " + strings.TrimSpace(sdkPath)
+	}
+	if p.GOARCH != hostArch {
+		clangArch := p.GOARCH
+		if clangArch == "amd64" {
+			clangArch = "x86_64"
+		}
+		cc += " -arch " + clangArch
+	}
+	return cc
 }
 
 // splitCC breaks a CC string like "clang -arch x86_64" into ("clang", ["-arch","x86_64"]).

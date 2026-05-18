@@ -32,33 +32,50 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		fmt.Printf("  [%d] %s\n", i+1, model)
 	}
 
-	detInput := readInput(reader, "🎯 Deterministic mode? (1=yes / 0=no) [0]: ", "0")
-	deterministic = detInput == "1"
+	if forwardBenchOnly {
+		idx, name, ok := findBitNetBenchModel(models)
+		if !ok {
+			log.Fatalf("Forward benchmark requires %q in the HuggingFace cache.", bitNetBenchModelNeedle)
+		}
+		fmt.Printf("\n📊 Forward benchmark: auto-selecting [%d] %s (CPU, deterministic)\n", idx, name)
+		deterministic = true
+	} else {
+		detInput := readInput(reader, "🎯 Deterministic mode? (1=yes / 0=no) [0]: ", "0")
+		deterministic = detInput == "1"
+	}
 
 	useTiling := true
 	tileSize := -1 // auto-detect
 
 	var useGPU bool
-	fmt.Print("🎮 Enable GPU Acceleration? (1=yes / 0=no) [0]: ")
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-	useGPU = input == "1"
-
-	fmt.Println("\n🚀 Select Execution Mode:")
-	fmt.Println("  [1] Tiled — GPU: single-workgroup; CPU: multi-core tiled")
-	fmt.Println("  [2] Tiled — GPU: multi-workgroup; CPU: multi-core tiled")
-	execModeInput := readInput(reader, "Choice [2]: ", "2")
+	if forwardBenchOnly {
+		useGPU = false
+		fmt.Println("🎮 GPU: off (benchmark uses CPU BitNet + pipeline wavefront stats)")
+	} else {
+		fmt.Print("🎮 Enable GPU Acceleration? (1=yes / 0=no) [0]: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		useGPU = input == "1"
+	}
 
 	var tilingMode string
-	tilingMode, tileSize = parseLLMExecutionMode(execModeInput)
+	if forwardBenchOnly {
+		tilingMode, tileSize = parseLLMExecutionMode("2")
+	} else {
+		fmt.Println("\n🚀 Select Execution Mode:")
+		fmt.Println("  [1] Tiled — GPU: single-workgroup; CPU: multi-core tiled")
+		fmt.Println("  [2] Tiled — GPU: multi-workgroup; CPU: multi-core tiled")
+		execModeInput := readInput(reader, "Choice [2]: ", "2")
+		tilingMode, tileSize = parseLLMExecutionMode(execModeInput)
+	}
 
 	if useGPU {
 		fmt.Print("💎 Weight Precision? (4=Q4_0 / 8=INT8 / 32=FP32) [4]: ")
-		input, _ = reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-		if input == "32" {
+		precInput, _ := reader.ReadString('\n')
+		precInput = strings.TrimSpace(precInput)
+		if precInput == "32" {
 			weightDType = poly.DTypeFloat32
-		} else if input == "8" {
+		} else if precInput == "8" {
 			weightDType = poly.DTypeInt8
 		} else {
 			weightDType = poly.DTypeInt4
@@ -70,14 +87,47 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		sequentialGPULoad = readInput(reader, "📥 Load weights block-by-block into GPU (lower peak host RAM; skips holding full checkpoint map)? (1=yes / 0=no) [0]: ", "0") == "1"
 	}
 
-	modelInput := readInput(reader, "\nSelect model number: ", "1")
+	var modelName string
 	var selectedIdx int
-	fmt.Sscanf(modelInput, "%d", &selectedIdx)
-	if selectedIdx < 1 || selectedIdx > len(models) {
-		log.Fatalf("Invalid model selection: %d", selectedIdx)
+	if forwardBenchOnly {
+		var ok bool
+		selectedIdx, modelName, ok = findBitNetBenchModel(models)
+		if !ok {
+			log.Fatalf("Forward benchmark requires %q in the HuggingFace cache.", bitNetBenchModelNeedle)
+		}
+	} else {
+		modelInput := readInput(reader, "\nSelect model number: ", "1")
+		fmt.Sscanf(modelInput, "%d", &selectedIdx)
+		if selectedIdx < 1 || selectedIdx > len(models) {
+			log.Fatalf("Invalid model selection: %d", selectedIdx)
+		}
+		modelName = models[selectedIdx-1]
 	}
-	modelName := models[selectedIdx-1]
-	isQwen := strings.Contains(strings.ToLower(modelName), "qwen")
+	modelNameLower := strings.ToLower(modelName)
+	isQwen := strings.Contains(modelNameLower, "qwen")
+	isBitNetModel := strings.Contains(modelNameLower, "bitnet") || strings.Contains(modelNameLower, "1bit")
+	useBitNetCPU := false
+	useBitNetGPU := false
+	useTernaryPTQCPU := false
+	if isBitNetModel {
+		if useGPU {
+			useBitNetGPU = true
+			weightDType = poly.DTypeTernary
+			sequentialGPULoad = false
+			fmt.Println("🧪 BitNet model detected; enabling experimental WebGPU packed ternary inference.")
+		} else {
+			useBitNetCPU = true
+			fmt.Println("🧮 BitNet model detected; enabling CPU packed ternary inference.")
+		}
+	} else if !useGPU {
+		quantInput := readInput(reader, "🧮 CPU weight precision? (32=FP32 / ternary=experimental PTQ) [32]: ", "32")
+		switch strings.ToLower(strings.TrimSpace(quantInput)) {
+		case "ternary", "t", "bitnet", "1bit", "b1.58", "158":
+			useTernaryPTQCPU = true
+			fmt.Println("⚠️  Ternary PTQ is experimental. It is not equivalent to BitNet training and may produce bad text.")
+		}
+	}
+	useBitNetPacked := useBitNetCPU || useBitNetGPU
 	template := templateForModel(modelName)
 	activeSystemPrompt := defaultSystemPromptForModel(modelName)
 	if deterministic && isQwen {
@@ -109,6 +159,7 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		log.Fatalf("⚠️  config parse: %v", err)
 	}
 	eosTokens = poly.LoadEOSTokenIDsFromConfigPath(configPath)
+	eosTokens = mergeIntSets(eosTokens, loadEOSTokensFromJSON(filepath.Join(snapshotDir, "generation_config.json")))
 
 	safetensorFiles, _ := filepath.Glob(filepath.Join(snapshotDir, "*.safetensors"))
 	if len(safetensorFiles) == 0 {
@@ -119,20 +170,19 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	var embeddings, lmHead, finalNorm []float32
 	var allTensors map[string][]float32
 
-	if sequentialGPULoad && useGPU {
-		globalTensors := make(map[string][]float32)
+	if (sequentialGPULoad && useGPU) || useBitNetPacked {
+		globalStored := make(map[string]poly.HFStoredTensor)
 		for _, f := range safetensorFiles {
-			part, err := poly.LoadSafetensorsSelective(f, poly.HFWeightIsGlobal)
+			part, err := poly.LoadSafetensorsSelectiveRaw(f, poly.HFWeightIsGlobal)
 			if err != nil {
 				log.Fatalf("⚠️  safetensors %s: %v", f, err)
 			}
 			for k, v := range part {
-				globalTensors[k] = v
+				globalStored[k] = v
 			}
 		}
-		embeddings, lmHead, finalNorm, _ = mapper.MapWeights(globalTensors)
-		embeddings, lmHead, finalNorm = poly.CloneMappedGlobalWeights(embeddings, lmHead, finalNorm)
-		globalTensors = nil
+		embeddings, lmHead, finalNorm, _ = mapper.MapWeightsFromStored(globalStored)
+		poly.ReleaseTransientHFStoredMap(globalStored)
 		runtime.GC()
 		debug.FreeOSMemory()
 	} else {
@@ -190,6 +240,10 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 
 	rmsNormEps := poly.HFConfigFloat64Default(config, "rms_norm_eps", 1e-6)
 	ropeFreqBase := poly.HFConfigFloat64Default(config, "rope_theta", 10000.0)
+	activation := poly.ActivationSilu
+	if strings.EqualFold(poly.HFConfigStringDefault(config, "hidden_act", ""), "relu2") {
+		activation = poly.ActivationReLU2
+	}
 	if useGPU && useTiling && hiddenSize >= 1536 {
 		fmt.Printf("⚠️  Large model detected (hidden=%d). Tiled GPU path can destabilize logits here; forcing Standard Forward.\n", hiddenSize)
 		useTiling = false
@@ -225,14 +279,63 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		IntermediateSize: intermediateSize,
 		RMSNormEps:       rmsNormEps,
 		RoPEFreqBase:     ropeFreqBase,
+		Activation:       activation,
 	})
 
-	if !(sequentialGPULoad && useGPU) {
+	if useBitNetPacked {
+		if useBitNetGPU {
+			fmt.Printf("⏳ BitNet WebGPU block-wise load + pack (%d transformer blocks)...\n", numLayers)
+		} else {
+			fmt.Printf("⏳ BitNet CPU block-wise load + pack (%d transformer blocks)...\n", numLayers)
+		}
+		layerFiles := buildLayerShardIndex(safetensorFiles, numLayers)
+		for li := 0; li < numLayers; li++ {
+			layerMap := make(map[string]poly.HFStoredTensor)
+			for _, sf := range layerFiles[li] {
+				part, err := poly.LoadSafetensorsSelectiveRaw(sf, func(k string) bool {
+					return poly.HFWeightMatchesLayer(k, li)
+				})
+				if err != nil {
+					log.Fatalf("⚠️  safetensors %s: %v", sf, err)
+				}
+				for k, v := range part {
+					layerMap[k] = v
+				}
+			}
+			poly.LoadWithPrefixesFromHFStored(net, layerMap)
+			if err := poly.PrepareDecoderBlockBitNetTernaryCPU(net, li); err != nil {
+				log.Fatalf("❌ BitNet CPU preparation failed for block %d: %v", li, err)
+			}
+			poly.ReleaseTransientHFStoredMap(layerMap)
+			fmt.Printf("   ✓ Block %d/%d packed\n", li+1, numLayers)
+		}
+		runtime.GC()
+		debug.FreeOSMemory()
+	} else if !(sequentialGPULoad && useGPU) {
 		poly.LoadWithPrefixes(net, allTensors)
+	}
+	if useBitNetPacked {
+		if isBitNetModel {
+			if useBitNetGPU {
+				fmt.Print("🧪 BitNet b1.58: decoder weights from raw safetensors (U8 offline → packed; dense → Master then pack); globals decoded once. ")
+			} else {
+				fmt.Print("🧮 BitNet b1.58: decoder weights from raw safetensors (U8 offline → packed; dense → Master then pack); globals decoded once. ")
+			}
+		}
+		net.UseExactDType = true
+		fmt.Println("done.")
+	}
+	if useTernaryPTQCPU {
+		fmt.Print("🧮 Quantizing FP32 transformer weights to experimental ternary PTQ... ")
+		if err := poly.MorphNetworkBitNetTernary(net); err != nil {
+			log.Fatalf("❌ Ternary PTQ failed: %v", err)
+		}
+		net.UseExactDType = true
+		fmt.Println("done.")
 	}
 
 	tr = poly.NewTransformer[float32](net, embeddings, lmHead, finalNorm, template)
-	if !(sequentialGPULoad && useGPU) {
+	if !(sequentialGPULoad && useGPU) && !useBitNetPacked {
 		poly.ReleaseTransientSafetensorMap(allTensors, embeddings, lmHead, finalNorm)
 	}
 	tr.SetRMSNormEps(rmsNormEps)
@@ -323,30 +426,83 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 	}
 	if !useGPU {
 		applyGlitchTilingFlags(tr.Network, false, useTiling, tilingMode)
+		if useBitNetCPU || useTernaryPTQCPU {
+			tr.Network.UseExactDType = true
+		}
 		tr.SyncInferenceCPU()
 	}
 
-	applyGlitchTanhiIfRequested(reader, tr.Network)
+	if !forwardBenchOnly {
+		applyGlitchTanhiIfRequested(reader, tr.Network)
+	}
 
 	fmt.Printf("\n✅ Model loaded! (%d layers)\n", numLayers)
 	printPostLoadMemorySnapshot(tr)
 	bannedTokens := poly.TokenizerBannedSpecialExceptEOS(tk, eosTokens)
-	if len(bannedTokens) > 0 {
+	if len(bannedTokens) > 0 && !forwardBenchOnly {
 		fmt.Printf("🧯 Special-token mask active (%d banned IDs)\n", len(bannedTokens))
 	}
 
-	encode := func(text string) []uint32 { return tk.Encode(text, false) }
+	addSpecialTokens := false
+	if strings.Contains(modelNameLower, "microsoft/bitnet-b1.58-2b-4t") {
+		addSpecialTokens = true
+	}
+	encode := func(text string) []uint32 { return tk.Encode(text, addSpecialTokens) }
 	decode := func(tokens []uint32) string { return tk.Decode(tokens, false) }
 
+	if forwardBenchOnly {
+		if !isBitNetModel || useGPU {
+			log.Fatalf("Forward benchmark requires BitNet b1.58 loaded on CPU (no GPU).")
+		}
+		runForwardScheduleComparison(tr, encode, activeSystemPrompt, numLayers)
+		forwardBenchOnly = false
+		return
+	}
+
+	configureCPUForwardMode(reader, tr, useGPU)
+
 	maxTokens = 2048
+	if isBitNetModel {
+		maxTokens = 192
+	}
+
+	layerTrace := readInput(reader, "\n📼 Layer action recording? (1=yes / 0=no) [0]: ", "0") == "1"
+	layerTraceMaxTokens := 8
+	layerTracePrefill := false
+	repeatDecoderBlock := -1
+	if layerTrace {
+		fmt.Println("ℹ️  Each new token runs through all decoder blocks (30 layers → ~181 sub-steps per token).")
+		fmt.Println("   Prefill (your whole prompt) is a separate full pass unless you opt in below.")
+		if useGPU {
+			fmt.Println("ℹ️  Traced decode uses CPU stepped forward; untraced prefill can still use GPU.")
+		}
+		tokInput := readInput(reader, "🔢 How many new tokens to trace per turn? [8]: ", "8")
+		fmt.Sscanf(tokInput, "%d", &layerTraceMaxTokens)
+		if layerTraceMaxTokens < 1 {
+			layerTraceMaxTokens = 1
+		}
+		layerTracePrefill = readInput(reader, "📥 Also trace prefill (full prompt through all layers)? (1=yes / 0=no) [0]: ", "0") == "1"
+		repeatInput := readInput(reader, fmt.Sprintf("🔁 Repeat a decoder block after its first pass? (1-%d, 0=off) [0]: ", numLayers), "0")
+		var repeatOneBased int
+		fmt.Sscanf(repeatInput, "%d", &repeatOneBased)
+		if repeatOneBased >= 1 && repeatOneBased <= numLayers {
+			repeatDecoderBlock = repeatOneBased - 1
+			fmt.Printf("   Block %d will run twice; repeat pass is logged as REPEAT.\n", repeatOneBased)
+		}
+		maxTokens = layerTraceMaxTokens
+	}
 
 	temp := float32(0.7)
 	if deterministic {
 		temp = 0
 	}
+	minTokens := 8
+	if layerTrace {
+		minTokens = 1
+	}
 	opts := poly.GenOptions{
 		MaxTokens:             maxTokens,
-		MinTokens:             8,
+		MinTokens:             minTokens,
 		Temperature:           temp,
 		TopK:                  40,
 		Deterministic:         deterministic,
@@ -356,6 +512,19 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		RepetitionWindow:      64,
 		MaxConsecutiveRepeats: 3,
 		NoRepeatNGram:         3,
+		LayerTrace:            layerTrace,
+		LayerTraceMaxTokens:   layerTraceMaxTokens,
+		LayerTracePrefill:     layerTracePrefill,
+		RepeatDecoderBlock:    repeatDecoderBlock,
+	}
+	if layerTrace {
+		opts.Silent = true
+		stepsPerTok := numLayers*6 + 1
+		if layerTracePrefill {
+			fmt.Printf("📼 Trace mode: prefill + up to %d decode token(s) (~%d sub-layer lines each phase).\n", layerTraceMaxTokens, stepsPerTok)
+		} else {
+			fmt.Printf("📼 Trace mode: up to %d decode token(s) only (~%d sub-layer lines per token; prefill not traced).\n", layerTraceMaxTokens, stepsPerTok)
+		}
 	}
 
 	for {
@@ -368,13 +537,103 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 
 		fmt.Print("GlitchBot: ")
 		reply, _ := tr.Generate(encode, decode, chatTurns, activeSystemPrompt, userMsg, opts)
-		fmt.Println()
+		if layerTrace {
+			fmt.Printf("\n(decoded) %s\n", reply)
+		} else {
+			fmt.Println()
+		}
 
 		chatTurns = append(chatTurns, poly.Turn{
 			User:      userMsg,
 			Assistant: reply,
 		})
 	}
+}
+
+func configureCPUForwardMode(reader *bufio.Reader, tr *poly.Transformer[float32], useGPU bool) {
+	fmt.Println("\n🧠 CPU forward schedule (decoder sub-layers):")
+	fmt.Println("  [1] Normal — fused blocks per forward (default, fastest)")
+	fmt.Println("  [2] Stepped — same math, one sub-layer at a time (auto-drained each forward)")
+	fmt.Println("  [3] Queued — same as stepped; pause each sub-layer (micro-queue, one token)")
+	fmt.Println("  [4] Pipeline — wavefront: tokens at different blocks; one tick = one clock")
+	fwdInput := readInput(reader, "Choice [1]: ", "1")
+	switch strings.TrimSpace(fwdInput) {
+	case "2":
+		tr.ForwardMode = poly.TransformerForwardSteppedCPU
+	case "3":
+		tr.ForwardMode = poly.TransformerForwardQueuedCPU
+	case "4":
+		tr.ForwardMode = poly.TransformerForwardPipelineCPU
+	default:
+		tr.ForwardMode = poly.TransformerForwardNormal
+	}
+	if tr.ForwardMode == poly.TransformerForwardNormal {
+		return
+	}
+	if useGPU {
+		fmt.Println("ℹ️  Non-normal CPU forward modes skip GPU during generation.")
+	}
+	steps := tr.CPUForwardQueueStepTotal()
+	nb := len(tr.Network.Layers) / 4
+	if tr.ForwardMode == poly.TransformerForwardPipelineCPU {
+		fmt.Printf("ℹ️  Pipeline: tokens can overlap across blocks (%d blocks). One tick advances all ready sub-layers.\n", nb)
+		fmt.Println("   Multiple prompt tokens can be in flight at different blocks during prefill.")
+	} else {
+		fmt.Printf("ℹ️  Each token forward = %d sub-layer steps (%d decoder blocks).\n", steps, nb)
+	}
+	if readInput(reader, "📝 Log each sub-layer step during generation? (1=yes / 0=no) [0]: ", "0") == "1" {
+		tr.ForwardStepDebug = true
+		tr.SetForwardStepObserver(func(step, total int, label string) {
+			fmt.Printf("   [%s] step %d/%d: %s\n", tr.ForwardMode, step, total, label)
+		})
+	}
+	if tr.ForwardMode == poly.TransformerForwardQueuedCPU &&
+		readInput(reader, "⏯️  Interactive micro-queue (Enter per sub-layer)? (1=yes / 0=no) [0]: ", "0") == "1" {
+		tr.QueueTickPause = func(step, total int, label string) {
+			fmt.Printf("   ⏸ step %d/%d: %s — press Enter… ", step, total, label)
+			_, _ = reader.ReadString('\n')
+		}
+		fmt.Println("   Interactive micro-queue enabled.")
+	}
+	if tr.ForwardMode == poly.TransformerForwardPipelineCPU &&
+		readInput(reader, "⏯️  Interactive pipeline (Enter per wavefront tick)? (1=yes / 0=no) [0]: ", "0") == "1" {
+		tr.PipelineTickPause = func(tick, total int, summary string) {
+			fmt.Printf("   ⏸ %s — press Enter… ", summary)
+			_, _ = reader.ReadString('\n')
+		}
+		fmt.Println("   Interactive pipeline enabled.")
+	}
+	fmt.Printf("✓ CPU forward mode: %s\n", tr.ForwardMode)
+}
+
+func loadEOSTokensFromJSON(path string) []int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil
+	}
+	return poly.EOSTokenIDsFromHFConfig(config)
+}
+
+func mergeIntSets(base []int, extra []int) []int {
+	seen := make(map[int]struct{}, len(base)+len(extra))
+	out := make([]int, 0, len(base)+len(extra))
+	for _, v := range base {
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	for _, v := range extra {
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func buildLayerShardIndex(safetensorFiles []string, numLayers int) [][]string {
