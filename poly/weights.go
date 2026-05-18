@@ -821,14 +821,22 @@ func (ws *WeightStore) Unpack(dtype DType) {
 		}
 	case DTypeFP8E4M3:
 		if w, ok := data.([]uint8); ok {
-			for i, v := range w {
-				ws.Master[i] = e4m3ToFloat32(v) * ws.Scale
+			limit := len(ws.Master)
+			if len(w) < limit {
+				limit = len(w)
+			}
+			for i := 0; i < limit; i++ {
+				ws.Master[i] = e4m3ToFloat32(w[i]) * ws.Scale
 			}
 		}
 	case DTypeFP8E5M2:
 		if w, ok := data.([]uint8); ok {
-			for i, v := range w {
-				ws.Master[i] = e5m2ToFloat32(v) * ws.Scale
+			limit := len(ws.Master)
+			if len(w) < limit {
+				limit = len(w)
+			}
+			for i := 0; i < limit; i++ {
+				ws.Master[i] = e5m2ToFloat32(w[i]) * ws.Scale
 			}
 		}
 	case DTypeInt64, DTypeUint64, DTypeInt32, DTypeUint32, DTypeInt16, DTypeUint16, DTypeUint8, DTypeUint4, DTypeUint2:

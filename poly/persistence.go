@@ -358,6 +358,46 @@ func decodeWeights(s string) ([]float32, error) {
 	return w, nil
 }
 
+// LayerPersistenceFromJSON reads the first layer's on-disk weight fields from serialized network JSON.
+func LayerPersistenceFromJSON(jsonData []byte, layerIndex int) (weightsB64 string, scale float32, native bool, err error) {
+	var spec PersistenceNetworkSpec
+	if err := json.Unmarshal(jsonData, &spec); err != nil {
+		return "", 0, false, err
+	}
+	if layerIndex < 0 || layerIndex >= len(spec.Layers) {
+		return "", 0, false, fmt.Errorf("layer index %d out of range (layers=%d)", layerIndex, len(spec.Layers))
+	}
+	ls := spec.Layers[layerIndex]
+	return ls.Weights, ls.Scale, ls.Native, nil
+}
+
+// NativeWeightsEncoded compares two native weight stores by on-disk encoding.
+func NativeWeightsEncoded(a any, b any, dtype DType) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return encodeNativeWeights(a, dtype) == encodeNativeWeights(b, dtype)
+}
+
+// LayerNativePersistenceSnapshot returns the native weights blob and scale that
+// SerializeNetwork would write for this layer dtype (Morph + encode, no JSON).
+func LayerNativePersistenceSnapshot(ws *WeightStore, dtype DType) (weightsB64 string, scale float32, ok bool) {
+	if ws == nil || len(ws.Master) == 0 {
+		return "", 0, false
+	}
+	delete(ws.Versions, dtype)
+	ws.Morph(dtype)
+	scale = ws.Scale
+	active := ws.Versions[dtype]
+	if active == nil {
+		active = ws.GetNative(dtype)
+	}
+	if active == nil {
+		return "", scale, false
+	}
+	return encodeNativeWeights(active, dtype), scale, true
+}
+
 // encodeNativeWeights converts an active weight slice to base64 string.
 func encodeNativeWeights(data any, dt DType) string {
 	switch w := data.(type) {
@@ -494,6 +534,11 @@ func encodeNativeWeights(data any, dt DType) string {
 	default:
 		return ""
 	}
+}
+
+// DecodeNativeWeights converts a base64 native checkpoint blob to in-memory native storage.
+func DecodeNativeWeights(s string, dt DType) (any, error) {
+	return decodeNativeWeights(s, dt)
 }
 
 // decodeNativeWeights converts base64 string to a slice of the given DType.

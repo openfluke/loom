@@ -390,6 +390,11 @@ func prepareLayerTreeBitNetTernaryCPU(l *VolumetricLayer) error {
 	return nil
 }
 
+// EnsureBitNetMHAWeights builds packed ternary matrices for MHA Q/K/V/O (CPU/GPU BitNet paths).
+func EnsureBitNetMHAWeights(l *VolumetricLayer) {
+	prepareBitNetMHA(l)
+}
+
 func prepareBitNetMHA(l *VolumetricLayer) {
 	if l == nil || l.WeightStore == nil {
 		return

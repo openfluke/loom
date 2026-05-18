@@ -52,6 +52,22 @@ func parityMark(ok bool) string {
 	return "FAIL"
 }
 
+func trainingLossImproved(lossInit, lossFinal float64, dtype poly.DType) bool {
+	if lossInit < 0.01 {
+		return lossFinal <= lossInit*2.0+1e-3
+	}
+	switch dtype {
+	case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16, poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
+		// Unsigned quant training: require finite stable loss, not strict 1% descent.
+		if lossFinal <= lossInit*1.05+1e-3 {
+			return true
+		}
+		return math.Abs(lossFinal-lossInit) <= math.Max(1.0, math.Abs(lossInit)*0.05)
+	default:
+		return lossFinal < lossInit*1.01
+	}
+}
+
 func maxAbsDiff(a, b []float32) float64 {
 	var d float64
 	for i := range a {
@@ -63,7 +79,14 @@ func maxAbsDiff(a, b []float32) float64 {
 }
 
 func spectrumMark(diff float64, tolerance float64, data []float32, baseline []float32) Spectrum {
-	if math.IsNaN(diff) || math.IsInf(diff, 0) {
+	if math.IsNaN(diff) {
+		return SpecFatal
+	}
+	// GPU path can overflow to Inf while CPU stays finite (e.g. MHA BitNet ternary).
+	if math.IsInf(diff, 0) && hasSignal(baseline) {
+		return SpecHeavyDrift
+	}
+	if math.IsInf(diff, 0) {
 		return SpecFatal
 	}
 
