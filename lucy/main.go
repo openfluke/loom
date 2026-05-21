@@ -18,6 +18,7 @@ func main() {
 		"[3] Layer testing — CPU/GPU suites (optional save to "+lucytesting.DefaultOutputDir+")\n"+
 		"[4] Download approved HF models (SoulGlitch-style HTTP → hub/manual-download)\n"+
 		"[5] Forward benchmark — BitNet b1.58 CPU: normal vs stepped vs pipeline\n"+
+		"[6] Five-layer examples — per-layer .go tutorials (→ "+lucytesting.DefaultOutputDir+"/five_layer.txt)\n"+
 		"Choice [1]: ", "1")
 	switch strings.TrimSpace(mode) {
 	case "2":
@@ -29,6 +30,8 @@ func main() {
 	case "5":
 		forwardBenchOnly = true
 		runHuggingFaceMode(reader)
+	case "6":
+		examples.RunFiveLayerMenu(reader)
 	default:
 		runHuggingFaceMode(reader)
 	}
