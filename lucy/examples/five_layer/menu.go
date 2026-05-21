@@ -50,15 +50,10 @@ func RunMenu(reader *bufio.Reader) {
 	}
 
 	if line == "0" {
-		passed, failed := 0, 0
 		for _, e := range menuExamples {
-			if e.run() {
-				passed++
-			} else {
-				failed++
-			}
+			fmt.Printf("\n▶ Starting %s …\n", e.name)
+			e.run()
 		}
-		fmt.Printf("\n═══ All layers: %d passed, %d failed ═══\n", passed, failed)
 		return
 	}
 

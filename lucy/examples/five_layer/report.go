@@ -15,6 +15,7 @@ const LogFile = "five_layer.txt"
 
 // BeginSession wipes lucy_testing_output and tees stdout to five_layer.txt + terminal.
 func BeginSession() func() {
+	ResetSummaries()
 	_ = os.RemoveAll(OutputDir)
 	_ = os.MkdirAll(OutputDir, 0o755)
 
@@ -55,6 +56,7 @@ func BeginSession() func() {
 		_ = r.Close()
 		_ = logFile.Close()
 		os.Stdout = orig
+		PrintGlobalManifest()
 		fmt.Printf("\n📄 All layer results: %s\n", logPath)
 	}
 }

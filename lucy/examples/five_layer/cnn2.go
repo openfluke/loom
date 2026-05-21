@@ -237,7 +237,7 @@ func cnn2Train(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32])
 		Epochs:       cnn2TrainEpochs,
 		LearningRate: cnn2LearningRate,
 		Mode:         cnn2GPUMode,
-		Verbose:      true,
+		Verbose:      false,
 		LossType:     "mse",
 	})
 }
@@ -263,70 +263,82 @@ func runCNN2Example() bool {
 	fmt.Println("  Loom five-layer CNN2 — JSON · GPU · train · save · reload")
 	fmt.Println("  5 flat layers in layers_per_cell (no SEQUENTIAL)")
 	fmt.Println("══════════════════════════════════════════════════════════════════════")
+	fmt.Printf("  Running %d numerical types (%d epochs GPU each, quiet)…\n", len(cnn2AllDTypes), cnn2TrainEpochs)
 
+	var rows []DTypeRow
 	passed, failed := 0, 0
-	fmt.Printf("\n| %-10s | %-13s | %-10s | %-10s | %-9s | %-12s | %-7s |\n",
-		"DType", "Phase", "Fwd Δ", "Wt Δ", "Bucket", "Native", "OK")
-	fmt.Println("|------------|---------------|----------|----------|-----------|--------------|---------|")
 
 	for _, tc := range cnn2AllDTypes {
-		fmt.Printf("\n── CNN2 / %s ──\n", tc.name)
+		fmt.Printf("  · %-10s ", tc.name)
+		row := DTypeRow{DType: tc.name}
 
 		net, err := cnn2CreateNetwork(tc.jsonName)
 		if err != nil {
-			fmt.Printf("| %-10s | BUILD ERR     |          |          | 💀 FATAL     |            | FAIL    |\n", tc.name)
+			row.Err = "BUILD"
+			rows = append(rows, row)
 			failed++
+			fmt.Println("BUILD ERR")
 			continue
 		}
 		cnn2ApplyDType(net, tc)
-
 		input := cnn2MakeInput()
 		target := cnn2MakeTarget(net, input)
 
 		if err := cnn2SyncGPU(net); err != nil {
-			fmt.Printf("| %-10s | GPU ERR       |          |          | 💀 FATAL     |            | FAIL    |\n", tc.name)
+			row.Err = "GPU"
+			rows = append(rows, row)
 			failed++
+			fmt.Println("GPU ERR")
 			continue
 		}
 
 		lossBefore := cnn2ForwardLoss(net, input, target)
-
 		before := cnn2CheckSaveReload(net, input, target, tc, cnn2PhaseBefore, lossBefore)
-		cnn2PrintSaveRow(tc.name, before)
+		row.BeforeBucket = before.bucket.String()
+		row.BeforeOK = before.pass
+		row.NativeOK = before.nativeOK
 
-		fmt.Printf("  Training %d epochs (GPU)…\n", cnn2TrainEpochs)
 		res, err := cnn2Train(net, input, target)
 		if err != nil {
-			fmt.Printf("| %-10s | TRAIN ERR     |          |          | 💀 FATAL     |            | FAIL    |\n", tc.name)
+			row.Err = "TRAIN"
+			rows = append(rows, row)
 			failed++
+			fmt.Println("TRAIN ERR")
 			continue
 		}
 		_ = poly.SyncWeightsFromGPU(net)
+		lossInit := res.LossHistory[0]
 		lossAfter := res.FinalLoss
 		if len(res.LossHistory) > 0 {
 			lossAfter = res.LossHistory[len(res.LossHistory)-1]
 		}
-		learned := cnn2TrainingOK(res.LossHistory[0], lossAfter, tc.dtype)
+		row.LossInit = lossInit
+		row.LossFinal = lossAfter
 
-		ck := cnn2SaveCheckpoint(net, tc.name)
-		if ck != "" {
-			fmt.Printf("  Checkpoint: %s\n", ck)
+		_ = cnn2SaveCheckpoint(net, tc.name)
+		after := cnn2CheckSaveReload(net, input, target, tc, cnn2PhaseAfter, lossAfter)
+		row.AfterBucket = after.bucket.String()
+		row.AfterOK = after.pass
+		if !after.nativeOK {
+			row.NativeOK = false
 		}
 
-		after := cnn2CheckSaveReload(net, input, target, tc, cnn2PhaseAfter, lossAfter)
-		cnn2PrintSaveRow(tc.name, after)
+		row.Learned = cnn2TrainingOK(lossInit, lossAfter, tc.dtype)
+		row.OverallOK = row.BeforeOK && row.AfterOK && row.Learned
+		rows = append(rows, row)
 
-		ok := before.pass && after.pass && learned
-		fmt.Printf("  Loss %.6f → %.6f | learned=%v | overall=%s\n",
-			res.LossHistory[0], lossAfter, learned, cnn2Mark(ok))
-		if ok {
+		if row.OverallOK {
 			passed++
+			fmt.Printf("PASS  loss %.4e→%.4e\n", lossInit, lossAfter)
 		} else {
 			failed++
+			fmt.Printf("FAIL  loss %.4e→%.4e learn=%s save=%s\n",
+				lossInit, lossAfter, markOK(row.Learned), markOK(row.BeforeOK && row.AfterOK))
 		}
 	}
 
-	fmt.Printf("\nCNN2 summary: %d passed, %d failed (of %d dtypes)\n", passed, failed, len(cnn2AllDTypes))
+	PrintDTypeResultsTable("CNN2", rows)
+	RegisterLayerSummary("CNN2", passed, failed, rows)
 	return failed == 0
 }
 
