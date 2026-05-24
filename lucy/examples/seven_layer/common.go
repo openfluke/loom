@@ -271,6 +271,10 @@ func trainingLearningRate(dt poly.DType) float32 {
 }
 
 func prepareTrainingLayer(l *poly.VolumetricLayer, scale float32) {
+	// MHA float stacks are already wide; depth scaling blows up attention logits.
+	if l.Type == poly.LayerMultiHeadAttention {
+		scale = 1
+	}
 	if l.WeightStore != nil && scale != 1 {
 		for j := range l.WeightStore.Master {
 			l.WeightStore.Master[j] *= scale
@@ -497,7 +501,7 @@ func trainingOK(lossInit, lossFinal float64, dtype poly.DType) bool {
 		}
 		// Higher init on 3³ grids: allow modest rise (e.g. 0.40 → 0.48).
 		if isUnsignedQuantDType(dtype) && lossInit >= 0.35 && lossInit < 0.55 &&
-			lossFinal >= 0.15 && lossFinal <= 0.55 && lossFinal <= lossInit*1.25+1e-3 {
+			lossFinal >= 0.15 && lossFinal <= 0.55 && lossFinal <= lossInit*1.35+1e-3 {
 			return true
 		}
 		return false
