@@ -166,6 +166,22 @@ func applyLayerSpec(l *VolumetricLayer, ls LayerSpec) error {
 	l.Mask = ls.Mask
 	l.HierarchyLevels = ls.HierarchyLevels
 
+	// CNN3: JSON often sets H/W only; default depth to height so 3D conv is well-defined.
+	if l.Type == LayerCNN3 {
+		if l.InputDepth <= 0 && l.InputHeight > 0 {
+			l.InputDepth = l.InputHeight
+		}
+		if l.OutputDepth <= 0 && l.OutputHeight > 0 {
+			l.OutputDepth = l.OutputHeight
+		}
+		if l.InputWidth <= 0 && l.InputHeight > 0 {
+			l.InputWidth = l.InputHeight
+		}
+		if l.OutputWidth <= 0 && l.OutputHeight > 0 {
+			l.OutputWidth = l.OutputHeight
+		}
+	}
+
 	// Dynamic weight initialization if possible
 	initializeWeights(l)
 

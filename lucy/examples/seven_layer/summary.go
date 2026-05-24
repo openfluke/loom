@@ -131,7 +131,7 @@ func PrintTimingTable(layerName string, rows []DTypeRow) {
 
 func PrintForwardBackwardTimingTable(layerName string, rows []DTypeRow) {
 	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  %s — forward / backward timing (avg of %d passes, CPU Go)              ║\n", layerName, benchIters)
+	fmt.Printf("║  %s — forward / backward timing (avg of %d passes, CPU Go)              ║\n", layerName, activeBenchIters)
 	fmt.Printf("╚══════════════════════════════════════════════════════════════════════╝\n\n")
 
 	fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s |\n",

@@ -13,6 +13,7 @@ import (
 // LayerSuite configures one seven-layer example (JSON build + tensors).
 type LayerSuite struct {
 	Name          string
+	Grid          GridSpec
 	PrimaryType   poly.LayerType
 	BuildJSON     func(jsonDType string) []byte
 	MakeInput     func() *poly.Tensor[float32]
@@ -89,7 +90,8 @@ func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[flo
 		wTol = tc.tolerance * 100
 	}
 	r.pass = r.forwardDiff <= fwdTol && r.weightDiff <= wTol &&
-		r.bucket <= maxBucket && r.nativeOK && r.err == ""
+		r.bucket <= maxBucket && r.nativeOK && r.err == "" &&
+		!math.IsNaN(r.forwardDiff) && lossFinite(r.trainedLoss) && lossFinite(r.reloadedLoss)
 	return r
 }
 
@@ -148,11 +150,11 @@ func nativePersistenceOKLayer(src, dst *poly.VolumetricLayer, wire []byte, layer
 		poly.NativeWeightsEncoded(decoded, loaded, dt)
 }
 
-func trainCPU(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], mode poly.TrainingMode, tc dtypeCase, primary poly.LayerType) (*poly.TrainingResult, time.Duration, error) {
+func trainCPU(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], mode poly.TrainingMode, tc dtypeCase, primary poly.LayerType, epochs int) (*poly.TrainingResult, time.Duration, error) {
 	configureTrainingNet(net, tc, primary)
 	prepareTrainingNet(net, tc.dtype)
 	cfg := poly.DefaultTrainingConfig()
-	cfg.Epochs = trainEpochs
+	cfg.Epochs = epochs
 	cfg.LearningRate = trainingLearningRate(tc.dtype)
 	cfg.GradientClip = 1.0
 	cfg.Mode = mode
@@ -174,16 +176,20 @@ func saveCheckpoint(net *poly.VolumetricNetwork, tag, dtypeName string) string {
 	return path
 }
 
-// RunLayerSuite executes the full [7] matrix for one layer type.
+// RunLayerSuite executes the full [7] matrix for one layer type on one grid.
 func RunLayerSuite(s LayerSuite) bool {
 	asmSt := layerAsmStatus(s.PrimaryType)
+	epochs := trainEpochsForGrid(s.Grid)
+	activeBenchIters = benchItersForGrid(s.Grid)
+	suiteLabel := fmt.Sprintf("%s %s", s.Name, s.Grid)
 
 	fmt.Println()
 	fmt.Println("══════════════════════════════════════════════════════════════════════")
-	fmt.Printf("  Loom seven-layer %s — JSON · CPU SC/MC · train · save/reload\n", s.Name)
+	fmt.Printf("  Loom seven-layer %s — JSON · CPU SC/MC · train · save/reload\n", suiteLabel)
 	fmt.Println(s.Banner)
 	fmt.Println("══════════════════════════════════════════════════════════════════════")
-	fmt.Printf("  %d dtypes × %d epochs · ASM: %s\n", len(allDTypes), trainEpochs, asmSt.Note)
+	fmt.Printf("  %d dtypes × %d epochs · grid %s (%d-layer stack) · ASM: %s\n",
+		len(allDTypes), epochs, s.Grid, s.Grid.StackLayers(), asmSt.Note)
 	if asmSt.ForwardCapable {
 		fmt.Println("  ASM enabled via net.UseAsmForward after JSON build (Dense layers only)")
 	}
@@ -262,6 +268,14 @@ func RunLayerSuite(s LayerSuite) bool {
 			(!requiresAsmDeterminism(tc.dtype) || row.FwdGoAsm <= tc.tolerance)
 
 		lossBefore := forwardLoss(net, input, target)
+		requiresLearn := layerRequiresLearn(s.PrimaryType)
+		if !lossFiniteOK(lossBefore, lossBefore, requiresLearn) {
+			row.Err = "LOSS"
+			rows = append(rows, row)
+			failed++
+			fmt.Printf("FAIL  forward loss %.4e (non-finite or degenerate)\n", lossBefore)
+			continue
+		}
 		before := checkSaveReload(net, input, target, tc, lossBefore, phaseBefore)
 		row.BeforeBucket = before.bucket.String()
 		row.BeforeOK = before.pass
@@ -272,7 +286,7 @@ func RunLayerSuite(s LayerSuite) bool {
 		applyDType(netSC, tc)
 		configureTrainingNet(netSC, tc, s.PrimaryType)
 		netSC.ReleaseFP32MasterWhenIdle = true
-		resSC, durSC, err := trainCPU(netSC, input, target, poly.TrainingModeCPUSC, tc, s.PrimaryType)
+		resSC, durSC, err := trainCPU(netSC, input, target, poly.TrainingModeCPUSC, tc, s.PrimaryType, epochs)
 		if err != nil {
 			row.Err = "TRAIN-SC"
 			rows = append(rows, row)
@@ -285,13 +299,13 @@ func RunLayerSuite(s LayerSuite) bool {
 			lossSC = resSC.LossHistory[len(resSC.LossHistory)-1]
 		}
 		row.TrainSCDur = formatDur(durSC)
-		row.TrainSCSps = samplesPerSec(durSC, trainEpochs)
+		row.TrainSCSps = samplesPerSec(durSC, epochs)
 
 		netMC, _ := poly.BuildNetworkFromJSON(s.BuildJSON(tc.jsonName))
 		applyDType(netMC, tc)
 		configureTrainingNet(netMC, tc, s.PrimaryType)
 		netMC.ReleaseFP32MasterWhenIdle = true
-		resMC, durMC, err := trainCPU(netMC, input, target, poly.TrainingModeCPUMC, tc, s.PrimaryType)
+		resMC, durMC, err := trainCPU(netMC, input, target, poly.TrainingModeCPUMC, tc, s.PrimaryType, epochs)
 		if err != nil {
 			row.Err = "TRAIN-MC"
 			rows = append(rows, row)
@@ -300,7 +314,7 @@ func RunLayerSuite(s LayerSuite) bool {
 			continue
 		}
 		row.TrainMCDur = formatDur(durMC)
-		row.TrainMCSps = samplesPerSec(durMC, trainEpochs)
+		row.TrainMCSps = samplesPerSec(durMC, epochs)
 
 		lossInit := resMC.LossHistory[0]
 		lossFinal := resMC.FinalLoss
@@ -309,10 +323,8 @@ func RunLayerSuite(s LayerSuite) bool {
 		}
 		row.LossInit = lossInit
 		row.LossFinal = lossFinal
-		row.Learned = true
-		if layerRequiresLearn(s.PrimaryType) {
-			row.Learned = trainingOK(lossInit, lossFinal, tc.dtype)
-		}
+		row.Learned = lossFiniteOK(lossInit, lossFinal, requiresLearn) &&
+			(!requiresLearn || trainingOK(lossInit, lossFinal, tc.dtype))
 
 		finalizeTrainingNet(netMC, tc)
 		memTrain := readMemSnapshot()
@@ -338,7 +350,8 @@ func RunLayerSuite(s LayerSuite) bool {
 		}
 
 		// CPU SC/MC parity + train + save/reload (ASM reported but not required for pass).
-		row.OverallOK = row.BeforeOK && row.AfterOK && row.Learned && row.DetOK
+		row.OverallOK = row.BeforeOK && row.AfterOK && row.Learned && row.DetOK &&
+			lossFiniteOK(lossInit, lossFinal, requiresLearn)
 		rows = append(rows, row)
 
 		asmTag := "N/A"
@@ -360,12 +373,12 @@ func RunLayerSuite(s LayerSuite) bool {
 		_ = lossSC
 	}
 
-	PrintDeterminismTable(s.Name, rows)
-	PrintForwardBackwardTimingTable(s.Name, rows)
-	PrintMemoryTable(s.Name, rows)
-	PrintTimingTable(s.Name, rows)
-	PrintTrainedReloadTable(s.Name, rows)
-	PrintDTypeResultsTable(s.Name, rows)
-	RegisterLayerSummary(s.Name, passed, failed, rows)
+	PrintDeterminismTable(suiteLabel, rows)
+	PrintForwardBackwardTimingTable(suiteLabel, rows)
+	PrintMemoryTable(suiteLabel, rows)
+	PrintTimingTable(suiteLabel, rows)
+	PrintTrainedReloadTable(suiteLabel, rows)
+	PrintDTypeResultsTable(suiteLabel, rows)
+	RegisterLayerSummary(suiteLabel, passed, failed, rows)
 	return failed == 0
 }
