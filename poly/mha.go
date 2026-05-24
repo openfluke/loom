@@ -72,11 +72,7 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 	qW, kW, vW, oW := wData[qwStart:kwStart], wData[kwStart:vwStart], wData[vwStart:owStart], wData[owStart:qbStart]
 	qB, kB, vB, oB := wData[qbStart:kbStart], wData[kbStart:vbStart], wData[vbStart:obStart], wData[obStart:obStart+dModel]
 
-	if layer.KVCacheK == nil {
-		layer.KVCacheK = NewTensor[T](msl, kvDim)
-		layer.KVCacheV = NewTensor[T](msl, kvDim)
-		layer.KVOffset = 0
-	}
+	mhaPrepareKVForForward[T](layer, lay, msl, kvDim)
 	cacheK := layer.KVCacheK.(*Tensor[T])
 	cacheV := layer.KVCacheV.(*Tensor[T])
 
@@ -86,10 +82,11 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 		seqBase := kvStart + b*seqLen
 
 		Q := make([]float64, seqLen*qDim)
+		qkEps := mhaQKNormEpsilon(layer)
 		for s := 0; s < seqLen; s++ {
 			pos := seqBase + s
 			kRow := cacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
-			vRow := layer.KVCacheV.(*Tensor[T]).Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+			vRow := cacheV.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
 
 			for i := 0; i < qDim; i++ {
 				sum := float64(qB[i])
@@ -110,7 +107,6 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 				vRow[i] = T(sumV)
 			}
 
-			qkEps := mhaQKNormEpsilon(layer)
 			if len(layer.QNormWeight) > 0 {
 				applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
 			}
@@ -245,11 +241,7 @@ func MHAForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor
 		return pre, post
 	}
 
-	if layer.KVCacheK == nil {
-		layer.KVCacheK = NewTensor[T](msl, kvDim)
-		layer.KVCacheV = NewTensor[T](msl, kvDim)
-		layer.KVOffset = 0
-	}
+	mhaPrepareKVForForward[T](layer, lay, msl, kvDim)
 	cacheK := layer.KVCacheK.(*Tensor[T])
 	cacheV := layer.KVCacheV.(*Tensor[T])
 
@@ -259,6 +251,7 @@ func MHAForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor
 		seqBase := kvStart + b*seqLen
 
 		Q := make([]float64, seqLen*qDim)
+		qkEps := mhaQKNormEpsilon(layer)
 		tmpQ := make([]float64, qDim)
 		tmpK := make([]float64, kvDim)
 		tmpV := make([]float64, kvDim)
@@ -282,7 +275,6 @@ func MHAForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor
 				vRow[i] = T(tmpV[i] + bitNetTernaryBias(layer.WeightStore, vbStart+i))
 			}
 
-			qkEps := mhaQKNormEpsilon(layer)
 			if len(layer.QNormWeight) > 0 {
 				applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
 			}
@@ -438,6 +430,7 @@ func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input
 		cacheV := layer.KVCacheV.(*Tensor[T])
 
 		Q := make([]float64, seqLen*qDim)
+		qkEps := mhaQKNormEpsilon(layer)
 		for s := 0; s < seqLen; s++ {
 			for i := 0; i < qDim; i++ {
 				sum := float64(wData[qbStart+i])
@@ -445,6 +438,9 @@ func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input
 					sum += float64(input.Data[lay.inIdx(b, s, j)]) * float64(qW[i*dModel+j])
 				}
 				Q[s*qDim+i] = sum
+			}
+			if len(layer.QNormWeight) > 0 {
+				applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
 			}
 			theta := mhaRoPETheta(layer)
 			half := headDim / 2

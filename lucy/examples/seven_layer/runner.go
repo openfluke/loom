@@ -46,7 +46,7 @@ func forwardLoss(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32
 	return poly.CalculateLoss(out, target, "mse")
 }
 
-func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], tc dtypeCase, refLoss float64, phase savePhase) saveResult {
+func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], tc dtypeCase, refLoss float64, phase savePhase, primary poly.LayerType) saveResult {
 	r := saveResult{}
 	finalizeTrainingNet(net, tc)
 	setCPUMode(net, true, false)
@@ -83,8 +83,8 @@ func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[flo
 	}
 
 	r.nativeOK = nativePersistenceOK(net, reloaded, wire, tc)
-	maxBucket := saveReloadMaxBucket(phase, tc.dtype)
-	fwdTol := saveReloadFwdTol(phase, tc)
+	maxBucket := saveReloadMaxBucket(phase, tc.dtype, primary)
+	fwdTol := saveReloadFwdTol(phase, tc, primary)
 	wTol := tc.tolerance
 	if poly.IsDenseNativeTrainDType(tc.dtype) {
 		wTol = tc.tolerance * 100
@@ -276,7 +276,7 @@ func RunLayerSuite(s LayerSuite) bool {
 			fmt.Printf("FAIL  forward loss %.4e (non-finite or degenerate)\n", lossBefore)
 			continue
 		}
-		before := checkSaveReload(net, input, target, tc, lossBefore, phaseBefore)
+		before := checkSaveReload(net, input, target, tc, lossBefore, phaseBefore, s.PrimaryType)
 		row.BeforeBucket = before.bucket.String()
 		row.BeforeOK = before.pass
 		row.NativeOK = before.nativeOK
@@ -338,7 +338,7 @@ func RunLayerSuite(s LayerSuite) bool {
 			}
 		}
 
-		after := checkSaveReload(netMC, input, target, tc, lossFinal, phaseAfter)
+		after := checkSaveReload(netMC, input, target, tc, lossFinal, phaseAfter, s.PrimaryType)
 		row.AfterBucket = after.bucket.String()
 		row.AfterOK = after.pass
 		row.ReloadFwdDiff = after.forwardDiff

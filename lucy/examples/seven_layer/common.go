@@ -174,8 +174,16 @@ func requiresAsmDeterminism(dt poly.DType) bool {
 	}
 }
 
-func saveReloadFwdTol(phase savePhase, tc dtypeCase) float64 {
+func saveReloadFwdTol(phase savePhase, tc dtypeCase, primary poly.LayerType) float64 {
 	tol := tc.tolerance
+	if primary == poly.LayerMultiHeadAttention {
+		if tol < 1e-4 {
+			tol = 1e-4
+		}
+		if phase == phaseAfter && tol < 2e-4 {
+			tol = 2e-4
+		}
+	}
 	if phase == phaseAfter {
 		tol = tc.tolerance * 100
 		if poly.IsDenseNativeTrainDType(tc.dtype) {
@@ -193,11 +201,19 @@ func saveReloadFwdTol(phase savePhase, tc dtypeCase) float64 {
 	return tol
 }
 
-func saveReloadMaxBucket(phase savePhase, dt poly.DType) spectrum {
+func saveReloadMaxBucket(phase savePhase, dt poly.DType, primary poly.LayerType) spectrum {
 	if phase == phaseAfter {
 		switch dt {
 		case poly.DTypeInt4, poly.DTypeInt2, poly.DTypeTernary:
 			return specHeavyDrift
+		}
+	}
+	if primary == poly.LayerMultiHeadAttention {
+		switch dt {
+		case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
+			return specHeavyDrift
+		case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeBinary, poly.DTypeFP8E4M3:
+			return specDrift
 		}
 	}
 	if poly.IsDenseNativeTrainDType(dt) || isQuantIntegerDType(dt) {

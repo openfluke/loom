@@ -56,3 +56,15 @@ func mhaResetKVCache(layer *VolumetricLayer) {
 	layer.KVCacheK = nil
 	layer.KVCacheV = nil
 }
+
+// mhaPrepareKVForForward resets KV for full-sequence / multi-batch training passes,
+// but keeps the cache when doing autoregressive decode (batch=1, seq=1, cache warm).
+func mhaPrepareKVForForward[T Numeric](layer *VolumetricLayer, lay mhaLayout, msl, kvDim int) {
+	incremental := lay.batch == 1 && lay.seqLen == 1 && layer.KVCacheK != nil && layer.KVOffset > 0
+	if incremental {
+		return
+	}
+	layer.KVCacheK = NewTensor[T](msl, kvDim)
+	layer.KVCacheV = NewTensor[T](msl, kvDim)
+	layer.KVOffset = 0
+}
