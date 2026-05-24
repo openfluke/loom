@@ -388,6 +388,17 @@ func LoomSyncToCPU(networkHandle C.longlong) {
 	n.UseGPU = false
 }
 
+//export LoomSyncInferenceWeights
+// LoomSyncInferenceWeights morphs each layer to its active dtype and, when
+// ReleaseFP32MasterWhenIdle is set, drops FP32 Master so inference uses native Versions only.
+func LoomSyncInferenceWeights(networkHandle C.longlong) {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok {
+		return
+	}
+	n.SyncInferenceWeights()
+}
+
 //export LoomDispatchDense
 func LoomDispatchDense(networkHandle C.longlong, batchSize C.int, inputSize C.int, outputSize C.int, inputHandle C.longlong, weightHandle C.longlong, outputHandle C.longlong, tileSize C.int) *C.char {
 	n, ok := getNetwork(int64(networkHandle))

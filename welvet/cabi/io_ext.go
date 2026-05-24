@@ -185,6 +185,7 @@ func LoomGetMethodsJSON() *C.char {
 		"LoomMorphLayer",
 		"LoomSyncToGPU",
 		"LoomSyncToCPU",
+		"LoomSyncInferenceWeights",
 		"LoomTokenize",
 		"LoomDetokenize",
 	}
