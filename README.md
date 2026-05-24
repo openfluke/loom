@@ -54,17 +54,18 @@ Loom provides bit-exact reproducibility across:
 ## 📊 Versioning & Roadmap
 Loom uses a mathematical versioning system derived from a strictly verified checklist in [`poly/README.md`](./poly/README.md) (row counts and completion ratio are maintained there).
 
-### **Current Version: 0.78.0 — CURRENT**
-- **Completion Ratio**: 76.1% (108 / 142 checklist rows verified — *ASM CPU* wave)
-- **Status**: **0.78.0 "ASM CPU"** adds **Plan 9 dense forward** (`poly/asm`, `UseAsmForward`) on top of **Operation Mesh**: **Donate Compute** (TCP LAN), **TANHI** (UDP layer telemetry for SoulGlitch), **Lucy** (HF pull + compile-on-the-go + layer suites with **Go · ASM · GPU** timers), **native JSON persistence** per layer dtype (not FP32-only checkpoints), **Qwen3-class** ingest, and **tiled-first** forward/backward — still with unified **SC/MC Tiling**, stabilized **step mesh 3D grid**, and **C-ABI parity** for Python and TypeScript.
+### **Current Version: 0.79.0 — CURRENT** (from **0.78.0**)
+- **Completion Ratio**: 78.2% (**111 / 142** checklist rows — *Bedrock Validation* wave)
+- **Status**: **0.79.0 "Bedrock Validation"** hardens the **Go CPU** bedrock on top of **0.78.0 "ASM CPU"**: **Lucy seven-layer suite** (10 layer types × 21 dtypes × volumetric grids, train + native save/reload), **MHA `[B,S,D]` layout** and **KV train/decode split**, **BitNet/native ternary** checkpoint parity, **Poly Talk** decode fixes, and **C-ABI 461/461** (`LoomSyncInferenceWeights`). Still: **Plan 9 Dense forward** (`UseAsmForward`), **Donate Compute**, **TANHI**, **native JSON per dtype**, **Qwen3-class** ingest, **SC/MC tiling**, and **WebGPU** training/inference.
     - > [!NOTE]
-    - > **Numerical Tiling**: Introduces specialized Single-Core (SC) and Multi-Core (MC) profiles, optimizing register pressure vs. high-bandwidth L1/L2 cache throughput.
+    - > **What shipped in 0.79:** See [`docs/bedrock_validation.md`](./docs/bedrock_validation.md) for the full fix list and how to re-run **[7]** in Lucy.
 - **Milestones**:
     - **v0.75.0 "Multi-Core Symphony"** ✅ — Tiling across the dispatcher; stabilized volumetric hopping; `welvet` parity.
     - **v0.76.0 "Operation Mesh"** ✅ — Wire protocols, LM tooling burst, RAM-aware load path, telemetry. See [poly/README.md § v0.76.0](./poly/README.md#v0760--operation-mesh-previous).
-    - **v0.78.0 "ASM CPU"** ✅ — Dense forward Plan 9 kernels (21 dtypes), Lucy ASM columns, native save/load per dtype. See [poly/README.md § v0.78.0](./poly/README.md#v0780--asm-cpu-current).
+    - **v0.78.0 "ASM CPU"** ✅ — Dense forward Plan 9 kernels (21 dtypes), Lucy ASM columns, native save/load per dtype. See [poly/README.md § v0.78.0](./poly/README.md#v0780--asm-cpu-previous).
+    - **v0.79.0 "Bedrock Validation"** ✅ — Seven-layer CPU regression, MHA/KV/persistence, C-ABI 100%. See [poly/README.md § v0.79.0](./poly/README.md#v0790--bedrock-validation-current) and [docs/bedrock_validation.md](./docs/bedrock_validation.md).
 - **Next Target — v0.8.0 "Edge-First"**: Thermal-aware scheduling, UMA pinning, command-buffer graphing for mobile and wearable deployment.
-- **Next Steps**: Command Graph Buffering; Thermal-Aware hardware scheduling.
+- **Next Steps**: Dense backward asm; Command Graph Buffering; Thermal-Aware hardware scheduling.
 
 For a detailed breakdown of the roadmap and version calculation, see [poly/README.md](./poly/README.md#📊-true-version-calculation).
 

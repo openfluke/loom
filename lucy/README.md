@@ -51,7 +51,7 @@ Harness: [`examples/seven_layer/`](../lucy/examples/seven_layer/) — JSON build
 
 Symbol legend: **✓** PASS · **✗** FAIL · **·** N/A (not implemented for this layer).
 
-Broader testing notes (H-DRIFT buckets, legacy matrices): [`docs/testing_and_validation.md`](../docs/testing_and_validation.md).
+Broader testing notes (H-DRIFT buckets, legacy matrices): [`docs/testing_and_validation.md`](../docs/testing_and_validation.md). **v0.79.0 Bedrock Validation** scope (MHA/KV, native save, C-ABI): [`docs/bedrock_validation.md`](../docs/bedrock_validation.md).
 
 ---
 

@@ -15,7 +15,7 @@ M-POLY-VTD is a next-generation neural inference engine designed for high-perfor
 
 **CPU gets faster as asm lands.** Dense forward on Lucy (arm64 Metal, 8×1024→512) is ~**1.7–2.5×** Go SC for Int4/Ternary/low-bit and up to ~**3.2×** Go MC for Uint4/Ternary/FP4 (best MC **Uint4 ~3.55×**; best SC **Uint8 ~2.46×**). Float64 can still be slower than Go on SC/MC — tile tuning, not a dead asm path. Backward, SwiGLU, MHA, and CNN asm are the next wins. Internals: [`asm/README.md`](asm/README.md).
 
-### Where we are now — **v0.78.0 “ASM CPU”**
+### Where we are now — **v0.79.0 “Bedrock Validation”** (was **v0.78.0 “ASM CPU”**)
 
 **Device-aware** = **Go** vs **`poly/asm`** on CPU (`UseAsmForward`), or **WebGPU** when `UseGPU` is on.
 
@@ -89,7 +89,7 @@ A comprehensive suite is provided to measure the speed, memory, and bit-level fi
 
 ### Running checks in this repo
 
-Layer matrices, GPU parity tables, and training transcripts are exercised from **`lucy/`** (output often under `lucy/lucy_testing_output/log.txt`). See [`docs/testing_and_validation.md`](../docs/testing_and_validation.md) for how to read the log.
+Layer matrices, GPU parity tables, and training transcripts are exercised from **`lucy/`** (`lucy_testing_output/log.txt`). The **seven-layer CPU bedrock suite** writes `lucy_testing_output/seven_layer.txt` (menu **[7]**). See [`docs/testing_and_validation.md`](../docs/testing_and_validation.md) and [`docs/bedrock_validation.md`](../docs/bedrock_validation.md).
 
 ```bash
 go test ./poly/...
@@ -169,7 +169,7 @@ cd welvet/typescript
 npm test
 ```
 
-**Verified Results (Loom v0.78.0):**
+**Verified Results (Loom v0.79.0):**
 - **[PASS]** Internal WASM Exports (8/8)
 - **[PASS]** Network Wrapper Methods (16/16)
 - **[PASS]** NEAT Population Methods (8/8)
@@ -619,8 +619,11 @@ Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`po
 - [x] Model Ensemble Diversity Metrics
 - [x] Training Method Comparison Analysis
 - **Lucy / log interpretation** — [`docs/testing_and_validation.md`](../docs/testing_and_validation.md) (parity legend, `lucy/lucy_testing_output/log.txt`, poly file map for suites)
+- [x] **Lucy seven-layer CPU suite** — 10 layer types × 21 dtypes × 1³/2³/3³ grids, SC/MC fwd/bwd, train, native save/reload (`lucy/examples/seven_layer/`, `seven_layer.txt`)
+- [x] **C-ABI functional parity** — `welvet/cabi/internal/check` at **461/461** (100%); includes `LoomSyncInferenceWeights`
+- [x] **MHA volumetric layout + KV** — `[B,S,D]` parsing, training vs decode cache policy, backward Q/K norm parity (`mha_layout.go`, `mha.go`)
 
-**Ecosystem Progress: 19 / 25**
+**Ecosystem Progress: 22 / 25**
 
 ---
 
@@ -651,7 +654,15 @@ Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`po
 
 ---
 
-## v0.78.0 — *ASM CPU* (current)
+## v0.79.0 — *Bedrock Validation* (current)
+
+- **Lucy [7] seven-layer suite** — volumetric JSON grids, **10 layer families** × **21 dtypes**, CPU **SC/MC**, **train**, **save/reload** before and after training (`lucy/examples/seven_layer/`).
+- **MHA** — `mhaParseLayout` for `[B,S,D]`; `mhaPrepareKVForForward` (train reset vs decode cache); backward matches forward Q/K RMS norm; Poly Talk KV offset fixed.
+- **Native checkpoints** — BitNet/ternary save uses native `Versions` packing (`bitnet_cpu.go`); signed low-bit persistence on `[]uint8`.
+- **C-ABI** — **461/461** export parity; **`LoomSyncInferenceWeights`** for `ReleaseFP32MasterWhenIdle` inference RAM.
+- **Docs** — [`docs/bedrock_validation.md`](../docs/bedrock_validation.md).
+
+## v0.78.0 — *ASM CPU* (previous)
 
 - **`poly/asm/dense/`** + **`asm/dot/`** + **`asm/matmul/`** — Plan 9 forward SC/MC on arm64/amd64 (float tiled + native integer / morphed-u8 quant paths).
 - **`UseAsmForward`** — network/layer toggle; training/backward unchanged (Go/GPU).
@@ -675,16 +686,19 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 | 2. Architectural Layers | 32 | 37 |
 | 3. ASM CPU | 5 | 17 |
 | 4. Training Automation | 14 | 18 |
-| 5. Deployment Ecosystem | 19 | 25 |
+| 5. Deployment Ecosystem | 22 | 25 |
 | 6. LLM & Tokenization | 15 | 15 |
-| **GRAND TOTAL** | **108** | **142** |
+| **GRAND TOTAL** | **111** | **142** |
 
-### **Completion Ratio: 76.1%**
+### **Completion Ratio: 78.2%**
 
-## **Version 0.78.0 — CURRENT**
-*(**v0.78.0 "ASM CPU"** — Loom stack = **Go + asm + WebGPU** only. **Dense forward** Plan 9 (~**2–3.5×** Go MC on quant dtypes; Float64 tuning pending). **Native JSON** per dtype on save. **Next:** more `poly/asm/*` layers (SwiGLU, MHA, CNN); optional Dense backward asm.)*
+## **Version 0.79.0 — CURRENT**
+*(**v0.79.0 "Bedrock Validation"** — from **0.78.0**. **Seven-layer** CPU regression, **MHA/KV** + **native save/reload** fixes, **C-ABI 100%**. Stack still **Go + asm + WebGPU**. **Dense forward** asm unchanged. **Next:** **v0.8.0 Edge-First**; asm rollout — Dense backward, SwiGLU, MHA, CNN.)*
 
-## **v0.79–0.81 Roadmap — ASM rollout**
+## **v0.78.0 — ASM CPU** (previous)
+*(Plan 9 **Dense forward** ~**2–3.5×** Go MC on quant dtypes; native JSON per dtype on save.)*
+
+## **v0.80–0.81 Roadmap — ASM rollout**
 *(Expand `poly/asm/*` layer-by-layer; block GEMM + fused ops on CPU. WebGPU track continues in parallel — fusion, graphs, attention kernels.)*
 
 
