@@ -13,7 +13,7 @@ import (
 
 const (
 	trainEpochs  = 50
-	learningRate = float32(0.01)
+	learningRate = float32(0.05)
 	numLayers    = 7
 )
 
@@ -151,6 +151,58 @@ func applyDTypeLayer(l *poly.VolumetricLayer, tc dtypeCase) {
 }
 
 // wireLayerTree sets Network on nested layers after DeserializeNetwork.
+// prepareTrainingNet scales flat-cell weights so deep stacks (7 layers/cell) get usable gradients.
+func prepareTrainingNet(net *poly.VolumetricNetwork, dt poly.DType) {
+	if net == nil || net.LayersPerCell <= 1 {
+		return
+	}
+	scale := float32(math.Sqrt(float64(net.LayersPerCell)))
+	switch dt {
+	case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16, poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
+		return // unsigned quant: keep JSON init; scaling destabilizes training
+	case poly.DTypeInt8, poly.DTypeInt4, poly.DTypeInt2, poly.DTypeTernary, poly.DTypeBinary, poly.DTypeFP4,
+		poly.DTypeFP8E4M3, poly.DTypeFP8E5M2:
+		scale = 1.5
+	case poly.DTypeInt64, poly.DTypeInt32, poly.DTypeInt16:
+		scale = 1.5
+	default:
+		// float32/float64/float16/bfloat16: full depth scaling
+	}
+	for i := range net.Layers {
+		prepareTrainingLayer(&net.Layers[i], scale)
+	}
+}
+
+func trainingLearningRate(dt poly.DType) float32 {
+	if isQuantIntegerDType(dt) {
+		return 0.01
+	}
+	switch dt {
+	case poly.DTypeFP8E4M3, poly.DTypeFP8E5M2, poly.DTypeFP4:
+		return 0.01
+	default:
+		return learningRate
+	}
+}
+
+func prepareTrainingLayer(l *poly.VolumetricLayer, scale float32) {
+	if l.WeightStore != nil && scale != 1 {
+		for j := range l.WeightStore.Master {
+			l.WeightStore.Master[j] *= scale
+		}
+		l.WeightStore.InvalidateVersions()
+	}
+	for i := range l.ParallelBranches {
+		prepareTrainingLayer(&l.ParallelBranches[i], scale)
+	}
+	for i := range l.SequentialLayers {
+		prepareTrainingLayer(&l.SequentialLayers[i], scale)
+	}
+	if l.MetaObservedLayer != nil {
+		prepareTrainingLayer(l.MetaObservedLayer, scale)
+	}
+}
+
 func wireLayerTree(net *poly.VolumetricNetwork) {
 	for i := range net.Layers {
 		wireLayer(&net.Layers[i], net)

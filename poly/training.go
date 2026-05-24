@@ -105,12 +105,14 @@ func resolveMode(config *TrainingConfig) TrainingMode {
 func ConfigureNetworkForMode(n *VolumetricNetwork, mode TrainingMode) error {
 	switch mode {
 	case TrainingModeCPUNormal, TrainingModeCPUSC, TrainingModeCPUMC:
-		// CPU paths use multi-core tiled implementations only (no separate naive / serial-tiled stacks).
-		n.EnableMultiCoreTiling = true
+		n.UseGPU = false
+		multiCore := mode == TrainingModeCPUMC
+		useTiling := mode != TrainingModeCPUNormal
+		n.EnableMultiCoreTiling = multiCore
 		n.RefreshRuntimeTileSizes()
 		for i := range n.Layers {
-			n.Layers[i].UseTiling = true
-			n.Layers[i].EnableMultiCoreTiling = true
+			n.Layers[i].UseTiling = useTiling
+			n.Layers[i].EnableMultiCoreTiling = multiCore
 		}
 		n.SyncToCPU()
 	case TrainingModeGPUNormal, TrainingModeGPUSC, TrainingModeGPUMC:

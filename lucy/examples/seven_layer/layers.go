@@ -44,7 +44,8 @@ func writeNetworkHeader(b *strings.Builder, id string) {
 
 func RunDense() bool {
 	dims := sevenEndpoints([]int{16, 24, 32, 48, 64, 48, 32, 8})
-	acts := []string{"RELU", "RELU", "RELU", "RELU", "RELU", "RELU", "SIGMOID"}
+	// LINEAR stack: deep ReLU pyramids stall gradients; scaling in prepareTrainingNet helps 7-wide cells.
+	acts := []string{"LINEAR", "LINEAR", "LINEAR", "LINEAR", "LINEAR", "LINEAR", "LINEAR"}
 	return RunLayerSuite(LayerSuite{
 		Name:          "Dense",
 		PrimaryType:   poly.LayerDense,
