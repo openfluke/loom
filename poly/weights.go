@@ -48,13 +48,71 @@ func GPUPackedNativeByteSize(dtype DType, weightCount int) int {
 }
 
 func isCNN1NativeQuantDType(dtype DType) bool {
+	return isDenseNativeTrainDType(dtype)
+}
+
+// IsDenseNativeTrainDType reports dtypes that support in-place native weight updates on CPU.
+func IsDenseNativeTrainDType(dtype DType) bool {
+	return isDenseNativeTrainDType(dtype)
+}
+
+// isDenseNativeTrainDType reports dtypes that support in-place native weight updates on CPU.
+func isDenseNativeTrainDType(dtype DType) bool {
 	switch dtype {
 	case DTypeInt8, DTypeInt4, DTypeFP4, DTypeInt2, DTypeTernary, DTypeBinary,
 		DTypeFP8E4M3, DTypeFP8E5M2, DTypeUint8, DTypeUint4, DTypeUint2,
-		DTypeFloat16, DTypeBFloat16, DTypeInt16:
+		DTypeFloat16, DTypeBFloat16,
+		DTypeInt16, DTypeUint16, DTypeInt32, DTypeUint32, DTypeInt64, DTypeUint64:
 		return true
 	default:
 		return false
+	}
+}
+
+func clipGrad(g, clipVal float32) float32 {
+	if clipVal > 0 {
+		if g > clipVal {
+			return clipVal
+		}
+		if g < -clipVal {
+			return -clipVal
+		}
+	}
+	return g
+}
+
+func clampMasterForDType(ws *WeightStore, dtype DType) {
+	if ws == nil || len(ws.Master) == 0 {
+		return
+	}
+	scale := ws.Scale
+	if scale <= 0 {
+		scale = 1
+	}
+	var maxMaster float32
+	switch dtype {
+	case DTypeUint64:
+		maxMaster = scale * float32(1<<20)
+	case DTypeUint32:
+		maxMaster = scale * float32(1<<20)
+	case DTypeUint16:
+		maxMaster = scale * float32(65535)
+	case DTypeUint8:
+		maxMaster = scale * 255
+	case DTypeUint4:
+		maxMaster = scale * 15
+	case DTypeUint2:
+		maxMaster = scale * 3
+	default:
+		return
+	}
+	for i := range ws.Master {
+		if ws.Master[i] < 0 {
+			ws.Master[i] = 0
+		}
+		if ws.Master[i] > maxMaster {
+			ws.Master[i] = maxMaster
+		}
 	}
 }
 
@@ -987,15 +1045,7 @@ func (ws *WeightStore) ApplyGradients(gradWeights *Tensor[float32], lr float32, 
 	}
 
 	for i := 0; i < limit; i++ {
-		g := gradWeights.Data[i]
-		if clipVal > 0 {
-			if g > clipVal {
-				g = clipVal
-			}
-			if g < -clipVal {
-				g = -clipVal
-			}
-		}
+		g := clipGrad(gradWeights.Data[i], clipVal)
 		ws.Master[i] -= lr * g
 	}
 	// After applying gradients, previously cached low-bit versions are now STALE.
@@ -1006,12 +1056,136 @@ func (ws *WeightStore) ApplyGradients(gradWeights *Tensor[float32], lr float32, 
 }
 
 func (ws *WeightStore) ApplyGradientsNative(dtype DType, gradWeights *Tensor[float32], lr float32, clipVal float32) bool {
-	if !isCNN1NativeQuantDType(dtype) || gradWeights == nil || len(gradWeights.Data) == 0 {
+	if !isDenseNativeTrainDType(dtype) || gradWeights == nil || len(gradWeights.Data) == 0 {
 		return false
 	}
 
 	ws.Morph(dtype)
+	limit := len(gradWeights.Data)
 	switch dtype {
+	case DTypeInt64:
+		raw, ok := ws.Versions[dtype].([]int64)
+		if !ok || len(raw) == 0 {
+			return false
+		}
+		if len(raw) < limit {
+			limit = len(raw)
+		}
+		scale := ws.Scale
+		if scale == 0 {
+			scale = 1
+		}
+		for i := 0; i < limit; i++ {
+			ws.Master[i] -= lr * clipGrad(gradWeights.Data[i], clipVal)
+			raw[i] = int64(math.Round(float64(ws.Master[i] / scale)))
+		}
+		ws.Versions[dtype] = raw
+		ws.GPUWeights = make(map[DType]any)
+		return true
+	case DTypeUint64:
+		raw, ok := ws.Versions[dtype].([]uint64)
+		if !ok || len(raw) == 0 {
+			return false
+		}
+		if len(raw) < limit {
+			limit = len(raw)
+		}
+		scale := ws.Scale
+		if scale == 0 {
+			scale = 1
+		}
+		for i := 0; i < limit; i++ {
+			ws.Master[i] -= lr * clipGrad(gradWeights.Data[i], clipVal)
+		}
+		clampMasterForDType(ws, dtype)
+		for i := 0; i < limit; i++ {
+			raw[i] = uint64(math.Round(float64(ws.Master[i] / scale)))
+		}
+		ws.Versions[dtype] = raw
+		ws.GPUWeights = make(map[DType]any)
+		return true
+	case DTypeInt32:
+		raw, ok := ws.Versions[dtype].([]int32)
+		if !ok || len(raw) == 0 {
+			return false
+		}
+		if len(raw) < limit {
+			limit = len(raw)
+		}
+		scale := ws.Scale
+		if scale == 0 {
+			scale = 1
+		}
+		for i := 0; i < limit; i++ {
+			ws.Master[i] -= lr * clipGrad(gradWeights.Data[i], clipVal)
+			raw[i] = int32(math.Round(float64(ws.Master[i] / scale)))
+		}
+		ws.Versions[dtype] = raw
+		ws.GPUWeights = make(map[DType]any)
+		return true
+	case DTypeUint32:
+		raw, ok := ws.Versions[dtype].([]uint32)
+		if !ok || len(raw) == 0 {
+			return false
+		}
+		if len(raw) < limit {
+			limit = len(raw)
+		}
+		scale := ws.Scale
+		if scale == 0 {
+			scale = 1
+		}
+		for i := 0; i < limit; i++ {
+			ws.Master[i] -= lr * clipGrad(gradWeights.Data[i], clipVal)
+		}
+		clampMasterForDType(ws, dtype)
+		for i := 0; i < limit; i++ {
+			raw[i] = uint32(math.Round(float64(ws.Master[i] / scale)))
+		}
+		ws.Versions[dtype] = raw
+		ws.GPUWeights = make(map[DType]any)
+		return true
+	case DTypeInt16:
+		raw, ok := ws.Versions[dtype].([]int16)
+		if !ok || len(raw) == 0 {
+			return false
+		}
+		if len(raw) < limit {
+			limit = len(raw)
+		}
+		scale := ws.Scale
+		if scale == 0 {
+			scale = 1
+		}
+		for i := 0; i < limit; i++ {
+			ws.Master[i] -= lr * clipGrad(gradWeights.Data[i], clipVal)
+			raw[i] = int16(math.Round(float64(ws.Master[i] / scale)))
+		}
+		ws.Versions[dtype] = raw
+		ws.GPUWeights = make(map[DType]any)
+		return true
+	case DTypeUint16:
+		raw, ok := ws.Versions[dtype].([]uint16)
+		if !ok || len(raw) == 0 {
+			return false
+		}
+		if len(raw) < limit {
+			limit = len(raw)
+		}
+		scale := ws.Scale
+		if scale == 0 {
+			scale = 1
+		}
+		for i := 0; i < limit; i++ {
+			ws.Master[i] -= lr * clipGrad(gradWeights.Data[i], clipVal)
+		}
+		clampMasterForDType(ws, dtype)
+		for i := 0; i < limit; i++ {
+			raw[i] = uint16(math.Round(float64(ws.Master[i] / scale)))
+		}
+		ws.Versions[dtype] = raw
+		ws.GPUWeights = make(map[DType]any)
+		return true
 	case DTypeFP4:
 		raw, ok := ws.Versions[dtype].([]uint8)
 		if !ok || len(raw) == 0 {

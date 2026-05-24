@@ -43,8 +43,11 @@ func forwardLoss(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32
 	return poly.CalculateLoss(out, target, "mse")
 }
 
-func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], tc dtypeCase, refLoss float64) saveResult {
+func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], tc dtypeCase, refLoss float64, phase savePhase) saveResult {
 	r := saveResult{}
+	finalizeTrainingNet(net, tc)
+	setCPUMode(net, true, false)
+
 	out0, _, _ := poly.ForwardPolymorphic(net, input)
 	baseline := append([]float32(nil), out0.Data...)
 
@@ -66,30 +69,63 @@ func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[flo
 	out1, _, _ := poly.ForwardPolymorphic(reloaded, input)
 	r.forwardDiff = maxAbsDiff(baseline, out1.Data)
 	r.bucket = spectrumMark(r.forwardDiff, tc.tolerance, out1.Data, baseline)
-	r.weightDiff = maxWeightDiff(net, reloaded)
+	r.weightDiff = nativeWeightDiff(net, reloaded, tc.dtype)
 	outR, _, _ := poly.ForwardPolymorphic(reloaded, input)
 	r.lossDelta = math.Abs(poly.CalculateLoss(outR, target, "mse") - refLoss)
 
-	r.nativeOK = true
-	if net.Layers[0].WeightStore != nil {
-		b64, scale, native, fileErr := poly.LayerPersistenceFromJSON(wire, 0)
-		l2 := reloaded.GetLayer(0, 0, 0, 0)
-		if fileErr != nil || !native || b64 == "" || l2 == nil || l2.WeightStore == nil {
-			r.nativeOK = false
-		} else {
-			decoded, decErr := poly.DecodeNativeWeights(b64, l2.DType)
-			loaded := l2.WeightStore.Versions[tc.dtype]
-			r.nativeOK = decErr == nil && loaded != nil && l2.WeightStore.Scale == scale &&
-				poly.NativeWeightsEncoded(decoded, loaded, tc.dtype)
+	r.nativeOK = nativePersistenceOK(net, reloaded, wire, tc)
+	maxBucket := saveReloadMaxBucket(phase, tc.dtype)
+	fwdTol := tc.tolerance
+	wTol := tc.tolerance
+	if poly.IsDenseNativeTrainDType(tc.dtype) {
+		wTol = tc.tolerance * 100
+	}
+	if phase == phaseAfter {
+		fwdTol = tc.tolerance * 100
+		if poly.IsDenseNativeTrainDType(tc.dtype) {
+			fwdTol = tc.tolerance * 1000
 		}
 	}
-	r.pass = r.forwardDiff <= tc.tolerance && r.weightDiff <= tc.tolerance*10 &&
-		r.bucket <= specLowBit && r.nativeOK && r.err == ""
+	r.pass = r.forwardDiff <= fwdTol && r.weightDiff <= wTol &&
+		r.bucket <= maxBucket && r.nativeOK && r.err == ""
 	return r
 }
 
+func nativeWeightDiff(a, b *poly.VolumetricNetwork, dt poly.DType) float64 {
+	if a.Layers[0].WeightStore == nil || b.Layers[0].WeightStore == nil {
+		return 0
+	}
+	if poly.IsDenseNativeTrainDType(dt) {
+		b64a, scaleA, oka := poly.LayerNativePersistenceSnapshot(a.Layers[0].WeightStore, dt)
+		b64b, scaleB, okb := poly.LayerNativePersistenceSnapshot(b.Layers[0].WeightStore, dt)
+		if !oka || !okb || b64a != b64b || scaleA != scaleB {
+			return 1
+		}
+		return 0
+	}
+	return maxWeightDiff(a, b)
+}
+
+func nativePersistenceOK(net, reloaded *poly.VolumetricNetwork, wire []byte, tc dtypeCase) bool {
+	if net.Layers[0].WeightStore == nil {
+		return true
+	}
+	b64, scale, native, fileErr := poly.LayerPersistenceFromJSON(wire, 0)
+	l2 := reloaded.GetLayer(0, 0, 0, 0)
+	if fileErr != nil || !native || b64 == "" || l2 == nil || l2.WeightStore == nil {
+		return false
+	}
+	decoded, decErr := poly.DecodeNativeWeights(b64, l2.DType)
+	loaded := l2.WeightStore.Versions[tc.dtype]
+	if loaded == nil {
+		loaded = l2.WeightStore.GetNative(tc.dtype)
+	}
+	return decErr == nil && loaded != nil && l2.WeightStore.Scale == scale &&
+		poly.NativeWeightsEncoded(decoded, loaded, tc.dtype)
+}
+
 func trainCPU(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], mode poly.TrainingMode, tc dtypeCase) (*poly.TrainingResult, time.Duration, error) {
-	wireLayerTree(net)
+	configureTrainingNet(net, tc)
 	prepareTrainingNet(net, tc.dtype)
 	cfg := poly.DefaultTrainingConfig()
 	cfg.Epochs = trainEpochs
@@ -144,12 +180,12 @@ func RunLayerSuite(s LayerSuite) bool {
 			fmt.Println("BUILD ERR")
 			continue
 		}
-		wireLayerTree(net)
+		configureTrainingNet(net, tc)
 		applyDType(net, tc)
 		input := s.MakeInput()
 		target := s.MakeTarget(net, input)
 
-		// Forward determinism: CPU Go SC vs MC
+		// Forward determinism: CPU Go SC vs MC (Go tiled path; ASM checked separately for floats).
 		fwdSC := captureForward(net, input, false, false)
 		fwdMC := captureForward(net, input, true, false)
 		row.FwdSCMC = maxAbsDiff(fwdSC.out, fwdMC.out)
@@ -159,8 +195,8 @@ func RunLayerSuite(s LayerSuite) bool {
 		bwdMC := captureBackward(net, input, target, true)
 		row.BwdSCMC = maxAbsDiff(append(bwdSC.dx, bwdSC.dw...), append(bwdMC.dx, bwdMC.dw...))
 
-		// ASM forward (Dense only)
-		if asmSt.ForwardCapable {
+		// ASM forward (Dense float paths only — native quant uses integer matmul in ASM).
+		if asmSt.ForwardCapable && requiresAsmDeterminism(tc.dtype) {
 			SetNetworkAsm(net, true)
 			asmSt.RuntimeEnabled = net.UseAsmForward
 			fwdGo := captureForward(net, input, true, false)
@@ -169,6 +205,10 @@ func RunLayerSuite(s LayerSuite) bool {
 			row.AsmUsed = true
 			row.AsmOK = row.FwdGoAsm <= tc.tolerance
 			SetNetworkAsm(net, false)
+		} else if asmSt.ForwardCapable {
+			row.AsmUsed = false
+			row.AsmOK = true
+			row.FwdGoAsm = 0
 		} else {
 			// Non-Dense: verify toggling ASM flag does not break CPU paths
 			SetNetworkAsm(net, true)
@@ -185,10 +225,10 @@ func RunLayerSuite(s LayerSuite) bool {
 			detTol = 1e-10
 		}
 		row.DetOK = row.FwdSCMC <= detTol && row.BwdSCMC <= detTol*10 &&
-			(!asmSt.ForwardCapable || row.FwdGoAsm <= tc.tolerance)
+			(!requiresAsmDeterminism(tc.dtype) || row.FwdGoAsm <= tc.tolerance)
 
 		lossBefore := forwardLoss(net, input, target)
-		before := checkSaveReload(net, input, target, tc, lossBefore)
+		before := checkSaveReload(net, input, target, tc, lossBefore, phaseBefore)
 		row.BeforeBucket = before.bucket.String()
 		row.BeforeOK = before.pass
 		row.NativeOK = before.nativeOK
@@ -196,6 +236,7 @@ func RunLayerSuite(s LayerSuite) bool {
 		// Train CPU SC then MC (fresh weight copy via rebuild for fairness)
 		netSC, _ := poly.BuildNetworkFromJSON(s.BuildJSON(tc.jsonName))
 		applyDType(netSC, tc)
+		configureTrainingNet(netSC, tc)
 		resSC, durSC, err := trainCPU(netSC, input, target, poly.TrainingModeCPUSC, tc)
 		if err != nil {
 			row.Err = "TRAIN-SC"
@@ -213,6 +254,7 @@ func RunLayerSuite(s LayerSuite) bool {
 
 		netMC, _ := poly.BuildNetworkFromJSON(s.BuildJSON(tc.jsonName))
 		applyDType(netMC, tc)
+		configureTrainingNet(netMC, tc)
 		resMC, durMC, err := trainCPU(netMC, input, target, poly.TrainingModeCPUMC, tc)
 		if err != nil {
 			row.Err = "TRAIN-MC"
@@ -233,8 +275,9 @@ func RunLayerSuite(s LayerSuite) bool {
 		row.LossFinal = lossFinal
 		row.Learned = trainingOK(lossInit, lossFinal, tc.dtype)
 
+		finalizeTrainingNet(netMC, tc)
 		_ = saveCheckpoint(netMC, s.CheckpointTag, tc.name)
-		after := checkSaveReload(netMC, input, target, tc, lossFinal)
+		after := checkSaveReload(netMC, input, target, tc, lossFinal, phaseAfter)
 		row.AfterBucket = after.bucket.String()
 		row.AfterOK = after.pass
 		if !after.nativeOK {

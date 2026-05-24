@@ -388,10 +388,12 @@ func LayerNativePersistenceSnapshot(ws *WeightStore, dtype DType) (weightsB64 st
 	if ws == nil || len(ws.Master) == 0 {
 		return "", 0, false
 	}
-	delete(ws.Versions, dtype)
-	ws.Morph(dtype)
 	scale = ws.Scale
 	active := ws.Versions[dtype]
+	if active == nil {
+		ws.Morph(dtype)
+		active = ws.Versions[dtype]
+	}
 	if active == nil {
 		active = ws.GetNative(dtype)
 	}

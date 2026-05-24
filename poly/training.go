@@ -1245,6 +1245,7 @@ func ApplyRecursiveGradients(layer *VolumetricLayer, gradWeights *Tensor[float32
 		}
 		if !usedNative {
 			layer.WeightStore.ApplyGradients(gradWeights, lr, clipVal)
+			clampMasterForDType(layer.WeightStore, layer.DType)
 		}
 
 		// Re-quantize after gradient update when the active state still lives in Master.

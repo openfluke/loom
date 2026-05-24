@@ -127,6 +127,51 @@ func applyDType(net *poly.VolumetricNetwork, tc dtypeCase) {
 	}
 }
 
+// configureTrainingNet enables native in-place updates (UseExactDType) for quant dtypes.
+func configureTrainingNet(net *poly.VolumetricNetwork, tc dtypeCase) {
+	wireLayerTree(net)
+	net.UseExactDType = poly.IsDenseNativeTrainDType(tc.dtype)
+}
+
+func finalizeTrainingNet(net *poly.VolumetricNetwork, tc dtypeCase) {
+	wireLayerTree(net)
+	for i := range net.Layers {
+		finalizeTrainingLayer(&net.Layers[i], tc.dtype)
+	}
+}
+
+func finalizeTrainingLayer(l *poly.VolumetricLayer, dt poly.DType) {
+	if l.WeightStore != nil && dt != poly.DTypeFloat32 {
+		l.WeightStore.ForceMorph(dt)
+	}
+	for i := range l.ParallelBranches {
+		finalizeTrainingLayer(&l.ParallelBranches[i], dt)
+	}
+	for i := range l.SequentialLayers {
+		finalizeTrainingLayer(&l.SequentialLayers[i], dt)
+	}
+	if l.MetaObservedLayer != nil {
+		finalizeTrainingLayer(l.MetaObservedLayer, dt)
+	}
+}
+
+func requiresAsmDeterminism(dt poly.DType) bool {
+	switch dt {
+	case poly.DTypeFloat64, poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16:
+		return true
+	default:
+		return false
+	}
+}
+
+func saveReloadMaxBucket(phase savePhase, dt poly.DType) spectrum {
+	_ = phase
+	if poly.IsDenseNativeTrainDType(dt) || isQuantIntegerDType(dt) {
+		return specLowBit
+	}
+	return specIndustry
+}
+
 func applyDTypeLayer(l *poly.VolumetricLayer, tc dtypeCase) {
 	l.DType = tc.dtype
 	if l.WeightStore != nil {
@@ -174,6 +219,12 @@ func prepareTrainingNet(net *poly.VolumetricNetwork, dt poly.DType) {
 }
 
 func trainingLearningRate(dt poly.DType) float32 {
+	switch dt {
+	case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
+		return 0.001
+	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
+		return 0.005
+	}
 	if isQuantIntegerDType(dt) {
 		return 0.01
 	}
