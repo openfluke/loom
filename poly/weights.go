@@ -513,7 +513,13 @@ func (ws *WeightStore) HeRandomize(seed int64, inputSize int) {
 
 func (ws *WeightStore) GetActive(dtype DType) any {
 	if dtype == DTypeFloat32 {
-		return ws.Master
+		if len(ws.Master) > 0 {
+			return ws.Master
+		}
+		if v, ok := ws.Versions[DTypeFloat32]; ok && v != nil {
+			return v
+		}
+		return nil
 	}
 	v, ok := ws.Versions[dtype]
 	if !ok {
@@ -653,7 +659,9 @@ func (ws *WeightStore) SetLoadedWeights(dtype DType, data any) {
 	ws.Versions[dtype] = data
 	ws.CPUPacked = make(map[DType]any)
 	ws.GPUWeights = make(map[DType]any)
-	ws.Unpack(dtype)
+	if len(ws.Master) > 0 {
+		ws.Unpack(dtype)
+	}
 }
 
 // ActiveWeightsFloat32 returns a float32 view of the layer weights at dtype (for loss/parity).
@@ -1039,6 +1047,7 @@ func (ws *WeightStore) ApplyGradients(gradWeights *Tensor[float32], lr float32, 
 	if gradWeights == nil || len(gradWeights.Data) == 0 {
 		return
 	}
+	ws.EnsureFP32Master(DTypeFloat32)
 	limit := len(gradWeights.Data)
 	if len(ws.Master) < limit {
 		limit = len(ws.Master)
@@ -1060,6 +1069,7 @@ func (ws *WeightStore) ApplyGradientsNative(dtype DType, gradWeights *Tensor[flo
 		return false
 	}
 
+	ws.EnsureFP32Master(dtype)
 	ws.Morph(dtype)
 	limit := len(gradWeights.Data)
 	switch dtype {

@@ -69,6 +69,17 @@ The suite runs **separate** checks for forward, backward, training, and weights.
 | **Training** | Timing | SC wall time | MC wall time | — | Informational only |
 | **Weights** | Save/reload **before** train | — | — | — | Serialize → deserialize → forward + native blob match (`B-OK`) |
 | **Weights** | Save/reload **after** MC train | — | — | — | Same on trained net (`A-OK`, `Native`) |
+
+**FP32 Master lifecycle (`ReleaseFP32MasterWhenIdle`):**
+
+| Phase | RAM weights | What happens |
+|-------|-------------|--------------|
+| **Load / first mount** | Native `Versions` at layer `DType` (Int8, Binary, …) | JSON init → `Morph`; optional `SyncInferenceWeights()` drops Master |
+| **Forward / infer** | Native only | `GetActive(dtype)`; no FP32 duplicate |
+| **Training** | Native + **FP32 Master** mounted | `Train()` → `EnsureTrainingWeights()`; grads update Master; native `Versions` refreshed (native train path) |
+| **After training** | Native only again (when flag true) | `Train()` ends with `SyncInferenceWeights()` — morph from Master, then **release** Master |
+
+Menu `[7]`: forward path uses `(infer)` weight bytes; after MC train, `(trained-native)` — same width as checkpoint on disk. Set `ReleaseFP32MasterWhenIdle = false` to keep Master resident (legacy / further training in-process).
 | **Overall** | Gate | — | — | — | `B-OK` ∧ `A-OK` ∧ **Learn** ∧ **Det** (ASM reported; not required except inside **Det** for float Dense) |
 
 **Det** = forward SC↔MC ∧ backward SC↔MC ∧ (for Float64/32/16/BF16 on Dense: Go↔ASM). Non-Dense layers: ASM column is **·**; toggling `UseAsmForward` must not change outputs.

@@ -381,7 +381,7 @@ func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input
 	kvDim := numKVHeads * headDim
 
 	gradInput = NewTensor[T](input.Shape...)
-	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
+	gradWeights = NewTensor[T](layer.WeightStore.WeightCount(layer.DType))
 
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil {

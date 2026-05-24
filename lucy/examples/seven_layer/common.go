@@ -133,10 +133,22 @@ func configureTrainingNet(net *poly.VolumetricNetwork, tc dtypeCase) {
 	net.UseExactDType = poly.IsDenseNativeTrainDType(tc.dtype)
 }
 
+// configureInferenceNet drops FP32 Master after native sync so forward-only RAM
+// reflects morphed Versions (training nets override via EnsureTrainingWeights).
+func configureInferenceNet(net *poly.VolumetricNetwork) {
+	wireLayerTree(net)
+	net.ReleaseFP32MasterWhenIdle = true
+	net.SyncInferenceWeights()
+}
+
 func finalizeTrainingNet(net *poly.VolumetricNetwork, tc dtypeCase) {
 	wireLayerTree(net)
+	net.EnsureTrainingWeights()
 	for i := range net.Layers {
 		finalizeTrainingLayer(&net.Layers[i], tc.dtype)
+	}
+	if net.ReleaseFP32MasterWhenIdle {
+		net.SyncInferenceWeights()
 	}
 }
 

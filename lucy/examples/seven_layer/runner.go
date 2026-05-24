@@ -190,13 +190,14 @@ func RunLayerSuite(s LayerSuite) bool {
 		}
 		configureTrainingNet(net, tc)
 		applyDType(net, tc)
+		configureInferenceNet(net)
 		input := s.MakeInput()
 		target := s.MakeTarget(net, input)
 
 		mem0 := readMemSnapshot()
 		row.MemHeap = formatBytes(mem0.HeapAlloc)
 		row.MemSys = formatBytes(mem0.Sys)
-		row.WeightBytes = formatBytes(networkWeightBytes(net))
+		row.WeightBytes = formatBytes(networkWeightBytes(net)) + " (infer)"
 
 		// Forward determinism: CPU Go SC vs MC (Go tiled path; ASM checked separately for floats).
 		fwdSC := captureForward(net, input, false, false)
@@ -254,6 +255,7 @@ func RunLayerSuite(s LayerSuite) bool {
 		netSC, _ := poly.BuildNetworkFromJSON(s.BuildJSON(tc.jsonName))
 		applyDType(netSC, tc)
 		configureTrainingNet(netSC, tc)
+		netSC.ReleaseFP32MasterWhenIdle = true
 		resSC, durSC, err := trainCPU(netSC, input, target, poly.TrainingModeCPUSC, tc)
 		if err != nil {
 			row.Err = "TRAIN-SC"
@@ -272,6 +274,7 @@ func RunLayerSuite(s LayerSuite) bool {
 		netMC, _ := poly.BuildNetworkFromJSON(s.BuildJSON(tc.jsonName))
 		applyDType(netMC, tc)
 		configureTrainingNet(netMC, tc)
+		netMC.ReleaseFP32MasterWhenIdle = true
 		resMC, durMC, err := trainCPU(netMC, input, target, poly.TrainingModeCPUMC, tc)
 		if err != nil {
 			row.Err = "TRAIN-MC"
@@ -295,7 +298,7 @@ func RunLayerSuite(s LayerSuite) bool {
 		finalizeTrainingNet(netMC, tc)
 		memTrain := readMemSnapshot()
 		row.MemHeapTrain = formatBytes(memTrain.HeapAlloc)
-		row.WeightBytes = formatBytes(networkWeightBytes(netMC)) + " (trained)"
+		row.WeightBytes = formatBytes(networkWeightBytes(netMC)) + " (trained-native)"
 
 		ckptPath := saveCheckpoint(netMC, s.CheckpointTag, tc.name)
 		if ckptPath != "" {

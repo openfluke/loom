@@ -99,7 +99,7 @@ func rnnForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 func rnnBackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
 	batchSize, inputSize, hiddenSize, seqLength := input.Shape[0], layer.InputHeight, layer.OutputHeight, layer.SeqLength
 	gradInput = NewTensor[T](batchSize, seqLength, inputSize)
-	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
+	gradWeights = NewTensor[T](layer.WeightStore.WeightCount(layer.DType))
 	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 32

@@ -320,7 +320,8 @@ func swigluBackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, 
 	}
 
 	gradInput = NewTensor[T](input.Shape...)
-	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
+	wCount := layer.WeightStore.WeightCount(layer.DType)
+	gradWeights = NewTensor[T](wCount)
 
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil {
@@ -345,7 +346,7 @@ func swigluBackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, 
 
 	localGradWs := make([][]float64, seqLen)
 	for s := 0; s < seqLen; s++ {
-		localGradWs[s] = make([]float64, len(layer.WeightStore.Master))
+		localGradWs[s] = make([]float64, wCount)
 	}
 
 	for s := 0; s < seqLen; s++ {

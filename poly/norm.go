@@ -54,7 +54,7 @@ func LayerNormBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput,
 	}
 
 	gradInput = NewTensor[T](input.Shape...)
-	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
+	gradWeights = NewTensor[T](layer.WeightStore.WeightCount(layer.DType))
 	epsilon := 1e-5
 
 	weights := layer.WeightStore.GetActive(layer.DType)
@@ -145,7 +145,7 @@ func RMSNormBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, i
 	}
 
 	gradInput = NewTensor[T](input.Shape...)
-	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
+	gradWeights = NewTensor[T](layer.WeightStore.WeightCount(layer.DType))
 
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil {

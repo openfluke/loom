@@ -246,6 +246,8 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 	if err := ConfigureNetworkForMode(n, mode); err != nil {
 		return nil, err
 	}
+	releaseWhenIdle := n.ReleaseFP32MasterWhenIdle
+	n.EnsureTrainingWeights()
 
 	// GPU tile sizes are now per-layer per-dtype; passed via mode to trainBatchGPU.
 
@@ -330,6 +332,14 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 
 	result.FinalLoss = result.LossHistory[len(result.LossHistory)-1]
 	result.TotalTime = time.Since(totalStart)
+
+	// Dismount FP32 Master after training when idle-release is enabled: native Versions
+	// hold the trained weights at the layer DType width for inference/checkpointing.
+	if releaseWhenIdle {
+		n.ReleaseFP32MasterWhenIdle = true
+		n.SyncInferenceWeights()
+	}
+
 	return result, nil
 }
 
