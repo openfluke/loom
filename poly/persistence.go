@@ -279,6 +279,7 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	if len(ls.ParallelBranches) > 0 {
 		l.ParallelBranches = make([]VolumetricLayer, len(ls.ParallelBranches))
 		for i, bs := range ls.ParallelBranches {
+			l.ParallelBranches[i].Network = l.Network
 			if err := applyPersistenceLayerSpec(&l.ParallelBranches[i], bs); err != nil {
 				return err
 			}
@@ -288,6 +289,7 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	if len(ls.SequentialLayers) > 0 {
 		l.SequentialLayers = make([]VolumetricLayer, len(ls.SequentialLayers))
 		for i, ss := range ls.SequentialLayers {
+			l.SequentialLayers[i].Network = l.Network
 			if err := applyPersistenceLayerSpec(&l.SequentialLayers[i], ss); err != nil {
 				return err
 			}
@@ -296,6 +298,7 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 
 	if ls.MetaObservedLayer != nil {
 		l.MetaObservedLayer = new(VolumetricLayer)
+		l.MetaObservedLayer.Network = l.Network
 		if err := applyPersistenceLayerSpec(l.MetaObservedLayer, *ls.MetaObservedLayer); err != nil {
 			return err
 		}
