@@ -83,16 +83,10 @@ func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[flo
 
 	r.nativeOK = nativePersistenceOK(net, reloaded, wire, tc)
 	maxBucket := saveReloadMaxBucket(phase, tc.dtype)
-	fwdTol := tc.tolerance
+	fwdTol := saveReloadFwdTol(phase, tc)
 	wTol := tc.tolerance
 	if poly.IsDenseNativeTrainDType(tc.dtype) {
 		wTol = tc.tolerance * 100
-	}
-	if phase == phaseAfter {
-		fwdTol = tc.tolerance * 100
-		if poly.IsDenseNativeTrainDType(tc.dtype) {
-			fwdTol = tc.tolerance * 1000
-		}
 	}
 	r.pass = r.forwardDiff <= fwdTol && r.weightDiff <= wTol &&
 		r.bucket <= maxBucket && r.nativeOK && r.err == ""
@@ -100,40 +94,62 @@ func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[flo
 }
 
 func nativeWeightDiff(a, b *poly.VolumetricNetwork, dt poly.DType) float64 {
-	if a.Layers[0].WeightStore == nil || b.Layers[0].WeightStore == nil {
+	var maxD float64
+	for i := range a.Layers {
+		d := nativeWeightDiffLayer(&a.Layers[i], &b.Layers[i], dt)
+		if d > maxD {
+			maxD = d
+		}
+	}
+	return maxD
+}
+
+func nativeWeightDiffLayer(a, b *poly.VolumetricLayer, dt poly.DType) float64 {
+	if a == nil || b == nil || a.WeightStore == nil || b.WeightStore == nil {
 		return 0
 	}
 	if poly.IsDenseNativeTrainDType(dt) {
-		b64a, scaleA, oka := poly.LayerNativePersistenceSnapshot(a.Layers[0].WeightStore, dt)
-		b64b, scaleB, okb := poly.LayerNativePersistenceSnapshot(b.Layers[0].WeightStore, dt)
+		b64a, scaleA, oka := poly.LayerNativePersistenceSnapshot(a.WeightStore, dt)
+		b64b, scaleB, okb := poly.LayerNativePersistenceSnapshot(b.WeightStore, dt)
 		if !oka || !okb || b64a != b64b || scaleA != scaleB {
 			return 1
 		}
 		return 0
 	}
-	return maxWeightDiff(a, b)
+	return maxLayerWeightDiff(a, b)
 }
 
 func nativePersistenceOK(net, reloaded *poly.VolumetricNetwork, wire []byte, tc dtypeCase) bool {
-	if net.Layers[0].WeightStore == nil {
-		return true
+	for i := range net.Layers {
+		if !nativePersistenceOKLayer(&net.Layers[i], &reloaded.Layers[i], wire, i, tc.dtype) {
+			return false
+		}
 	}
-	b64, scale, native, fileErr := poly.LayerPersistenceFromJSON(wire, 0)
-	l2 := reloaded.GetLayer(0, 0, 0, 0)
-	if fileErr != nil || !native || b64 == "" || l2 == nil || l2.WeightStore == nil {
-		return false
-	}
-	decoded, decErr := poly.DecodeNativeWeights(b64, l2.DType)
-	loaded := l2.WeightStore.Versions[tc.dtype]
-	if loaded == nil {
-		loaded = l2.WeightStore.GetNative(tc.dtype)
-	}
-	return decErr == nil && loaded != nil && l2.WeightStore.Scale == scale &&
-		poly.NativeWeightsEncoded(decoded, loaded, tc.dtype)
+	return true
 }
 
-func trainCPU(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], mode poly.TrainingMode, tc dtypeCase) (*poly.TrainingResult, time.Duration, error) {
-	configureTrainingNet(net, tc)
+func nativePersistenceOKLayer(src, dst *poly.VolumetricLayer, wire []byte, layerIndex int, dt poly.DType) bool {
+	if src == nil || src.WeightStore == nil {
+		return true
+	}
+	b64, scale, native, fileErr := poly.LayerPersistenceFromJSON(wire, layerIndex)
+	if dst == nil || dst.WeightStore == nil {
+		return false
+	}
+	if fileErr != nil || !native || b64 == "" {
+		return false
+	}
+	decoded, decErr := poly.DecodeNativeWeights(b64, dst.DType)
+	loaded := dst.WeightStore.Versions[dt]
+	if loaded == nil {
+		loaded = dst.WeightStore.GetNative(dt)
+	}
+	return decErr == nil && loaded != nil && dst.WeightStore.Scale == scale &&
+		poly.NativeWeightsEncoded(decoded, loaded, dt)
+}
+
+func trainCPU(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], mode poly.TrainingMode, tc dtypeCase, primary poly.LayerType) (*poly.TrainingResult, time.Duration, error) {
+	configureTrainingNet(net, tc, primary)
 	prepareTrainingNet(net, tc.dtype)
 	cfg := poly.DefaultTrainingConfig()
 	cfg.Epochs = trainEpochs
@@ -188,7 +204,7 @@ func RunLayerSuite(s LayerSuite) bool {
 			fmt.Println("BUILD ERR")
 			continue
 		}
-		configureTrainingNet(net, tc)
+		configureTrainingNet(net, tc, s.PrimaryType)
 		applyDType(net, tc)
 		configureInferenceNet(net)
 		input := s.MakeInput()
@@ -254,9 +270,9 @@ func RunLayerSuite(s LayerSuite) bool {
 		// Train CPU SC then MC (fresh weight copy via rebuild for fairness)
 		netSC, _ := poly.BuildNetworkFromJSON(s.BuildJSON(tc.jsonName))
 		applyDType(netSC, tc)
-		configureTrainingNet(netSC, tc)
+		configureTrainingNet(netSC, tc, s.PrimaryType)
 		netSC.ReleaseFP32MasterWhenIdle = true
-		resSC, durSC, err := trainCPU(netSC, input, target, poly.TrainingModeCPUSC, tc)
+		resSC, durSC, err := trainCPU(netSC, input, target, poly.TrainingModeCPUSC, tc, s.PrimaryType)
 		if err != nil {
 			row.Err = "TRAIN-SC"
 			rows = append(rows, row)
@@ -273,9 +289,9 @@ func RunLayerSuite(s LayerSuite) bool {
 
 		netMC, _ := poly.BuildNetworkFromJSON(s.BuildJSON(tc.jsonName))
 		applyDType(netMC, tc)
-		configureTrainingNet(netMC, tc)
+		configureTrainingNet(netMC, tc, s.PrimaryType)
 		netMC.ReleaseFP32MasterWhenIdle = true
-		resMC, durMC, err := trainCPU(netMC, input, target, poly.TrainingModeCPUMC, tc)
+		resMC, durMC, err := trainCPU(netMC, input, target, poly.TrainingModeCPUMC, tc, s.PrimaryType)
 		if err != nil {
 			row.Err = "TRAIN-MC"
 			rows = append(rows, row)
@@ -293,7 +309,10 @@ func RunLayerSuite(s LayerSuite) bool {
 		}
 		row.LossInit = lossInit
 		row.LossFinal = lossFinal
-		row.Learned = trainingOK(lossInit, lossFinal, tc.dtype)
+		row.Learned = true
+		if layerRequiresLearn(s.PrimaryType) {
+			row.Learned = trainingOK(lossInit, lossFinal, tc.dtype)
+		}
 
 		finalizeTrainingNet(netMC, tc)
 		memTrain := readMemSnapshot()

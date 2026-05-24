@@ -160,9 +160,36 @@ func decodeFP4Codes(codes []uint8, scale float32) []float32 {
 
 func nativeQuantValue(dtype DType, v float32) uint8 {
 	switch dtype {
-	case DTypeInt8, DTypeInt4, DTypeInt2, DTypeTernary:
+	case DTypeInt4:
 		q := int(math.Round(float64(v)))
-		return uint8(q) // Use uint8 as the byte container
+		if q > 7 {
+			q = 7
+		}
+		if q < -8 {
+			q = -8
+		}
+		return uint8(int8(q))
+	case DTypeInt2:
+		q := int(math.Round(float64(v)))
+		if q > 1 {
+			q = 1
+		}
+		if q < -2 {
+			q = -2
+		}
+		return uint8(int8(q))
+	case DTypeTernary:
+		q := int(math.Round(float64(v)))
+		if q > 1 {
+			q = 1
+		}
+		if q < -1 {
+			q = -1
+		}
+		return uint8(int8(q))
+	case DTypeInt8:
+		q := int(math.Round(float64(v)))
+		return uint8(int8(q))
 	case DTypeBinary:
 		if v >= 0 {
 			return 1

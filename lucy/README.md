@@ -96,24 +96,26 @@ Menu `[7]`: forward path uses `(infer)` weight bytes; after MC train, `(trained-
 
 ### Session manifest (from latest `seven_layer.txt`)
 
-**180 / 210** dtype checks passed · **3 / 10** layer types fully green.
+**210 / 210** dtype checks passed · **10 / 10** layer types fully green (latest `seven_layer.txt`).
 
 | Layer | Passed | Failed | Total | All dtypes OK |
 |-------|--------|--------|-------|---------------|
 | Dense | 21 | 0 | 21 | ✓ |
+| SwiGLU | 21 | 0 | 21 | ✓ |
+| MHA | 21 | 0 | 21 | ✓ |
+| CNN1 | 21 | 0 | 21 | ✓ |
 | CNN2 | 21 | 0 | 21 | ✓ |
 | CNN3 | 21 | 0 | 21 | ✓ |
-| SwiGLU | 18 | 3 | 21 | ✗ |
-| MHA | 18 | 3 | 21 | ✗ |
-| LSTM | 19 | 2 | 21 | ✗ |
-| RNN | 15 | 6 | 21 | ✗ |
-| Embedding | 17 | 4 | 21 | ✗ |
-| Residual | 17 | 4 | 21 | ✗ |
-| CNN1 | 13 | 8 | 21 | ✗ |
+| RNN | 21 | 0 | 21 | ✓ |
+| LSTM | 21 | 0 | 21 | ✓ |
+| Embedding | 21 | 0 | 21 | ✓ |
+| Residual | 21 | 0 | 21 | ✓ |
 
 ---
 
 ### Per-layer results (21 numerical types)
+
+Latest full run: **210/210 PASS** — see [`lucy_testing_output/seven_layer.txt`](lucy_testing_output/seven_layer.txt) for live tables. Snapshot tables below may lag; re-run menu `[7]` → `[0]` after changes.
 
 Columns: **Fwd SC↔MC** / **Bwd SC↔MC** (determinism), **Go↔ASM**, **Train**, **Save before** / **Save after**, **Native** persistence, **Overall**.
 
