@@ -26,6 +26,17 @@ var StandardGrids = []GridSpec{
 	{Depth: 3, Rows: 3, Cols: 3},
 }
 
+// ConvGrids skips 3³ (189 conv layers/cell-type is too slow for smoke tests).
+var ConvGrids = []GridSpec{
+	{Depth: 1, Rows: 1, Cols: 1},
+	{Depth: 2, Rows: 2, Cols: 2},
+}
+
+// CNN3Grids: 3D conv only on 1³ (56+ layers on 2³ is impractical for menu [7]).
+var CNN3Grids = []GridSpec{
+	{Depth: 1, Rows: 1, Cols: 1},
+}
+
 func trainEpochsForGrid(g GridSpec) int {
 	switch g.Cells() {
 	case 1:
@@ -52,9 +63,9 @@ func gridCheckpointSuffix(g GridSpec) string {
 	return fmt.Sprintf("_%dd%dr%dc", g.Depth, g.Rows, g.Cols)
 }
 
-func runAllGrids(build func(GridSpec) LayerSuite) bool {
+func runGrids(grids []GridSpec, build func(GridSpec) LayerSuite) bool {
 	ok := true
-	for _, g := range StandardGrids {
+	for _, g := range grids {
 		fmt.Printf("\n  ▷ Grid %s — %d cells × %d layers/cell = %d forward stack\n",
 			g, g.Cells(), sevenLayersPerCell, g.StackLayers())
 		if !RunLayerSuite(build(g)) {
@@ -62,6 +73,10 @@ func runAllGrids(build func(GridSpec) LayerSuite) bool {
 		}
 	}
 	return ok
+}
+
+func runAllGrids(build func(GridSpec) LayerSuite) bool {
+	return runGrids(StandardGrids, build)
 }
 
 func writeNetworkHeader(b *strings.Builder, id string, g GridSpec) {

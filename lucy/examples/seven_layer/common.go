@@ -455,6 +455,10 @@ func trainingOK(lossInit, lossFinal float64, dtype poly.DType) bool {
 		math.IsInf(lossInit, 0) || math.IsInf(lossFinal, 0) {
 		return false
 	}
+	// Collapse to ~0 after non-trivial init (e.g. broken MHA float paths) is not "trained".
+	if lossInit > 0.05 && lossFinal < 1e-9 {
+		return false
+	}
 	if lossInit > 1e-3 && (lossFinal > lossInit*50 || lossFinal > 1e10) {
 		return false
 	}

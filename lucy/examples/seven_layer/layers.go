@@ -99,7 +99,7 @@ func cnn3ChannelEndpoints(g GridSpec) []int {
 func cnnSpatial(g GridSpec) int {
 	switch g.Cells() {
 	case 1:
-		return 32
+		return 16
 	case 8:
 		return 8
 	default:
@@ -108,14 +108,8 @@ func cnnSpatial(g GridSpec) int {
 }
 
 func cnn3Spatial(g GridSpec) (d, h, w int) {
-	switch g.Cells() {
-	case 1:
-		return 16, 16, 16
-	case 8:
-		return 8, 8, 8
-	default:
-		return 4, 4, 4
-	}
+	// Small cube on 1³ only (seven_layer runs CNN3 on 1×1×1 grid).
+	return 8, 8, 8
 }
 
 type mhaShape struct {
@@ -266,7 +260,7 @@ func RunMHA() bool {
 }
 
 func RunCNN1() bool {
-	return runAllGrids(func(g GridSpec) LayerSuite {
+	return runGrids(ConvGrids, func(g GridSpec) LayerSuite {
 		ch := cnnChannelEndpoints(g)
 		sp := cnnSpatial(g)
 		return LayerSuite{
@@ -297,7 +291,7 @@ func RunCNN1() bool {
 }
 
 func RunCNN2() bool {
-	return runAllGrids(func(g GridSpec) LayerSuite {
+	return runGrids(ConvGrids, func(g GridSpec) LayerSuite {
 		ch := cnnChannelEndpoints(g)
 		sp := cnnSpatial(g)
 		return LayerSuite{
@@ -313,8 +307,8 @@ func RunCNN2() bool {
 				forEachGridCell(g, func(z, y, x int) {
 					for i := 0; i < sevenLayersPerCell; i++ {
 						appendLayerJSON(&b, &first, fmt.Sprintf(
-							`{"z":%d,"y":%d,"x":%d,"l":%d,"type":"CNN2","activation":"RELU","dtype":"%s","input_channels":%d,"filters":%d,"input_height":%d,"output_height":%d,"kernel_size":3,"stride":1,"padding":1}`,
-							z, y, x, i, jsonDType, ch[i], ch[i+1], sp, sp,
+							`{"z":%d,"y":%d,"x":%d,"l":%d,"type":"CNN2","activation":"RELU","dtype":"%s","input_channels":%d,"filters":%d,"input_height":%d,"input_width":%d,"output_height":%d,"output_width":%d,"kernel_size":3,"stride":1,"padding":1}`,
+							z, y, x, i, jsonDType, ch[i], ch[i+1], sp, sp, sp, sp,
 						))
 					}
 				})
@@ -328,7 +322,7 @@ func RunCNN2() bool {
 }
 
 func RunCNN3() bool {
-	return runAllGrids(func(g GridSpec) LayerSuite {
+	return runGrids(CNN3Grids, func(g GridSpec) LayerSuite {
 		ch := cnn3ChannelEndpoints(g)
 		d, h, w := cnn3Spatial(g)
 		return LayerSuite{

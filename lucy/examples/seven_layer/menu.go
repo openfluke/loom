@@ -41,7 +41,7 @@ func RunMenu(reader *bufio.Reader) {
 	fmt.Println("╚══════════════════════════════════════════════════════════════════════╝")
 	fmt.Println("  Flow: BuildNetworkFromJSON → dtype morph → fwd/bwd timing · memory")
 	fmt.Println("        → save/reload (before) → CPU SC/MC train → checkpoint save/reload verify")
-	fmt.Println("  Grids: 1×1×1 (full), 2×2×2 (12 ep), 3×3×3 (6 ep) — flat widths on 2³/3³; Embedding only at (0,0,0)")
+	fmt.Println("  Grids: most layers 1³·2³·3³; CNN1/2 skip 3³; CNN3 is 1³ only (8³ cube); Embedding@(0,0,0)")
 	fmt.Printf("  ASM: %s\n", asmNote)
 	fmt.Println("  Other layer types: ASM forward/backward reported as not implemented.")
 	fmt.Println()
