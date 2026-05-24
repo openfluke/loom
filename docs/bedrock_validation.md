@@ -1,0 +1,98 @@
+# Bedrock Validation (v0.79.0)
+
+**Release:** **0.78.0 "ASM CPU"** → **0.79.0 "Bedrock Validation"**  
+**Checklist:** **108 / 142** (76.1%) → **111 / 142** (78.2%)
+
+This wave does not add a new compute backend. It hardens the **Go CPU** path, **native persistence**, **transformer decode**, and **C-ABI** so Lucy and Welvet bindings can trust train → save → reload → infer on real volumetric graphs.
+
+---
+
+## What changed (summary)
+
+| Area | Problem | Fix |
+|------|---------|-----|
+| **MHA layout** | Flat `[B·S·D]` was parsed as one long sequence (`seq = len/D`) | `mhaParseLayout` trusts `[B,S,D]` when `Shape[2] == d_model`; legacy flat layouts still work |
+| **KV cache** | Training and autoregressive decode shared one policy; decode overwrote position 0 | `mhaPrepareKVForForward`: reset on full-sequence train; keep cache for `batch=1`, `seq=1`, warm KV |
+| **Poly Talk** | `KVOffset` ignored in forward; `+=` broken across steps | `seqBase = kvStart + b*seqLen`; correct `KVOffset` advance; layout no longer stomps `input.Shape[1]` |
+| **MHA backward** | Q recomputed with RoPE but skipped Q/K RMS norm vs forward | Backward matches forward norm order before RoPE |
+| **Dense Ternary save** | Checkpoint re-quantized from FP32 Master, not native path | `GetBitNetTernaryMatrix` → `packNativeTernaryToBitNetMatrix` (same matmul as forward) |
+| **Signed low-bit I/O** | Int2/Int4/Ternary round-trip gaps on `[]uint8` | `persistence.go` encode/decode aligned with CPU kernels |
+| **FP32 Master lifecycle** | Bindings could not mirror post-train native-only RAM | `LoomSyncInferenceWeights` in `welvet/cabi` (461/461 C-ABI parity) |
+| **Regression harness** | False PASS (zeros/NaN); suite gaps | Lucy **[7] seven-layer** CPU suite: 10 layer types × 21 dtypes × SC/MC × train × save/reload |
+
+---
+
+## Lucy seven-layer CPU suite
+
+**Run:** `cd lucy && go run .` → **[7]** (or **[0]** for all layer types).  
+**Log:** `lucy/lucy_testing_output/seven_layer.txt` (reset each run).
+
+**Harness:** `lucy/examples/seven_layer/` — builds a volumetric JSON network per layer family, morphs all **21 dtypes**, checks:
+
+- Forward **SC ↔ MC** parity (dtype tolerance)
+- Backward **SC ↔ MC** parity (10× fwd tol)
+- **50-epoch** CPU training (loss decrease on MC path)
+- **Save/reload before train** and **after train** (forward match + native blob)
+- Grids **1³**, **2³**, **3³** (CNN1/2 skip 3³; CNN3 is 1³ only; Embedding at `(0,0,0)`)
+
+**Layer types:** Dense, SwiGLU, MHA, CNN1, CNN2, CNN3, RNN, LSTM, Embedding, Residual.
+
+**ASM:** Dense forward only (`UseAsmForward` after JSON build); other types report asm N/A.
+
+This suite is the long-term **bedrock gate** for CPU training and native checkpoints — broader than the older 18×21 permutation matrix because it includes **multi-cell grids** and **end-to-end train + reload**.
+
+---
+
+## C-ABI (Welvet)
+
+```bash
+cd welvet/cabi/internal/check && go run .
+```
+
+Expect **461/461 (100.0%)** functional overlap. The last gap closed in this release:
+
+- **`LoomSyncInferenceWeights`** — calls `VolumetricNetwork.SyncInferenceWeights()` when `ReleaseFP32MasterWhenIdle` is set (morph Master → native `Versions`, drop FP32 duplicate for inference RAM).
+
+Python / TypeScript / WASM consumers that train outside `LoomTrain` should call this after morph or custom training if they mirror Go’s inference-only memory model.
+
+---
+
+## What this release is (and is not)
+
+**You now have:**
+
+- A **deterministic CPU VM** story that survives volumetric multi-cell layouts, not only single-stack benches.
+- **Transformer decode** aligned with training layout (KV + RoPE + Q/K norm).
+- **Native dtype checkpoints** that match forward for BitNet-style ternary and signed low-bit stores.
+- **Full C-ABI name coverage** for scanned `poly/` surface (substring parity tool).
+
+**You do not yet claim:**
+
+- Beating PyTorch/llama.cpp on model zoo size or raw tok/s.
+- ASM on MHA/SwiGLU/CNN (still **Dense forward** only).
+- Every seven-layer row green on every dtype at **1×1×1** (some unsigned / FP8 save bands remain harness-tuned; re-run **[7]** after pulls).
+
+**Next named target (unchanged):** **v0.8.0 "Edge-First"** — thermal scheduling, UMA pinning, command-buffer graphing. **ASM track:** Dense backward, then SwiGLU / MHA / CNN (`poly/README.md` rollout queue).
+
+---
+
+## Key source files
+
+| Topic | Files |
+|-------|--------|
+| MHA layout / KV | `poly/mha_layout.go`, `poly/mha.go` |
+| BitNet CPU / ternary | `poly/bitnet_cpu.go` |
+| Persistence | `poly/persistence.go`, `poly/serialization.go` |
+| Master / inference RAM | `poly/weight_master.go` |
+| Seven-layer harness | `lucy/examples/seven_layer/*.go` |
+| C-ABI export | `welvet/cabi/acceleration_ext.go` (`LoomSyncInferenceWeights`) |
+
+---
+
+## See also
+
+- [testing_and_validation.md](testing_and_validation.md) — log legend, ASM columns, `log.txt` snapshot
+- [transformer.md](transformer.md) — MHA, RoPE, GQA, KV cache fields
+- [serialization.md](serialization.md) — native packed JSON per dtype
+- [training.md](training.md) — `Train`, `ReleaseFP32MasterWhenIdle`, SC/MC modes
+- [`poly/README.md`](../poly/README.md) — checklist and version calculation

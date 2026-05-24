@@ -303,6 +303,23 @@ func (ws *WeightStore) GetBitNetTernaryMatrix(offset, rows, cols int) (*BitNetTe
 		return m, true
 	}
 
+	if raw, ok := ws.Versions[DTypeTernary].([]uint8); ok && offset+total <= len(raw) {
+		scale := ws.Scale
+		if scale == 0 {
+			scale = 1
+		}
+		if m := ws.lookupBitNetTernaryPacked(offset, rows, cols); m != nil {
+			return m, true
+		}
+		matrix, ok := packNativeTernaryToBitNetMatrix(raw[offset:offset+total], rows, cols, scale)
+		if !ok {
+			return nil, false
+		}
+		matrix.Offset = offset
+		ws.CPUPacked[key] = matrix
+		return matrix, true
+	}
+
 	if ws.Master == nil || offset+total > len(ws.Master) {
 		return nil, false
 	}
@@ -662,6 +679,25 @@ func bitNetRMSNormTensorRowWeighted[T Numeric](data []T, weight []float32, eps f
 		}
 		data[i] = T(float64(v) * scale * w)
 	}
+}
+
+// packNativeTernaryToBitNetMatrix builds a CPU matmul slab from persisted []uint8
+// {-1,0,1} codes. Forward must use this path after save/reload so execution matches
+// the native blob, not a re-quantize of Master*scale.
+func packNativeTernaryToBitNetMatrix(native []uint8, rows, cols int, scale float32) (*BitNetTernaryMatrix, bool) {
+	if rows <= 0 || cols <= 0 || rows*cols > len(native) {
+		return nil, false
+	}
+	if scale == 0 {
+		scale = 1
+	}
+	return &BitNetTernaryMatrix{
+		Rows:     rows,
+		Cols:     cols,
+		RowWords: (cols + 15) / 16,
+		Scale:    scale,
+		Words:    packTernaryRowsToU32(native, rows, cols),
+	}, true
 }
 
 func packFloat32AsBitNetTernaryMatrix(weights []float32, rows, cols int) (*BitNetTernaryMatrix, bool) {

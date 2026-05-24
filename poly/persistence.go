@@ -147,20 +147,24 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 		IsDisabled:  l.IsDisabled,
 	}
 
-	if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
-		// Persist native weights for this layer's DType (int8 bytes, bf16 uint16, etc.).
-		// Keep the live scale so save/load round-trips match what training used.
+	if l.WeightStore != nil {
 		dt := l.DType
-		delete(l.WeightStore.Versions, dt)
-		l.WeightStore.Morph(dt)
 		ls.Scale = l.WeightStore.Scale
 		active := l.WeightStore.Versions[dt]
+		if active == nil && len(l.WeightStore.Master) > 0 {
+			delete(l.WeightStore.Versions, dt)
+			l.WeightStore.Morph(dt)
+			active = l.WeightStore.Versions[dt]
+		}
 		if active == nil {
 			active = l.WeightStore.GetNative(dt)
 		}
 		if active != nil {
 			ls.Weights = encodeNativeWeights(active, dt)
 			ls.Native = true
+		} else if len(l.WeightStore.Master) > 0 {
+			ls.Weights = encodeWeights(l.WeightStore.Master)
+			ls.Native = false
 		}
 	}
 
@@ -279,6 +283,7 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	if len(ls.ParallelBranches) > 0 {
 		l.ParallelBranches = make([]VolumetricLayer, len(ls.ParallelBranches))
 		for i, bs := range ls.ParallelBranches {
+			l.ParallelBranches[i].Network = l.Network
 			if err := applyPersistenceLayerSpec(&l.ParallelBranches[i], bs); err != nil {
 				return err
 			}
@@ -288,6 +293,7 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	if len(ls.SequentialLayers) > 0 {
 		l.SequentialLayers = make([]VolumetricLayer, len(ls.SequentialLayers))
 		for i, ss := range ls.SequentialLayers {
+			l.SequentialLayers[i].Network = l.Network
 			if err := applyPersistenceLayerSpec(&l.SequentialLayers[i], ss); err != nil {
 				return err
 			}
@@ -296,6 +302,7 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 
 	if ls.MetaObservedLayer != nil {
 		l.MetaObservedLayer = new(VolumetricLayer)
+		l.MetaObservedLayer.Network = l.Network
 		if err := applyPersistenceLayerSpec(l.MetaObservedLayer, *ls.MetaObservedLayer); err != nil {
 			return err
 		}
@@ -382,13 +389,15 @@ func NativeWeightsEncoded(a any, b any, dtype DType) bool {
 // LayerNativePersistenceSnapshot returns the native weights blob and scale that
 // SerializeNetwork would write for this layer dtype (Morph + encode, no JSON).
 func LayerNativePersistenceSnapshot(ws *WeightStore, dtype DType) (weightsB64 string, scale float32, ok bool) {
-	if ws == nil || len(ws.Master) == 0 {
+	if ws == nil {
 		return "", 0, false
 	}
-	delete(ws.Versions, dtype)
-	ws.Morph(dtype)
 	scale = ws.Scale
 	active := ws.Versions[dtype]
+	if active == nil && len(ws.Master) > 0 {
+		ws.Morph(dtype)
+		active = ws.Versions[dtype]
+	}
 	if active == nil {
 		active = ws.GetNative(dtype)
 	}
@@ -505,7 +514,12 @@ func encodeNativeWeights(data any, dt DType) string {
 			// Sub-byte native storage uses one 4-bit code per weight; persist it compactly.
 			buf := make([]byte, (len(w)+1)/2)
 			for i, v := range w {
-				val := v & 0x0F
+				var val byte
+				if dt == DTypeInt4 {
+					val = byte(int8(v) & 0x0F)
+				} else {
+					val = v & 0x0F
+				}
 				if i%2 == 0 {
 					buf[i/2] |= val << 4
 				} else {
@@ -516,7 +530,12 @@ func encodeNativeWeights(data any, dt DType) string {
 		} else if dt == DTypeInt2 || dt == DTypeUint2 || dt == DTypeTernary {
 			buf := make([]byte, (len(w)+3)/4)
 			for i, v := range w {
-				val := v & 0x03
+				var val byte
+				if dt == DTypeInt2 || dt == DTypeTernary {
+					val = byte(int8(v) & 0x03)
+				} else {
+					val = v & 0x03
+				}
 				shift := uint(6 - (i%4)*2)
 				buf[i/4] |= val << shift
 			}

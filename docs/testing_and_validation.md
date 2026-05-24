@@ -6,11 +6,16 @@ This page ties together **how we stress `poly/`**, where **artifacts land**, and
 
 ## Where logs come from
 
-The **Lucy** tree (`lucy/`) drives broad layer suites: forward/backward parity, training matrices, save/reload checks, and GPU timing tables. A typical full run writes a transcript under:
+The **Lucy** tree (`lucy/`) drives broad layer suites: forward/backward parity, training matrices, save/reload checks, and GPU timing tables. Typical transcripts:
 
-- `lucy/lucy_testing_output/log.txt`
+| Log | Menu | Contents |
+|-----|------|----------|
+| `lucy/lucy_testing_output/log.txt` | Dense L1 / GPU parity / layer matrices | Forward/backward parity, ASM timers, GPU tables |
+| `lucy/lucy_testing_output/seven_layer.txt` | **[7] Seven-layer CPU suite** | 10 layer types × 21 dtypes × 1³/2³/3³ grids, SC/MC, train, save/reload |
 
-That file is meant for human review and regression diffing (adapter name, Metal/Vulkan, per-dtype rows, and summary tallies at the end of each section).
+Both files are meant for human review and regression diffing (adapter name, per-dtype rows, summary tallies).
+
+**Seven-layer suite (v0.79+):** See [`bedrock_validation.md`](bedrock_validation.md) for what the harness gates (MHA layout, KV decode, native ternary save, C-ABI `SyncInferenceWeights`). Run `cd lucy && go run .` → **[7]** or **[0]**.
 
 ---
 
@@ -123,12 +128,13 @@ Exact entrypoints move with refactors; prefer:
 
 - `lucy/README.md` — MRBiVS stack and pointers into `poly/`.
 - `poly/README.md` — version checklist and capability matrix.
-- `welvet/cabi/internal/check/` — C-ABI vs `poly/` export parity scanner (Go).
+- `welvet/cabi/internal/check/` — C-ABI vs `poly/` export parity scanner (Go); expect **461/461 (100%)** after v0.79 (`LoomSyncInferenceWeights`).
 
 ---
 
 ## See also
 
+- [bedrock_validation.md](bedrock_validation.md) — v0.79.0 seven-layer suite, MHA/KV, C-ABI  
 - [numerical_types.md](numerical_types.md) — DType list and `WeightStore` lifecycle  
 - [gpu.md](gpu.md) — WebGPU context and dispatch overview  
 - [serialization.md](serialization.md) — Save/load and safetensors  

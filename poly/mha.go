@@ -41,7 +41,8 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 	if qDim == 0 {
 		qDim = numHeads * headDim
 	}
-	seqLen := len(input.Data) / dModel
+	lay := mhaParseLayout(layer, input)
+	seqLen := lay.seqLen
 	msl := layer.MaxSeqLen
 	if msl == 0 {
 		msl = 512
@@ -71,125 +72,125 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 	qW, kW, vW, oW := wData[qwStart:kwStart], wData[kwStart:vwStart], wData[vwStart:owStart], wData[owStart:qbStart]
 	qB, kB, vB, oB := wData[qbStart:kbStart], wData[kbStart:vbStart], wData[vbStart:obStart], wData[obStart:obStart+dModel]
 
-	if seqLen > 1 || layer.KVCacheK == nil {
-		layer.KVCacheK = NewTensor[T](msl, kvDim)
-		layer.KVCacheV = NewTensor[T](msl, kvDim)
-		layer.KVOffset = 0
-	}
+	mhaPrepareKVForForward[T](layer, lay, msl, kvDim)
 	cacheK := layer.KVCacheK.(*Tensor[T])
 	cacheV := layer.KVCacheV.(*Tensor[T])
 
-	Q := make([]float64, seqLen*qDim)
-	for s := 0; s < seqLen; s++ {
-		pos := layer.KVOffset + s
-		kRow := cacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
-		vRow := layer.KVCacheV.(*Tensor[T]).Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+	kvStart := layer.KVOffset
+	for b := 0; b < lay.batch; b++ {
+		base := lay.base(b)
+		seqBase := kvStart + b*seqLen
 
-		for i := 0; i < qDim; i++ {
-			sum := float64(qB[i])
-			for j := 0; j < dModel; j++ {
-				sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j])
-			}
-			Q[s*qDim+i] = sum
-		}
-
-		for i := 0; i < kvDim; i++ {
-			sumK, sumV := float64(kB[i]), float64(vB[i])
-			for j := 0; j < dModel; j++ {
-				inVal := float64(input.Data[s*dModel+j])
-				sumK += inVal * float64(kW[i*dModel+j])
-				sumV += inVal * float64(vW[i*dModel+j])
-			}
-			kRow[i] = T(sumK)
-			vRow[i] = T(sumV)
-		}
-
+		Q := make([]float64, seqLen*qDim)
 		qkEps := mhaQKNormEpsilon(layer)
-		if len(layer.QNormWeight) > 0 {
-			applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
-		}
-		if len(layer.KNormWeight) > 0 {
-			applyPerHeadRMSNormTensor(kRow, layer.KNormWeight, numKVHeads, headDim, qkEps)
-		}
+		for s := 0; s < seqLen; s++ {
+			pos := seqBase + s
+			kRow := cacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+			vRow := cacheV.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
 
-		// Same order as wgpu_forward: optional Q/K norm, then RoPE on Q and K (always dispatched on GPU).
-		theta := mhaRoPETheta(layer)
-		half := headDim / 2
-		for h := 0; h < numHeads; h++ {
-			for d := 0; d < half; d++ {
-				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-				c, sVal := math.Cos(angle), math.Sin(angle)
-				qOff := s*qDim + h*headDim + d
-				v0, v1 := Q[qOff], Q[qOff+half]
-				Q[qOff] = v0*c - v1*sVal
-				Q[qOff+half] = v0*sVal + v1*c
-			}
-		}
-		for h := 0; h < numKVHeads; h++ {
-			for d := 0; d < half; d++ {
-				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-				c, sVal := math.Cos(angle), math.Sin(angle)
-				kOff := h*headDim + d
-				v0, v1 := float64(kRow[kOff]), float64(kRow[kOff+half])
-				kRow[kOff] = T(v0*c - v1*sVal)
-				kRow[kOff+half] = T(v0*sVal + v1*c)
-			}
-		}
-	}
-
-	headsPerKV := numHeads / numKVHeads
-	scale := 1.0 / math.Sqrt(float64(headDim))
-	attnOut := make([]float64, seqLen*qDim)
-
-	for s := 0; s < seqLen; s++ {
-		currentTotalPos := layer.KVOffset + s
-		for h := 0; h < numHeads; h++ {
-			kvHead := h / headsPerKV
-
-			scores := make([]float64, currentTotalPos+1)
-			maxScore := float64(-1e9)
-
-			for kPos := 0; kPos <= currentTotalPos; kPos++ {
-				kIdx := kPos % msl
-				var dot float64
-				for d := 0; d < headDim; d++ {
-					dot += Q[s*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
+			for i := 0; i < qDim; i++ {
+				sum := float64(qB[i])
+				for j := 0; j < dModel; j++ {
+					sum += float64(input.Data[base+s*dModel+j]) * float64(qW[i*dModel+j])
 				}
-				score := dot * scale
-				scores[kPos] = score
-				if score > maxScore {
-					maxScore = score
+				Q[s*qDim+i] = sum
+			}
+
+			for i := 0; i < kvDim; i++ {
+				sumK, sumV := float64(kB[i]), float64(vB[i])
+				for j := 0; j < dModel; j++ {
+					inVal := float64(input.Data[base+s*dModel+j])
+					sumK += inVal * float64(kW[i*dModel+j])
+					sumV += inVal * float64(vW[i*dModel+j])
+				}
+				kRow[i] = T(sumK)
+				vRow[i] = T(sumV)
+			}
+
+			if len(layer.QNormWeight) > 0 {
+				applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
+			}
+			if len(layer.KNormWeight) > 0 {
+				applyPerHeadRMSNormTensor(kRow, layer.KNormWeight, numKVHeads, headDim, qkEps)
+			}
+
+			theta := mhaRoPETheta(layer)
+			half := headDim / 2
+			for h := 0; h < numHeads; h++ {
+				for d := 0; d < half; d++ {
+					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+					c, sVal := math.Cos(angle), math.Sin(angle)
+					qOff := s*qDim + h*headDim + d
+					v0, v1 := Q[qOff], Q[qOff+half]
+					Q[qOff] = v0*c - v1*sVal
+					Q[qOff+half] = v0*sVal + v1*c
 				}
 			}
-
-			var expSum float64
-			for kPos := 0; kPos <= currentTotalPos; kPos++ {
-				scores[kPos] = math.Exp(scores[kPos] - maxScore)
-				expSum += scores[kPos]
+			for h := 0; h < numKVHeads; h++ {
+				for d := 0; d < half; d++ {
+					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+					c, sVal := math.Cos(angle), math.Sin(angle)
+					kOff := h*headDim + d
+					v0, v1 := float64(kRow[kOff]), float64(kRow[kOff+half])
+					kRow[kOff] = T(v0*c - v1*sVal)
+					kRow[kOff+half] = T(v0*sVal + v1*c)
+				}
 			}
+		}
 
-			for d := 0; d < headDim; d++ {
-				var sum float64
+		headsPerKV := numHeads / numKVHeads
+		scale := 1.0 / math.Sqrt(float64(headDim))
+		attnOut := make([]float64, seqLen*qDim)
+
+		for s := 0; s < seqLen; s++ {
+			currentTotalPos := seqBase + s
+			for h := 0; h < numHeads; h++ {
+				kvHead := h / headsPerKV
+
+				scores := make([]float64, currentTotalPos+1)
+				maxScore := float64(-1e9)
+
 				for kPos := 0; kPos <= currentTotalPos; kPos++ {
-					sum += scores[kPos] * float64(cacheV.Data[(kPos%msl)*kvDim+kvHead*headDim+d])
+					kIdx := kPos % msl
+					var dot float64
+					for d := 0; d < headDim; d++ {
+						dot += Q[s*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
+					}
+					score := dot * scale
+					scores[kPos] = score
+					if score > maxScore {
+						maxScore = score
+					}
 				}
-				attnOut[s*qDim+h*headDim+d] = sum / expSum
+
+				var expSum float64
+				for kPos := 0; kPos <= currentTotalPos; kPos++ {
+					scores[kPos] = math.Exp(scores[kPos] - maxScore)
+					expSum += scores[kPos]
+				}
+
+				for d := 0; d < headDim; d++ {
+					var sum float64
+					for kPos := 0; kPos <= currentTotalPos; kPos++ {
+						sum += scores[kPos] * float64(cacheV.Data[(kPos%msl)*kvDim+kvHead*headDim+d])
+					}
+					attnOut[s*qDim+h*headDim+d] = sum / expSum
+				}
+			}
+		}
+
+		for s := 0; s < seqLen; s++ {
+			for i := 0; i < dModel; i++ {
+				preAct.Data[base+s*dModel+i] = T(attnOut[s*qDim+i])
+				sum := float64(oB[i])
+				for j := 0; j < qDim; j++ {
+					sum += attnOut[s*qDim+j] * float64(oW[i*qDim+j])
+				}
+				postAct.Data[base+s*dModel+i] = T(sum)
 			}
 		}
 	}
-
-	for s := 0; s < seqLen; s++ {
-		for i := 0; i < dModel; i++ {
-			preAct.Data[s*dModel+i] = T(attnOut[s*qDim+i])
-			sum := float64(oB[i])
-			for j := 0; j < qDim; j++ {
-				sum += attnOut[s*qDim+j] * float64(oW[i*qDim+j])
-			}
-			postAct.Data[s*dModel+i] = T(sum)
-		}
-	}
-
-	layer.KVOffset += seqLen
+	layer.KVOffset = kvStart + lay.batch*seqLen
 	return preAct, postAct
 }
 
@@ -205,7 +206,8 @@ func MHAForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor
 	if qDim == 0 {
 		qDim = numHeads * headDim
 	}
-	seqLen := len(input.Data) / dModel
+	lay := mhaParseLayout(layer, input)
+	seqLen := lay.seqLen
 	msl := layer.MaxSeqLen
 	if msl == 0 {
 		msl = 512
@@ -239,124 +241,125 @@ func MHAForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor
 		return pre, post
 	}
 
-	if seqLen > 1 || layer.KVCacheK == nil {
-		layer.KVCacheK = NewTensor[T](msl, kvDim)
-		layer.KVCacheV = NewTensor[T](msl, kvDim)
-		layer.KVOffset = 0
-	}
+	mhaPrepareKVForForward[T](layer, lay, msl, kvDim)
 	cacheK := layer.KVCacheK.(*Tensor[T])
 	cacheV := layer.KVCacheV.(*Tensor[T])
 
-	Q := make([]float64, seqLen*qDim)
-	tmpQ := make([]float64, qDim)
-	tmpK := make([]float64, kvDim)
-	tmpV := make([]float64, kvDim)
-	inputQ := make([]int8, dModel)
-	for s := 0; s < seqLen; s++ {
-		pos := layer.KVOffset + s
-		inputRow := input.Data[s*dModel : (s+1)*dModel]
-		kRow := cacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
-		vRow := cacheV.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+	kvStart := layer.KVOffset
+	for b := 0; b < lay.batch; b++ {
+		base := lay.base(b)
+		seqBase := kvStart + b*seqLen
 
-		inputQ, activationMax := bitNetQuantizeActivationNumeric(inputRow, inputQ)
-		bitNetTernaryMatVecQuantized(qW, inputQ, activationMax, tmpQ)
-		for i := 0; i < qDim; i++ {
-			Q[s*qDim+i] = tmpQ[i] + bitNetTernaryBias(layer.WeightStore, qbStart+i)
-		}
-
-		bitNetTernaryMatVecQuantized(kW, inputQ, activationMax, tmpK)
-		bitNetTernaryMatVecQuantized(vW, inputQ, activationMax, tmpV)
-		for i := 0; i < kvDim; i++ {
-			kRow[i] = T(tmpK[i] + bitNetTernaryBias(layer.WeightStore, kbStart+i))
-			vRow[i] = T(tmpV[i] + bitNetTernaryBias(layer.WeightStore, vbStart+i))
-		}
-
+		Q := make([]float64, seqLen*qDim)
 		qkEps := mhaQKNormEpsilon(layer)
-		if len(layer.QNormWeight) > 0 {
-			applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
-		}
-		if len(layer.KNormWeight) > 0 {
-			applyPerHeadRMSNormTensor(kRow, layer.KNormWeight, numKVHeads, headDim, qkEps)
-		}
+		tmpQ := make([]float64, qDim)
+		tmpK := make([]float64, kvDim)
+		tmpV := make([]float64, kvDim)
+		inputQ := make([]int8, dModel)
+		for s := 0; s < seqLen; s++ {
+			pos := seqBase + s
+			inputRow := input.Data[base+s*dModel : base+(s+1)*dModel]
+			kRow := cacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+			vRow := cacheV.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
 
-		theta := mhaRoPETheta(layer)
-		half := headDim / 2
-		for h := 0; h < numHeads; h++ {
-			for d := 0; d < half; d++ {
-				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-				c, sVal := math.Cos(angle), math.Sin(angle)
-				qOff := s*qDim + h*headDim + d
-				v0, v1 := Q[qOff], Q[qOff+half]
-				Q[qOff] = v0*c - v1*sVal
-				Q[qOff+half] = v0*sVal + v1*c
+			inputQ, activationMax := bitNetQuantizeActivationNumeric(inputRow, inputQ)
+			bitNetTernaryMatVecQuantized(qW, inputQ, activationMax, tmpQ)
+			for i := 0; i < qDim; i++ {
+				Q[s*qDim+i] = tmpQ[i] + bitNetTernaryBias(layer.WeightStore, qbStart+i)
 			}
-		}
-		for h := 0; h < numKVHeads; h++ {
-			for d := 0; d < half; d++ {
-				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-				c, sVal := math.Cos(angle), math.Sin(angle)
-				kOff := h*headDim + d
-				v0, v1 := float64(kRow[kOff]), float64(kRow[kOff+half])
-				kRow[kOff] = T(v0*c - v1*sVal)
-				kRow[kOff+half] = T(v0*sVal + v1*c)
+
+			bitNetTernaryMatVecQuantized(kW, inputQ, activationMax, tmpK)
+			bitNetTernaryMatVecQuantized(vW, inputQ, activationMax, tmpV)
+			for i := 0; i < kvDim; i++ {
+				kRow[i] = T(tmpK[i] + bitNetTernaryBias(layer.WeightStore, kbStart+i))
+				vRow[i] = T(tmpV[i] + bitNetTernaryBias(layer.WeightStore, vbStart+i))
 			}
-		}
-	}
 
-	headsPerKV := numHeads / numKVHeads
-	scale := 1.0 / math.Sqrt(float64(headDim))
-	attnOut := make([]float64, seqLen*qDim)
+			if len(layer.QNormWeight) > 0 {
+				applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
+			}
+			if len(layer.KNormWeight) > 0 {
+				applyPerHeadRMSNormTensor(kRow, layer.KNormWeight, numKVHeads, headDim, qkEps)
+			}
 
-	for s := 0; s < seqLen; s++ {
-		currentTotalPos := layer.KVOffset + s
-		for h := 0; h < numHeads; h++ {
-			kvHead := h / headsPerKV
-			scores := make([]float64, currentTotalPos+1)
-			maxScore := float64(-1e9)
-
-			for kPos := 0; kPos <= currentTotalPos; kPos++ {
-				kIdx := kPos % msl
-				var dot float64
-				for d := 0; d < headDim; d++ {
-					dot += Q[s*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
-				}
-				score := dot * scale
-				scores[kPos] = score
-				if score > maxScore {
-					maxScore = score
+			theta := mhaRoPETheta(layer)
+			half := headDim / 2
+			for h := 0; h < numHeads; h++ {
+				for d := 0; d < half; d++ {
+					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+					c, sVal := math.Cos(angle), math.Sin(angle)
+					qOff := s*qDim + h*headDim + d
+					v0, v1 := Q[qOff], Q[qOff+half]
+					Q[qOff] = v0*c - v1*sVal
+					Q[qOff+half] = v0*sVal + v1*c
 				}
 			}
-
-			var expSum float64
-			for kPos := 0; kPos <= currentTotalPos; kPos++ {
-				scores[kPos] = math.Exp(scores[kPos] - maxScore)
-				expSum += scores[kPos]
+			for h := 0; h < numKVHeads; h++ {
+				for d := 0; d < half; d++ {
+					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+					c, sVal := math.Cos(angle), math.Sin(angle)
+					kOff := h*headDim + d
+					v0, v1 := float64(kRow[kOff]), float64(kRow[kOff+half])
+					kRow[kOff] = T(v0*c - v1*sVal)
+					kRow[kOff+half] = T(v0*sVal + v1*c)
+				}
 			}
+		}
 
-			for d := 0; d < headDim; d++ {
-				var sum float64
+		headsPerKV := numHeads / numKVHeads
+		scale := 1.0 / math.Sqrt(float64(headDim))
+		attnOut := make([]float64, seqLen*qDim)
+
+		for s := 0; s < seqLen; s++ {
+			currentTotalPos := seqBase + s
+			for h := 0; h < numHeads; h++ {
+				kvHead := h / headsPerKV
+				scores := make([]float64, currentTotalPos+1)
+				maxScore := float64(-1e9)
+
 				for kPos := 0; kPos <= currentTotalPos; kPos++ {
-					sum += scores[kPos] * float64(cacheV.Data[(kPos%msl)*kvDim+kvHead*headDim+d])
+					kIdx := kPos % msl
+					var dot float64
+					for d := 0; d < headDim; d++ {
+						dot += Q[s*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
+					}
+					score := dot * scale
+					scores[kPos] = score
+					if score > maxScore {
+						maxScore = score
+					}
 				}
-				attnOut[s*qDim+h*headDim+d] = sum / expSum
+
+				var expSum float64
+				for kPos := 0; kPos <= currentTotalPos; kPos++ {
+					scores[kPos] = math.Exp(scores[kPos] - maxScore)
+					expSum += scores[kPos]
+				}
+
+				for d := 0; d < headDim; d++ {
+					var sum float64
+					for kPos := 0; kPos <= currentTotalPos; kPos++ {
+						sum += scores[kPos] * float64(cacheV.Data[(kPos%msl)*kvDim+kvHead*headDim+d])
+					}
+					attnOut[s*qDim+h*headDim+d] = sum / expSum
+				}
+			}
+		}
+
+		tmpO := make([]float64, dModel)
+		attnQ := make([]int8, qDim)
+		for s := 0; s < seqLen; s++ {
+			attnRow := attnOut[s*qDim : (s+1)*qDim]
+			bitNetRMSNormFloat64Weighted(attnRow, layer.InnerNormWeight, layer.RMSNormEps)
+			attnQ, activationMax := bitNetQuantizeActivationFloat64(attnRow, attnQ)
+			bitNetTernaryMatVecQuantized(oW, attnQ, activationMax, tmpO)
+			for i := 0; i < dModel; i++ {
+				preAct.Data[base+s*dModel+i] = T(attnRow[i])
+				postAct.Data[base+s*dModel+i] = T(tmpO[i] + bitNetTernaryBias(layer.WeightStore, obStart+i))
 			}
 		}
 	}
-
-	tmpO := make([]float64, dModel)
-	attnQ := make([]int8, qDim)
-	for s := 0; s < seqLen; s++ {
-		attnRow := attnOut[s*qDim : (s+1)*qDim]
-		bitNetRMSNormFloat64Weighted(attnRow, layer.InnerNormWeight, layer.RMSNormEps)
-		attnQ, activationMax := bitNetQuantizeActivationFloat64(attnRow, attnQ)
-		bitNetTernaryMatVecQuantized(oW, attnQ, activationMax, tmpO)
-		for i := 0; i < dModel; i++ {
-			preAct.Data[s*dModel+i] = T(attnRow[i])
-			postAct.Data[s*dModel+i] = T(tmpO[i] + bitNetTernaryBias(layer.WeightStore, obStart+i))
-		}
-	}
-
-	layer.KVOffset += seqLen
+	layer.KVOffset = kvStart + lay.batch*seqLen
 	return preAct, postAct
 }
 
@@ -373,7 +376,8 @@ func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input
 	if qDim == 0 {
 		qDim = numHeads * headDim
 	}
-	seqLen := len(input.Data) / dModel
+	lay := mhaParseLayout(layer, input)
+	seqLen := lay.seqLen
 	msl := layer.MaxSeqLen
 	if msl == 0 {
 		msl = 512
@@ -381,7 +385,7 @@ func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input
 	kvDim := numKVHeads * headDim
 
 	gradInput = NewTensor[T](input.Shape...)
-	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
+	gradWeights = NewTensor[T](layer.WeightStore.WeightCount(layer.DType))
 
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil {
@@ -400,153 +404,162 @@ func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input
 
 	qW, kW, vW, oW := wData[qwStart:kwStart], wData[kwStart:vwStart], wData[vwStart:owStart], wData[owStart:qbStart]
 
-	gradPre := make([]float64, seqLen*qDim)
 	gi64 := make([]float64, len(gradInput.Data))
 	gw64 := make([]float64, len(gradWeights.Data))
 
-	for s := 0; s < seqLen; s++ {
-		for i := 0; i < dModel; i++ {
-			dy := float64(gradOutput.Data[s*dModel+i])
-			gw64[obStart+i] += dy
-			for j := 0; j < qDim; j++ {
-				preVal := 0.0
-				if j < dModel {
-					preVal = float64(preAct.Data[s*dModel+j])
+	kvEnd := layer.KVOffset
+	for b := 0; b < lay.batch; b++ {
+		seqBase := kvEnd - lay.batch*seqLen + b*seqLen
+		gradPre := make([]float64, seqLen*qDim)
+		for s := 0; s < seqLen; s++ {
+			for i := 0; i < dModel; i++ {
+				dy := float64(gradOutput.Data[lay.outIdx(b, s, i)])
+				gw64[obStart+i] += dy
+				for j := 0; j < qDim; j++ {
+					preVal := 0.0
+					if j < dModel {
+						preVal = float64(preAct.Data[lay.outIdx(b, s, j)])
+					}
+					gw64[owStart+i*qDim+j] += preVal * dy
+					gradPre[s*qDim+j] += dy * float64(oW[i*qDim+j])
 				}
-				gw64[owStart+i*qDim+j] += preVal * dy
-				gradPre[s*qDim+j] += dy * float64(oW[i*qDim+j])
 			}
 		}
-	}
 
-	cacheK := layer.KVCacheK.(*Tensor[T])
-	cacheV := layer.KVCacheV.(*Tensor[T])
+		cacheK := layer.KVCacheK.(*Tensor[T])
+		cacheV := layer.KVCacheV.(*Tensor[T])
 
-	Q := make([]float64, seqLen*qDim)
-	for s := 0; s < seqLen; s++ {
-		for i := 0; i < qDim; i++ {
-			sum := float64(wData[qbStart+i])
-			for j := 0; j < dModel; j++ {
-				sum += float64(input.Data[s*dModel+j]) * float64(qW[i*dModel+j])
+		Q := make([]float64, seqLen*qDim)
+		qkEps := mhaQKNormEpsilon(layer)
+		for s := 0; s < seqLen; s++ {
+			for i := 0; i < qDim; i++ {
+				sum := float64(wData[qbStart+i])
+				for j := 0; j < dModel; j++ {
+					sum += float64(input.Data[lay.inIdx(b, s, j)]) * float64(qW[i*dModel+j])
+				}
+				Q[s*qDim+i] = sum
 			}
-			Q[s*qDim+i] = sum
+			if len(layer.QNormWeight) > 0 {
+				applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
+			}
+			theta := mhaRoPETheta(layer)
+			half := headDim / 2
+			pos := seqBase + s
+			for h := 0; h < numHeads; h++ {
+				for d := 0; d < half; d++ {
+					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+					c, sVal := math.Cos(angle), math.Sin(angle)
+					qOff := s*qDim + h*headDim + d
+					v0, v1 := Q[qOff], Q[qOff+half]
+					Q[qOff] = v0*c - v1*sVal
+					Q[qOff+half] = v0*sVal + v1*c
+				}
+			}
 		}
-		theta := mhaRoPETheta(layer)
-		half := headDim / 2
-		pos := layer.KVOffset - seqLen + s
+
+		headsPerKV := numHeads / numKVHeads
+		scale := 1.0 / math.Sqrt(float64(headDim))
+
+		gQ := make([]float64, seqLen*qDim)
+		gK := make([]float64, msl*kvDim)
+		gV := make([]float64, msl*kvDim)
+
 		for h := 0; h < numHeads; h++ {
-			for d := 0; d < half; d++ {
-				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-				c, sVal := math.Cos(angle), math.Sin(angle)
-				qOff := s*qDim + h*headDim + d
-				v0, v1 := Q[qOff], Q[qOff+half]
-				Q[qOff] = v0*c - v1*sVal
-				Q[qOff+half] = v0*sVal + v1*c
-			}
-		}
-	}
-
-	headsPerKV := numHeads / numKVHeads
-	scale := 1.0 / math.Sqrt(float64(headDim))
-
-	gQ := make([]float64, seqLen*qDim)
-	gK := make([]float64, msl*kvDim)
-	gV := make([]float64, msl*kvDim)
-
-	for h := 0; h < numHeads; h++ {
-		kvHead := h / headsPerKV
-		for qPos := 0; qPos < seqLen; qPos++ {
-			currentTotalPos := layer.KVOffset - seqLen + qPos
-			scores := make([]float64, currentTotalPos+1)
-			maxScore := float64(-1e9)
-			for kPos := 0; kPos <= currentTotalPos; kPos++ {
-				kIdx := kPos % msl
-				var dot float64
-				for d := 0; d < headDim; d++ {
-					dot += Q[qPos*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
-				}
-				score := dot * scale
-				scores[kPos] = score
-				if score > maxScore {
-					maxScore = score
-				}
-			}
-			var expSum float64
-			for kPos := 0; kPos <= currentTotalPos; kPos++ {
-				scores[kPos] = math.Exp(scores[kPos] - maxScore)
-				expSum += scores[kPos]
-			}
-			for kPos := 0; kPos <= currentTotalPos; kPos++ {
-				scores[kPos] /= expSum
-			}
-
-			for d := 0; d < headDim; d++ {
-				dy := gradPre[qPos*qDim+h*headDim+d]
-				var dS_sum float64
-				for kPos := 0; kPos <= currentTotalPos; kPos++ {
-					vIdx := kPos % msl
-					gV[vIdx*kvDim+kvHead*headDim+d] += scores[kPos] * dy
-					dS_sum += float64(cacheV.Data[vIdx*kvDim+kvHead*headDim+d]) * dy * scores[kPos]
-				}
-
+			kvHead := h / headsPerKV
+			for qPos := 0; qPos < seqLen; qPos++ {
+				currentTotalPos := seqBase + qPos
+				scores := make([]float64, currentTotalPos+1)
+				maxScore := float64(-1e9)
 				for kPos := 0; kPos <= currentTotalPos; kPos++ {
 					kIdx := kPos % msl
-					dScore := (scores[kPos]*dy*float64(cacheV.Data[kIdx*kvDim+kvHead*headDim+d]) - scores[kPos]*dS_sum) * scale
+					var dot float64
+					for d := 0; d < headDim; d++ {
+						dot += Q[qPos*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
+					}
+					score := dot * scale
+					scores[kPos] = score
+					if score > maxScore {
+						maxScore = score
+					}
+				}
+				var expSum float64
+				for kPos := 0; kPos <= currentTotalPos; kPos++ {
+					scores[kPos] = math.Exp(scores[kPos] - maxScore)
+					expSum += scores[kPos]
+				}
+				for kPos := 0; kPos <= currentTotalPos; kPos++ {
+					scores[kPos] /= expSum
+				}
 
-					gQ[qPos*qDim+h*headDim+d] += dScore * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
-					gK[kIdx*kvDim+kvHead*headDim+d] += dScore * Q[qPos*qDim+h*headDim+d]
+				for d := 0; d < headDim; d++ {
+					dy := gradPre[qPos*qDim+h*headDim+d]
+					var dS_sum float64
+					for kPos := 0; kPos <= currentTotalPos; kPos++ {
+						vIdx := kPos % msl
+						gV[vIdx*kvDim+kvHead*headDim+d] += scores[kPos] * dy
+						dS_sum += float64(cacheV.Data[vIdx*kvDim+kvHead*headDim+d]) * dy * scores[kPos]
+					}
+
+					for kPos := 0; kPos <= currentTotalPos; kPos++ {
+						kIdx := kPos % msl
+						dScore := (scores[kPos]*dy*float64(cacheV.Data[kIdx*kvDim+kvHead*headDim+d]) - scores[kPos]*dS_sum) * scale
+
+						gQ[qPos*qDim+h*headDim+d] += dScore * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
+						gK[kIdx*kvDim+kvHead*headDim+d] += dScore * Q[qPos*qDim+h*headDim+d]
+					}
 				}
 			}
 		}
-	}
 
-	half := headDim / 2
-	theta := mhaRoPETheta(layer)
-	for s := 0; s < seqLen; s++ {
-		pos := layer.KVOffset - seqLen + s
-		for h := 0; h < numHeads; h++ {
-			for d := 0; d < half; d++ {
-				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-				c, sVal := math.Cos(angle), math.Sin(angle)
-				qOff := s*qDim + h*headDim + d
-				v0, v1 := gQ[qOff], gQ[qOff+half]
-				gQ[qOff] = v0*c + v1*sVal
-				gQ[qOff+half] = -v0*sVal + v1*c
+		half := headDim / 2
+		theta := mhaRoPETheta(layer)
+		for s := 0; s < seqLen; s++ {
+			pos := seqBase + s
+			for h := 0; h < numHeads; h++ {
+				for d := 0; d < half; d++ {
+					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+					c, sVal := math.Cos(angle), math.Sin(angle)
+					qOff := s*qDim + h*headDim + d
+					v0, v1 := gQ[qOff], gQ[qOff+half]
+					gQ[qOff] = v0*c + v1*sVal
+					gQ[qOff+half] = -v0*sVal + v1*c
+				}
+			}
+			kIdx := pos % msl
+			for h := 0; h < numKVHeads; h++ {
+				for d := 0; d < half; d++ {
+					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+					c, sVal := math.Cos(angle), math.Sin(angle)
+					kOff := kIdx*kvDim + h*headDim + d
+					v0, v1 := gK[kOff], gK[kOff+half]
+					gK[kOff] = v0*c + v1*sVal
+					gK[kOff+half] = -v0*sVal + v1*c
+				}
 			}
 		}
-		kIdx := pos % msl
-		for h := 0; h < numKVHeads; h++ {
-			for d := 0; d < half; d++ {
-				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-				c, sVal := math.Cos(angle), math.Sin(angle)
-				kOff := kIdx*kvDim + h*headDim + d
-				v0, v1 := gK[kOff], gK[kOff+half]
-				gK[kOff] = v0*c + v1*sVal
-				gK[kOff+half] = -v0*sVal + v1*c
-			}
-		}
-	}
 
-	for s := 0; s < seqLen; s++ {
-		kIdx := (layer.KVOffset - seqLen + s) % msl
-		for i := 0; i < qDim; i++ {
-			dq := gQ[s*qDim+i]
-			gw64[qbStart+i] += dq
-			for j := 0; j < dModel; j++ {
-				gw64[qwStart+i*dModel+j] += float64(input.Data[s*dModel+j]) * dq
-				gi64[s*dModel+j] += dq * float64(qW[i*dModel+j])
+		for s := 0; s < seqLen; s++ {
+			kIdx := (seqBase + s) % msl
+			for i := 0; i < qDim; i++ {
+				dq := gQ[s*qDim+i]
+				gw64[qbStart+i] += dq
+				for j := 0; j < dModel; j++ {
+					inIdx := lay.inIdx(b, s, j)
+					gw64[qwStart+i*dModel+j] += float64(input.Data[inIdx]) * dq
+					gi64[inIdx] += dq * float64(qW[i*dModel+j])
+				}
 			}
-		}
-		for i := 0; i < kvDim; i++ {
-			dk, dv := gK[kIdx*kvDim+i], gV[kIdx*kvDim+i]
-			gw64[kbStart+i] += dk
-			gw64[vbStart+i] += dv
-			for j := 0; j < dModel; j++ {
-				x := float64(input.Data[s*dModel+j])
-				gw64[kwStart+i*dModel+j] += x * dk
-				gw64[vwStart+i*dModel+j] += x * dv
-
-				gi64[s*dModel+j] += dk*float64(kW[i*dModel+j]) + dv*float64(vW[i*dModel+j])
+			for i := 0; i < kvDim; i++ {
+				dk, dv := gK[kIdx*kvDim+i], gV[kIdx*kvDim+i]
+				gw64[kbStart+i] += dk
+				gw64[vbStart+i] += dv
+				for j := 0; j < dModel; j++ {
+					inIdx := lay.inIdx(b, s, j)
+					x := float64(input.Data[inIdx])
+					gw64[kwStart+i*dModel+j] += x * dk
+					gw64[vwStart+i*dModel+j] += x * dv
+					gi64[inIdx] += dk*float64(kW[i*dModel+j]) + dv*float64(vW[i*dModel+j])
+				}
 			}
 		}
 	}

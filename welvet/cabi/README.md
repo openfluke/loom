@@ -23,5 +23,15 @@ The build system uses a **"Polyglot Builder"** architecture designed for cross-p
 - **Clean builds**: Add the `-clean` flag to start from a fresh slate.
 - **macOS — C-shared `libwelvet`**: From this directory, run `./build_macos.sh`. This writes `dist/macos/libwelvet.dylib` and `dist/macos/libwelvet.h` (ignored by git). Rebuild after any C-ABI surface change. On Windows/Linux, use `go build -buildmode=c-shared` (or `internal/build/build_windows.bat`) and copy the resulting `.dll` / `.so` plus headers into your app’s native layout as needed.
 
+## Parity check (v0.79+)
+
+Scan `poly/` public API vs `//export` names:
+
+```bash
+cd welvet/cabi/internal/check && go run .
+```
+
+Expect **461/461 (100.0%)** — includes `LoomSyncInferenceWeights` (`ReleaseFP32MasterWhenIdle` path). See [`docs/bedrock_validation.md`](../../docs/bedrock_validation.md).
+
 ---
 *Loom C-ABI: Bit-perfect performance, exposed to the world.*

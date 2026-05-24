@@ -146,7 +146,8 @@ func lstmBackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, in
 	batchSize, inputSize, hiddenSize, seqLength := input.Shape[0], layer.InputHeight, layer.OutputHeight, layer.SeqLength
 
 	gradInput = NewTensor[T](batchSize, seqLength, inputSize)
-	gradWeights = NewTensor[T](len(layer.WeightStore.Master))
+	wCount := layer.WeightStore.WeightCount(layer.DType)
+	gradWeights = NewTensor[T](wCount)
 
 	ihSize, hhSize, bSize := hiddenSize*inputSize, hiddenSize*hiddenSize, hiddenSize
 	gateSize := ihSize + hhSize + bSize
@@ -174,7 +175,7 @@ func lstmBackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, in
 			defer func() { <-sem; wg.Done() }()
 			
 			localGI := make([]float64, seqLength*inputSize)
-			localGW := make([]float64, len(layer.WeightStore.Master))
+			localGW := make([]float64, wCount)
 			gradH, gradC := make([]float64, hiddenSize), make([]float64, hiddenSize)
 
 			for t := seqLength - 1; t >= 0; t-- {

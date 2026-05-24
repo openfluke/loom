@@ -534,6 +534,10 @@ type VolumetricNetwork struct {
 	UseGPU                bool
 	UseExactDType         bool
 
+	// ReleaseFP32MasterWhenIdle drops FP32 Master after SyncInferenceWeights so
+	// forward-only paths hold native Versions only. Training calls EnsureTrainingWeights.
+	ReleaseFP32MasterWhenIdle bool
+
 	// GPU Acceleration context
 	GPUContext *WGPUContext
 

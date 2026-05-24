@@ -163,5 +163,5 @@ func ConvTransposed1DForwardPolymorphic[T Numeric](layer *VolumetricLayer, input
 }
 
 func ConvTransposed1DBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
-	return NewTensor[T](input.Shape...), NewTensor[T](len(layer.WeightStore.Master))
+	return NewTensor[T](input.Shape...), NewTensor[T](layer.WeightStore.WeightCount(layer.DType))
 }

@@ -105,12 +105,14 @@ func resolveMode(config *TrainingConfig) TrainingMode {
 func ConfigureNetworkForMode(n *VolumetricNetwork, mode TrainingMode) error {
 	switch mode {
 	case TrainingModeCPUNormal, TrainingModeCPUSC, TrainingModeCPUMC:
-		// CPU paths use multi-core tiled implementations only (no separate naive / serial-tiled stacks).
-		n.EnableMultiCoreTiling = true
+		n.UseGPU = false
+		multiCore := mode == TrainingModeCPUMC
+		useTiling := mode != TrainingModeCPUNormal
+		n.EnableMultiCoreTiling = multiCore
 		n.RefreshRuntimeTileSizes()
 		for i := range n.Layers {
-			n.Layers[i].UseTiling = true
-			n.Layers[i].EnableMultiCoreTiling = true
+			n.Layers[i].UseTiling = useTiling
+			n.Layers[i].EnableMultiCoreTiling = multiCore
 		}
 		n.SyncToCPU()
 	case TrainingModeGPUNormal, TrainingModeGPUSC, TrainingModeGPUMC:
@@ -244,6 +246,8 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 	if err := ConfigureNetworkForMode(n, mode); err != nil {
 		return nil, err
 	}
+	releaseWhenIdle := n.ReleaseFP32MasterWhenIdle
+	n.EnsureTrainingWeights()
 
 	// GPU tile sizes are now per-layer per-dtype; passed via mode to trainBatchGPU.
 
@@ -328,6 +332,14 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 
 	result.FinalLoss = result.LossHistory[len(result.LossHistory)-1]
 	result.TotalTime = time.Since(totalStart)
+
+	// Dismount FP32 Master after training when idle-release is enabled: native Versions
+	// hold the trained weights at the layer DType width for inference/checkpointing.
+	if releaseWhenIdle {
+		n.ReleaseFP32MasterWhenIdle = true
+		n.SyncInferenceWeights()
+	}
+
 	return result, nil
 }
 
@@ -1243,6 +1255,7 @@ func ApplyRecursiveGradients(layer *VolumetricLayer, gradWeights *Tensor[float32
 		}
 		if !usedNative {
 			layer.WeightStore.ApplyGradients(gradWeights, lr, clipVal)
+			clampMasterForDType(layer.WeightStore, layer.DType)
 		}
 
 		// Re-quantize after gradient update when the active state still lives in Master.
