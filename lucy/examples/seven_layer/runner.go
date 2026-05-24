@@ -29,13 +29,15 @@ const (
 )
 
 type saveResult struct {
-	forwardDiff float64
-	weightDiff  float64
-	lossDelta   float64
-	bucket      spectrum
-	nativeOK    bool
-	pass        bool
-	err         string
+	forwardDiff  float64
+	weightDiff   float64
+	lossDelta    float64
+	trainedLoss  float64
+	reloadedLoss float64
+	bucket       spectrum
+	nativeOK     bool
+	pass         bool
+	err          string
 }
 
 func forwardLoss(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32]) float64 {
@@ -70,8 +72,14 @@ func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[flo
 	r.forwardDiff = maxAbsDiff(baseline, out1.Data)
 	r.bucket = spectrumMark(r.forwardDiff, tc.tolerance, out1.Data, baseline)
 	r.weightDiff = nativeWeightDiff(net, reloaded, tc.dtype)
+	r.trainedLoss = poly.CalculateLoss(out0, target, "mse")
 	outR, _, _ := poly.ForwardPolymorphic(reloaded, input)
-	r.lossDelta = math.Abs(poly.CalculateLoss(outR, target, "mse") - refLoss)
+	r.reloadedLoss = poly.CalculateLoss(outR, target, "mse")
+	if phase == phaseAfter {
+		r.lossDelta = math.Abs(r.reloadedLoss - r.trainedLoss)
+	} else {
+		r.lossDelta = math.Abs(r.reloadedLoss - refLoss)
+	}
 
 	r.nativeOK = nativePersistenceOK(net, reloaded, wire, tc)
 	maxBucket := saveReloadMaxBucket(phase, tc.dtype)
@@ -185,14 +193,23 @@ func RunLayerSuite(s LayerSuite) bool {
 		input := s.MakeInput()
 		target := s.MakeTarget(net, input)
 
+		mem0 := readMemSnapshot()
+		row.MemHeap = formatBytes(mem0.HeapAlloc)
+		row.MemSys = formatBytes(mem0.Sys)
+		row.WeightBytes = formatBytes(networkWeightBytes(net))
+
 		// Forward determinism: CPU Go SC vs MC (Go tiled path; ASM checked separately for floats).
 		fwdSC := captureForward(net, input, false, false)
 		fwdMC := captureForward(net, input, true, false)
+		row.FwdSCDur = formatDur(fwdSC.dur)
+		row.FwdMCDur = formatDur(fwdMC.dur)
 		row.FwdSCMC = maxAbsDiff(fwdSC.out, fwdMC.out)
 
 		// Backward determinism: SC vs MC
 		bwdSC := captureBackward(net, input, target, false)
 		bwdMC := captureBackward(net, input, target, true)
+		row.BwdSCDur = formatDur(bwdSC.dur)
+		row.BwdMCDur = formatDur(bwdMC.dur)
 		row.BwdSCMC = maxAbsDiff(append(bwdSC.dx, bwdSC.dw...), append(bwdMC.dx, bwdMC.dw...))
 
 		// ASM forward (Dense float paths only — native quant uses integer matmul in ASM).
@@ -276,10 +293,24 @@ func RunLayerSuite(s LayerSuite) bool {
 		row.Learned = trainingOK(lossInit, lossFinal, tc.dtype)
 
 		finalizeTrainingNet(netMC, tc)
-		_ = saveCheckpoint(netMC, s.CheckpointTag, tc.name)
+		memTrain := readMemSnapshot()
+		row.MemHeapTrain = formatBytes(memTrain.HeapAlloc)
+		row.WeightBytes = formatBytes(networkWeightBytes(netMC)) + " (trained)"
+
+		ckptPath := saveCheckpoint(netMC, s.CheckpointTag, tc.name)
+		if ckptPath != "" {
+			if st, err := os.Stat(ckptPath); err == nil {
+				row.Checkpoint = formatBytes(uint64(st.Size()))
+			}
+		}
+
 		after := checkSaveReload(netMC, input, target, tc, lossFinal, phaseAfter)
 		row.AfterBucket = after.bucket.String()
 		row.AfterOK = after.pass
+		row.ReloadFwdDiff = after.forwardDiff
+		row.ReloadLossDelta = after.lossDelta
+		row.TrainedLoss = after.trainedLoss
+		row.ReloadedLoss = after.reloadedLoss
 		if !after.nativeOK {
 			row.NativeOK = false
 		}
@@ -294,20 +325,24 @@ func RunLayerSuite(s LayerSuite) bool {
 		}
 		if row.OverallOK {
 			passed++
-			fmt.Printf("PASS  loss %.4e→%.4e det=%s asm=%s  timing: SC=%s (%.0f/s) MC=%s (%.0f/s)\n",
-				lossInit, lossFinal, markOK(row.DetOK), asmTag,
-				row.TrainSCDur, row.TrainSCSps, row.TrainMCDur, row.TrainMCSps)
+			fmt.Printf("PASS  loss %.4e→%.4e det=%s reload=%s fwd/bwd SC=%s/%s MC=%s/%s mem=%s ckpt=%s\n",
+				lossInit, lossFinal, markOK(row.DetOK), markOK(row.AfterOK),
+				row.FwdSCDur, row.BwdSCDur, row.FwdMCDur, row.BwdMCDur,
+				row.MemHeapTrain, row.Checkpoint)
 		} else {
 			failed++
-			fmt.Printf("FAIL  loss %.4e→%.4e learn=%s save=%s det=%s asm=%s\n",
+			fmt.Printf("FAIL  loss %.4e→%.4e learn=%s save=%s det=%s asm=%s reload_Δloss=%.2e\n",
 				lossInit, lossFinal, markOK(row.Learned), markOK(row.BeforeOK && row.AfterOK),
-				markOK(row.DetOK), asmTag)
+				markOK(row.DetOK), asmTag, row.ReloadLossDelta)
 		}
 		_ = lossSC
 	}
 
 	PrintDeterminismTable(s.Name, rows)
+	PrintForwardBackwardTimingTable(s.Name, rows)
+	PrintMemoryTable(s.Name, rows)
 	PrintTimingTable(s.Name, rows)
+	PrintTrainedReloadTable(s.Name, rows)
 	PrintDTypeResultsTable(s.Name, rows)
 	RegisterLayerSummary(s.Name, passed, failed, rows)
 	return failed == 0

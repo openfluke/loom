@@ -296,11 +296,8 @@ type forwardCapture struct {
 }
 
 func captureForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore, useAsm bool) forwardCapture {
-	setCPUMode(net, multiCore, useAsm)
-	resetNetwork(net)
-	t0 := time.Now()
-	out, _, _ := poly.ForwardPolymorphic(net, input)
-	return forwardCapture{out: append([]float32(nil), out.Data...), dur: time.Since(t0)}
+	out, avg := benchmarkForward(net, input, multiCore, useAsm)
+	return forwardCapture{out: out, dur: avg}
 }
 
 type backwardCapture struct {
@@ -309,38 +306,8 @@ type backwardCapture struct {
 }
 
 func captureBackward(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], multiCore bool) backwardCapture {
-	setCPUMode(net, multiCore, false)
-	resetNetwork(net)
-
-	histIn := make([]*poly.Tensor[float32], len(net.Layers))
-	histPre := make([]*poly.Tensor[float32], len(net.Layers))
-	curr := input
-	for i := range net.Layers {
-		l := &net.Layers[i]
-		if l.IsDisabled {
-			continue
-		}
-		histIn[i] = curr
-		pre, post := poly.DispatchLayer(l, curr, nil)
-		histPre[i] = pre
-		curr = post
-	}
-	gradOut := poly.ComputeLossGradient(curr, target, "mse")
-
-	t0 := time.Now()
-	_, layerGrads, _ := poly.BackwardPolymorphic(net, gradOut, histIn, histPre)
-	dur := time.Since(t0)
-
-	var dx, dw []float32
-	if len(layerGrads) > 0 && layerGrads[0][0] != nil {
-		dx = append([]float32(nil), layerGrads[0][0].Data...)
-	}
-	for _, g := range layerGrads {
-		if g[1] != nil {
-			dw = append(dw, g[1].Data...)
-		}
-	}
-	return backwardCapture{dx: dx, dw: dw, dur: dur}
+	dx, dw, avg := benchmarkBackward(net, input, target, multiCore)
+	return backwardCapture{dx: dx, dw: dw, dur: avg}
 }
 
 func maxAbsDiff(a, b []float32) float64 {
@@ -449,10 +416,96 @@ func trainingOK(lossInit, lossFinal float64, dtype poly.DType) bool {
 }
 
 func formatDur(d time.Duration) string {
+	if d <= 0 {
+		return "0"
+	}
+	if d < time.Microsecond {
+		return fmt.Sprintf("%dns", d.Nanoseconds())
+	}
+	if d < time.Millisecond {
+		return fmt.Sprintf("%.1fµs", float64(d)/float64(time.Microsecond))
+	}
 	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
+		ms := float64(d) / float64(time.Millisecond)
+		if ms < 10 {
+			return fmt.Sprintf("%.2fms", ms)
+		}
+		return fmt.Sprintf("%.1fms", ms)
 	}
 	return fmt.Sprintf("%.3fs", d.Seconds())
+}
+
+const benchIters = 25
+
+func benchmarkForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore, useAsm bool) (out []float32, avg time.Duration) {
+	setCPUMode(net, multiCore, useAsm)
+	for i := 0; i < 3; i++ {
+		resetNetwork(net)
+		_, _, _ = poly.ForwardPolymorphic(net, input)
+	}
+	var total time.Duration
+	var last *poly.Tensor[float32]
+	for i := 0; i < benchIters; i++ {
+		resetNetwork(net)
+		t0 := time.Now()
+		post, _, _ := poly.ForwardPolymorphic(net, input)
+		total += time.Since(t0)
+		last = post
+	}
+	if last == nil {
+		return nil, 0
+	}
+	return append([]float32(nil), last.Data...), total / benchIters
+}
+
+func benchmarkBackward(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], multiCore bool) (dx, dw []float32, avg time.Duration) {
+	setCPUMode(net, multiCore, false)
+	for i := 0; i < 3; i++ {
+		_, _, dur := runBackwardOnce(net, input, target)
+		_ = dur
+	}
+	var total time.Duration
+	var lastDx, lastDw []float32
+	for i := 0; i < benchIters; i++ {
+		dx, dw, dur := runBackwardOnce(net, input, target)
+		total += dur
+		lastDx, lastDw = dx, dw
+	}
+	return lastDx, lastDw, total / benchIters
+}
+
+func runBackwardOnce(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32]) (dx, dw []float32, dur time.Duration) {
+	setCPUMode(net, false, false)
+	resetNetwork(net)
+
+	histIn := make([]*poly.Tensor[float32], len(net.Layers))
+	histPre := make([]*poly.Tensor[float32], len(net.Layers))
+	curr := input
+	for i := range net.Layers {
+		l := &net.Layers[i]
+		if l.IsDisabled {
+			continue
+		}
+		histIn[i] = curr
+		pre, post := poly.DispatchLayer(l, curr, nil)
+		histPre[i] = pre
+		curr = post
+	}
+	gradOut := poly.ComputeLossGradient(curr, target, "mse")
+
+	t0 := time.Now()
+	_, layerGrads, _ := poly.BackwardPolymorphic(net, gradOut, histIn, histPre)
+	dur = time.Since(t0)
+
+	if len(layerGrads) > 0 && layerGrads[0][0] != nil {
+		dx = append([]float32(nil), layerGrads[0][0].Data...)
+	}
+	for _, g := range layerGrads {
+		if g[1] != nil {
+			dw = append(dw, g[1].Data...)
+		}
+	}
+	return dx, dw, dur
 }
 
 func samplesPerSec(d time.Duration, epochs int) float64 {

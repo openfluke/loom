@@ -36,6 +36,21 @@ type DTypeRow struct {
 	TrainMCDur string
 	TrainSCSps float64
 	TrainMCSps float64
+
+	FwdSCDur string
+	FwdMCDur string
+	BwdSCDur string
+	BwdMCDur string
+
+	MemHeap      string
+	MemSys       string
+	MemHeapTrain string
+	WeightBytes  string
+	Checkpoint   string
+	ReloadFwdDiff float64
+	ReloadLossDelta float64
+	TrainedLoss   float64
+	ReloadedLoss  float64
 }
 
 // LayerSummary aggregates one layer-type run (21 dtypes).
@@ -111,6 +126,62 @@ func PrintTimingTable(layerName string, rows []DTypeRow) {
 		}
 		fmt.Printf("| %-10s | %-12s | %-10.0f | %-12s | %-10.0f |\n",
 			r.DType, r.TrainSCDur, r.TrainSCSps, r.TrainMCDur, r.TrainMCSps)
+	}
+}
+
+func PrintForwardBackwardTimingTable(layerName string, rows []DTypeRow) {
+	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  %s — forward / backward timing (avg of %d passes, CPU Go)              ║\n", layerName, benchIters)
+	fmt.Printf("╚══════════════════════════════════════════════════════════════════════╝\n\n")
+
+	fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s |\n",
+		"DType", "Fwd SC", "Fwd MC", "Bwd SC", "Bwd MC")
+	fmt.Println("|------------|------------|------------|------------|------------|")
+
+	for _, r := range rows {
+		if r.Err != "" {
+			continue
+		}
+		fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s |\n",
+			r.DType, r.FwdSCDur, r.FwdMCDur, r.BwdSCDur, r.BwdMCDur)
+	}
+}
+
+func PrintMemoryTable(layerName string, rows []DTypeRow) {
+	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  %s — memory & weight footprint (Go runtime + network)               ║\n", layerName)
+	fmt.Printf("╚══════════════════════════════════════════════════════════════════════╝\n\n")
+
+	fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s | %-12s |\n",
+		"DType", "Heap", "Sys", "Heap+train", "Weights", "Checkpoint")
+	fmt.Println("|------------|------------|------------|------------|------------|--------------|")
+
+	for _, r := range rows {
+		if r.Err != "" {
+			continue
+		}
+		fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s | %-12s |\n",
+			r.DType, r.MemHeap, r.MemSys, r.MemHeapTrain, r.WeightBytes, r.Checkpoint)
+	}
+}
+
+func PrintTrainedReloadTable(layerName string, rows []DTypeRow) {
+	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  %s — trained checkpoint save/reload (after MC train)                  ║\n", layerName)
+	fmt.Printf("╚══════════════════════════════════════════════════════════════════════╝\n\n")
+	fmt.Println("  Verifies: serialize trained net → deserialize → forward/loss/native match in-memory model.")
+
+	fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s | %-8s | %-8s |\n",
+		"DType", "Loss train", "Loss reload", "|Δloss|", "|Δfwd|", "A-OK", "Native")
+	fmt.Println("|------------|------------|------------|------------|------------|--------|--------|")
+
+	for _, r := range rows {
+		if r.Err != "" {
+			continue
+		}
+		fmt.Printf("| %-10s | %-10.4e | %-10.4e | %-10.2e | %-10.2e | %-8s | %-8s |\n",
+			r.DType, r.TrainedLoss, r.ReloadedLoss, r.ReloadLossDelta, r.ReloadFwdDiff,
+			markOK(r.AfterOK), markOK(r.NativeOK))
 	}
 }
 
