@@ -5,9 +5,11 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/pypi/pyversions/welvet.svg)](https://pypi.org/project/welvet/)
 
-**Python bindings for the M-POLY-VTD neural engine — 21 numerical types, WebGPU acceleration, NEAT evolution, and 100% determinism.**
+**M-POLY-VTD AI Engine (Loom v0.79.0)** — Python bindings: 21 numerical types, volumetric grids, CPU/GPU training, DNA/NEAT, native save/reload.
 
-`welvet` wraps the [Loom](https://github.com/openfluke/loom) C-ABI with zero Python dependencies. It ships precompiled native libraries for all major platforms.
+`welvet` wraps the [Loom](https://github.com/openfluke/loom) C-ABI with zero runtime Python dependencies. The PyPI wheel ships **prebuilt native libraries for every supported OS/arch**; at import time only the matching binary is loaded (`linux_amd64/welvet.so`, `windows_amd64/welvet.dll`, etc.).
+
+> **Bedrock validation (v0.79):** seven-layer CPU suite (10 layer types × 21 dtypes × train × serialize). See [`docs/bedrock_validation.md`](https://github.com/openfluke/loom/blob/main/docs/bedrock_validation.md).
 
 ---
 
@@ -17,26 +19,66 @@
 pip install welvet
 ```
 
-Supported platforms: **Windows** (x86-64, ARM64), **Linux** (x86-64, ARM64, ARM, x86), **macOS** (x86-64, ARM64, Universal), **Android** (ARM64, ARM).
+```python
+import welvet
+print(welvet.__version__)  # 0.79.0
+```
+
+Supported platforms (64-bit): **Linux** (x86-64, ARM64), **macOS** (x86-64, ARM64, universal fallback), **Windows** (x86-64, ARM64), **Android** (ARM64, x86-64), **iOS** (device / simulator / XCFramework when built into the wheel).
 
 ### Build from source (monorepo)
 
 PyPI wheels ship prebuilt `.so` / `.dylib` / `.dll`. To run **latest `main`** against your checkout:
 
-```bash
-# From repo root — builds C-ABI and copies into welvet/python/src/welvet/
-cd welvet/cabi/internal/build
-./build_unix.sh linux amd64    # or: darwin arm64, windows amd64, etc.
+**Option A — build + copy in one step**
 
-cd ../../../python
-pip install -e .
-python3 -m welvet.cabi_verify   # 328/328 C-ABI symbols + smoke
-python3 consumer_smoke.py       # forward · morph · train · serialize
-python3 examples/run_all.py   # README examples (5 scripts)
+```bash
+cd welvet/cabi/internal/build
+./build_unix.sh linux amd64    # native Linux x86_64 (+ --test for CABI smoke)
+# or: ./build_unix.sh all       # every platform you have cross-toolchains for
+```
+
+`build_unix.sh` already copies `dist/*` → `welvet/python/src/welvet/`.
+
+**Option B — you already compiled into `dist/` (or copied builds there)**
+
+```bash
+cd welvet/cabi/internal/build
+./copy_to_python.sh              # default: ./dist → python/src/welvet/
+# or if your tree is elsewhere:
+./copy_to_python.sh ../../dist   # e.g. welvet/cabi/dist from build_macos.sh
+```
+
+One-liner from the Python folder:
+
+```bash
+cd welvet/python
+./copy_from_cabi.sh              # copy + pip install -e .
+```
+
+**Then install / verify**
+
+```bash
+cd welvet/python
+pip install -e .                 # editable install picks up src/welvet/*.so
+python3 -m welvet.cabi_verify    # C-ABI symbols + smoke
+python3 examples/run_all.py      # README examples
 python3 benchmark_seven_layer.py --layer Dense
 ```
 
-`build_unix.sh` mirrors `dist/*` → `python/src/welvet/linux_amd64/welvet.so` (and headers). Without that step, `import welvet` fails with “native library not found”.
+Artifacts land as `python/src/welvet/linux_amd64/welvet.so` (etc.). Without that, `import welvet` fails with “native library not found”.
+
+**Publish to PyPI** (maintainers)
+
+```bash
+pip install build twine
+cd welvet/cabi/internal/build && ./copy_to_python.sh   # all platforms → src/welvet/
+cd ../../../python
+pip install -e . && python3 examples/run_all.py        # smoke before release
+./publish.sh                                           # python3 -m build + twine upload
+```
+
+The wheel is **multi-platform**: it contains every `*/welvet.{so,dylib,dll}` you copied; each machine only loads its own folder.
 
 ---
 
@@ -200,11 +242,10 @@ GPU backward training is live for Dense, RMSNorm, CNN 1D/2D/3D — **17x–65x**
 Extract a topological fingerprint and compare networks:
 
 ```python
-from welvet import extract_dna, compare_dna
+from welvet import Network, compare_dna
 
-dna_a = extract_dna(net_a._handle)
-dna_b = extract_dna(net_b._handle)
-
+dna_a = net_a.dna()
+dna_b = net_b.dna()
 result = compare_dna(dna_a, dna_b)
 print(f"Overlap: {result['OverallOverlap']:.4f}")
 print(f"Logic shifts: {len(result.get('LogicShifts', []))}")
@@ -325,13 +366,30 @@ net.free()
 Load a SafeTensors model and run token generation:
 
 ```python
-from welvet import load_network, load_tokenizer, tokenize, detokenize, sequential_forward
+from welvet import Network, Tokenizer, sequential_forward
 
-net = load_network("path/to/model.safetensors")
-tok = load_tokenizer("path/to/tokenizer.json")
+net = Network.from_file("path/to/model.safetensors")
+tok = Tokenizer("path/to/tokenizer.json")
 
-ids = tokenize(tok, "Hello, world!")
-output = sequential_forward(net, [float(i) for i in ids])
+ids = tok.encode("Hello, world!")
+output = net.forward([float(i) for i in ids])
+tok.free()
+net.free()
+```
+
+---
+
+## Seven-layer validation (Python → CABI)
+
+Same bedrock gate as Lucy and `@openfluke/welvet` (WASM). Logic in `seven_layer_spec.py`; engine work stays in the `.so`.
+
+```bash
+cd welvet/python
+pip install -e .
+python3 benchmark_seven_layer.py --layer Dense
+python3 benchmark_seven_layer.py --layer Embedding
+python3 benchmark_seven_layer.py --layer Residual
+# full suite (slow): python3 benchmark_seven_layer.py
 ```
 
 ---
@@ -355,13 +413,26 @@ output = sequential_forward(net, [float(i) for i in ids])
 | iOS      | Simulator (ARM64) | `welvet.dylib` |
 | iOS      | XCFramework (all slices) | `.xcframework` |
 
+At runtime, `import welvet` resolves `welvet/<platform>_<arch>/welvet.{so,dylib,dll}` for the current machine (see `src/welvet/utils.py`).
+
+---
+
+## Version alignment
+
+| Component | Version |
+|-----------|---------|
+| **Loom engine (C-ABI / poly)** | **0.79.0** — Bedrock Validation |
+| **PyPI `welvet`** | **0.79.0** |
+| **npm `@openfluke/welvet`** | **0.79.0** |
+
 ---
 
 ## Links
 
 - **GitHub**: [github.com/openfluke/loom](https://github.com/openfluke/loom)
-- **Engine docs**: [poly/README.md](https://github.com/openfluke/loom/blob/main/poly/README.md)
-- **TypeScript bindings**: [@openfluke/welvet](https://www.npmjs.com/package/@openfluke/welvet)
+- **Python package**: [welvet/python](https://github.com/openfluke/loom/tree/main/welvet/python)
+- **Engine docs**: [poly/README.md](https://github.com/openfluke/loom/blob/main/poly/README.md) · [docs index](https://github.com/openfluke/loom/blob/main/docs/index.md)
+- **TypeScript / WASM**: [@openfluke/welvet](https://www.npmjs.com/package/@openfluke/welvet)
 - **Issues**: [github.com/openfluke/loom/issues](https://github.com/openfluke/loom/issues)
 
 ---

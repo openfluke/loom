@@ -32,7 +32,7 @@ keywords = [
 Homepage = "https://github.com/openfluke/loom"
 Source = "https://github.com/openfluke/loom"
 Issues = "https://github.com/openfluke/loom/issues"
-Documentation = "https://github.com/openfluke/loom/tree/main/welvet"
+Documentation = "https://github.com/openfluke/loom/tree/main/welvet/python"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
