@@ -8,6 +8,12 @@ set -e
 echo "=== Building and Publishing welvet to PyPI ==="
 echo ""
 
+# Native lib required for the wheel (linux_amd64/, etc.)
+if [ ! -f "src/welvet/linux_amd64/welvet.so" ] && [ "$(uname -s)" = "Linux" ]; then
+    echo "⚠️  linux_amd64/welvet.so missing — building C-ABI..."
+    (cd ../cabi/internal/build && ./build_unix.sh linux amd64)
+fi
+
 # Clean previous builds
 echo "Cleaning previous builds..."
 rm -rf dist/ build/ *.egg-info src/*.egg-info

@@ -1299,6 +1299,31 @@ def get_layer_telemetry(handle: int, layer_idx: int) -> dict:
     return _check(result, f"get_layer_telemetry(layer={layer_idx})")
 
 
+# Layer types with no WeightStore — dtype comes from JSON at build time (see lucy applyDTypeLayer).
+_LAYERS_WITHOUT_WEIGHT_STORE = frozenset({LayerType.SOFTMAX, LayerType.RESIDUAL})
+
+
+def get_layer_spec(handle: int, layer_idx: int) -> LoomLayerSpec:
+    """Return native layer spec (grid, type, dtype, dims)."""
+    if not _LoomGetLayerSpec:
+        raise RuntimeError("LoomGetLayerSpec not available in library")
+    if layer_idx < 0:
+        raise ValueError("layer_idx must be >= 0")
+    return _LoomGetLayerSpec(int(handle), int(layer_idx))
+
+
+def morph_all_layers(handle: int, target_dtype: int) -> None:
+    """Morph every layer that has a WeightStore (skip Residual, Softmax, etc.)."""
+    info = get_network_info(handle)
+    n = info.get("total_layers", 0)
+    for i in range(n):
+        if _LoomGetLayerSpec:
+            spec = get_layer_spec(handle, i)
+            if spec.Type in _LAYERS_WITHOUT_WEIGHT_STORE:
+                continue
+        morph_layer(handle, i, target_dtype)
+
+
 def morph_layer(handle: int, layer_idx: int, target_dtype: int) -> dict:
     """
     Morph a layer's numerical type at runtime (zero-cost when cached).
@@ -2818,10 +2843,8 @@ class Network:
         return morph_layer(self._handle, layer_idx, target_dtype)
 
     def morph_all(self, target_dtype: int) -> None:
-        """Morph all layers to the same numerical type."""
-        info = self.info()
-        for i in range(info.get("total_layers", 0)):
-            morph_layer(self._handle, i, target_dtype)
+        """Morph all layers that have weights to the same numerical type."""
+        morph_all_layers(self._handle, target_dtype)
 
     def forward_polymorphic(self, data: List[float], shape: List[int]) -> List[float]:
         return forward_polymorphic(self._handle, data, shape)

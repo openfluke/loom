@@ -72,10 +72,15 @@ def _bench_forward_cabi(net, inp, shape, mode, iters):
     return last, avg_ns
 
 
+def _grad_list(v):
+    """CABI may return null for dw on weightless layers (e.g. Residual)."""
+    return v if v is not None else []
+
+
 def _bench_backward_cabi(net, inp, in_shape, tgt, tgt_shape, mode):
     net.set_training_mode(mode)
     r = net.backward_polymorphic(inp, in_shape, tgt, tgt_shape)
-    return r.get("dx", []), r.get("dw", [])
+    return _grad_list(r.get("dx")), _grad_list(r.get("dw"))
 
 
 

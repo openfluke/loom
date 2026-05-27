@@ -19,34 +19,115 @@ pip install welvet
 
 Supported platforms: **Windows** (x86-64, ARM64), **Linux** (x86-64, ARM64, ARM, x86), **macOS** (x86-64, ARM64, Universal), **Android** (ARM64, ARM).
 
+### Build from source (monorepo)
+
+PyPI wheels ship prebuilt `.so` / `.dylib` / `.dll`. To run **latest `main`** against your checkout:
+
+```bash
+# From repo root — builds C-ABI and copies into welvet/python/src/welvet/
+cd welvet/cabi/internal/build
+./build_unix.sh linux amd64    # or: darwin arm64, windows amd64, etc.
+
+cd ../../../python
+pip install -e .
+python3 -m welvet.cabi_verify   # 328/328 C-ABI symbols + smoke
+python3 consumer_smoke.py       # forward · morph · train · serialize
+python3 examples/run_all.py   # README examples (5 scripts)
+python3 benchmark_seven_layer.py --layer Dense
+```
+
+`build_unix.sh` mirrors `dist/*` → `python/src/welvet/linux_amd64/welvet.so` (and headers). Without that step, `import welvet` fails with “native library not found”.
+
 ---
 
-## Quick Start
+## Examples (runnable)
+
+Scripts in [`examples/`](examples/) mirror the snippets below. Run one file or verify all:
+
+```bash
+cd welvet/python
+pip install -e .
+python3 examples/01_dense_forward.py
+python3 examples/run_all.py          # runs 01–05
+```
+
+| Script | What it shows |
+|--------|----------------|
+| [`01_dense_forward.py`](examples/01_dense_forward.py) | Volumetric JSON → `forward_polymorphic` + `forward` |
+| [`02_morph_and_train.py`](examples/02_morph_and_train.py) | `morph(INT8)`, CPU MC `train()` with shapes |
+| [`03_save_reload.py`](examples/03_save_reload.py) | `serialize()` / `Network.deserialize()` |
+| [`04_mha_forward.py`](examples/04_mha_forward.py) | MHA with `[batch, seq, d_model]` |
+| [`05_dna_compare.py`](examples/05_dna_compare.py) | `dna()` + `compare_dna()` |
+
+---
+
+## Quick start
+
+Layers live on a 3D grid `(z, y, x, l)` — see [`docs/overview.md`](https://github.com/openfluke/loom/blob/main/docs/overview.md).
+
+### 1. Build and forward
 
 ```python
-import welvet
-from welvet import Network, LayerType, DType
+from welvet import Network
 
-# Build a 3-layer dense MLP in the first grid cell
 net = Network({
-    "id": "my_net",
-    "depth": 1, "rows": 1, "cols": 1, "layers_per_cell": 3,
+    "id": "demo",
+    "depth": 1, "rows": 1, "cols": 1, "layers_per_cell": 2,
     "layers": [
-        {"z": 0, "y": 0, "x": 0, "l": 0, "type": "dense", 
-         "input_height": 128, "output_height": 256, "activation": "relu"},
-        {"z": 0, "y": 0, "x": 0, "l": 1, "type": "dense", 
-         "input_height": 256, "output_height": 256, "activation": "relu"},
-        {"z": 0, "y": 0, "x": 0, "l": 2, "type": "dense", 
-         "input_height": 256, "output_height": 10,  "activation": "sigmoid"},
-    ]
+        {"z": 0, "y": 0, "x": 0, "l": 0, "type": "dense",
+         "dtype": "float32", "input_height": 16, "output_height": 8, "activation": "relu"},
+        {"z": 0, "y": 0, "x": 0, "l": 1, "type": "dense",
+         "dtype": "float32", "input_height": 8, "output_height": 4, "activation": "linear"},
+    ],
 })
 
-# Forward pass
-output = net.forward([0.5] * 128)
-print(output[:5])
+inp = [0.1] * 16
+out = net.forward_polymorphic(inp, [1, 16])   # preferred: explicit shape
+print(out)                                    # length 4
 
 net.free()
 ```
+
+### 2. Morph precision (21 types)
+
+```python
+from welvet import DType, Network
+
+# ... same net as above ...
+net.morph(0, DType.INT8)          # layer index 0 only
+out_q = net.forward_polymorphic(inp, [1, 16])
+```
+
+Use `net.morph_all(DType.INT8)` to morph every layer that has weights (skips Residual / Softmax).
+
+### 3. Training (CPU, shape-aware)
+
+```python
+from welvet import Network, train
+
+net = Network({...})  # single dense 16→8
+inp, tgt = [0.1] * 16, [0.5] * 8
+in_shape, out_shape = [1, 16], [1, 8]
+
+net.set_training_mode(2)   # 1 = CPU SC, 2 = CPU MC (multicore on native C-ABI)
+losses = train(
+    net, [[inp]], [[tgt]],   # [[batch of input rows]], [[batch of target rows]]
+    epochs=10, learning_rate=0.05, mode=2,
+    input_shape=in_shape, target_shape=out_shape,
+)
+print(losses[-1])
+net.free()
+```
+
+### 4. Save / reload
+
+```python
+wire = net.serialize()
+copy = Network.deserialize(wire)
+# ... forward on copy, then copy.free()
+```
+
+Full scripts: [`examples/03_save_reload.py`](examples/03_save_reload.py).
 
 ---
 
@@ -75,10 +156,13 @@ net.free()
 
 `float64`, `float32`, `float16`, `bfloat16`, `int64/32/16/8`, `uint64/32/16/8`, `fp8_e4m3`, `fp8_e5m2`, `int4`, `uint4`, `fp4_e2m1`, `int2`, `uint2`, `ternary`, `binary`
 
-Morph a layer's precision at runtime with no reallocation:
+Morph a layer's precision at runtime (zero realloc when cached):
 
 ```python
-welvet.morph_layer(net._handle, layer_index=0, new_dtype="int8")
+from welvet import DType, morph_layer
+
+morph_layer(net.handle, layer_index=0, target_dtype=DType.INT8)
+# or: net.morph(0, DType.INT8)
 ```
 
 ---
@@ -101,8 +185,9 @@ output = welvet.forward_wgpu(net._handle, inputs)
 net.free()
 ```
 
-### Numerical Tiling (SC vs MC)
-V0.75.0 introduces specialized tiling profiles to maximize throughput:
+### Numerical tiling (SC vs MC)
+
+v0.79+ uses specialized tiling profiles to maximize throughput:
 - **SC (Single-Core)**: Optimized for Edge/WASM/Small NPUs.
 - **MC (Multi-Core)**: Optimized for high-bandwidth L1/L2 caches (Ryzen, RTX, M4).
 
@@ -153,10 +238,10 @@ seed = Network({
 })
 
 cfg = default_neat_config(32)
-pop = new_neat_population(seed, size=16, config=cfg)
+pop = seed.create_population(size=16, config=cfg)
 
-for gen in range(20):
-    fitnesses = [my_fitness_fn(pop.get_network(i)) for i in range(pop.size())]
+for gen in range(5):
+    fitnesses = [0.5 + 0.1 * i for i in range(pop.size())]
     pop.evolve(fitnesses)
     print(pop.summary(gen))
 
@@ -207,14 +292,10 @@ welvet.free_step_state(state)
 
 ## Training
 
-```python
-from welvet import train_network
+- **`train(net, batches, …)`** — poly `LoomTrain`, shape-aware (used in seven-layer suite). See [`examples/02_morph_and_train.py`](examples/02_morph_and_train.py).
+- **`train_network(net, inputs, targets, …)`** — step-mesh clock-cycle path.
 
-# High-level training helper
-train_network(net._handle, inputs, targets, epochs=100, learning_rate=0.001)
-```
-
-Or use full GPU backward dispatch for maximum performance — see the [benchmark scripts](https://github.com/openfluke/loom/tree/main/welvet/python).
+GPU backward dispatch and benchmarks: [`benchmark_training.py`](benchmark_training.py), [`benchmark_seven_layer.py`](benchmark_seven_layer.py).
 
 ---
 
@@ -234,6 +315,7 @@ _ = get_default_tween_config()
 handle = create_tween_state(net.handle)
 tween_forward(net.handle, handle, inputs)
 tween_backward(net.handle, handle, targets)
+net.free()
 ```
 
 ---
