@@ -6,6 +6,7 @@
 import { loadLoomWASM } from "../src/loader.js";
 
 const EXPECTED_SYMBOLS = [
+  'loomEngineVersion',
   'createLoomNetwork', 'loadLoomNetwork',
   'compareLoomDNA',
   'getDefaultTweenConfig', 'defaultSpliceConfig', 'defaultNEATConfig',

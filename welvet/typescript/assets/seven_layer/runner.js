@@ -1,0 +1,164 @@
+/**
+ * Seven-layer suite — drives Loom only through welvet bindings (WASM / same API as CABI).
+ */
+
+import {
+  ALL_DTYPES, LAYER_SUITES, TrainingMode,
+  trainEpochsForGrid, benchItersForGrid,
+  sinTarget, maxAbsDiff, trainingOK, trainingLR,
+} from './bench.js';
+
+function f32(data) {
+  return data instanceof Float32Array ? data : new Float32Array(data);
+}
+
+function toArray(out) {
+  if (typeof out === 'string') {
+    const j = JSON.parse(out);
+    if (j.error) throw new Error(j.error);
+  }
+  return Array.from(out);
+}
+
+function morphAll(net) {
+  const n = JSON.parse(net.getInfo()).total_layers;
+  return (dtype) => {
+    for (let i = 0; i < n; i++) net.morphLayer(i, dtype);
+  };
+}
+
+function forwardBind(net, data, shape, mode, iters) {
+  net.setTrainingMode(mode);
+  const d = f32(data);
+  const sh = JSON.stringify(shape);
+  for (let i = 0; i < 3; i++) toArray(net.forwardPolymorphic(d, sh));
+  const t0 = performance.now();
+  let last = null;
+  for (let i = 0; i < iters; i++) last = toArray(net.forwardPolymorphic(d, sh));
+  return last;
+}
+
+function backwardBind(net, inp, inShape, tgt, tgtShape, mode) {
+  net.setTrainingMode(mode);
+  const r = JSON.parse(net.backwardPolymorphic(
+    f32(inp), JSON.stringify(inShape), f32(tgt), JSON.stringify(tgtShape),
+  ));
+  if (r.error) throw new Error(r.error);
+  return r;
+}
+
+/** Target tensor shape: match input rank when volumes agree (MHA/CNN), else [batch, features]. */
+function targetShape(inShape, outLen, isEmbedding) {
+  const inVol = inShape.reduce((a, b) => a * b, 1);
+  if (outLen === inVol) return [...inShape];
+  if (isEmbedding) return [inShape[0], outLen / inShape[0]];
+  if (inShape.length === 1) return [outLen];
+  return [inShape[0], outLen / inShape[0]];
+}
+
+function trainBind(net, inp, tgt, inShape, tgtShape, epochs, mode, lr) {
+  const batches = [{
+    input: { shape: inShape, data: Array.from(f32(inp)) },
+    target: { shape: tgtShape, data: Array.from(f32(tgt)) },
+  }];
+  const cfg = JSON.stringify({
+    Epochs: epochs, LearningRate: lr, LossType: 'mse', Mode: mode,
+    GradientClip: 1.0, Verbose: false, UseGPU: false,
+  });
+  const r = JSON.parse(net.train(JSON.stringify(batches), epochs, lr, cfg));
+  if (r.error) throw new Error(r.error);
+  return r.loss_history || [];
+}
+
+function saveReloadBind(net, inp, shape, tol, after) {
+  const d = f32(inp);
+  const sh = JSON.stringify(shape);
+  const out0 = toArray(net.forwardPolymorphic(d, sh));
+  const wire = net.serialize();
+  const reloaded = globalThis.deserializeLoomNetwork(wire);
+  const out1 = toArray(reloaded.forwardPolymorphic(d, sh));
+  reloaded.free();
+  return maxAbsDiff(out0, out1) <= tol * (after ? 100 : 1);
+}
+
+export function runLayerSuite(suite, log = console.log) {
+  let passed = 0, failed = 0;
+  for (const g of suite.grids) {
+    const epochs = trainEpochsForGrid(g);
+    const iters = benchItersForGrid(g);
+    const label = `${suite.name} ${g.depth}×${g.rows}×${g.cols}`;
+    log(`\n${'═'.repeat(70)}`);
+    log(`  ${label} — bindings → Loom (CPU SC/MC · train · save/reload)`);
+    log('═'.repeat(70));
+
+    for (const tc of ALL_DTYPES) {
+      log(`  · ${tc.name.padEnd(10)} `);
+      try {
+        const net = globalThis.createLoomNetwork(suite.build(g, tc.jsonName));
+        morphAll(net)(tc.dtype);
+
+        const { data: inp, shape: inShape } = suite.makeInput(g);
+        const batch = suite.isEmbedding ? 1 : 4;
+
+        const outSc = forwardBind(net, inp, inShape, TrainingMode.CPUSC, iters);
+        const outMc = forwardBind(net, inp, inShape, TrainingMode.CPUMC, iters);
+        const fwdScmc = maxAbsDiff(outSc, outMc);
+
+        const tgt = sinTarget(outSc);
+        const tgtShape = targetShape(inShape, tgt.length, suite.isEmbedding);
+
+        const bSc = backwardBind(net, inp, inShape, tgt, tgtShape, TrainingMode.CPUSC);
+        const bMc = backwardBind(net, inp, inShape, tgt, tgtShape, TrainingMode.CPUMC);
+        const bwdScmc = maxAbsDiff(
+          [...(bSc.dx || []), ...(bSc.dw || [])],
+          [...(bMc.dx || []), ...(bMc.dw || [])],
+        );
+
+        const detTol = Math.max(tc.tolerance, 1e-10);
+        const detOk = fwdScmc <= detTol && bwdScmc <= detTol * 10;
+        const beforeOk = saveReloadBind(net, inp, inShape, tc.tolerance, false);
+
+        const lr = trainingLR(tc.dtype);
+        const netSc = globalThis.createLoomNetwork(suite.build(g, tc.jsonName));
+        morphAll(netSc)(tc.dtype);
+        trainBind(netSc, inp, tgt, inShape, tgtShape, epochs, TrainingMode.CPUSC, lr);
+        netSc.free();
+
+        const netMc = globalThis.createLoomNetwork(suite.build(g, tc.jsonName));
+        morphAll(netMc)(tc.dtype);
+        const hist = trainBind(netMc, inp, tgt, inShape, tgtShape, epochs, TrainingMode.CPUMC, lr);
+
+        const lossInit = hist[0] ?? 0;
+        const lossFinal = hist[hist.length - 1] ?? 0;
+        const requiresLearn = suite.primary !== 'RESIDUAL' && !suite.noLearn;
+        const learned = trainingOK(lossInit, lossFinal, tc.dtype) || !requiresLearn;
+        const afterOk = saveReloadBind(netMc, inp, inShape, tc.tolerance, true);
+        const overall = beforeOk && afterOk && learned && detOk;
+
+        net.free();
+        netMc.free();
+
+        if (overall) {
+          passed++;
+          log(`PASS  loss ${lossInit.toExponential(4)}→${lossFinal.toExponential(4)} det=${detOk} reload=${afterOk}`);
+        } else {
+          failed++;
+          log(`FAIL  loss ${lossInit.toExponential(4)}→${lossFinal.toExponential(4)} learn=${learned} save=${beforeOk && afterOk} det=${detOk}`);
+        }
+      } catch (e) {
+        failed++;
+        log(`ERR   ${e.message || e}`);
+      }
+    }
+  }
+  return failed === 0;
+}
+
+export function runAllSuites(log = console.log, filterName = null) {
+  let ok = true;
+  for (const suite of LAYER_SUITES) {
+    if (filterName && suite.name !== filterName) continue;
+    if (!runLayerSuite(suite, log)) ok = false;
+  }
+  return ok;
+}

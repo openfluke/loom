@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "welvet"
-version = "0.75.0"
-description = "M-POLY-VTD AI Engine (Loom v0.75.0) — 21 Numerical Types, WebGPU, Transformer Inference, and 100% Determinism"
+version = "0.79.0"
+description = "M-POLY-VTD AI Engine (Loom v0.79.0) — 21 Numerical Types, WebGPU, Transformer Inference, and 100% Determinism"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "Apache-2.0"}
@@ -32,7 +32,7 @@ keywords = [
 Homepage = "https://github.com/openfluke/loom"
 Source = "https://github.com/openfluke/loom"
 Issues = "https://github.com/openfluke/loom/issues"
-Documentation = "https://github.com/openfluke/loom/tree/main/welvet"
+Documentation = "https://github.com/openfluke/loom/tree/main/welvet/python"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

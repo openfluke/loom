@@ -301,6 +301,39 @@ if _LoomTrain:
         ctypes.c_char_p,             # configJSON
     ]
 
+_LoomSerializeNetwork = _sym("LoomSerializeNetwork")
+if _LoomSerializeNetwork:
+    _LoomSerializeNetwork.restype = ctypes.c_char_p
+    _LoomSerializeNetwork.argtypes = [ctypes.c_longlong]
+
+_LoomDeserializeNetwork = _sym("LoomDeserializeNetwork")
+if _LoomDeserializeNetwork:
+    _LoomDeserializeNetwork.restype = ctypes.c_longlong
+    _LoomDeserializeNetwork.argtypes = [ctypes.c_char_p, ctypes.c_int]
+
+_LoomConfigureTrainingMode = _sym("LoomConfigureTrainingMode")
+if _LoomConfigureTrainingMode:
+    _LoomConfigureTrainingMode.restype = ctypes.c_char_p
+    _LoomConfigureTrainingMode.argtypes = [ctypes.c_longlong, ctypes.c_int]
+
+_LoomForwardPolymorphic = _sym("LoomForwardPolymorphic")
+if _LoomForwardPolymorphic:
+    _LoomForwardPolymorphic.restype = ctypes.c_char_p
+    _LoomForwardPolymorphic.argtypes = [
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_float), ctypes.c_int,
+        ctypes.c_char_p,
+    ]
+
+_LoomBackwardPolymorphic = _sym("LoomBackwardPolymorphic")
+if _LoomBackwardPolymorphic:
+    _LoomBackwardPolymorphic.restype = ctypes.c_char_p
+    _LoomBackwardPolymorphic.argtypes = [
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_float), ctypes.c_int, ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_float), ctypes.c_int, ctypes.c_char_p,
+    ]
+
 _LoomStepBackward = _sym("LoomStepBackward")
 if _LoomStepBackward:
     _LoomStepBackward.restype = ctypes.c_char_p
@@ -1266,6 +1299,31 @@ def get_layer_telemetry(handle: int, layer_idx: int) -> dict:
     return _check(result, f"get_layer_telemetry(layer={layer_idx})")
 
 
+# Layer types with no WeightStore — dtype comes from JSON at build time (see lucy applyDTypeLayer).
+_LAYERS_WITHOUT_WEIGHT_STORE = frozenset({LayerType.SOFTMAX, LayerType.RESIDUAL})
+
+
+def get_layer_spec(handle: int, layer_idx: int) -> LoomLayerSpec:
+    """Return native layer spec (grid, type, dtype, dims)."""
+    if not _LoomGetLayerSpec:
+        raise RuntimeError("LoomGetLayerSpec not available in library")
+    if layer_idx < 0:
+        raise ValueError("layer_idx must be >= 0")
+    return _LoomGetLayerSpec(int(handle), int(layer_idx))
+
+
+def morph_all_layers(handle: int, target_dtype: int) -> None:
+    """Morph every layer that has a WeightStore (skip Residual, Softmax, etc.)."""
+    info = get_network_info(handle)
+    n = info.get("total_layers", 0)
+    for i in range(n):
+        if _LoomGetLayerSpec:
+            spec = get_layer_spec(handle, i)
+            if spec.Type in _LAYERS_WITHOUT_WEIGHT_STORE:
+                continue
+        morph_layer(handle, i, target_dtype)
+
+
 def morph_layer(handle: int, layer_idx: int, target_dtype: int) -> dict:
     """
     Morph a layer's numerical type at runtime (zero-cost when cached).
@@ -1386,6 +1444,58 @@ def get_output(state_handle: int, layer_idx: int = -1) -> List[float]:
         raise RuntimeError("No output available — did you call mesh_step()?")
     _check(result, "get_output")
     return result if isinstance(result, list) else []
+
+
+def serialize_network(handle: int) -> str:
+    if not _LoomSerializeNetwork:
+        raise RuntimeError("LoomSerializeNetwork not available")
+    raw = _LoomSerializeNetwork(int(handle))
+    s = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+    if s.startswith('{"error"'):
+        raise RuntimeError(_parse_json(raw).get("error", s))
+    return s
+
+
+def deserialize_network(wire: str) -> int:
+    if not _LoomDeserializeNetwork:
+        raise RuntimeError("LoomDeserializeNetwork not available")
+    b = wire.encode("utf-8")
+    h = _LoomDeserializeNetwork(b, len(b))
+    if h < 0:
+        raise RuntimeError("LoomDeserializeNetwork failed")
+    return int(h)
+
+
+def configure_training_mode(handle: int, mode: int) -> None:
+    if not _LoomConfigureTrainingMode:
+        raise RuntimeError("LoomConfigureTrainingMode not available")
+    _check(_parse_json(_LoomConfigureTrainingMode(int(handle), int(mode))), "configure_training_mode")
+
+
+def forward_polymorphic(handle: int, data: List[float], shape: List[int]) -> List[float]:
+    if not _LoomForwardPolymorphic:
+        raise RuntimeError("LoomForwardPolymorphic not available")
+    arr, n = _to_cfloat_array(data)
+    sh = json.dumps(shape).encode("utf-8")
+    result = _parse_json(_LoomForwardPolymorphic(int(handle), arr, n, sh))
+    _check(result, "forward_polymorphic")
+    return result if isinstance(result, list) else []
+
+
+def backward_polymorphic(
+    handle: int, inp: List[float], in_shape: List[int],
+    tgt: List[float], tgt_shape: List[int],
+) -> dict:
+    if not _LoomBackwardPolymorphic:
+        raise RuntimeError("LoomBackwardPolymorphic not available")
+    a_in, n_in = _to_cfloat_array(inp)
+    a_tgt, n_tgt = _to_cfloat_array(tgt)
+    result = _parse_json(_LoomBackwardPolymorphic(
+        int(handle), a_in, n_in, json.dumps(in_shape).encode("utf-8"),
+        a_tgt, n_tgt, json.dumps(tgt_shape).encode("utf-8"),
+    ))
+    _check(result, "backward_polymorphic")
+    return result
 
 
 def sequential_forward(network_handle: int, inputs: List[float]) -> List[float]:
@@ -2733,10 +2843,26 @@ class Network:
         return morph_layer(self._handle, layer_idx, target_dtype)
 
     def morph_all(self, target_dtype: int) -> None:
-        """Morph all layers to the same numerical type."""
-        info = self.info()
-        for i in range(info.get("total_layers", 0)):
-            morph_layer(self._handle, i, target_dtype)
+        """Morph all layers that have weights to the same numerical type."""
+        morph_all_layers(self._handle, target_dtype)
+
+    def forward_polymorphic(self, data: List[float], shape: List[int]) -> List[float]:
+        return forward_polymorphic(self._handle, data, shape)
+
+    def backward_polymorphic(
+        self, inp: List[float], in_shape: List[int], tgt: List[float], tgt_shape: List[int]
+    ) -> dict:
+        return backward_polymorphic(self._handle, inp, in_shape, tgt, tgt_shape)
+
+    def set_training_mode(self, mode: int) -> None:
+        configure_training_mode(self._handle, mode)
+
+    def serialize(self) -> str:
+        return serialize_network(self._handle)
+
+    @classmethod
+    def deserialize(cls, wire: str) -> "Network":
+        return cls(_handle=deserialize_network(wire))
 
     # --- Model I/O ---
 
@@ -3067,7 +3193,10 @@ def train(
     learning_rate: float = 0.01,
     loss_type: str = "mse",
     use_gpu: bool = False,
+    mode: int = 0,
     verbose: bool = False,
+    input_shape: Optional[List[int]] = None,
+    target_shape: Optional[List[int]] = None,
 ) -> List[float]:
     """
     Train a network via poly.Train (proper sequential forward, not step mesh).
@@ -3102,6 +3231,12 @@ def train(
         "Verbose": verbose,
         "GradientClip": 0.0,
     }
+    if mode:
+        config["Mode"] = mode
+    if input_shape:
+        config["InputShape"] = input_shape
+    if target_shape:
+        config["TargetShape"] = target_shape
     cfg_json = json.dumps(config).encode("utf-8")
 
     raw = _LoomTrain(

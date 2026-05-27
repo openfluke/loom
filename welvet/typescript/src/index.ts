@@ -1,7 +1,7 @@
 /**
  * @openfluke/welvet — M-POLY-VTD AI Engine
  *
- * Isomorphic TypeScript wrapper for the Loom v0.75.0 WASM module.
+ * Isomorphic TypeScript wrapper for the Loom v0.79.0 WASM module.
  * Supports Node.js and browser environments.
  *
  * @example
@@ -17,10 +17,14 @@
  *   ]
  * });
  *
- * const output = net.sequentialForward(new Float32Array([1, 0, 0, 1]));
+ * const shape = JSON.stringify([1, 4]);
+ * const output = net.forwardPolymorphic(new Float32Array(4).fill(0.1), shape);
  * console.log(output); // Float32Array [...]
  * ```
  */
+
+/** Loom engine version this package targets (npm + WASM banner). */
+export const LOOM_ENGINE_VERSION = "0.79.0";
 
 import type {
   Network,
@@ -249,6 +253,7 @@ export function saveNetwork(network: Network): Uint8Array {
 // ──────────────────────────────────────────────────────────────────────────────
 
 export default {
+  LOOM_ENGINE_VERSION,
   init,
   initBrowser,
   createNetwork,

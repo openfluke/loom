@@ -65,7 +65,7 @@ def verify_cabi_parity():
     else:
         log("100% C-ABI PARITY ACHIEVED!")
 
-    log("\nVERIFYING NEW v0.75.0 FEATURES:")
+    log("\nVERIFYING v0.79.0 FEATURES:")
     new_features = [
         "CreateTransformer",
         "TokensToTensor",

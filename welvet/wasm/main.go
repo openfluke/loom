@@ -1,7 +1,7 @@
 //go:build js && wasm
 // +build js,wasm
 
-// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.75.0)
+// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.79.0)
 //
 // Exposes the poly.VolumetricNetwork API to JavaScript via WebAssembly.
 // Supports 21 numerical types, step mesh propagation, target propagation,
@@ -17,6 +17,9 @@ import (
 
 	"github.com/openfluke/loom/poly"
 )
+
+// loomEngineVersion must match @openfluke/welvet LOOM_ENGINE_VERSION (welvet/typescript/src/index.ts).
+const loomEngineVersion = "0.79.0"
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Global Registries
@@ -788,7 +791,7 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 		return nil
 	}))
 
-	// train(batchesJSON, epochs, lr) -> JSON result
+	// train(batchesJSON, epochs, lr [, configJSON]) -> JSON result
 	obj.Set("train", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		if len(args) < 3 {
 			return `{"error": "Expected batchesJSON, epochs, learningRate"}`
@@ -807,9 +810,6 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 			return fmt.Sprintf(`{"error": "invalid batches JSON: %v"}`, err)
 		}
 
-		epochs := args[1].Int()
-		lr := float32(args[2].Float())
-
 		batches := make([]poly.TrainingBatch[float32], len(rawBatches))
 		for i, b := range rawBatches {
 			batches[i] = poly.TrainingBatch[float32]{
@@ -818,11 +818,16 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 			}
 		}
 
-		cfg := &poly.TrainingConfig{
-			Epochs:       epochs,
-			LearningRate: lr,
-			LossType:     "mse",
-			Verbose:      false,
+		cfg := poly.DefaultTrainingConfig()
+		if len(args) >= 4 && args[3].Type() == js.TypeString && args[3].String() != "" {
+			if err := json.Unmarshal([]byte(args[3].String()), cfg); err != nil {
+				return fmt.Sprintf(`{"error": "invalid config JSON: %v"}`, err)
+			}
+		} else {
+			cfg.Epochs = args[1].Int()
+			cfg.LearningRate = float32(args[2].Float())
+			cfg.LossType = "mse"
+			cfg.Verbose = false
 		}
 
 		trainResult, err := poly.Train(n, batches, cfg)
@@ -833,11 +838,88 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 		result := map[string]interface{}{
 			"final_loss":       trainResult.FinalLoss,
 			"duration_ms":      float64(trainResult.TotalTime.Nanoseconds()) / 1e6,
-			"epochs_completed": epochs,
+			"epochs_completed": cfg.Epochs,
 			"loss_history":     trainResult.LossHistory,
 		}
 		b, _ := json.Marshal(result)
 		return string(b)
+	}))
+
+	// CABI parity: LoomForwardPolymorphic / Backward / ConfigureTrainingMode / Serialize
+	obj.Set("setTrainingMode", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 1 {
+			return `{"error":"expected mode"}`
+		}
+		if err := poly.ConfigureNetworkForMode(n, poly.TrainingMode(args[0].Int())); err != nil {
+			return fmt.Sprintf(`{"error":"%v"}`, err)
+		}
+		return `{"ok":true}`
+	}))
+
+	obj.Set("forwardPolymorphic", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 2 {
+			return `{"error":"expected data and shape"}`
+		}
+		data := readFloat32Array(args[0])
+		var shape []int
+		if err := json.Unmarshal([]byte(args[1].String()), &shape); err != nil {
+			return fmt.Sprintf(`{"error":"%v"}`, err)
+		}
+		out, _, _ := poly.ForwardPolymorphic(n, poly.NewTensorFromSlice(data, shape...))
+		if out == nil {
+			return `{"error":"forward failed"}`
+		}
+		return jsFloat32Array(out.Data)
+	}))
+
+	obj.Set("backwardPolymorphic", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		if len(args) < 4 {
+			return `{"error":"expected input, inShape, target, tgtShape"}`
+		}
+		inData := readFloat32Array(args[0])
+		var inShape, tgtShape []int
+		json.Unmarshal([]byte(args[1].String()), &inShape)
+		tgtData := readFloat32Array(args[2])
+		json.Unmarshal([]byte(args[3].String()), &tgtShape)
+		input := poly.NewTensorFromSlice(inData, inShape...)
+		target := poly.NewTensorFromSlice(tgtData, tgtShape...)
+		for i := range n.Layers {
+			n.Layers[i].ResetState()
+		}
+		histIn := make([]*poly.Tensor[float32], len(n.Layers))
+		histPre := make([]*poly.Tensor[float32], len(n.Layers))
+		curr := input
+		for i := range n.Layers {
+			l := &n.Layers[i]
+			if l.IsDisabled {
+				continue
+			}
+			histIn[i] = curr
+			pre, post := poly.DispatchLayer(l, curr, nil)
+			histPre[i] = pre
+			curr = post
+		}
+		gradOut := poly.ComputeLossGradient(curr, target, "mse")
+		_, layerGrads, _ := poly.BackwardPolymorphic(n, gradOut, histIn, histPre)
+		var dx, dw []float32
+		if len(layerGrads) > 0 && layerGrads[0][0] != nil {
+			dx = layerGrads[0][0].Data
+		}
+		for _, g := range layerGrads {
+			if g[1] != nil {
+				dw = append(dw, g[1].Data...)
+			}
+		}
+		resp, _ := json.Marshal(map[string]interface{}{"dx": dx, "dw": dw})
+		return string(resp)
+	}))
+
+	obj.Set("serialize", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		wire, err := poly.SerializeNetwork(n)
+		if err != nil {
+			return fmt.Sprintf(`{"error":"%v"}`, err)
+		}
+		return string(wire)
 	}))
 
 	// createStepState() -> StepState wrapper object
@@ -874,6 +956,13 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 
 	// alias for extractNetworkBlueprint
 	obj.Set("ExtractNetworkBlueprint", obj.Get("extractNetworkBlueprint"))
+
+	obj.Set("free", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		mu.Lock()
+		delete(networks, id)
+		mu.Unlock()
+		return nil
+	}))
 
 	return obj
 }
@@ -969,6 +1058,17 @@ func createLoomNetworkFn(this js.Value, args []js.Value) interface{} {
 	n, err := poly.BuildNetworkFromJSON([]byte(args[0].String()))
 	if err != nil {
 		return fmt.Sprintf(`{"error": "failed to build network: %v"}`, err)
+	}
+	return createNetworkWrapper(n)
+}
+
+func deserializeLoomNetworkFn(this js.Value, args []js.Value) interface{} {
+	if len(args) < 1 {
+		return `{"error":"Expected JSON wire"}`
+	}
+	n, err := poly.DeserializeNetwork([]byte(args[0].String()))
+	if err != nil {
+		return fmt.Sprintf(`{"error":"%v"}`, err)
 	}
 	return createNetworkWrapper(n)
 }
@@ -1139,10 +1239,16 @@ func setupWebGPUFn(this js.Value, args []js.Value) interface{} {
 // main
 // ──────────────────────────────────────────────────────────────────────────────
 
-func main() {
-	fmt.Println("welvet WASM — M-POLY-VTD Engine (Loom v0.75.0) initialized")
+func loomEngineVersionFn(this js.Value, args []js.Value) interface{} {
+	return loomEngineVersion
+}
 
+func main() {
+	fmt.Printf("welvet WASM — M-POLY-VTD Engine (Loom %s) initialized\n", loomEngineVersion)
+
+	js.Global().Set("loomEngineVersion", js.FuncOf(loomEngineVersionFn))
 	js.Global().Set("createLoomNetwork", js.FuncOf(createLoomNetworkFn))
+	js.Global().Set("deserializeLoomNetwork", js.FuncOf(deserializeLoomNetworkFn))
 	js.Global().Set("loadLoomNetwork", js.FuncOf(loadLoomNetworkFn))
 	js.Global().Set("setupWebGPU", js.FuncOf(setupWebGPUFn))
 	js.Global().Set("compareLoomDNA", js.FuncOf(compareDNAFn))

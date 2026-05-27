@@ -114,6 +114,11 @@ from .utils import (
     # Training helpers
     train,
     train_network,
+    serialize_network,
+    deserialize_network,
+    configure_training_mode,
+    forward_polymorphic,
+    backward_polymorphic,
     # DNA Splice / Crossover
     default_splice_config,
     splice_dna,
@@ -131,7 +136,7 @@ from .utils import (
     free_neat_population,
 )
 
-__version__ = "0.75.0"
+__version__ = "0.79.0"
 
 __all__ = [
     # Version

@@ -9,7 +9,7 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
 def test_parity():
-    log("=== WELVET PYTHON ENGINE PARITY CHECK (v0.75.0) ===")
+    log("=== WELVET PYTHON ENGINE PARITY CHECK (v0.79.0) ===")
     
     # 1. Basic Inference (Symmetric)
     log("PHASE 1: Symmetric Inference")
