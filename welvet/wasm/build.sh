@@ -23,8 +23,12 @@ cp "$WASM_EXEC" "$DIST_DIR/wasm_exec.js"
 echo "Copying HTML benchmark/verify files..."
 cp "$SCRIPT_DIR"/*.html "$DIST_DIR/"
 cp "$SCRIPT_DIR/../typescript/examples/benchmark_seven_layer.html" "$DIST_DIR/benchmark_seven_layer.html" 2>/dev/null || true
-# Canonical JS suite lives in welvet/seven_layer (not wasm/seven_layer).
-cp -r "$SCRIPT_DIR/../seven_layer" "$DIST_DIR/seven_layer"
+# Seven-layer JS suite (prefer welvet/seven_layer, else wasm/seven_layer).
+SEVEN_LAYER_SRC="$SCRIPT_DIR/../seven_layer"
+if [[ ! -d "$SEVEN_LAYER_SRC" ]]; then
+  SEVEN_LAYER_SRC="$SCRIPT_DIR/seven_layer"
+fi
+cp -r "$SEVEN_LAYER_SRC" "$DIST_DIR/seven_layer"
 
 echo "Build complete: $DIST_DIR/main.wasm"
 ls -lh "$DIST_DIR/main.wasm"

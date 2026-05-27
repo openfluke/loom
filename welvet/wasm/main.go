@@ -1,7 +1,7 @@
 //go:build js && wasm
 // +build js,wasm
 
-// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.75.0)
+// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.79.0)
 //
 // Exposes the poly.VolumetricNetwork API to JavaScript via WebAssembly.
 // Supports 21 numerical types, step mesh propagation, target propagation,
@@ -17,6 +17,9 @@ import (
 
 	"github.com/openfluke/loom/poly"
 )
+
+// loomEngineVersion must match @openfluke/welvet LOOM_ENGINE_VERSION (welvet/typescript/src/index.ts).
+const loomEngineVersion = "0.79.0"
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Global Registries
@@ -1236,9 +1239,14 @@ func setupWebGPUFn(this js.Value, args []js.Value) interface{} {
 // main
 // ──────────────────────────────────────────────────────────────────────────────
 
-func main() {
-	fmt.Println("welvet WASM — M-POLY-VTD Engine (Loom v0.75.0) initialized")
+func loomEngineVersionFn(this js.Value, args []js.Value) interface{} {
+	return loomEngineVersion
+}
 
+func main() {
+	fmt.Printf("welvet WASM — M-POLY-VTD Engine (Loom %s) initialized\n", loomEngineVersion)
+
+	js.Global().Set("loomEngineVersion", js.FuncOf(loomEngineVersionFn))
 	js.Global().Set("createLoomNetwork", js.FuncOf(createLoomNetworkFn))
 	js.Global().Set("deserializeLoomNetwork", js.FuncOf(deserializeLoomNetworkFn))
 	js.Global().Set("loadLoomNetwork", js.FuncOf(loadLoomNetworkFn))

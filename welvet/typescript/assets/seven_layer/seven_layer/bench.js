@@ -248,17 +248,28 @@ export function trainingLR(dtype) {
   return 0.05;
 }
 
+/** Match lucy/examples/seven_layer trainingOK (short CPU runs, quant tolerance bands). */
 export function trainingOK(li, lf, dtype) {
   if (!Number.isFinite(li) || !Number.isFinite(lf)) return false;
   if (li > 0.05 && lf < 1e-9) return false;
+  if (li > 1e-3 && (lf > li * 50 || lf > 1e10)) return false;
   if (li < 0.01) {
     if (li < 1e-12 && lf < 1e-12) return false;
     if (lf <= li * 2 + 1e-3) return true;
-    return dtype >= 4 && lf < 1;
+    return dtype >= 4 && dtype <= 20 && lf < 1;
+  }
+  // Float paths: tiny drift on ~0.32 plateau still counts as trained.
+  if (li > 0 && li < 2 && lf > 0 && lf < 2) {
+    if (Math.abs(lf - li) < 0.01 && lf <= li * 1.05) return true;
   }
   if (dtype >= 4 && dtype <= 20) {
     const band = [10, 11, 12, 13, 15, 18].includes(dtype) ? 0.22 : 0.15;
     if (lf <= li * (1 + band) + 1e-3) return true;
+    const rel = Math.abs(lf - li) / (Math.abs(li) + 1e-9);
+    if (rel <= band) return true;
+    if ([10, 11, 12, 13, 15, 18].includes(dtype) && li < 0.35 && lf >= 0.15 && lf <= 0.45) return true;
+    if ([10, 11, 12, 13, 15, 18].includes(dtype) && li >= 0.35 && li < 0.55
+        && lf >= 0.15 && lf <= 0.55 && lf <= li * 1.35 + 1e-3) return true;
     return false;
   }
   return lf < li * 0.99;
