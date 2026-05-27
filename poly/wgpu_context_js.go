@@ -1,11 +1,11 @@
+//go:build js
+
 package poly
 
 import (
 	"fmt"
-	"runtime"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/openfluke/webgpu/wgpu"
 )
@@ -17,66 +17,7 @@ var (
 	mu             sync.Mutex // Protects global initialization
 )
 
-// WGPUContext manages the GPU device and queue for acceleration.
-type WGPUContext struct {
-	Instance       *wgpu.Instance
-	Adapter        *wgpu.Adapter
-	Device         *wgpu.Device
-	Queue          *wgpu.Queue
-	PipelineCache  map[string]*wgpu.ComputePipeline
-	ActivationPool map[string]*wgpu.Buffer
-	// GPUTileSize is the auto-detected optimal tile size for this GPU.
-	// Can be overridden by the caller after init.
-	GPUTileSize int
-	// ActiveEncoder, when non-nil, is used by all Dispatch* calls instead of
-	// creating their own encoder. This lets the entire forward pass be recorded
-	// into a single command buffer and submitted once, reducing GPU overhead.
-	ActiveEncoder *wgpu.CommandEncoder
-	// PendingDestroys holds temporary uniform buffers that must not be destroyed
-	// until after FlushFrame() submits the active encoder. When not batching,
-	// buffers are destroyed immediately instead of queued here.
-	PendingDestroys []*wgpu.Buffer
-
-	// --- Performance Optimization Caches ---
-	LayoutCache    map[string]*wgpu.BindGroupLayout
-	BindGroupCache map[uint64]*wgpu.BindGroup
-
-	// Uniform Pool
-	UniformPool []*wgpu.Buffer
-	UniformIdx  int
-
-	// Negotiated limits
-	Limits wgpu.Limits
-
-	// BlankBuffer is a small zeroed buffer for optional bindings (e.g. bias)
-	BlankBuffer *wgpu.Buffer
-
-	// HasTimestampQuery reports whether GPU timestamp queries were enabled.
-	HasTimestampQuery bool
-
-	// FrameCount increments with every training iteration or forward pass
-	// used for hardware-native randomized seeds.
-	FrameCount uint32
-}
-
-// WGPUBufferBinding represents a slice of a GPU buffer for binding.
-type WGPUBufferBinding struct {
-	Buffer *wgpu.Buffer
-	Offset uint64
-	Size   uint64
-}
-
-func (c *WGPUContext) GetSubBuffer(buf *wgpu.Buffer, offset, size uint64) *WGPUBufferBinding {
-	return &WGPUBufferBinding{Buffer: buf, Offset: offset, Size: size}
-}
-
-// BindGroupKey is used for the BindGroupCache
-type BindGroupKey struct {
-	Pipeline *wgpu.ComputePipeline
-	Buffers  []*wgpu.Buffer
-}
-
-// InitWGPU initializes the WebGPU context for the network.
+// InitWGPU initializes WebGPU using navigator.gpu / setupWebGPU() in the host page.
 func (n *VolumetricNetwork) InitWGPU() error {
 	if n.GPUContext != nil {
 		return nil
@@ -85,107 +26,25 @@ func (n *VolumetricNetwork) InitWGPU() error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// 1. One-time Global Initialization
 	if sharedDevice == nil {
 		if sharedInstance == nil {
-			// Force Vulkan at instance level — newer wgpu-native ignores
-			// RequestAdapterOptions.BackendType; the correct API is InstanceExtras.backends.
-			var instanceDesc *wgpu.InstanceDescriptor
-			if runtime.GOOS == "android" || runtime.GOOS == "windows" {
-				Alog("Forcing Vulkan via InstanceDescriptor.Backends...")
-				instanceDesc = &wgpu.InstanceDescriptor{
-					Backends: wgpu.InstanceBackendVulkan,
-				}
-			}
-			sharedInstance = wgpu.CreateInstance(instanceDesc)
+			sharedInstance = wgpu.CreateInstance(nil)
 			if sharedInstance == nil {
-				// Fallback: no backend constraint
-				Alog("⚠️  Vulkan instance failed, retrying with all backends...")
-				sharedInstance = wgpu.CreateInstance(nil)
-			}
-			if sharedInstance == nil {
-				return fmt.Errorf("failed to create WGPU instance")
+				return fmt.Errorf("failed to create WGPU instance (is navigator.gpu available?)")
 			}
 		}
-
 		if sharedAdapter == nil {
-			opts := &wgpu.RequestAdapterOptions{
+			adapter, err := sharedInstance.RequestAdapter(&wgpu.RequestAdapterOptions{
 				PowerPreference: wgpu.PowerPreferenceHighPerformance,
-			}
-
-			adapter, err := sharedInstance.RequestAdapter(opts)
+			})
 			if err != nil {
 				return fmt.Errorf("failed to request adapter: %v", err)
 			}
 			sharedAdapter = adapter
-			info := adapter.GetInfo()
-			fmt.Println("=========================================================")
-			fmt.Printf("Adapter: %s [%v]\n", info.Name, info.BackendType)
-			fmt.Println("=========================================================")
 		}
-
-		adapter := sharedAdapter
-		adapterLimits := adapter.GetLimits().Limits
-
-		Alog(fmt.Sprintf("Adapter Hardware Limits: MaxStorage=%d MB, MaxBuffer=%d MB",
-			adapterLimits.MaxStorageBufferBindingSize/(1024*1024),
-			adapterLimits.MaxBufferSize/(1024*1024)))
-
-		// Build required limits directly from adapter caps — no dummy device probe.
-		// The dummy probe + Release() invalidates adapter state in newer wgpu-native.
-		requiredLimits := adapterLimits
-
-		// Override only storage/buffer sizes; all other fields stay at adapter max.
-		requiredLimits.MaxStorageBufferBindingSize = min64(1024*1024*1024, adapterLimits.MaxStorageBufferBindingSize)
-		requiredLimits.MaxBufferSize = min64(2048*1024*1024, adapterLimits.MaxBufferSize)
-
-		var requiredFeatures []wgpu.FeatureName
-		if adapter.HasFeature(wgpu.FeatureNameShaderF16) {
-			Alog("Hardware Feature: shader-f16 supported.")
-			requiredFeatures = append(requiredFeatures, wgpu.FeatureNameShaderF16)
-		}
-		if adapter.HasFeature(wgpu.FeatureNameTimestampQuery) {
-			Alog("Hardware Feature: timestamp-query supported.")
-			requiredFeatures = append(requiredFeatures, wgpu.FeatureNameTimestampQuery)
-		}
-
-		storageAttempts := []uint64{
-			requiredLimits.MaxStorageBufferBindingSize,
-			min64(512*1024*1024, adapterLimits.MaxStorageBufferBindingSize),
-			min64(256*1024*1024, adapterLimits.MaxStorageBufferBindingSize),
-		}
-		bufferAttempts := []uint64{
-			requiredLimits.MaxBufferSize,
-			min64(512*1024*1024, adapterLimits.MaxBufferSize),
-			min64(256*1024*1024, adapterLimits.MaxBufferSize),
-		}
-
-		var device *wgpu.Device
-		var err error
-		succeeded := false
-		for i, storage := range storageAttempts {
-			requiredLimits.MaxStorageBufferBindingSize = storage
-			requiredLimits.MaxBufferSize = bufferAttempts[i]
-			Alog(fmt.Sprintf("Requesting Device [Storage:%dMB, Buffer:%dMB] Backend: %s",
-				storage/(1024*1024), bufferAttempts[i]/(1024*1024),
-				adapter.GetInfo().BackendType))
-			device, err = adapter.RequestDevice(&wgpu.DeviceDescriptor{
-				RequiredLimits:   &wgpu.RequiredLimits{Limits: requiredLimits},
-				RequiredFeatures: requiredFeatures,
-			})
-			if err == nil {
-				Alog(fmt.Sprintf("✅ Device acquired at %dMB storage tier.", storage/(1024*1024)))
-				succeeded = true
-				break
-			}
-			Alog(fmt.Sprintf("⚠️  Tier %d failed: %v", i+1, err))
-		}
-		if !succeeded {
-			Alog("⚠️  All limit tiers failed. Falling back to adapter defaults.")
-			device, err = adapter.RequestDevice(nil)
-			if err != nil {
-				return fmt.Errorf("FATAL: device request failed: %v", err)
-			}
+		device, err := sharedAdapter.RequestDevice(nil)
+		if err != nil {
+			return fmt.Errorf("device request failed (call setupWebGPU() first): %v", err)
 		}
 		sharedDevice = device
 	}
@@ -205,7 +64,7 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		LayoutCache:       make(map[string]*wgpu.BindGroupLayout),
 		BindGroupCache:    make(map[uint64]*wgpu.BindGroup),
 		UniformPool:       make([]*wgpu.Buffer, 0, 1024),
-		HasTimestampQuery: device.HasFeature(wgpu.FeatureNameTimestampQuery),
+		HasTimestampQuery: false, // browser wgpu bindings lack timestamp-query helpers
 	}
 
 	n.GPUContext.GPUTileSize = CalculateOptimalGPUTileSizeFromLimits(
@@ -414,25 +273,6 @@ func (c *WGPUContext) GetUniformBuffer(size uint64) *wgpu.Buffer {
 	return buf
 }
 
-// BindGroupKeyHash generates a stable hash for a set of buffers (or bindings) and a pipeline.
-func BindGroupKeyHash(pipeline *wgpu.ComputePipeline, bindings ...any) uint64 {
-	h := uint64(uintptr(unsafe.Pointer(pipeline)))
-	for _, b := range bindings {
-		if b == nil {
-			continue
-		}
-		switch v := b.(type) {
-		case *wgpu.Buffer:
-			h ^= uint64(uintptr(unsafe.Pointer(v))) + 0x9e3779b9 + (h << 6) + (h >> 2)
-		case *WGPUBufferBinding:
-			h ^= uint64(uintptr(unsafe.Pointer(v.Buffer))) + 0x9e3779b9 + (h << 6) + (h >> 2)
-			h ^= v.Offset + 0x9e3779b9 + (h << 6) + (h >> 2)
-			h ^= v.Size + 0x9e3779b9 + (h << 6) + (h >> 2)
-		}
-	}
-	return h
-}
-
 // GetBindGroup retrieves or creates a BindGroup for the given pipeline and buffers/bindings.
 func (c *WGPUContext) GetBindGroup(pipeline *wgpu.ComputePipeline, bindings ...any) (*wgpu.BindGroup, error) {
 	key := BindGroupKeyHash(pipeline, bindings...)
@@ -577,8 +417,8 @@ func (c *WGPUContext) ReadUint64Buffer(buf *wgpu.Buffer, count int) ([]uint64, e
 	}
 	enc.CopyBufferToBuffer(buf, 0, stagingBuf, 0, size)
 	cmd, _ := enc.Finish(nil)
-	submission := c.Queue.Submit(cmd)
-	c.Device.Poll(true, &wgpu.WrappedSubmissionIndex{Queue: c.Queue, SubmissionIndex: submission})
+	c.Queue.Submit(cmd)
+	c.Device.Poll(true, nil)
 
 	done := make(chan struct{})
 	if err := stagingBuf.MapAsync(wgpu.MapModeRead, 0, size, func(status wgpu.BufferMapAsyncStatus) {
@@ -601,99 +441,7 @@ func (c *WGPUContext) ReadUint64Buffer(buf *wgpu.Buffer, count int) ([]uint64, e
 	}
 }
 
-// TimeCommands records compute work into a single command buffer, wraps it in
-// timestamp queries, and returns the measured on-device duration.
-func (c *WGPUContext) TimeCommands(label string, record func() error) (time.Duration, error) {
-	if c == nil || !c.HasTimestampQuery {
-		return 0, fmt.Errorf("timestamp queries unavailable")
-	}
-	if c.ActiveEncoder != nil {
-		return 0, fmt.Errorf("timestamp timing requires idle encoder")
-	}
-
-	querySet, err := c.Device.CreateQuerySet(&wgpu.QuerySetDescriptor{
-		Label: label + "_timestamps",
-		Type:  wgpu.QueryTypeTimestamp,
-		Count: 2,
-	})
-	if err != nil {
-		return 0, err
-	}
-	defer querySet.Release()
-
-	resolveSize := uint64(wgpu.QueryResolveBufferAlignment)
-	resolveBuf, err := c.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: label + "_resolve",
-		Size:  resolveSize,
-		Usage: wgpu.BufferUsageQueryResolve | wgpu.BufferUsageCopySrc,
-	})
-	if err != nil {
-		return 0, err
-	}
-	defer resolveBuf.Destroy()
-
-	stagingBuf, err := c.Device.CreateBuffer(&wgpu.BufferDescriptor{
-		Label: label + "_staging",
-		Size:  resolveSize,
-		Usage: wgpu.BufferUsageMapRead | wgpu.BufferUsageCopyDst,
-	})
-	if err != nil {
-		return 0, err
-	}
-	defer stagingBuf.Destroy()
-
-	if err := c.BeginFrame(); err != nil {
-		return 0, err
-	}
-	if err := c.ActiveEncoder.WriteTimestamp(querySet, 0); err != nil {
-		c.ActiveEncoder = nil
-		return 0, err
-	}
-	if err := record(); err != nil {
-		c.ActiveEncoder = nil
-		return 0, err
-	}
-	if err := c.ActiveEncoder.WriteTimestamp(querySet, 1); err != nil {
-		c.ActiveEncoder = nil
-		return 0, err
-	}
-	if err := c.ActiveEncoder.ResolveQuerySet(querySet, 0, 2, resolveBuf, 0); err != nil {
-		c.ActiveEncoder = nil
-		return 0, err
-	}
-	c.ActiveEncoder.CopyBufferToBuffer(resolveBuf, 0, stagingBuf, 0, 16)
-
-	cmd, _ := c.ActiveEncoder.Finish(nil)
-	submission := c.Queue.Submit(cmd)
-	c.ActiveEncoder = nil
-	for _, buf := range c.PendingDestroys {
-		buf.Destroy()
-	}
-	c.PendingDestroys = c.PendingDestroys[:0]
-	c.UniformIdx = 0
-
-	c.Device.Poll(true, &wgpu.WrappedSubmissionIndex{Queue: c.Queue, SubmissionIndex: submission})
-
-	done := make(chan struct{})
-	if err := stagingBuf.MapAsync(wgpu.MapModeRead, 0, 16, func(status wgpu.BufferMapAsyncStatus) {
-		close(done)
-	}); err != nil {
-		return 0, err
-	}
-
-	for {
-		c.Device.Poll(false, nil)
-		select {
-		case <-done:
-			data := stagingBuf.GetMappedRange(0, 16)
-			defer stagingBuf.Unmap()
-			stamps := make([]uint64, 2)
-			copy(wgpu.ToBytes(stamps), data[:16])
-			if stamps[1] < stamps[0] {
-				return 0, fmt.Errorf("timestamp query underflow")
-			}
-			return time.Duration(stamps[1] - stamps[0]), nil
-		default:
-		}
-	}
+// TimeCommands is not supported in the browser/WebAssembly wgpu bindings.
+func (c *WGPUContext) TimeCommands(_ string, _ func() error) (time.Duration, error) {
+	return 0, fmt.Errorf("timestamp queries unavailable in wasm/js build")
 }

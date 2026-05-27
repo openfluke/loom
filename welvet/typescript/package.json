@@ -71,11 +71,13 @@
     "build": "tsc -p tsconfig.json",
     "postbuild": "shx cp -r assets/* dist/ && shx mkdir -p dist/tests && shx cp -r tests/* dist/tests/",
     "prepare": "npm run build",
-    "serve": "python3 serve.py",
-    "dev": "npm run build && npm run serve",
+    "serve:seven-layer": "npx --yes serve dist -p 3000",
+    "dev": "npm run build && npm run serve:seven-layer",
     "test": "tsx tests/cabi_verify.ts && tsx tests/benchmark.ts && tsx tests/coverage.ts",
     "test:cabi": "tsx tests/cabi_verify.ts",
     "test:bench": "tsx tests/benchmark.ts",
+    "test:seven-layer": "tsx tests/seven_layer.ts",
+    "test:seven-layer:dense": "tsx tests/seven_layer.ts --layer Dense",
     "test:coverage": "tsx tests/coverage.ts"
   },
   "devDependencies": {

@@ -50,7 +50,8 @@ a:hover { background: #1e3a4a; }
 <div class="sub">Build main.wasm first: <strong>cd ..  &amp;&amp;  build.bat</strong> (Windows) or <strong>./build.sh</strong> (Linux/Mac)</div>
 <a href="/cabi_verify.html">C-ABI Verify — all WASM exports + smoke tests</a>
 <a href="/benchmark_tiling.html">Benchmark: Tiling — forward pass (11 layer types)</a>
-<a href="/benchmark_training.html">Benchmark: Training — forward + train (9 layer types)</a>
+<a href="/benchmark_seven_layer.html">Seven-Layer CPU Suite — lucy [7] via WASM bindings</a>
+<a href="/benchmark_training.html">Benchmark: Training (redirects to seven-layer)</a>
 <a href="/benchmark_training_comparison.html">Benchmark: Training Comparison — 6 architectures, 20 epochs</a>
 <a href="/dna_evo_benchmark.html">Benchmark: DNA &amp; Evolution — splice, NEAT, population</a>
 `)

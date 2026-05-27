@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Seven-Layer CPU Suite (WASM → Loom)</title>
+<style>
+  body { background: #0d0d0d; color: #c8c8c8; font-family: 'Courier New', monospace; font-size: 12px; padding: 20px; }
+  h1 { color: #7ec8e3; font-size: 15px; }
+  .sub { color: #555; font-size: 11px; margin-bottom: 12px; }
+  #output { white-space: pre; max-height: 85vh; overflow: auto; }
+  button { background: #1e3a4a; color: #7ec8e3; border: 1px solid #2d5a70; padding: 6px 16px; cursor: pointer; }
+  select { background: #1a1a1a; color: #ccc; margin-right: 8px; }
+</style>
+</head>
+<body>
+<h1>Seven-Layer Suite — JavaScript → WASM bindings → Loom</h1>
+<p class="sub">Same test as lucy menu [7]. All engine calls via createLoomNetwork / forwardPolymorphic / train / serialize (CABI surface).</p>
+<label>Layer <select id="layerPick"><option value="">All</option></select></label>
+<button id="runBtn" disabled>Run</button>
+<p id="status">Loading WASM…</p>
+<pre id="output"></pre>
+<script src="wasm_exec.js"></script>
+<script type="module">
+import { LAYER_SUITES } from './seven_layer/bench.js';
+import { runAllSuites } from './seven_layer/runner.js';
+
+const out = document.getElementById('output');
+const log = (m) => { out.textContent += m + '\n'; };
+for (const s of LAYER_SUITES) {
+  const o = document.createElement('option');
+  o.value = s.name; o.textContent = s.name;
+  document.getElementById('layerPick').appendChild(o);
+}
+
+async function load() {
+  const go = new Go();
+  const r = await WebAssembly.instantiateStreaming(fetch('main.wasm'), go.importObject);
+  go.run(r.instance);
+  await new Promise(r => setTimeout(r, 200));
+}
+
+document.getElementById('runBtn').onclick = async () => {
+  out.textContent = '';
+  document.getElementById('runBtn').disabled = true;
+  const filter = document.getElementById('layerPick').value || null;
+  log('=== welvet seven-layer — JS/WASM bindings → Loom ===\n');
+  const ok = await runAllSuites(log, filter);
+  log(ok ? '\n✅ ALL PASSED' : '\n❌ FAILURES');
+  document.getElementById('runBtn').disabled = false;
+};
+
+load().then(() => {
+  document.getElementById('status').textContent = 'Ready';
+  document.getElementById('runBtn').disabled = false;
+}).catch(e => { document.getElementById('status').textContent = String(e); });
+</script>
+</body>
+</html>

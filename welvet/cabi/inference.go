@@ -8,6 +8,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"time"
 	"unsafe"
 
 	"github.com/openfluke/loom/poly"
@@ -312,6 +313,102 @@ func LoomSequentialForward(networkHandle C.longlong, inputData *C.float, inputLe
 
 	data, _ := json.Marshal(out.Data)
 	return C.CString(string(data))
+}
+
+//export LoomConfigureTrainingMode
+func LoomConfigureTrainingMode(networkHandle C.longlong, mode C.int) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok {
+		return errJSON("invalid network handle")
+	}
+	if err := poly.ConfigureNetworkForMode(n, poly.TrainingMode(mode)); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"ok":true}`)
+}
+
+//export LoomForwardPolymorphic
+// shapeJSON: e.g. [4,16] — tensor layout for inputData (float32 host buffer).
+func LoomForwardPolymorphic(networkHandle C.longlong, inputData *C.float, inputLen C.int, shapeJSON *C.char) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok {
+		return errJSON("invalid network handle")
+	}
+	var shape []int
+	if s := C.GoString(shapeJSON); s != "" {
+		if err := json.Unmarshal([]byte(s), &shape); err != nil {
+			return errJSON("invalid shape JSON: " + err.Error())
+		}
+	}
+	if len(shape) == 0 {
+		shape = []int{int(inputLen)}
+	}
+	slice := (*[1 << 30]float32)(unsafe.Pointer(inputData))[:inputLen:inputLen]
+	t := poly.NewTensorFromSlice(slice, shape...)
+	out, _, _ := poly.ForwardPolymorphic(n, t)
+	if out == nil {
+		return errJSON("forward returned nil")
+	}
+	data, _ := json.Marshal(out.Data)
+	return C.CString(string(data))
+}
+
+//export LoomBackwardPolymorphic
+// One full-network backward (MSE). Returns JSON {"dx":[],"dw":[],"dur_ns":int64}.
+func LoomBackwardPolymorphic(
+	networkHandle C.longlong,
+	inputData *C.float, inputLen C.int, inputShapeJSON *C.char,
+	targetData *C.float, targetLen C.int, targetShapeJSON *C.char,
+) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok {
+		return errJSON("invalid network handle")
+	}
+	var inShape, tgtShape []int
+	if err := json.Unmarshal([]byte(C.GoString(inputShapeJSON)), &inShape); err != nil {
+		return errJSON("invalid input shape JSON")
+	}
+	if err := json.Unmarshal([]byte(C.GoString(targetShapeJSON)), &tgtShape); err != nil {
+		return errJSON("invalid target shape JSON")
+	}
+	inSlice := (*[1 << 30]float32)(unsafe.Pointer(inputData))[:inputLen:inputLen]
+	tgtSlice := (*[1 << 30]float32)(unsafe.Pointer(targetData))[:targetLen:targetLen]
+	input := poly.NewTensorFromSlice(inSlice, inShape...)
+	target := poly.NewTensorFromSlice(tgtSlice, tgtShape...)
+
+	for i := range n.Layers {
+		n.Layers[i].ResetState()
+	}
+	histIn := make([]*poly.Tensor[float32], len(n.Layers))
+	histPre := make([]*poly.Tensor[float32], len(n.Layers))
+	curr := input
+	for i := range n.Layers {
+		l := &n.Layers[i]
+		if l.IsDisabled {
+			continue
+		}
+		histIn[i] = curr
+		pre, post := poly.DispatchLayer(l, curr, nil)
+		histPre[i] = pre
+		curr = post
+	}
+	gradOut := poly.ComputeLossGradient(curr, target, "mse")
+	t0 := time.Now()
+	_, layerGrads, _ := poly.BackwardPolymorphic(n, gradOut, histIn, histPre)
+	dur := time.Since(t0)
+	var dx, dw []float32
+	if len(layerGrads) > 0 && layerGrads[0][0] != nil {
+		dx = layerGrads[0][0].Data
+	}
+	for _, g := range layerGrads {
+		if g[1] != nil {
+			dw = append(dw, g[1].Data...)
+		}
+	}
+	resp, _ := json.Marshal(map[string]interface{}{
+		"dx": dx, "dw": dw, "dur_ns": dur.Nanoseconds(),
+	})
+	return C.CString(string(resp))
 }
 
 //export LoomMorphLayer

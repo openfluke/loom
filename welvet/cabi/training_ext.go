@@ -527,29 +527,62 @@ func LoomTrain(
 	inSlice  := (*[1 << 30]float32)(unsafe.Pointer(inputData))[:inputLen:inputLen]
 	tgtSlice := (*[1 << 30]float32)(unsafe.Pointer(targetData))[:targetLen:targetLen]
 
-	numBatches := total / (bs * id)
-	if numBatches == 0 {
-		return errJSON("inputLen too small for one batch")
+	config := poly.DefaultTrainingConfig()
+	var inputShape, targetShape []int
+	if s := C.GoString(configJSON); s != "" && s != "null" {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(s), &raw); err != nil {
+			return errJSON("invalid config JSON: " + err.Error())
+		}
+		if err := json.Unmarshal([]byte(s), config); err != nil {
+			return errJSON("invalid config JSON: " + err.Error())
+		}
+		if v, ok := raw["InputShape"]; ok {
+			_ = json.Unmarshal(v, &inputShape)
+		}
+		if v, ok := raw["TargetShape"]; ok {
+			_ = json.Unmarshal(v, &targetShape)
+		}
+	}
+
+	inShape := []int{bs, id}
+	if len(inputShape) > 0 {
+		inShape = inputShape
+	}
+	tgtShape := []int{bs, od}
+	if len(targetShape) > 0 {
+		tgtShape = targetShape
+	}
+	inVol, tgtVol := 1, 1
+	for _, d := range inShape {
+		inVol *= d
+	}
+	for _, d := range tgtShape {
+		tgtVol *= d
+	}
+	if inVol <= 0 || tgtVol <= 0 {
+		return errJSON("invalid InputShape/TargetShape")
+	}
+
+	numBatches := total / inVol
+	if numBatches == 0 || total%inVol != 0 {
+		return errJSON("inputLen does not match InputShape volume")
+	}
+	if int(targetLen) < numBatches*tgtVol {
+		return errJSON("targetLen too small for TargetShape volume")
 	}
 
 	batches := make([]poly.TrainingBatch[float32], numBatches)
 	for b := 0; b < numBatches; b++ {
-		iOff := b * bs * id
-		tOff := b * bs * od
-		inCopy  := make([]float32, bs*id)
-		tgtCopy := make([]float32, bs*od)
-		copy(inCopy,  inSlice[iOff:iOff+bs*id])
-		copy(tgtCopy, tgtSlice[tOff:tOff+bs*od])
+		iOff := b * inVol
+		tOff := b * tgtVol
+		inCopy := make([]float32, inVol)
+		tgtCopy := make([]float32, tgtVol)
+		copy(inCopy, inSlice[iOff:iOff+inVol])
+		copy(tgtCopy, tgtSlice[tOff:tOff+tgtVol])
 		batches[b] = poly.TrainingBatch[float32]{
-			Input:  poly.NewTensorFromSlice(inCopy,  bs, id),
-			Target: poly.NewTensorFromSlice(tgtCopy, bs, od),
-		}
-	}
-
-	config := poly.DefaultTrainingConfig()
-	if s := C.GoString(configJSON); s != "" && s != "null" {
-		if err := json.Unmarshal([]byte(s), config); err != nil {
-			return errJSON("invalid config JSON: " + err.Error())
+			Input:  poly.NewTensorFromSlice(inCopy, inShape...),
+			Target: poly.NewTensorFromSlice(tgtCopy, tgtShape...),
 		}
 	}
 
