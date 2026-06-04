@@ -21,7 +21,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [dna.md](dna.md) | Topological network fingerprinting: `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection, recursive extraction for all 19 layer types |
 | [evolution.md](evolution.md) | DNA Splice / Genetic Crossover and NEAT-style Topology Evolution: `SpliceDNA`, `NEATMutate`, `NEATPopulation`, all 3 crossover modes, all 6 mutation types |
 | [softmax.md](softmax.md) | All 10 softmax variants: Standard, Temperature, Gumbel, Masked, Sparse, Entmax, Grid, Hierarchical, Adaptive, Mixture |
-| [serialization.md](serialization.md) | Full save/load (`SerializeNetwork`/`DeserializeNetwork`), bit-packing formats, idempotency guarantee, SafeTensors support |
+| [serialization.md](serialization.md) | Full save/load (`SerializeNetwork`/`DeserializeNetwork`), bit-packing formats, idempotency guarantee, SafeTensors import |
+| [entity.md](entity.md) | **ENTITY** (`.entity`) — native binary checkpoint format; why SafeTensors is not enough |
 | [parallel_sequential.md](parallel_sequential.md) | `LayerParallel` (5 combine modes, activation tree), `LayerSequential` (step containers, skip gradients), nesting patterns |
 | [quantization.md](quantization.md) | PTQ pipeline, `WeightStore` versioning, `Morph`/`Unpack`, `Q4_0Block` block quantization, calibration, accuracy trade-offs |
 | [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, Qwen-style expanded-query + Q/K norm support, `Transformer[T]` generation type; CPU vs GPU tiling behavior |
@@ -46,6 +47,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Using the GPU?** Read [gpu.md](gpu.md).
 
 **Loading a HuggingFace model?** Read [transformer.md](transformer.md) and [serialization.md](serialization.md).
+
+**Saving a native Loom checkpoint (not HF)?** Read [entity.md](entity.md).
 
 **Changing precision / quantizing?** Read [numerical_types.md](numerical_types.md) and [quantization.md](quantization.md).
 

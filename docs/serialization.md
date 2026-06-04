@@ -162,9 +162,9 @@ type LayerSpec struct {
 
 ---
 
-## SafeTensors Support
+## SafeTensors support (import only)
 
-`safetensors.go` and `prefix_safetensor.go` implement loading from the HuggingFace SafeTensors format, enabling direct weight import from PyTorch/HuggingFace checkpoints.
+`safetensors.go` and `prefix_safetensor.go` implement **loading** from the HuggingFace SafeTensors format. Export via `SaveSafetensors` is F32-only. For native Loom saves (all 21 dtypes, volumetric topology, native packing), use **ENTITY** (`.entity`) — see [entity.md](entity.md).
 
 `universal_loader.go` provides auto-detection of the model format.
 
