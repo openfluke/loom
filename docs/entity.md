@@ -94,6 +94,14 @@ The header is one JSON object:
 {
   "format_version": 1,
   "network": { /* PersistenceNetworkSpec — topology only, no weight strings */ },
+  "transformer": {
+    "architecture": "llama_style_decoder",
+    "hidden_size": 2048,
+    "vocab_size": 32000,
+    "lm_head_tied": true,
+    "has_final_norm": true,
+    "dims": { "num_layers": 24, "num_heads": 32, ... }
+  },
   "blobs": [
     {
       "path": "layers.0",
@@ -110,7 +118,8 @@ The header is one JSON object:
 | Field | Role |
 |:------|:-----|
 | `network` | Same shape as [`PersistenceNetworkSpec`](../poly/persistence.go): `depth`, `rows`, `cols`, `layers_per_cell`, and every `PersistenceLayerSpec` (type, activation, dtype, z/y/x/l, MHA/CNN dims, parallel/sequential recursion). **No** `weights` Base64 strings — those live in the blob section. |
-| `blobs[]` | Index into the payload. Each entry points at one weight store (main layer or nested branch). |
+| `transformer` | **Optional** universal-transformer add-on. When present, global causal-LM weights live outside `net.Layers`: embeddings, LM head, final RMSNorm. Used by `ImportHFToEntity` for SmolLM2, Qwen, Llama-style decoders. Tokenizer/chat template still come from the HF snapshot (or your app). |
+| `blobs[]` | Index into the payload. Each entry points at one weight store (main layer, nested branch, or transformer global). |
 
 **Blob paths** mirror the in-memory tree:
 
@@ -120,6 +129,9 @@ The header is one JSON object:
 | `layers.3.sequential_layers.1` | Nested sequential sub-layer |
 | `layers.2.parallel_branches.0` | Parallel branch |
 | `layers.5.meta_observed_layer` | Metacognition observed layer |
+| `transformer.embeddings` | Token embedding matrix (FP32 blob) |
+| `transformer.lm_head` | Output projection (omitted when `lm_head_tied`) |
+| `transformer.final_norm` | Pre-head RMSNorm gamma (when `has_final_norm`) |
 
 Each blob carries its own **`dtype`**, **`scale`**, and **`native`** flag — so a single checkpoint can hold **different numerical types per layer** (e.g. layer 0 Int4, layer 12 BFloat16, layer 40 Binary).
 
@@ -143,6 +155,9 @@ No Base64. No FP32-only export constraint (unlike `SaveSafetensors`).
 | `DeserializeEntityWithOptions(data, opts)` | Selective weight load (`EntityLoadOptions.LayerIndices`) |
 | `DeserializeEntityLayer(data, layerIndex)` | Topology + one top-level layer’s weights |
 | `SaveEntity(path, net)` / `LoadEntity(path)` | File I/O |
+| `SerializeEntityTransformer(et)` / `DeserializeEntityTransformer(data)` | Universal transformer: decoder + embeddings/LM head/final norm |
+| `SaveEntityTransformer` / `LoadEntityTransformer` / `LoadEntityTransformerAs[T]` | File I/O + `NewTransformer` wiring |
+| `ImportHFToEntity(modelDir, path, opts)` | HF snapshot → universal `.entity` ([`hf_import.go`](../poly/hf_import.go)) |
 | `ParseEntityHeader(data)` | Header only (no weight decode; mmap-friendly planning) |
 | `LayerPersistenceFromEntity(data, layerIndex)` | Raw blob + scale + native for one layer (parity checks) |
 | `EntityBlobBytes(data, blobIndex)` | Raw bytes for blob `i` without dtype decode |

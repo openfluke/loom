@@ -20,6 +20,7 @@ func main() {
 		"[5] Forward benchmark — BitNet b1.58 CPU: normal vs stepped vs pipeline\n"+
 		"[6] Five-layer examples — per-layer .go tutorials (→ "+lucytesting.DefaultOutputDir+"/five_layer.txt)\n"+
 		"[7] Seven-layer CPU suite — JSON · SC/MC/ASM · train · save/reload (→ "+lucytesting.DefaultOutputDir+"/seven_layer.txt)\n"+
+		"[8] ENTITY Talk — HF cache → .entity convert → chat (Qwen/SmolLM2/Llama-style)\n"+
 		"Choice [1]: ", "1")
 	switch strings.TrimSpace(mode) {
 	case "2":
@@ -35,6 +36,8 @@ func main() {
 		examples.RunFiveLayerMenu(reader)
 	case "7":
 		examples.RunSevenLayerMenu(reader)
+	case "8":
+		runEntityTalkMode(reader)
 	default:
 		runHuggingFaceMode(reader)
 	}

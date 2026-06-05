@@ -269,5 +269,5 @@ func runApprovedHFModelsDownload(reader *bufio.Reader) {
 		}
 		fmt.Printf("✅ Finished → %s\n", hfManualSnapshotDir(hubRoot, spec.Repo))
 	}
-	fmt.Println("\nDone. Run [1] Poly Talk — models should appear under the scanned hub root.")
+	fmt.Println("\nDone. Run [1] Poly Talk or [8] ENTITY Talk — models should appear under the scanned hub root.")
 }

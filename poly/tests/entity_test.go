@@ -2,6 +2,7 @@ package poly_test
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	. "github.com/openfluke/loom/poly"
@@ -101,5 +102,122 @@ func TestEntityLayerSelectiveLoad(t *testing.T) {
 	}
 	if l1.WeightStore == nil || l1.WeightStore.Versions[DTypeFloat32] == nil && len(l1.WeightStore.Master) == 0 {
 		t.Fatal("layer 1 should have loaded entity blob")
+	}
+}
+
+func TestEntityTransformerRoundTrip(t *testing.T) {
+	dims := HFDecoderDims{
+		NumLayers:        1,
+		HiddenSize:       4,
+		NumHeads:         2,
+		NumKVHeads:       2,
+		HeadDim:          2,
+		QueryDim:         4,
+		KVDim:            4,
+		IntermediateSize: 8,
+		RMSNormEps:       1e-5,
+		RoPEFreqBase:     10000,
+		Activation:       ActivationSilu,
+	}
+	net := NewVolumetricNetwork(1, 1, 1, 4)
+	InitHFDecoderBlocks(net, dims)
+	for i := range net.Layers {
+		if net.Layers[i].WeightStore != nil {
+			copy(net.Layers[i].WeightStore.Master, deterministicWeights(len(net.Layers[i].WeightStore.Master)))
+		}
+	}
+
+	hidden := dims.HiddenSize
+	vocab := 8
+	embeddings := deterministicWeights(vocab * hidden)
+	finalNorm := deterministicWeights(hidden)
+	et := NewEntityTransformer(net, HFArchLlamaStyleDecoder, dims, embeddings, embeddings, finalNorm, true)
+	et.WeightDType = DTypeInt4
+	wire, err := SerializeEntityTransformer(et)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := DeserializeEntityTransformer(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Embeddings) != len(embeddings) {
+		t.Fatalf("embeddings len = %d, want %d", len(reloaded.Embeddings), len(embeddings))
+	}
+	for i := range embeddings {
+		if reloaded.Embeddings[i] != embeddings[i] {
+			t.Fatalf("embeddings[%d] = %v, want %v", i, reloaded.Embeddings[i], embeddings[i])
+		}
+	}
+	if !reloaded.LMHeadTied {
+		t.Fatal("expected tied lm_head")
+	}
+	if &reloaded.LMHead[0] != &reloaded.Embeddings[0] {
+		t.Fatal("tied lm_head should share embeddings backing array")
+	}
+	if len(reloaded.FinalNorm) != len(finalNorm) {
+		t.Fatalf("final_norm len = %d, want %d", len(reloaded.FinalNorm), len(finalNorm))
+	}
+	for i := range finalNorm {
+		if reloaded.FinalNorm[i] != finalNorm[i] {
+			t.Fatalf("final_norm[%d] = %v, want %v", i, reloaded.FinalNorm[i], finalNorm[i])
+		}
+	}
+	if len(reloaded.Network.Layers) != 4 {
+		t.Fatalf("layers = %d, want 4", len(reloaded.Network.Layers))
+	}
+	if reloaded.WeightDType != DTypeInt4 {
+		t.Fatalf("WeightDType = %v, want INT4", reloaded.WeightDType)
+	}
+	l1 := reloaded.Network.Layers[1] // MHA
+	if l1.WeightStore == nil || !l1.WeightStore.HasAnyQ4_0() {
+		t.Fatal("MHA layer missing baked Q4_0 after INT4 entity load")
+	}
+	for _, key := range []DType{WeightMHAQuery, WeightMHAKey, WeightMHAValue, WeightMHAProjection} {
+		if !l1.WeightStore.HasQ4_0Component(key) {
+			t.Fatalf("MHA missing Q4_0 component %v", key)
+		}
+	}
+	swiglu := reloaded.Network.Layers[3]
+	if !swiglu.WeightStore.HasAnyQ4_0() {
+		t.Fatal("SwiGLU layer missing baked Q4_0 after INT4 entity load")
+	}
+	if len(swiglu.WeightStore.Master) == 0 {
+		t.Fatal("SwiGLU missing bias tail in Master after INT4 entity load")
+	}
+	hdr, err := ParseEntityHeader(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var q4blobs int
+	for _, b := range hdr.Blobs {
+		if strings.Contains(b.Path, ".q4_0.") {
+			q4blobs++
+		}
+	}
+	if q4blobs == 0 {
+		t.Fatal("INT4 entity wire missing q4_0 weight blobs")
+	}
+	norm := reloaded.Network.Layers[0]
+	if norm.Type != LayerRMSNorm {
+		t.Fatalf("layer 0 type = %v, want RMSNorm", norm.Type)
+	}
+	if norm.DType != DTypeFloat32 {
+		t.Fatalf("RMSNorm DType = %v, want FP32", norm.DType)
+	}
+	wantNorm := net.Layers[0].WeightStore.Master
+	for i := range wantNorm {
+		if norm.WeightStore.Master[i] != wantNorm[i] {
+			t.Fatalf("RMSNorm weight[%d] corrupted by INT4 entity round-trip", i)
+		}
+	}
+	PrepareEntityTransformerInference(reloaded)
+
+	netOnly, err := DeserializeEntity(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(netOnly.Layers) != 4 {
+		t.Fatalf("network-only layers = %d, want 4", len(netOnly.Layers))
 	}
 }

@@ -1673,31 +1673,44 @@ func (l *VolumetricLayer) syncQuantizedMHA_I8(ctx *WGPUContext) {
 }
 
 func (l *VolumetricLayer) syncQuantizedSwiGLU(ctx *WGPUContext, h, inter int) {
-	w := l.WeightStore.Master
-	gateW := w[0 : h*inter]
-	upW := w[h*inter : 2*h*inter]
-	downW := w[2*h*inter : 3*h*inter]
+	wSize := h * inter
+	ws := l.WeightStore
+	useQ4 := ws != nil && ws.HasAnyQ4_0()
+	if useQ4 {
+		l.syncQuantizedComponent(ctx, nil, "Gate", DType(1100), DType(100))
+		l.syncQuantizedComponent(ctx, nil, "Up", DType(1101), DType(101))
+		l.syncQuantizedComponent(ctx, nil, "Down", DType(1102), DType(102))
+	} else {
+		w := ws.Master
+		l.syncQuantizedComponent(ctx, w[0:wSize], "Gate", DType(1100), DType(100))
+		l.syncQuantizedComponent(ctx, w[wSize:2*wSize], "Up", DType(1101), DType(101))
+		l.syncQuantizedComponent(ctx, w[2*wSize:3*wSize], "Down", DType(1102), DType(102))
+	}
 
-	gateB := w[3*h*inter : 3*h*inter+inter]
-	upB := w[3*h*inter+inter : 3*h*inter+2*inter]
-	downB := w[3*h*inter+2*inter : 3*h*inter+2*inter+h]
+	if ws == nil || len(ws.Master) < 3*wSize+2*inter+h {
+		return
+	}
+	w := ws.Master
+	gateB := w[3*wSize : 3*wSize+inter]
+	upB := w[3*wSize+inter : 3*wSize+2*inter]
+	downB := w[3*wSize+2*inter : 3*wSize+2*inter+h]
 
-	// Weights & Scales
-	l.syncQuantizedComponent(ctx, gateW, "Gate", DType(1100), DType(100))
-	l.syncQuantizedComponent(ctx, upW, "Up", DType(1101), DType(101))
-	l.syncQuantizedComponent(ctx, downW, "Down", DType(1102), DType(102))
-
-	// Biases (typically kept in FP32 on GPU for precision)
 	gBBuf, _ := ctx.CreatePersistentBuffer(gateB, "Gate Bias")
 	uBBuf, _ := ctx.CreatePersistentBuffer(upB, "Up Bias")
 	dBBuf, _ := ctx.CreatePersistentBuffer(downB, "Down Bias")
 
-	l.WeightStore.GPUWeights[DType(110)] = gBBuf
-	l.WeightStore.GPUWeights[DType(111)] = uBBuf
-	l.WeightStore.GPUWeights[DType(112)] = dBBuf
+	ws.GPUWeights[DType(110)] = gBBuf
+	ws.GPUWeights[DType(111)] = uBBuf
+	ws.GPUWeights[DType(112)] = dBBuf
 }
 
 func (l *VolumetricLayer) syncQuantizedComponent(ctx *WGPUContext, data []float32, label string, scaleDType, weightDType DType) {
+	if l.WeightStore != nil && l.WeightStore.uploadQ4_0Cached(ctx, weightDType, label) {
+		return
+	}
+	if len(data) == 0 {
+		return
+	}
 	blocks := QuantizeQ4_0(data)
 	// Ensure packed size is a multiple of tile/workgroup alignment
 	numBlocks := len(blocks)
@@ -1810,11 +1823,19 @@ func (l *VolumetricLayer) syncQuantizedMHA(ctx *WGPUContext) {
 	vwSize := d * kv
 	owSize := d * q
 
-	w := l.WeightStore.Master
-	l.syncQuantizedComponent(ctx, w[0:qwSize], "Q", WeightMHAQuery, WeightMHAQuery)
-	l.syncQuantizedComponent(ctx, w[qwSize:qwSize+kwSize], "K", WeightMHAKey, WeightMHAKey)
-	l.syncQuantizedComponent(ctx, w[qwSize+kwSize:qwSize+kwSize+vwSize], "V", WeightMHAValue, WeightMHAValue)
-	l.syncQuantizedComponent(ctx, w[qwSize+kwSize+vwSize:qwSize+kwSize+vwSize+owSize], "O", WeightMHAProjection, WeightMHAProjection)
+	ws := l.WeightStore
+	if ws != nil && ws.HasAnyQ4_0() {
+		l.syncQuantizedComponent(ctx, nil, "Q", WeightMHAQuery, WeightMHAQuery)
+		l.syncQuantizedComponent(ctx, nil, "K", WeightMHAKey, WeightMHAKey)
+		l.syncQuantizedComponent(ctx, nil, "V", WeightMHAValue, WeightMHAValue)
+		l.syncQuantizedComponent(ctx, nil, "O", WeightMHAProjection, WeightMHAProjection)
+	} else {
+		w := ws.Master
+		l.syncQuantizedComponent(ctx, w[0:qwSize], "Q", WeightMHAQuery, WeightMHAQuery)
+		l.syncQuantizedComponent(ctx, w[qwSize:qwSize+kwSize], "K", WeightMHAKey, WeightMHAKey)
+		l.syncQuantizedComponent(ctx, w[qwSize+kwSize:qwSize+kwSize+vwSize], "V", WeightMHAValue, WeightMHAValue)
+		l.syncQuantizedComponent(ctx, w[qwSize+kwSize+vwSize:qwSize+kwSize+vwSize+owSize], "O", WeightMHAProjection, WeightMHAProjection)
+	}
 	if len(l.QNormWeight) > 0 {
 		if buf, err := ctx.CreatePersistentBuffer(l.QNormWeight, "QNorm Weights"); err == nil {
 			l.WeightStore.GPUWeights[WeightMHAQNorm] = buf

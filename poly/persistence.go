@@ -45,6 +45,7 @@ type PersistenceLayerSpec struct {
 	NumHeads     int     `json:"num_heads,omitempty"`
 	NumKVHeads   int     `json:"num_kv_heads,omitempty"`
 	HeadDim      int     `json:"head_dim,omitempty"`
+	QueryDim     int     `json:"query_dim,omitempty"`
 	DModel       int     `json:"d_model,omitempty"`
 	SeqLength    int     `json:"seq_length,omitempty"`
 	RoPEFreqBase float64 `json:"rope_freq_base,omitempty"`
@@ -126,6 +127,7 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 		NumHeads:     l.NumHeads,
 		NumKVHeads:   l.NumKVHeads,
 		HeadDim:      l.HeadDim,
+		QueryDim:     l.QueryDim,
 		DModel:       l.DModel,
 		SeqLength:    l.SeqLength,
 		RoPEFreqBase: l.RoPEFreqBase,
@@ -233,6 +235,7 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	l.NumHeads = ls.NumHeads
 	l.NumKVHeads = ls.NumKVHeads
 	l.HeadDim = ls.HeadDim
+	l.QueryDim = ls.QueryDim
 	l.DModel = ls.DModel
 	l.SeqLength = ls.SeqLength
 	l.RoPEFreqBase = ls.RoPEFreqBase
