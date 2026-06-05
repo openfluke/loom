@@ -32,7 +32,7 @@ func normalizeInferenceConfig(cfg *inferenceConfig) {
 		cfg.tilingMode = "1"
 		cfg.tileSize = 0
 	}
-	if cfg.useGPU && cfg.hiddenSize >= 1536 && cfg.weightDType == poly.DTypeInt4 {
+	if cfg.useGPU && !cfg.fromEntity && cfg.hiddenSize >= 1536 && cfg.weightDType == poly.DTypeInt4 {
 		fmt.Printf("⚠️  Large model detected (hidden=%d). Q4 can degrade output quality; promoting weight precision to INT8.\n", cfg.hiddenSize)
 		cfg.weightDType = poly.DTypeInt8
 	}
