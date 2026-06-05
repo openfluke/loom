@@ -6,7 +6,7 @@ Native Loom checkpoint files. One `.entity` file = one saved brain: **full volum
 
 Implementation: [`poly/entity.go`](../poly/entity.go)
 
-Validated in Lucy menu **[7] Seven-layer CPU suite** — JSON and `.entity` save/reload run side by side for all 21 dtypes (`lucy/examples/seven_layer/runner.go`).
+Validated in Lucy menu **[7] Seven-layer CPU suite** — JSON and `.entity` save/reload run side by side for all 21 dtypes (`lucy/examples/seven_layer/runner.go`). Lucy **[8] ENTITY Talk** converts HF LLMs to `.entity` and runs GPU chat from native checkpoints (`lucy/hf_entity.go`).
 
 ---
 
@@ -58,6 +58,115 @@ Unlike HuggingFace’s split of `config.json` + `model.safetensors`, ENTITY keep
 ```
 
 After `LoadEntity`, you get a full `VolumetricNetwork` — grid dimensions, every layer’s type/activation/dtype/config, recursive branches, and quantized weights ready for forward or further training.
+
+---
+
+## The unlock: HF models as native citizens
+
+ENTITY is not only a smaller checkpoint format. It is the **bridge** that moves real LLM weights from HuggingFace’s flat tensor world into Loom’s volumetric brain format — the same container Lucy **[7]** uses for 3D grids, parallel branches, and per-layer dtypes.
+
+### Before vs after
+
+**Before** — two separate worlds:
+
+```
+HF .safetensors  →  flat tensor names  →  Poly Talk reads every run
+                      ↓
+              foreign format (no grid, no branches, no per-layer dtype in one file)
+
+Lucy [7] seven-layer suite  →  2×2×2 grids, remote links, 21 dtypes
+                      ↓
+              synthetic trained brains only
+```
+
+**After** — one native lane:
+
+```
+HF snapshot  →  convert once  →  .entity  →  VolumetricNetwork + transformer globals
+                                      ↓
+                         same format as Lucy [7] save/reload
+                         chat without HF weights at runtime (Lucy [8] ENTITY Talk)
+```
+
+HuggingFace models are no longer guests. They are **`.entity` citizens** — reloadable, trainable, graftable, and eligible for every volumetric feature the stack already implements.
+
+### The arc: simple → native → experimental → full 3D
+
+| Stage | What it is | Status |
+|:------|:-----------|:-------|
+| **Simple** | Flat HF decoder; Poly Talk loads safetensors each run | ✅ Shipped |
+| **Native** | HF → `.entity`; Q4 baked for decoder blocks; GPU chat from Lucy-owned checkpoint | ✅ Shipped (Lucy **[8]** ENTITY Talk) |
+| **Experimental** | Graft, parallel branches, remote links, per-layer dtype mixes on imported LLM weights | 🔓 Unlocked in format + API; product UI not built |
+| **Full 3D** | LLM blocks as cells in a `(Z,Y,X,L)` grid — experts, hops, evolution around a frozen core | 🔮 Next chapter |
+
+Lucy **[7]** proved the volumetric stack on **small trained grids**. Lucy **[8]** brings **real LLM weights** into that same format. The chat path today is still a flat decoder layout; the **container** is already the full brain OS.
+
+### HF import layout today
+
+`ImportHFToEntity` ([`hf_import.go`](../poly/hf_import.go)) maps a Llama-style stack into a **1×1×1** grid with four sub-layers per block (pre-norm, MHA, post-norm, SwiGLU):
+
+```go
+net := NewVolumetricNetwork(1, 1, 1, dims.NumLayers*4)
+InitHFDecoderBlocks(net, dims)
+```
+
+ENTITY Talk chat uses this linear layout. Nothing in the format prevents expanding to `2×2×N`, parallel experts, or remote links — that is topology editing on a loaded `VolumetricNetwork`, then `SaveEntityTransformer`.
+
+### What the format unlocks
+
+| Capability | Supported by format / poly | ENTITY Talk UI today |
+|:-----------|:----------------------------|:---------------------|
+| Save / reload / train native state | ✅ | Convert + chat only |
+| Different dtype per layer in one file | ✅ | Q4 decoder when user picks INT4 at convert |
+| Parallel branches / MoE-style `filter` gates | ✅ [`parallel.go`](../poly/parallel.go) | ❌ |
+| Spatial hops (`IsRemoteLink`) | ✅ [`dispatch.md`](dispatch.md) | ❌ |
+| Graft multiple networks into one parallel layer | ✅ [`grafting.go`](../poly/grafting.go) | ❌ |
+| NEAT / topology evolution | ✅ [`evolution.md`](evolution.md) | ❌ |
+| Selective layer load + block-wise GPU upload | ✅ `DeserializeEntityWithOptions` | ✅ block upload prompt |
+| Merge two LLMs with mismatched hidden size / vocab | ❌ shapes must align | ❌ |
+
+**Principle:** anything Lucy **[7]** could do to a trained `.entity`, you can now *in principle* do to an imported LLM `.entity` — graft a side branch, add an experimental layer, mix dtypes, evolve topology around a frozen decoder core. Wiring those flows into product UI is separate work; the **format bridge** is the prerequisite, and it exists.
+
+### Example directions (not shipped)
+
+```go
+// Load two checkpoints, graft parallel branches, save hybrid
+a, _ := poly.LoadEntityTransformer("lucy_entities/Qwen--Qwen3-0.6B.entity")
+b, _ := poly.LoadEntity("lucy_testing_output/my_swiglu_Int4.entity")
+graft, err := poly.GraftNetworksPolymorphic([]*poly.VolumetricNetwork{a.Network, b.Network}, "concat")
+// … embed graft in a new net topology, SaveEntityTransformer …
+```
+
+See [parallel_sequential.md](parallel_sequential.md), [evolution.md](evolution.md), and [quick_reference.md](quick_reference.md#remote-link-spatial-hop) for the underlying APIs.
+
+---
+
+## LLM transformer checkpoints (Lucy [8])
+
+Lucy menu **[8] ENTITY Talk** (`lucy/hf_entity.go`) converts supported HF models (SmolLM2, Qwen, Llama-style) to universal-transformer `.entity` files and runs GPU chat without loading safetensors at runtime.
+
+Flow:
+
+```
+HF cache  →  ImportHFToEntity (FP32 master)  →  SerializeEntityTransformer (Q4_0 bake if INT4)
+         →  lucy_entities/*.entity  →  LoadEntityTransformer  →  chat
+```
+
+### Q4 on disk vs GPU (v1)
+
+When the user selects **Q4 (INT4)** at convert time, implementation lives in [`entity_q4.go`](../poly/entity_q4.go):
+
+| Weight region | On disk (`.entity`) | On GPU at chat |
+|:--------------|:--------------------|:---------------|
+| Decoder MHA + SwiGLU | **Q4_0** blocks (baked; no re-quant on load) | **Q4_0** via cached `Q4_0Packed` / `uploadQ4_0Cached` |
+| RMSNorm, MHA Q/K norms, final norm | FP32 | FP32 |
+| Embeddings, LM head | FP32 | FP32 |
+
+RMSNorm stays FP32 intentionally — quantizing norm gamma corrupts the forward pass. Globals stay FP32 in v1; that is why large-vocab **untied** models (e.g. Qwen3) may show little disk shrink vs BF16 safetensors even though decoder Q4 is real (GPU weights ~1450 MB vs ~4550 MB FP32 for Qwen3-0.6B).
+
+Model-specific metadata persisted in the header includes expanded `query_dim` / `kv_dim` (Qwen-style MHA), MHA `q_norm` / `k_norm` auxiliary blobs, and `lm_head_tied`.
+
+Tokenizer and chat template still come from the HF snapshot; only **weights** move native.
 
 ---
 
@@ -296,7 +405,8 @@ Topology fields are canonicalized on save (e.g. default `seq_length` omitted for
 | Suite | What it checks |
 |:------|:---------------|
 | Lucy **[7]** (`seven_layer/runner.go`) | Before/after train: JSON **and** `.entity` save/reload PASS; memory table shows both checkpoint sizes |
-| `poly/tests/entity_test.go` | Round-trip, idempotent bytes, selective layer load, entity smaller than JSON |
+| Lucy **[8]** (`lucy/hf_entity.go`) | HF cache → Q4 `.entity` convert → GPU ENTITY Talk; SmolLM2 parity with Poly Talk; Qwen load + Q4 GPU path |
+| `poly/tests/entity_test.go` | Round-trip, idempotent bytes, selective layer load, Q4_0 blob round-trip for transformers |
 
 Checkpoints land in `lucy/lucy_testing_output/` as `tag_DType.json` and `tag_DType.entity`. Full-run numbers and compression observations: [entity.md — observed compression](entity.md#size-vs-json--observed-compression-lucy-7) (from `seven_layer.txt`).
 
@@ -332,7 +442,10 @@ Weights stay on `EncodeNativeWeightsRaw`; the big disk wins are in **topology + 
 ## See also
 
 - [serialization.md](serialization.md) — JSON persistence, bit-packing, SafeTensors import, three save paths
+- [transformer.md](transformer.md) — MHA, SwiGLU, HF decoder layout; links back here for native checkpoints
+- [parallel_sequential.md](parallel_sequential.md) — parallel branches and combine modes (graft targets)
+- [evolution.md](evolution.md) — NEAT, remote links, topology mutation
 - [numerical_types.md](numerical_types.md) — 21 DTypes
-- [quantization.md](quantization.md) — Scale, Morph, native packing
+- [quantization.md](quantization.md) — Scale, Morph, native packing, Q4_0
 - [testing_and_validation.md](testing_and_validation.md) — Lucy [7] logs and tables
 - [bedrock_validation.md](bedrock_validation.md) — seven-layer CPU suite overview

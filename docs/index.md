@@ -22,7 +22,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [evolution.md](evolution.md) | DNA Splice / Genetic Crossover and NEAT-style Topology Evolution: `SpliceDNA`, `NEATMutate`, `NEATPopulation`, all 3 crossover modes, all 6 mutation types |
 | [softmax.md](softmax.md) | All 10 softmax variants: Standard, Temperature, Gumbel, Masked, Sparse, Entmax, Grid, Hierarchical, Adaptive, Mixture |
 | [serialization.md](serialization.md) | JSON + ENTITY save/load, bit-packing, idempotency, SafeTensors import |
-| [entity.md](entity.md) | **ENTITY** (`.entity`) — native binary checkpoint; topology + weights in one file |
+| [entity.md](entity.md) | **ENTITY** (`.entity`) — native binary checkpoint; topology + weights in one file; HF→native bridge (Lucy [8]), Q4 LLM bake, experimental 3D unlock |
 | [parallel_sequential.md](parallel_sequential.md) | `LayerParallel` (5 combine modes, activation tree), `LayerSequential` (step containers, skip gradients), nesting patterns |
 | [quantization.md](quantization.md) | PTQ pipeline, `WeightStore` versioning, `Morph`/`Unpack`, `Q4_0Block` block quantization, calibration, accuracy trade-offs |
 | [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, Qwen-style expanded-query + Q/K norm support, `Transformer[T]` generation type; CPU vs GPU tiling behavior |
@@ -48,7 +48,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **Loading a HuggingFace model?** Read [transformer.md](transformer.md) and [serialization.md](serialization.md).
 
-**Saving a native Loom checkpoint (not HF)?** Read [entity.md](entity.md).
+**Saving a native Loom checkpoint (not HF)?** Read [entity.md](entity.md) — includes Lucy **[8]** ENTITY Talk (HF → `.entity` → chat) and what the format unlocks for grafting / 3D experiments.
 
 **Changing precision / quantizing?** Read [numerical_types.md](numerical_types.md) and [quantization.md](quantization.md).
 

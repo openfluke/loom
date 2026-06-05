@@ -197,7 +197,7 @@ Wire layout (v1): magic + version + JSON header (`PersistenceNetworkSpec` + blob
 | **~25–28% smaller** on Lucy [7] full run (546 rows); up to **~42%** when weight blobs are tiny vs topology (e.g. Residual 3×3×3) — see [entity.md](entity.md#size-vs-json--observed-compression-lucy-7) | ENTITY carries grid, branches, per-layer dtype/scale; SafeTensors does not |
 | Same semantics; human-readable if you decode the header JSON | SafeTensors is the HF import lane; ENTITY is the native export lane |
 
-Lucy **[7]** validates JSON and `.entity` save/reload in parallel for all 21 dtypes. Full spec: [entity.md](entity.md).
+Lucy **[7]** validates JSON and `.entity` save/reload in parallel for all 21 dtypes. Lucy **[8]** ENTITY Talk imports HF LLMs into the same format for native chat. Full spec and the HF→native / 3D unlock narrative: [entity.md](entity.md) (*The unlock*, *LLM transformer checkpoints*).
 
 ---
 
