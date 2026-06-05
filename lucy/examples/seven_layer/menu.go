@@ -36,11 +36,11 @@ func RunMenu(reader *bufio.Reader) {
 
 	fmt.Println()
 	fmt.Println("╔══════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║  [7] Seven-layer CPU suite — JSON · SC/MC · train · save/reload      ║")
+	fmt.Println("║  [7] Seven-layer CPU suite — JSON + .entity · SC/MC · train · save/reload ║")
 	fmt.Println("║  Log: lucy_testing_output/seven_layer.txt (reset each run)            ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════════════╝")
 	fmt.Println("  Flow: BuildNetworkFromJSON → dtype morph → fwd/bwd timing · memory")
-	fmt.Println("        → save/reload (before) → CPU SC/MC train → checkpoint save/reload verify")
+	fmt.Println("        → JSON + .entity save/reload (before) → CPU SC/MC train → checkpoint verify")
 	fmt.Println("  Grids: most layers 1³·2³·3³; CNN1/2 skip 3³; CNN3 is 1³ only (8³ cube); Embedding@(0,0,0)")
 	fmt.Printf("  ASM: %s\n", asmNote)
 	fmt.Println("  Other layer types: ASM forward/backward reported as not implemented.")

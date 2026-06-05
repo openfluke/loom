@@ -6,12 +6,15 @@ This document covers how `VolumetricNetwork` instances are saved and loaded, the
 
 ## Two Serialization Paths
 
-`poly/` provides two complementary serialization systems:
+`poly/` provides three complementary checkpoint systems:
 
 | File | Functions | Use case |
 |:-----|:---------|:---------|
 | `serialization.go` | `BuildNetworkFromJSON` | Architecture-only: creates a network from a spec with randomly initialized weights |
-| `persistence.go` | `SerializeNetwork` / `DeserializeNetwork` | Full save/load: architecture + trained weights |
+| `persistence.go` | `SerializeNetwork` / `DeserializeNetwork` | Full save/load: architecture + trained weights as **JSON + Base64** (debug / transparent) |
+| `entity.go` | `SerializeEntity` / `DeserializeEntity`, `SaveEntity` / `LoadEntity` | Full save/load: architecture + trained weights as **binary `.entity`** (native ship lane) |
+
+For production checkpoints on device, prefer **`.entity`**. Keep JSON when you want to inspect weights and topology in a text editor. See [entity.md](entity.md) for the full format spec.
 
 ---
 
@@ -172,6 +175,32 @@ The `Transformer[T]` type has dedicated loading support in `transformer.go` for 
 
 ---
 
+## ENTITY format (native `.entity` checkpoint)
+
+**ENTITY** — **E**very **N**umerical **T**ype **I**n **N**ative **T**opolog**Y** — is Loom’s single-file native checkpoint: **full topology + native-packed weights**, no Base64.
+
+```go
+// Save
+err := poly.SaveEntity("model.entity", network)
+
+// Load (full brain)
+network, err := poly.LoadEntity("model.entity")
+
+// Load one layer’s weights only (topology still parsed)
+net, err := poly.DeserializeEntityLayer(data, layerIndex)
+```
+
+Wire layout (v1): magic + version + JSON header (`PersistenceNetworkSpec` + blob index) + raw payload. Same bit-packing as `encodeNativeWeights`, exposed as `EncodeNativeWeightsRaw` / `DecodeNativeWeightsRaw` in `persistence.go`.
+
+| vs JSON | vs SafeTensors |
+|:--------|:---------------|
+| **~25–28% smaller** on Lucy [7] full run (546 rows); up to **~42%** when weight blobs are tiny vs topology (e.g. Residual 3×3×3) — see [entity.md](entity.md#size-vs-json--observed-compression-lucy-7) | ENTITY carries grid, branches, per-layer dtype/scale; SafeTensors does not |
+| Same semantics; human-readable if you decode the header JSON | SafeTensors is the HF import lane; ENTITY is the native export lane |
+
+Lucy **[7]** validates JSON and `.entity` save/reload in parallel for all 21 dtypes. Full spec: [entity.md](entity.md).
+
+---
+
 ## Compression Ratios in Practice
 
 From the README, for a network with 1M weights:
@@ -189,6 +218,8 @@ From the README, for a network with 1M weights:
 
 Base64 encoding adds ~33% overhead over the raw binary size. The 98.4% figure is relative to FP32 on disk (including the base64 overhead).
 
+**ENTITY (`.entity`)** stores the same native-packed bytes **without** Base64. In Lucy [7] (`seven_layer.txt`), checkpoints are on average **~28% smaller** than JSON — mostly from dropping Base64 on weights, while topology remains JSON in the header. See [entity.md](entity.md#size-vs-json--observed-compression-lucy-7).
+
 ---
 
 ## Weight Encoding Flow
@@ -200,22 +231,22 @@ Training produces Master []float32
          Morph(layer.DType)
                 │
                 ▼
-         Versions[dtype] = []int8 / []int4 / etc.
+         Versions[dtype] = []int8 / []uint8 / etc.
                 │
                 ▼
-    encodeNativeWeights(active, dtype)
+    encodeNativeWeights / EncodeNativeWeightsRaw
                 │
-         ┌──────┴──────┐
-         │             │
-         ▼             ▼
-    bit-packing    Base64 encode
-         │             │
-         └──────┬──────┘
-                │
-                ▼
-    PersistenceLayerSpec.Weights = "base64string..."
-    PersistenceLayerSpec.Native  = true
-    PersistenceLayerSpec.Scale   = ws.Scale
+         ┌──────┴──────────────────┐
+         │                         │
+         ▼                         ▼
+    JSON path                  ENTITY path
+    bit-pack → Base64          bit-pack → raw bytes in blob section
+         │                         │
+         ▼                         ▼
+    PersistenceLayerSpec       EntityWeightBlob index + payload
+    .Weights = "…"             (see entity.md)
+    .Native = true
+    .Scale = ws.Scale
 ```
 
 ---
