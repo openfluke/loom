@@ -5,7 +5,7 @@
 M-POLY-VTD is a neural inference and training engine built from first principles in Go. It treats a neural network not as a sequential stack of layers, but as a **spatial 3D grid** where each cell can hold any layer type, and every layer can morph its numerical precision on demand.
 
 > [!NOTE]
-> Current version: **0.79.0 (Bedrock Validation)**. Previous: **0.78.0 (ASM CPU)**. The Loom stack is **Go + `poly/asm` + WebGPU** only. **Numerical Tiling (SC/MC)** is live across all 21 DTypes; **Dense forward** can use Plan 9 assembly via `UseAsmForward`. **v0.79** hardens CPU train/save/reload, MHA layout + KV decode, and C-ABI parity (see [`bedrock_validation.md`](bedrock_validation.md)). Checkpoints save **native packed weights per layer dtype** (not FP32-only JSON). See [`poly/README.md`](../poly/README.md) for the live checklist and [`testing_and_validation.md`](testing_and_validation.md) for Lucy log interpretation.
+> Current version: **0.80.0 (Native Ship)**. Previous: **0.79.0 (Bedrock Validation)**. The Loom stack is **Go + `poly/asm` + WebGPU** (`github.com/openfluke/webgpu@v1.0.4`, wgpu-native v29). **Numerical Tiling (SC/MC)** is live across all 21 DTypes; **Dense forward** can use Plan 9 assembly via `UseAsmForward`. **v0.80** ships **ENTITY** (`.entity`) native checkpoints, Lucy **[8] ENTITY Talk**, and multi-platform GPU validation. **Planet Bridging** POC (planets→Loom) is complete in [`planetbridging/`](../planetbridging/) and releases after Loom. See [`v080_release.md`](v080_release.md) and [`entity.md`](entity.md).
 
 ---
 
@@ -183,7 +183,7 @@ type Tensor[T Numeric] struct {
 
 ## Performance Snapshot
 
-From the README benchmark table, measured on a GTX 1650 Super (Vulkan/WebGPU):
+From the README benchmark table, measured on GTX 1650 Super (Vulkan/WebGPU). **v0.80** production GPU uses **openfluke/webgpu v1.0.4** (wgpu-native v29); Lucy Poly Talk on RTX 3050 Mobile reaches ~**69 tok/s decode** / ~**492 tok/s prefill** for SmolLM2-135M Q4 (custom WGSL — not Ollama-class, but validated on Metal, Win ARM64, Intel, and NVIDIA Vulkan).
 
 | Layer type | CPU Tiled | GPU | Speedup |
 |:-----------|:----------|:----|:--------|
@@ -205,6 +205,8 @@ End-to-end GPU training (20 epochs):
 
 ## Next Steps
 
+- [v080_release.md](./v080_release.md) — **v0.80.0** ENTITY, WebGPU v1.0.4, GPU validation, Planet Bridging POC
+- [entity.md](./entity.md) — `.entity` native checkpoint format
 - [numerical_types.md](./numerical_types.md) — DType system, WeightStore, Metamorphosis
 - [layers.md](./layers.md) — Every layer type in detail
 - [dispatch.md](./dispatch.md) — The dispatcher pattern and 3D coordinates
