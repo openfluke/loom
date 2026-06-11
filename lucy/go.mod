@@ -6,4 +6,4 @@ replace github.com/openfluke/loom => ../
 
 require github.com/openfluke/loom v0.0.0
 
-require github.com/openfluke/webgpu v1.0.2
+require github.com/openfluke/webgpu v1.0.4
