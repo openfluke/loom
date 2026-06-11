@@ -68,11 +68,30 @@ func getStepContainer(handle int64) (*stepContainer, bool) {
 var transformers = make(map[int64]interface{})
 var transformerNextID int64 = 1
 
+var entityTransformers = make(map[int64]*poly.EntityTransformer)
+var entityTransformerNextID int64 = 1
+
 func getTransformer(handle int64) (interface{}, bool) {
 	networkMu.RLock()
 	defer networkMu.RUnlock()
 	tr, ok := transformers[handle]
 	return tr, ok
+}
+
+func getEntityTransformer(handle int64) (*poly.EntityTransformer, bool) {
+	networkMu.RLock()
+	defer networkMu.RUnlock()
+	et, ok := entityTransformers[handle]
+	return et, ok
+}
+
+func registerTransformer(tr interface{}, _ poly.DType) int64 {
+	networkMu.Lock()
+	id := transformerNextID
+	transformerNextID++
+	transformers[id] = tr
+	networkMu.Unlock()
+	return id
 }
 
 func getTensor(handle int64) (interface{}, bool) {
