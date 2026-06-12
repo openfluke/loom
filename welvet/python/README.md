@@ -5,11 +5,11 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/pypi/pyversions/welvet.svg)](https://pypi.org/project/welvet/)
 
-**M-POLY-VTD AI Engine (Loom v0.79.0)** — Python bindings: 21 numerical types, volumetric grids, CPU/GPU training, DNA/NEAT, native save/reload.
+**M-POLY-VTD AI Engine (Loom v0.80.0)** — Python bindings: 21 numerical types, volumetric grids, CPU/GPU training, DNA/NEAT, JSON wire + native `.entity` checkpoints.
 
 `welvet` wraps the [Loom](https://github.com/openfluke/loom) C-ABI with zero runtime Python dependencies. The PyPI wheel ships **prebuilt native libraries for every supported OS/arch**; at import time only the matching binary is loaded (`linux_amd64/welvet.so`, `windows_amd64/welvet.dll`, etc.).
 
-> **Bedrock validation (v0.79):** seven-layer CPU suite (10 layer types × 21 dtypes × train × serialize). See [`docs/bedrock_validation.md`](https://github.com/openfluke/loom/blob/main/docs/bedrock_validation.md).
+> **Bedrock validation (v0.80):** seven-layer CPU suite (10 layer types × 21 dtypes × train × JSON serialize × `.entity` roundtrip). See [`docs/bedrock_validation.md`](https://github.com/openfluke/loom/blob/main/docs/bedrock_validation.md).
 
 ---
 
@@ -21,7 +21,7 @@ pip install welvet
 
 ```python
 import welvet
-print(welvet.__version__)  # 0.79.0
+print(welvet.__version__)  # 0.80.0
 ```
 
 Supported platforms (64-bit): **Linux** (x86-64, ARM64), **macOS** (x86-64, ARM64, universal fallback), **Windows** (x86-64, ARM64), **Android** (ARM64, x86-64), **iOS** (device / simulator / XCFramework when built into the wheel).
@@ -97,7 +97,7 @@ python3 examples/run_all.py          # runs 01–05
 |--------|----------------|
 | [`01_dense_forward.py`](examples/01_dense_forward.py) | Volumetric JSON → `forward_polymorphic` + `forward` |
 | [`02_morph_and_train.py`](examples/02_morph_and_train.py) | `morph(INT8)`, CPU MC `train()` with shapes |
-| [`03_save_reload.py`](examples/03_save_reload.py) | `serialize()` / `Network.deserialize()` |
+| [`03_save_reload.py`](examples/03_save_reload.py) | JSON wire + `.entity` checkpoint roundtrip |
 | [`04_mha_forward.py`](examples/04_mha_forward.py) | MHA with `[batch, seq, d_model]` |
 | [`05_dna_compare.py`](examples/05_dna_compare.py) | `dna()` + `compare_dna()` |
 
@@ -161,13 +161,26 @@ print(losses[-1])
 net.free()
 ```
 
-### 4. Save / reload
+### 4. Save / reload (JSON wire + `.entity`)
+
+**JSON wire** (human-readable checkpoint, same as v0.79):
 
 ```python
 wire = net.serialize()
 copy = Network.deserialize(wire)
 # ... forward on copy, then copy.free()
 ```
+
+**Native `.entity` blob** (compact binary checkpoint, v0.80+):
+
+```python
+blob = net.serialize_entity()
+copy = Network.deserialize_entity(blob)
+copy.sync_inference_weights()   # after training reload, before inference
+# ... forward on copy, then copy.free()
+```
+
+`layer_persistence_from_entity(blob, layer_index)` inspects per-layer weight blobs in a checkpoint without loading a full network.
 
 Full scripts: [`examples/03_save_reload.py`](examples/03_save_reload.py).
 
@@ -229,7 +242,7 @@ net.free()
 
 ### Numerical tiling (SC vs MC)
 
-v0.79+ uses specialized tiling profiles to maximize throughput:
+v0.80+ uses specialized tiling profiles to maximize throughput:
 - **SC (Single-Core)**: Optimized for Edge/WASM/Small NPUs.
 - **MC (Multi-Core)**: Optimized for high-bandwidth L1/L2 caches (Ryzen, RTX, M4).
 
@@ -383,6 +396,8 @@ net.free()
 
 Same bedrock gate as Lucy and `@openfluke/welvet` (WASM). Logic in `seven_layer_spec.py`; engine work stays in the `.so`.
 
+Each layer × dtype run: forward → train → **JSON** save/reload → **`.entity`** save/reload → `sync_inference_weights()` → native persistence check.
+
 ```bash
 cd welvet/python
 pip install -e .
@@ -421,9 +436,9 @@ At runtime, `import welvet` resolves `welvet/<platform>_<arch>/welvet.{so,dylib,
 
 | Component | Version |
 |-----------|---------|
-| **Loom engine (C-ABI / poly)** | **0.79.0** — Bedrock Validation |
-| **PyPI `welvet`** | **0.79.0** |
-| **npm `@openfluke/welvet`** | **0.79.0** |
+| **Loom engine (C-ABI / poly)** | **0.80.0** — Bedrock Validation + `.entity` |
+| **PyPI `welvet`** | **0.80.0** |
+| **npm `@openfluke/welvet`** | **0.80.0** |
 
 ---
 
