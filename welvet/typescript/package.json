@@ -80,6 +80,7 @@
     "test:cabi": "tsx tests/cabi_verify.ts",
     "test:bench": "tsx tests/benchmark.ts",
     "test:seven-layer": "tsx tests/seven_layer.ts",
+    "test:entity-roundtrip": "tsx tests/entity_roundtrip.ts",
     "test:seven-layer:dense": "tsx tests/seven_layer.ts --layer Dense",
     "test:coverage": "tsx tests/coverage.ts"
   },

@@ -396,8 +396,11 @@ export interface Network {
   /** CPU training path: 1 = SC tiling, 2 = MC tiling (parity on WASM). */
   setTrainingMode(mode: number): string;
 
-  /** Native wire checkpoint (pair with global `deserializeLoomNetwork`). */
+  /** JSON wire checkpoint (pair with global `deserializeLoomNetwork`). */
   serialize(): string;
+
+  /** Native .entity wire checkpoint (pair with global `deserializeLoomEntity`). */
+  serializeEntity(): Uint8Array;
 
   /**
    * Polymorphic forward (same path as training / seven-layer suite).
