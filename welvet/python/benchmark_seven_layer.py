@@ -94,10 +94,16 @@ def _check_save_reload_cabi(net, inp, shape, tol, after):
 
 
 def _entity_native_ok(net, wire):
+    """Skip weightless layers (Residual, etc.) — lucy / entity_roundtrip.js parity."""
     n = net.info().get("total_layers", 0)
     for i in range(n):
-        r = layer_persistence_from_entity(wire, i)
-        if r.get("error") or not r.get("native") or not r.get("weights"):
+        try:
+            r = layer_persistence_from_entity(wire, i)
+        except RuntimeError as e:
+            if "no weight blob" in str(e):
+                continue
+            raise
+        if not r.get("native") or not r.get("weights"):
             return False
     return True
 
