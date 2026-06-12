@@ -8,6 +8,7 @@ src/welvet/ios_*/
 # Build artifacts
 dist/
 build/
+.publish-venv/
 *.egg-info/
 __pycache__/
 *.pyc

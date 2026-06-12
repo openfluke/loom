@@ -1,5 +1,10 @@
 include README.md
 include LICENSE
-recursive-include src/welvet *.so *.dylib *.dll
+recursive-include src/welvet/linux_amd64 *.so
+recursive-include src/welvet/linux_arm64 *.so
+recursive-include src/welvet/macos_amd64 *.dylib
+recursive-include src/welvet/macos_arm64 *.dylib
+recursive-include src/welvet/windows_amd64 *.dll
+recursive-include src/welvet/windows_arm64 *.dll
 exclude src/welvet/**/*.h
 exclude src/welvet/**/simple_bench*
