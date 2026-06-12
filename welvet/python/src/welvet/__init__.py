@@ -116,6 +116,10 @@ from .utils import (
     train_network,
     serialize_network,
     deserialize_network,
+    serialize_entity,
+    deserialize_entity,
+    layer_persistence_from_entity,
+    sync_inference_weights,
     configure_training_mode,
     forward_polymorphic,
     backward_polymorphic,
@@ -136,7 +140,7 @@ from .utils import (
     free_neat_population,
 )
 
-__version__ = "0.79.0"
+__version__ = "0.80.0"
 
 __all__ = [
     # Version
@@ -252,6 +256,15 @@ __all__ = [
     # Training helpers
     "train",
     "train_network",
+    "serialize_network",
+    "deserialize_network",
+    "serialize_entity",
+    "deserialize_entity",
+    "layer_persistence_from_entity",
+    "sync_inference_weights",
+    "configure_training_mode",
+    "forward_polymorphic",
+    "backward_polymorphic",
     # DNA Splice / Crossover
     "default_splice_config",
     "splice_dna",

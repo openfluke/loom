@@ -1,7 +1,7 @@
 /**
  * welvet — Type Definitions for the M-POLY-VTD AI Engine
  *
- * Wraps the Loom v0.79.0 WASM module which supports 21 numerical types,
+ * Wraps the Loom v0.80.0 WASM module which supports 21 numerical types,
  * step mesh propagation, target propagation, and WebGPU acceleration.
  */
 
@@ -396,8 +396,11 @@ export interface Network {
   /** CPU training path: 1 = SC tiling, 2 = MC tiling (parity on WASM). */
   setTrainingMode(mode: number): string;
 
-  /** Native wire checkpoint (pair with global `deserializeLoomNetwork`). */
+  /** JSON wire checkpoint (pair with global `deserializeLoomNetwork`). */
   serialize(): string;
+
+  /** Native .entity wire checkpoint (pair with global `deserializeLoomEntity`). */
+  serializeEntity(): Uint8Array;
 
   /**
    * Polymorphic forward (same path as training / seven-layer suite).

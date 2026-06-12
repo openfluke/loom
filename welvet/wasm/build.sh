@@ -28,7 +28,9 @@ SEVEN_LAYER_SRC="$SCRIPT_DIR/../seven_layer"
 if [[ ! -d "$SEVEN_LAYER_SRC" ]]; then
   SEVEN_LAYER_SRC="$SCRIPT_DIR/seven_layer"
 fi
+rm -rf "$DIST_DIR/seven_layer"
 cp -r "$SEVEN_LAYER_SRC" "$DIST_DIR/seven_layer"
+# entity_roundtrip.js lives in seven_layer/ (copied above)
 
 echo "Build complete: $DIST_DIR/main.wasm"
 ls -lh "$DIST_DIR/main.wasm"

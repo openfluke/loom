@@ -45,6 +45,7 @@ type PersistenceLayerSpec struct {
 	NumHeads     int     `json:"num_heads,omitempty"`
 	NumKVHeads   int     `json:"num_kv_heads,omitempty"`
 	HeadDim      int     `json:"head_dim,omitempty"`
+	QueryDim     int     `json:"query_dim,omitempty"`
 	DModel       int     `json:"d_model,omitempty"`
 	SeqLength    int     `json:"seq_length,omitempty"`
 	RoPEFreqBase float64 `json:"rope_freq_base,omitempty"`
@@ -82,8 +83,8 @@ type PersistenceLayerSpec struct {
 	MetaObservedLayer *PersistenceLayerSpec `json:"meta_observed_layer,omitempty"`
 }
 
-// SerializeNetwork converts a VolumetricNetwork into a JSON byte slice.
-func SerializeNetwork(net *VolumetricNetwork) ([]byte, error) {
+// BuildPersistenceNetworkSpec converts a VolumetricNetwork into the JSON-serializable spec.
+func BuildPersistenceNetworkSpec(net *VolumetricNetwork) PersistenceNetworkSpec {
 	spec := PersistenceNetworkSpec{
 		ID:            "network",
 		Depth:         net.Depth,
@@ -92,12 +93,15 @@ func SerializeNetwork(net *VolumetricNetwork) ([]byte, error) {
 		LayersPerCell: net.LayersPerCell,
 		Layers:        make([]PersistenceLayerSpec, 0, len(net.Layers)),
 	}
-
 	for _, l := range net.Layers {
 		spec.Layers = append(spec.Layers, serializeLayer(&l))
 	}
+	return spec
+}
 
-	return json.MarshalIndent(spec, "", "  ")
+// SerializeNetwork converts a VolumetricNetwork into a JSON byte slice.
+func SerializeNetwork(net *VolumetricNetwork) ([]byte, error) {
+	return json.MarshalIndent(BuildPersistenceNetworkSpec(net), "", "  ")
 }
 
 func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
@@ -123,6 +127,7 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 		NumHeads:     l.NumHeads,
 		NumKVHeads:   l.NumKVHeads,
 		HeadDim:      l.HeadDim,
+		QueryDim:     l.QueryDim,
 		DModel:       l.DModel,
 		SeqLength:    l.SeqLength,
 		RoPEFreqBase: l.RoPEFreqBase,
@@ -230,6 +235,7 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	l.NumHeads = ls.NumHeads
 	l.NumKVHeads = ls.NumKVHeads
 	l.HeadDim = ls.HeadDim
+	l.QueryDim = ls.QueryDim
 	l.DModel = ls.DModel
 	l.SeqLength = ls.SeqLength
 	l.RoPEFreqBase = ls.RoPEFreqBase
@@ -340,21 +346,17 @@ func ParseSoftmaxType(s string) SoftmaxType {
 	}
 }
 
-// encodeWeights converts float32 slice to base64 string (Little Endian).
-func encodeWeights(w []float32) string {
+// EncodeWeightsRaw converts float32 weights to little-endian bytes.
+func EncodeWeightsRaw(w []float32) []byte {
 	bytes := make([]byte, len(w)*4)
 	for i, v := range w {
 		binary.LittleEndian.PutUint32(bytes[i*4:], math.Float32bits(v))
 	}
-	return base64.StdEncoding.EncodeToString(bytes)
+	return bytes
 }
 
-// decodeWeights converts base64 string to float32 slice.
-func decodeWeights(s string) ([]float32, error) {
-	bytes, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return nil, err
-	}
+// DecodeWeightsRaw converts little-endian bytes to float32 weights.
+func DecodeWeightsRaw(bytes []byte) ([]float32, error) {
 	if len(bytes)%4 != 0 {
 		return nil, fmt.Errorf("invalid weight byte length: %d", len(bytes))
 	}
@@ -363,6 +365,20 @@ func decodeWeights(s string) ([]float32, error) {
 		w[i] = math.Float32frombits(binary.LittleEndian.Uint32(bytes[i*4:]))
 	}
 	return w, nil
+}
+
+// encodeWeights converts float32 slice to base64 string (Little Endian).
+func encodeWeights(w []float32) string {
+	return base64.StdEncoding.EncodeToString(EncodeWeightsRaw(w))
+}
+
+// decodeWeights converts base64 string to float32 slice.
+func decodeWeights(s string) ([]float32, error) {
+	bytes, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, err
+	}
+	return DecodeWeightsRaw(bytes)
 }
 
 // LayerPersistenceFromJSON reads the first layer's on-disk weight fields from serialized network JSON.
@@ -407,56 +423,52 @@ func LayerNativePersistenceSnapshot(ws *WeightStore, dtype DType) (weightsB64 st
 	return encodeNativeWeights(active, dtype), scale, true
 }
 
-// encodeNativeWeights converts an active weight slice to base64 string.
-func encodeNativeWeights(data any, dt DType) string {
+// EncodeNativeWeightsRaw converts an active weight slice to native-packed bytes.
+func EncodeNativeWeightsRaw(data any, dt DType) []byte {
 	switch w := data.(type) {
 	case []float64:
 		buf := make([]byte, len(w)*8)
 		for i, v := range w {
 			binary.LittleEndian.PutUint64(buf[i*8:], math.Float64bits(v))
 		}
-		return base64.StdEncoding.EncodeToString(buf)
+		return buf
 	case []float32:
 		if dt == DTypeBFloat16 {
-			// Pack as 16-bit BFloat16 (top 16 bits of float32)
 			buf := make([]byte, len(w)*2)
 			for i, v := range w {
 				u32 := math.Float32bits(v)
 				binary.LittleEndian.PutUint16(buf[i*2:], uint16(u32>>16))
 			}
-			return base64.StdEncoding.EncodeToString(buf)
+			return buf
 		} else if dt == DTypeFloat16 {
-			// Pack as 16-bit IEEE Float16 (simulated truncation for now)
 			buf := make([]byte, len(w)*2)
 			for i, v := range w {
-				// Simple truncation of mantissa for now (not true Float16 but 2 bytes)
 				u32 := math.Float32bits(v)
 				binary.LittleEndian.PutUint16(buf[i*2:], uint16(u32>>16))
 			}
-			return base64.StdEncoding.EncodeToString(buf)
+			return buf
 		}
-		return encodeWeights(w)
+		return EncodeWeightsRaw(w)
 	case []int64:
 		buf := make([]byte, len(w)*8)
 		for i, v := range w {
 			binary.LittleEndian.PutUint64(buf[i*8:], uint64(v))
 		}
-		return base64.StdEncoding.EncodeToString(buf)
+		return buf
 	case []int32:
 		buf := make([]byte, len(w)*4)
 		for i, v := range w {
 			binary.LittleEndian.PutUint32(buf[i*4:], uint32(v))
 		}
-		return base64.StdEncoding.EncodeToString(buf)
+		return buf
 	case []int16:
 		buf := make([]byte, len(w)*2)
 		for i, v := range w {
 			binary.LittleEndian.PutUint16(buf[i*2:], uint16(v))
 		}
-		return base64.StdEncoding.EncodeToString(buf)
+		return buf
 	case []int8:
 		if dt == DTypeInt4 || dt == DTypeUint4 || dt == DTypeFP4 {
-			// Pack 2 weights per byte
 			buf := make([]byte, (len(w)+1)/2)
 			for i, v := range w {
 				val := byte(v & 0x0F)
@@ -466,52 +478,49 @@ func encodeNativeWeights(data any, dt DType) string {
 					buf[i/2] |= val
 				}
 			}
-			return base64.StdEncoding.EncodeToString(buf)
+			return buf
 		} else if dt == DTypeInt2 || dt == DTypeUint2 || dt == DTypeTernary {
-			// Pack 4 weights per byte
 			buf := make([]byte, (len(w)+3)/4)
 			for i, v := range w {
 				val := byte(v & 0x03)
 				shift := uint(6 - (i%4)*2)
 				buf[i/4] |= (val << shift)
 			}
-			return base64.StdEncoding.EncodeToString(buf)
+			return buf
 		} else if dt == DTypeBinary {
-			// Pack 8 weights per byte
 			buf := make([]byte, (len(w)+7)/8)
 			for i, v := range w {
 				if v > 0 {
 					buf[i/8] |= (1 << uint(7-(i%8)))
 				}
 			}
-			return base64.StdEncoding.EncodeToString(buf)
+			return buf
 		}
 		buf := make([]byte, len(w))
 		for i, v := range w {
 			buf[i] = byte(v)
 		}
-		return base64.StdEncoding.EncodeToString(buf)
+		return buf
 	case []uint64:
 		buf := make([]byte, len(w)*8)
 		for i, v := range w {
 			binary.LittleEndian.PutUint64(buf[i*8:], v)
 		}
-		return base64.StdEncoding.EncodeToString(buf)
+		return buf
 	case []uint32:
 		buf := make([]byte, len(w)*4)
 		for i, v := range w {
 			binary.LittleEndian.PutUint32(buf[i*4:], v)
 		}
-		return base64.StdEncoding.EncodeToString(buf)
+		return buf
 	case []uint16:
 		buf := make([]byte, len(w)*2)
 		for i, v := range w {
 			binary.LittleEndian.PutUint16(buf[i*2:], v)
 		}
-		return base64.StdEncoding.EncodeToString(buf)
+		return buf
 	case []uint8:
 		if dt == DTypeInt4 || dt == DTypeUint4 || dt == DTypeFP4 {
-			// Sub-byte native storage uses one 4-bit code per weight; persist it compactly.
 			buf := make([]byte, (len(w)+1)/2)
 			for i, v := range w {
 				var val byte
@@ -526,7 +535,7 @@ func encodeNativeWeights(data any, dt DType) string {
 					buf[i/2] |= val
 				}
 			}
-			return base64.StdEncoding.EncodeToString(buf)
+			return buf
 		} else if dt == DTypeInt2 || dt == DTypeUint2 || dt == DTypeTernary {
 			buf := make([]byte, (len(w)+3)/4)
 			for i, v := range w {
@@ -539,7 +548,7 @@ func encodeNativeWeights(data any, dt DType) string {
 				shift := uint(6 - (i%4)*2)
 				buf[i/4] |= val << shift
 			}
-			return base64.StdEncoding.EncodeToString(buf)
+			return buf
 		} else if dt == DTypeBinary {
 			buf := make([]byte, (len(w)+7)/8)
 			for i, v := range w {
@@ -547,12 +556,23 @@ func encodeNativeWeights(data any, dt DType) string {
 					buf[i/8] |= 1 << uint(7-(i%8))
 				}
 			}
-			return base64.StdEncoding.EncodeToString(buf)
+			return buf
 		}
-		return base64.StdEncoding.EncodeToString(w)
+		out := make([]byte, len(w))
+		copy(out, w)
+		return out
 	default:
+		return nil
+	}
+}
+
+// encodeNativeWeights converts an active weight slice to base64 string.
+func encodeNativeWeights(data any, dt DType) string {
+	raw := EncodeNativeWeightsRaw(data, dt)
+	if len(raw) == 0 {
 		return ""
 	}
+	return base64.StdEncoding.EncodeToString(raw)
 }
 
 // DecodeNativeWeights converts a base64 native checkpoint blob to in-memory native storage.
@@ -560,13 +580,8 @@ func DecodeNativeWeights(s string, dt DType) (any, error) {
 	return decodeNativeWeights(s, dt)
 }
 
-// decodeNativeWeights converts base64 string to a slice of the given DType.
-func decodeNativeWeights(s string, dt DType) (any, error) {
-	bytes, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return nil, err
-	}
-
+// DecodeNativeWeightsRaw converts native-packed bytes to in-memory storage for dt.
+func DecodeNativeWeightsRaw(bytes []byte, dt DType) (any, error) {
 	switch dt {
 	case DTypeFloat64:
 		w := make([]float64, len(bytes)/8)
@@ -575,7 +590,7 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 		}
 		return w, nil
 	case DTypeFloat32:
-		return decodeWeights(s)
+		return DecodeWeightsRaw(bytes)
 	case DTypeFloat16, DTypeBFloat16:
 		w := make([]uint16, len(bytes)/2)
 		for i := range w {
@@ -629,7 +644,6 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 		copy(w, bytes)
 		return w, nil
 	case DTypeInt4, DTypeUint4:
-		// Unpack 2 weights per byte into native []uint8 storage.
 		w := make([]uint8, len(bytes)*2)
 		for i := range bytes {
 			valHigh := (bytes[i] >> 4) & 0x0F
@@ -638,7 +652,6 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 			sh := int8(valHigh)
 			sl := int8(valLow)
 
-			// Sign extend only if it's a signed type
 			if dt == DTypeInt4 {
 				if sh > 7 {
 					sh -= 16
@@ -655,7 +668,6 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 		}
 		return w, nil
 	case DTypeFP4:
-		// Unpack 2 FP4 codes per byte into []uint8 code storage.
 		w := make([]uint8, len(bytes)*2)
 		for i := range bytes {
 			w[i*2] = (bytes[i] >> 4) & 0x0F
@@ -665,14 +677,12 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 		}
 		return w, nil
 	case DTypeInt2, DTypeUint2, DTypeTernary:
-		// Unpack 4 weights per byte into native []uint8 storage.
 		w := make([]uint8, len(bytes)*4)
 		for i := range bytes {
 			for j := 0; j < 4; j++ {
 				shift := uint(6 - j*2)
 				val := (bytes[i] >> shift) & 0x03
 				sv := int8(val)
-				// Sign extend only if it's a signed type
 				if dt == DTypeInt2 || dt == DTypeTernary {
 					if sv > 1 {
 						sv -= 4
@@ -685,7 +695,6 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 		}
 		return w, nil
 	case DTypeBinary:
-		// Unpack 8 weights per byte into native []uint8 storage.
 		w := make([]uint8, len(bytes)*8)
 		for i := range bytes {
 			for j := 0; j < 8; j++ {
@@ -701,6 +710,17 @@ func decodeNativeWeights(s string, dt DType) (any, error) {
 		}
 		return w, nil
 	default:
-		return bytes, nil
+		out := make([]byte, len(bytes))
+		copy(out, bytes)
+		return out, nil
 	}
+}
+
+// decodeNativeWeights converts base64 string to a slice of the given DType.
+func decodeNativeWeights(s string, dt DType) (any, error) {
+	bytes, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, err
+	}
+	return DecodeNativeWeightsRaw(bytes, dt)
 }

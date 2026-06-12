@@ -18,6 +18,8 @@ type WeightStore struct {
 	GPUWeights     map[DType]any          // Primary Execution Store (VRAM-resident wgpu.Buffer)
 	GPUScales      map[DType]*wgpu.Buffer // VRAM-resident scales for quantized types
 	GPUScaleValues map[DType]float32      // CPU metadata for VRAM-resident packed kernels
+	Q4_0Scales     map[DType][]float32    // Baked Q4_0 scales from .entity (upload as-is)
+	Q4_0Packed     map[DType][]uint32     // Baked Q4_0 packed weights from .entity
 	Scale          float32                // Dynamic quantization scale factor
 }
 
@@ -509,6 +511,8 @@ func NewWeightStore(size int) *WeightStore {
 		GPUWeights:     make(map[DType]any),
 		GPUScales:      make(map[DType]*wgpu.Buffer),
 		GPUScaleValues: make(map[DType]float32),
+		Q4_0Scales:     make(map[DType][]float32),
+		Q4_0Packed:     make(map[DType][]uint32),
 		Scale:          1.0,
 	}
 }

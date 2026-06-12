@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "welvet"
-version = "0.79.0"
-description = "M-POLY-VTD AI Engine (Loom v0.79.0) — 21 Numerical Types, WebGPU, Transformer Inference, and 100% Determinism"
+version = "0.80.0"
+description = "M-POLY-VTD AI Engine (Loom v0.80.0) — 21 Numerical Types, native .entity checkpoints, WebGPU, and 100% Determinism"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "Apache-2.0"}
@@ -42,18 +42,17 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
+# PyPI wheel: desktop platforms only (100 MB upload limit). Mobile/iOS slices ship via
+# monorepo copy_to_python.sh for local/CI builds — see README platform table.
 welvet = [
   "linux_amd64/*.so",
   "linux_arm64/*.so",
   "macos_amd64/*.dylib",
   "macos_arm64/*.dylib",
-  "macos_universal/*.dylib",
   "windows_amd64/*.dll",
+  "windows_amd64/libunwind.dll",
   "windows_arm64/*.dll",
-  "android_arm64/*.so",
-  "android_x86_64/*.so",
-  "ios_arm64/*",
-  "ios_xcframework/**/*",
+  "windows_arm64/libunwind.dll",
 ]
 
 [tool.setuptools.exclude-package-data]

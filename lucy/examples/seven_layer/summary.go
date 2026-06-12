@@ -46,7 +46,11 @@ type DTypeRow struct {
 	MemSys       string
 	MemHeapTrain string
 	WeightBytes  string
-	Checkpoint   string
+	Checkpoint        string
+	EntityCheckpoint  string
+	EntityBeforeOK    bool
+	EntityAfterOK     bool
+	EntityNativeOK    bool
 	ReloadFwdDiff float64
 	ReloadLossDelta float64
 	TrainedLoss   float64
@@ -152,36 +156,36 @@ func PrintMemoryTable(layerName string, rows []DTypeRow) {
 	fmt.Printf("║  %s — memory & weight footprint (Go runtime + network)               ║\n", layerName)
 	fmt.Printf("╚══════════════════════════════════════════════════════════════════════╝\n\n")
 
-	fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s | %-12s |\n",
-		"DType", "Heap", "Sys", "Heap+train", "Weights", "Checkpoint")
-	fmt.Println("|------------|------------|------------|------------|------------|--------------|")
+	fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s | %-12s | %-12s |\n",
+		"DType", "Heap", "Sys", "Heap+train", "Weights", "JSON ckpt", ".entity ckpt")
+	fmt.Println("|------------|------------|------------|------------|------------|--------------|--------------|")
 
 	for _, r := range rows {
 		if r.Err != "" {
 			continue
 		}
-		fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s | %-12s |\n",
-			r.DType, r.MemHeap, r.MemSys, r.MemHeapTrain, r.WeightBytes, r.Checkpoint)
+		fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s | %-12s | %-12s |\n",
+			r.DType, r.MemHeap, r.MemSys, r.MemHeapTrain, r.WeightBytes, r.Checkpoint, r.EntityCheckpoint)
 	}
 }
 
 func PrintTrainedReloadTable(layerName string, rows []DTypeRow) {
 	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  %s — trained checkpoint save/reload (after MC train)                  ║\n", layerName)
+	fmt.Printf("║  %s — trained checkpoint save/reload (JSON + .entity, after MC train)  ║\n", layerName)
 	fmt.Printf("╚══════════════════════════════════════════════════════════════════════╝\n\n")
 	fmt.Println("  Verifies: serialize trained net → deserialize → forward/loss/native match in-memory model.")
 
-	fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s | %-8s | %-8s |\n",
-		"DType", "Loss train", "Loss reload", "|Δloss|", "|Δfwd|", "A-OK", "Native")
-	fmt.Println("|------------|------------|------------|------------|------------|--------|--------|")
+	fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s | %-8s | %-8s | %-8s | %-8s |\n",
+		"DType", "Loss train", "Loss reload", "|Δloss|", "|Δfwd|", "JSON", "Native", "ENTITY", "E-Native")
+	fmt.Println("|------------|------------|------------|------------|------------|--------|--------|--------|--------|")
 
 	for _, r := range rows {
 		if r.Err != "" {
 			continue
 		}
-		fmt.Printf("| %-10s | %-10.4e | %-10.4e | %-10.2e | %-10.2e | %-8s | %-8s |\n",
+		fmt.Printf("| %-10s | %-10.4e | %-10.4e | %-10.2e | %-10.2e | %-8s | %-8s | %-8s | %-8s |\n",
 			r.DType, r.TrainedLoss, r.ReloadedLoss, r.ReloadLossDelta, r.ReloadFwdDiff,
-			markOK(r.AfterOK), markOK(r.NativeOK))
+			markOK(r.AfterOK), markOK(r.NativeOK), markOK(r.EntityAfterOK), markOK(r.EntityNativeOK))
 	}
 }
 

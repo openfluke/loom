@@ -72,7 +72,7 @@ Python / TypeScript / WASM consumers that train outside `LoomTrain` should call 
 - ASM on MHA/SwiGLU/CNN (still **Dense forward** only).
 - Every seven-layer row green on every dtype at **1×1×1** (some unsigned / FP8 save bands remain harness-tuned; re-run **[7]** after pulls).
 
-**Next named target (unchanged):** **v0.8.0 "Edge-First"** — thermal scheduling, UMA pinning, command-buffer graphing. **ASM track:** Dense backward, then SwiGLU / MHA / CNN (`poly/README.md` rollout queue).
+**Next named target (unchanged):** **v0.81** — ASM rollout (Dense backward, SwiGLU, MHA); GPU fusion. See [`v080_release.md`](v080_release.md) for the **0.80.0** wave.
 
 ---
 

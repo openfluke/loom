@@ -6,6 +6,7 @@ import {
   ALL_DTYPES, LAYER_SUITES, TrainingMode,
   trainEpochsForGrid, benchItersForGrid,
   sinTarget, maxAbsDiff, trainingOK, trainingLR,
+  isDenseNativeTrainDType,
 } from './bench.js';
 
 function f32(data) {
@@ -27,19 +28,46 @@ function morphAll(net) {
   };
 }
 
+function resetNet(net) {
+  if (typeof net.resetLayerState === 'function') net.resetLayerState();
+}
+
+function configureInferenceNet(net) {
+  net.setReleaseFP32MasterWhenIdle(true);
+  net.syncInferenceWeights();
+}
+
+function configureTrainingNet(net, primary, dtype) {
+  net.setUseExactDType(primary === 'DENSE' && isDenseNativeTrainDType(dtype));
+}
+
+function prepareTrainNet(net) {
+  net.setReleaseFP32MasterWhenIdle(true);
+}
+
+function loomGC() {
+  if (typeof globalThis.loomGC === 'function') globalThis.loomGC();
+}
+
 function forwardBind(net, data, shape, mode, iters) {
   net.setTrainingMode(mode);
   const d = f32(data);
   const sh = JSON.stringify(shape);
-  for (let i = 0; i < 3; i++) toArray(net.forwardPolymorphic(d, sh));
-  const t0 = performance.now();
+  for (let i = 0; i < 3; i++) {
+    resetNet(net);
+    toArray(net.forwardPolymorphic(d, sh));
+  }
   let last = null;
-  for (let i = 0; i < iters; i++) last = toArray(net.forwardPolymorphic(d, sh));
+  for (let i = 0; i < iters; i++) {
+    resetNet(net);
+    last = toArray(net.forwardPolymorphic(d, sh));
+  }
   return last;
 }
 
 function backwardBind(net, inp, inShape, tgt, tgtShape, mode) {
   net.setTrainingMode(mode);
+  resetNet(net);
   const r = JSON.parse(net.backwardPolymorphic(
     f32(inp), JSON.stringify(inShape), f32(tgt), JSON.stringify(tgtShape),
   ));
@@ -73,12 +101,44 @@ function trainBind(net, inp, tgt, inShape, tgtShape, epochs, mode, lr) {
 function saveReloadBind(net, inp, shape, tol, after) {
   const d = f32(inp);
   const sh = JSON.stringify(shape);
+  resetNet(net);
   const out0 = toArray(net.forwardPolymorphic(d, sh));
   const wire = net.serialize();
   const reloaded = globalThis.deserializeLoomNetwork(wire);
+  resetNet(reloaded);
   const out1 = toArray(reloaded.forwardPolymorphic(d, sh));
   reloaded.free();
   return maxAbsDiff(out0, out1) <= tol * (after ? 100 : 1);
+}
+
+/** Native .entity wire — parity with lucy [7] checkEntitySaveReload. */
+function entityNativeOK(net, wire) {
+  const n = JSON.parse(net.getInfo()).total_layers;
+  for (let i = 0; i < n; i++) {
+    const raw = globalThis.layerPersistenceFromEntity(wire, i);
+    const r = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (r.error || !r.native || !r.weights) return false;
+  }
+  return true;
+}
+
+function saveReloadEntityBind(net, inp, shape, tol, after) {
+  const d = f32(inp);
+  const sh = JSON.stringify(shape);
+  resetNet(net);
+  const out0 = toArray(net.forwardPolymorphic(d, sh));
+  const wire = net.serializeEntity();
+  if (wire && wire.error) throw new Error(wire.error);
+  const reloaded = globalThis.deserializeLoomEntity(wire);
+  if (typeof reloaded === 'string' && reloaded.includes('"error"')) {
+    throw new Error(JSON.parse(reloaded).error);
+  }
+  resetNet(reloaded);
+  const out1 = toArray(reloaded.forwardPolymorphic(d, sh));
+  const fwdOk = maxAbsDiff(out0, out1) <= tol * (after ? 100 : 1);
+  const nativeOk = entityNativeOK(net, wire);
+  reloaded.free();
+  return fwdOk && nativeOk;
 }
 
 export function runLayerSuite(suite, log = console.log) {
@@ -88,7 +148,7 @@ export function runLayerSuite(suite, log = console.log) {
     const iters = benchItersForGrid(g);
     const label = `${suite.name} ${g.depth}×${g.rows}×${g.cols}`;
     log(`\n${'═'.repeat(70)}`);
-    log(`  ${label} — bindings → Loom (CPU SC/MC · train · save/reload)`);
+    log(`  ${label} — bindings → Loom (CPU SC/MC · train · JSON + .entity save/reload)`);
     log('═'.repeat(70));
 
     for (const tc of ALL_DTYPES) {
@@ -96,9 +156,10 @@ export function runLayerSuite(suite, log = console.log) {
       try {
         const net = globalThis.createLoomNetwork(suite.build(g, tc.jsonName));
         morphAll(net)(tc.dtype);
+        configureTrainingNet(net, suite.primary, tc.dtype);
+        configureInferenceNet(net);
 
         const { data: inp, shape: inShape } = suite.makeInput(g);
-        const batch = suite.isEmbedding ? 1 : 4;
 
         const outSc = forwardBind(net, inp, inShape, TrainingMode.CPUSC, iters);
         const outMc = forwardBind(net, inp, inShape, TrainingMode.CPUMC, iters);
@@ -116,38 +177,46 @@ export function runLayerSuite(suite, log = console.log) {
 
         const detTol = Math.max(tc.tolerance, 1e-10);
         const detOk = fwdScmc <= detTol && bwdScmc <= detTol * 10;
-        const beforeOk = saveReloadBind(net, inp, inShape, tc.tolerance, false);
+        const jsonBeforeOk = saveReloadBind(net, inp, inShape, tc.tolerance, false);
+        const entityBeforeOk = saveReloadEntityBind(net, inp, inShape, tc.tolerance, false);
 
         const lr = trainingLR(tc.dtype);
         const netSc = globalThis.createLoomNetwork(suite.build(g, tc.jsonName));
         morphAll(netSc)(tc.dtype);
+        configureTrainingNet(netSc, suite.primary, tc.dtype);
+        prepareTrainNet(netSc);
         trainBind(netSc, inp, tgt, inShape, tgtShape, epochs, TrainingMode.CPUSC, lr);
         netSc.free();
 
         const netMc = globalThis.createLoomNetwork(suite.build(g, tc.jsonName));
         morphAll(netMc)(tc.dtype);
+        configureTrainingNet(netMc, suite.primary, tc.dtype);
+        prepareTrainNet(netMc);
         const hist = trainBind(netMc, inp, tgt, inShape, tgtShape, epochs, TrainingMode.CPUMC, lr);
 
         const lossInit = hist[0] ?? 0;
         const lossFinal = hist[hist.length - 1] ?? 0;
         const requiresLearn = suite.primary !== 'RESIDUAL' && !suite.noLearn;
         const learned = trainingOK(lossInit, lossFinal, tc.dtype) || !requiresLearn;
-        const afterOk = saveReloadBind(netMc, inp, inShape, tc.tolerance, true);
-        const overall = beforeOk && afterOk && learned && detOk;
+        const jsonAfterOk = saveReloadBind(netMc, inp, inShape, tc.tolerance, true);
+        const entityAfterOk = saveReloadEntityBind(netMc, inp, inShape, tc.tolerance, true);
+        const overall = jsonBeforeOk && entityBeforeOk && jsonAfterOk && entityAfterOk && learned && detOk;
 
         net.free();
         netMc.free();
+        loomGC();
 
         if (overall) {
           passed++;
-          log(`PASS  loss ${lossInit.toExponential(4)}→${lossFinal.toExponential(4)} det=${detOk} reload=${afterOk}`);
+          log(`PASS  loss ${lossInit.toExponential(4)}→${lossFinal.toExponential(4)} det=${detOk} json=${jsonAfterOk} entity=${entityAfterOk}`);
         } else {
           failed++;
-          log(`FAIL  loss ${lossInit.toExponential(4)}→${lossFinal.toExponential(4)} learn=${learned} save=${beforeOk && afterOk} det=${detOk}`);
+          log(`FAIL  loss ${lossInit.toExponential(4)}→${lossFinal.toExponential(4)} learn=${learned} json=${jsonBeforeOk && jsonAfterOk} entity=${entityBeforeOk && entityAfterOk} det=${detOk}`);
         }
       } catch (e) {
         failed++;
         log(`ERR   ${e.message || e}`);
+        loomGC();
       }
     }
   }

@@ -47,6 +47,21 @@ func forwardLoss(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32
 }
 
 func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], tc dtypeCase, refLoss float64, phase savePhase, primary poly.LayerType) saveResult {
+	return checkSaveReloadFormat(net, input, target, tc, refLoss, phase, primary, formatJSON)
+}
+
+func checkEntitySaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], tc dtypeCase, refLoss float64, phase savePhase, primary poly.LayerType) saveResult {
+	return checkSaveReloadFormat(net, input, target, tc, refLoss, phase, primary, formatEntity)
+}
+
+type checkpointFormat int
+
+const (
+	formatJSON checkpointFormat = iota
+	formatEntity
+)
+
+func checkSaveReloadFormat(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], tc dtypeCase, refLoss float64, phase savePhase, primary poly.LayerType, fmt checkpointFormat) saveResult {
 	r := saveResult{}
 	finalizeTrainingNet(net, tc)
 	setCPUMode(net, true, false)
@@ -54,13 +69,26 @@ func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[flo
 	out0, _, _ := poly.ForwardPolymorphic(net, input)
 	baseline := append([]float32(nil), out0.Data...)
 
-	wire, err := poly.SerializeNetwork(net)
+	var wire []byte
+	var err error
+	switch fmt {
+	case formatJSON:
+		wire, err = poly.SerializeNetwork(net)
+	case formatEntity:
+		wire, err = poly.SerializeEntity(net)
+	}
 	if err != nil {
 		r.err = err.Error()
 		r.bucket = specFatal
 		return r
 	}
-	reloaded, err := poly.DeserializeNetwork(wire)
+	var reloaded *poly.VolumetricNetwork
+	switch fmt {
+	case formatJSON:
+		reloaded, err = poly.DeserializeNetwork(wire)
+	case formatEntity:
+		reloaded, err = poly.DeserializeEntity(wire)
+	}
 	if err != nil {
 		r.err = err.Error()
 		r.bucket = specFatal
@@ -82,7 +110,12 @@ func checkSaveReload(net *poly.VolumetricNetwork, input, target *poly.Tensor[flo
 		r.lossDelta = math.Abs(r.reloadedLoss - refLoss)
 	}
 
-	r.nativeOK = nativePersistenceOK(net, reloaded, wire, tc)
+	switch fmt {
+	case formatJSON:
+		r.nativeOK = nativePersistenceOK(net, reloaded, wire, tc)
+	case formatEntity:
+		r.nativeOK = nativeEntityPersistenceOK(net, reloaded, wire, tc)
+	}
 	maxBucket := saveReloadMaxBucket(phase, tc.dtype, primary)
 	fwdTol := saveReloadFwdTol(phase, tc, primary)
 	wTol := tc.tolerance
@@ -150,6 +183,35 @@ func nativePersistenceOKLayer(src, dst *poly.VolumetricLayer, wire []byte, layer
 		poly.NativeWeightsEncoded(decoded, loaded, dt)
 }
 
+func nativeEntityPersistenceOK(net, reloaded *poly.VolumetricNetwork, wire []byte, tc dtypeCase) bool {
+	for i := range net.Layers {
+		if !nativeEntityPersistenceOKLayer(&net.Layers[i], &reloaded.Layers[i], wire, i, tc.dtype) {
+			return false
+		}
+	}
+	return true
+}
+
+func nativeEntityPersistenceOKLayer(src, dst *poly.VolumetricLayer, wire []byte, layerIndex int, dt poly.DType) bool {
+	if src == nil || src.WeightStore == nil {
+		return true
+	}
+	raw, scale, native, fileErr := poly.LayerPersistenceFromEntity(wire, layerIndex)
+	if dst == nil || dst.WeightStore == nil {
+		return false
+	}
+	if fileErr != nil || !native || len(raw) == 0 {
+		return false
+	}
+	decoded, decErr := poly.DecodeNativeWeightsRaw(raw, dst.DType)
+	loaded := dst.WeightStore.Versions[dt]
+	if loaded == nil {
+		loaded = dst.WeightStore.GetNative(dt)
+	}
+	return decErr == nil && loaded != nil && dst.WeightStore.Scale == scale &&
+		poly.NativeWeightsEncoded(decoded, loaded, dt)
+}
+
 func trainCPU(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], mode poly.TrainingMode, tc dtypeCase, primary poly.LayerType, epochs int) (*poly.TrainingResult, time.Duration, error) {
 	configureTrainingNet(net, tc, primary)
 	prepareTrainingNet(net, tc.dtype)
@@ -176,6 +238,17 @@ func saveCheckpoint(net *poly.VolumetricNetwork, tag, dtypeName string) string {
 	return path
 }
 
+func saveEntityCheckpoint(net *poly.VolumetricNetwork, tag, dtypeName string) string {
+	wire, err := poly.SerializeEntity(net)
+	if err != nil {
+		return ""
+	}
+	_ = os.MkdirAll(OutputDir, 0o755)
+	path := filepath.Join(OutputDir, tag+"_"+dtypeName+".entity")
+	_ = os.WriteFile(path, wire, 0o644)
+	return path
+}
+
 // RunLayerSuite executes the full [7] matrix for one layer type on one grid.
 func RunLayerSuite(s LayerSuite) bool {
 	asmSt := layerAsmStatus(s.PrimaryType)
@@ -185,7 +258,7 @@ func RunLayerSuite(s LayerSuite) bool {
 
 	fmt.Println()
 	fmt.Println("══════════════════════════════════════════════════════════════════════")
-	fmt.Printf("  Loom seven-layer %s — JSON · CPU SC/MC · train · save/reload\n", suiteLabel)
+	fmt.Printf("  Loom seven-layer %s — JSON + .entity · CPU SC/MC · train · save/reload\n", suiteLabel)
 	fmt.Println(s.Banner)
 	fmt.Println("══════════════════════════════════════════════════════════════════════")
 	fmt.Printf("  %d dtypes × %d epochs · grid %s (%d-layer stack) · ASM: %s\n",
@@ -280,6 +353,11 @@ func RunLayerSuite(s LayerSuite) bool {
 		row.BeforeBucket = before.bucket.String()
 		row.BeforeOK = before.pass
 		row.NativeOK = before.nativeOK
+		entityBefore := checkEntitySaveReload(net, input, target, tc, lossBefore, phaseBefore, s.PrimaryType)
+		row.EntityBeforeOK = entityBefore.pass
+		if entityBefore.nativeOK {
+			row.EntityNativeOK = true
+		}
 
 		// Train CPU SC then MC (fresh weight copy via rebuild for fairness)
 		netSC, _ := poly.BuildNetworkFromJSON(s.BuildJSON(tc.jsonName))
@@ -337,6 +415,12 @@ func RunLayerSuite(s LayerSuite) bool {
 				row.Checkpoint = formatBytes(uint64(st.Size()))
 			}
 		}
+		entityPath := saveEntityCheckpoint(netMC, s.CheckpointTag, tc.name)
+		if entityPath != "" {
+			if st, err := os.Stat(entityPath); err == nil {
+				row.EntityCheckpoint = formatBytes(uint64(st.Size()))
+			}
+		}
 
 		after := checkSaveReload(netMC, input, target, tc, lossFinal, phaseAfter, s.PrimaryType)
 		row.AfterBucket = after.bucket.String()
@@ -348,10 +432,15 @@ func RunLayerSuite(s LayerSuite) bool {
 		if !after.nativeOK {
 			row.NativeOK = false
 		}
+		entityAfter := checkEntitySaveReload(netMC, input, target, tc, lossFinal, phaseAfter, s.PrimaryType)
+		row.EntityAfterOK = entityAfter.pass
+		if !entityAfter.nativeOK {
+			row.EntityNativeOK = false
+		}
 
-		// CPU SC/MC parity + train + save/reload (ASM reported but not required for pass).
-		row.OverallOK = row.BeforeOK && row.AfterOK && row.Learned && row.DetOK &&
-			lossFiniteOK(lossInit, lossFinal, requiresLearn)
+		// CPU SC/MC parity + train + JSON/.entity save/reload (ASM reported but not required for pass).
+		row.OverallOK = row.BeforeOK && row.AfterOK && row.EntityBeforeOK && row.EntityAfterOK &&
+			row.Learned && row.DetOK && lossFiniteOK(lossInit, lossFinal, requiresLearn)
 		rows = append(rows, row)
 
 		asmTag := "N/A"
@@ -360,15 +449,15 @@ func RunLayerSuite(s LayerSuite) bool {
 		}
 		if row.OverallOK {
 			passed++
-			fmt.Printf("PASS  loss %.4e→%.4e det=%s reload=%s fwd/bwd SC=%s/%s MC=%s/%s mem=%s ckpt=%s\n",
-				lossInit, lossFinal, markOK(row.DetOK), markOK(row.AfterOK),
+			fmt.Printf("PASS  loss %.4e→%.4e det=%s json=%s entity=%s fwd/bwd SC=%s/%s MC=%s/%s mem=%s json=%s entity=%s\n",
+				lossInit, lossFinal, markOK(row.DetOK), markOK(row.AfterOK), markOK(row.EntityAfterOK),
 				row.FwdSCDur, row.BwdSCDur, row.FwdMCDur, row.BwdMCDur,
-				row.MemHeapTrain, row.Checkpoint)
+				row.MemHeapTrain, row.Checkpoint, row.EntityCheckpoint)
 		} else {
 			failed++
-			fmt.Printf("FAIL  loss %.4e→%.4e learn=%s save=%s det=%s asm=%s reload_Δloss=%.2e\n",
+			fmt.Printf("FAIL  loss %.4e→%.4e learn=%s json=%s entity=%s det=%s asm=%s reload_Δloss=%.2e\n",
 				lossInit, lossFinal, markOK(row.Learned), markOK(row.BeforeOK && row.AfterOK),
-				markOK(row.DetOK), asmTag, row.ReloadLossDelta)
+				markOK(row.EntityBeforeOK && row.EntityAfterOK), markOK(row.DetOK), asmTag, row.ReloadLossDelta)
 		}
 		_ = lossSC
 	}

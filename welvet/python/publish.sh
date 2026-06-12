@@ -5,14 +5,36 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 echo "=== Building and Publishing welvet to PyPI ==="
 echo ""
 
-if ! python3 -c "import build" 2>/dev/null; then
-    echo "⚠️  Missing Python packaging tools. Install first:"
-    echo "  pip install build twine"
-    exit 1
+# Prefer active env (conda/venv) over bare system python3
+pick_python() {
+    for cmd in python python3; do
+        if command -v "$cmd" >/dev/null 2>&1 && "$cmd" -c "import build, twine" 2>/dev/null; then
+            echo "$cmd"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if PYTHON="$(pick_python)"; then
+    echo "Using $PYTHON ($($PYTHON --version 2>&1))"
+else
+    VENV=".publish-venv"
+    echo "Packaging tools not found — bootstrapping $VENV ..."
+    if [ ! -x "$VENV/bin/python" ]; then
+        python3 -m venv "$VENV" 2>/dev/null || python -m venv "$VENV"
+    fi
+    "$VENV/bin/pip" install -q build twine
+    PYTHON="$VENV/bin/python"
+    echo "Using $PYTHON ($($PYTHON --version 2>&1))"
 fi
+echo ""
 
 # Native libs required for the wheel (multi-platform tree under src/welvet/)
 if [ ! -f "src/welvet/linux_amd64/welvet.so" ]; then
@@ -40,7 +62,7 @@ rm -rf dist/ build/ *.egg-info src/*.egg-info
 
 # Build the package
 echo "Building package..."
-python3 -m build
+"$PYTHON" -m build
 
 echo ""
 echo "✓ Build complete!"
@@ -50,7 +72,7 @@ grep -E '"name"|"version"' pyproject.toml | head -2
 echo ""
 
 # Check if logged in to PyPI (try to get username)
-if python3 -m twine check dist/* &> /dev/null; then
+if "$PYTHON" -m twine check dist/* &> /dev/null; then
     echo "✓ Package passes twine checks"
     echo ""
     
@@ -64,7 +86,7 @@ if python3 -m twine check dist/* &> /dev/null; then
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo "Uploading to PyPI..."
-        python3 -m twine upload dist/*
+        "$PYTHON" -m twine upload dist/*
         echo ""
         echo "=== Published Successfully ==="
         echo "View at: https://pypi.org/project/welvet/"
@@ -74,7 +96,7 @@ if python3 -m twine check dist/* &> /dev/null; then
         echo "Upload cancelled."
         echo ""
         echo "To upload manually:"
-        echo "  python3 -m twine upload dist/*"
+        echo "  $PYTHON -m twine upload dist/*"
     fi
 else
     echo "⚠️  twine check failed or twine not installed"

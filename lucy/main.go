@@ -4,14 +4,33 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/openfluke/loom/lucy/examples"
 	lucytesting "github.com/openfluke/loom/lucy/testing"
 )
 
+func printPlatformInfo() {
+	hostCPU := strings.TrimSpace(os.Getenv("PROCESSOR_ARCHITECTURE"))
+	msg := fmt.Sprintf("Platform: %s/%s binary", runtime.GOOS, runtime.GOARCH)
+	if hostCPU != "" {
+		msg += fmt.Sprintf(" | host CPU=%s", hostCPU)
+	}
+	switch {
+	case runtime.GOOS == "windows" && strings.EqualFold(hostCPU, "ARM64") && runtime.GOARCH == "amd64":
+		msg += " → x64 build on ARM64 PC (WoA / Prism emulation)"
+	case runtime.GOOS == "windows" && strings.EqualFold(hostCPU, "ARM64") && runtime.GOARCH == "arm64":
+		msg += " → native ARM64"
+	case runtime.GOOS == "windows" && runtime.GOARCH == "amd64":
+		msg += " → native x64"
+	}
+	fmt.Println(msg)
+}
+
 func main() {
 	fmt.Println("Initializing Lucy Bloom Rivers …")
+	printPlatformInfo()
 	reader := bufio.NewReader(os.Stdin)
 	mode := readInput(reader, "\n[1] Poly Talk (HuggingFace cache)\n"+
 		"[2] Tests — dense mid-stream adaptation benchmark\n"+
@@ -20,6 +39,7 @@ func main() {
 		"[5] Forward benchmark — BitNet b1.58 CPU: normal vs stepped vs pipeline\n"+
 		"[6] Five-layer examples — per-layer .go tutorials (→ "+lucytesting.DefaultOutputDir+"/five_layer.txt)\n"+
 		"[7] Seven-layer CPU suite — JSON · SC/MC/ASM · train · save/reload (→ "+lucytesting.DefaultOutputDir+"/seven_layer.txt)\n"+
+		"[8] ENTITY Talk — HF cache → .entity convert → chat (Qwen/SmolLM2/Llama-style)\n"+
 		"Choice [1]: ", "1")
 	switch strings.TrimSpace(mode) {
 	case "2":
@@ -35,6 +55,8 @@ func main() {
 		examples.RunFiveLayerMenu(reader)
 	case "7":
 		examples.RunSevenLayerMenu(reader)
+	case "8":
+		runEntityTalkMode(reader)
 	default:
 		runHuggingFaceMode(reader)
 	}

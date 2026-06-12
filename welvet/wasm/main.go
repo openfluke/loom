@@ -1,7 +1,7 @@
 //go:build js && wasm
 // +build js,wasm
 
-// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.79.0)
+// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.80.0)
 //
 // Exposes the poly.VolumetricNetwork API to JavaScript via WebAssembly.
 // Supports 21 numerical types, step mesh propagation, target propagation,
@@ -19,7 +19,7 @@ import (
 )
 
 // loomEngineVersion must match @openfluke/welvet LOOM_ENGINE_VERSION (welvet/typescript/src/index.ts).
-const loomEngineVersion = "0.79.0"
+const loomEngineVersion = "0.80.0"
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Global Registries
@@ -922,6 +922,15 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 		return string(wire)
 	}))
 
+	// CABI parity: LoomSerializeEntity / DeserializeEntity (native .entity wire)
+	obj.Set("serializeEntity", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		wire, err := poly.SerializeEntity(n)
+		if err != nil {
+			return errObj(err.Error())
+		}
+		return jsUint8Array(wire)
+	}))
+
 	// createStepState() -> StepState wrapper object
 	obj.Set("createStepState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		s := poly.NewStepState[float32](n)
@@ -956,6 +965,28 @@ func createNetworkWrapper(n *poly.VolumetricNetwork) js.Value {
 
 	// alias for extractNetworkBlueprint
 	obj.Set("ExtractNetworkBlueprint", obj.Get("extractNetworkBlueprint"))
+
+	obj.Set("resetLayerState", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		for i := range n.Layers {
+			n.Layers[i].ResetState()
+		}
+		return `{"ok":true}`
+	}))
+
+	obj.Set("setReleaseFP32MasterWhenIdle", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		n.ReleaseFP32MasterWhenIdle = len(args) > 0 && args[0].Bool()
+		return `{"ok":true}`
+	}))
+
+	obj.Set("setUseExactDType", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		n.UseExactDType = len(args) > 0 && args[0].Bool()
+		return `{"ok":true}`
+	}))
+
+	obj.Set("syncInferenceWeights", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		n.SyncInferenceWeights()
+		return `{"ok":true}`
+	}))
 
 	obj.Set("free", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		mu.Lock()
@@ -1257,6 +1288,7 @@ func main() {
 	js.Global().Set("defaultNEATConfig", js.FuncOf(defaultNEATConfigFn))
 	js.Global().Set("createLoomNEATPopulation", js.FuncOf(createLoomNEATPopulationFn))
 	js.Global().Set("getLoomInternalParity", js.FuncOf(getLoomInternalParityFn))
+	registerEntityWasmGlobals()
 
 	// Transformer Factory
 	js.Global().Set("createLoomTransformer", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
@@ -1359,6 +1391,9 @@ func main() {
 
 	fmt.Println("Exposed globals:")
 	fmt.Println("  createLoomNetwork(jsonConfig)          - Build network from JSON")
+	fmt.Println("  deserializeLoomNetwork(wire)           - JSON wire checkpoint")
+	fmt.Println("  deserializeLoomEntity(bytes)             - .entity wire checkpoint")
+	fmt.Println("  layerPersistenceFromEntity(bytes, idx)   - Native layer blob probe")
 	fmt.Println("  loadLoomNetwork(path)                  - Load from SafeTensors")
 	fmt.Println("  setupWebGPU()                          - Init WebGPU (Promise)")
 	fmt.Println("  compareLoomDNA(dnaA, dnaB)             - Compare network DNA")

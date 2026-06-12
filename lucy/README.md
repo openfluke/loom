@@ -2,6 +2,45 @@
 
 Architecture shorthand for a Loom stack that combines **multi-region volumetric** layout, **bicameral** train vs run, **discrete-time stepping** (`step.go`), and **streaming** inference on the outside — summarized as **MRBiVS** (**M**ulti-**R**egion · **Bi**cameral · **V**olumetric · **S**tep).
 
+**Loom version:** **0.80.0 "Native Ship"** — see [`../docs/v080_release.md`](../docs/v080_release.md).
+
+---
+
+## Quick start
+
+```bash
+cd lucy
+go mod tidy          # pulls github.com/openfluke/webgpu@v1.0.4
+go run .
+```
+
+**GPU (Linux NVIDIA example):**
+
+```bash
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json
+export WGPU_ADAPTER_NAME=NVIDIA
+go run .
+```
+
+Requires **Go 1.26.2+** (`GOTOOLCHAIN=auto` if your system Go is older).
+
+---
+
+## Menu
+
+| # | Mode | What it does |
+|---|------|----------------|
+| **1** | **Poly Talk** | Chat from HuggingFace cache (safetensors each run); optional GPU, Q4, block-wise upload |
+| **2** | Tests | Dense mid-stream adaptation benchmark |
+| **3** | Layer testing | CPU/GPU suites → `lucy_testing_output/` |
+| **4** | Download | Approved HF models (SoulGlitch-style) |
+| **5** | Forward benchmark | BitNet b1.58 CPU: normal vs stepped vs pipeline |
+| **6** | Five-layer examples | Per-layer `.go` tutorials |
+| **7** | Seven-layer CPU suite | 10 layer types × 21 dtypes × SC/MC/ASM · JSON **and** `.entity` save/reload |
+| **8** | **ENTITY Talk** | HF cache → `.entity` convert (optional Q4 bake) → GPU chat without runtime safetensors |
+
+Native checkpoints: [`docs/entity.md`](../docs/entity.md). Converted models land in [`lucy_entities/`](lucy_entities/).
+
 ---
 
 ## Letter expansion
@@ -51,7 +90,7 @@ Harness: [`examples/seven_layer/`](../lucy/examples/seven_layer/) — JSON build
 
 Symbol legend: **✓** PASS · **✗** FAIL · **·** N/A (not implemented for this layer).
 
-Broader testing notes (H-DRIFT buckets, legacy matrices): [`docs/testing_and_validation.md`](../docs/testing_and_validation.md). **v0.79.0 Bedrock Validation** scope (MHA/KV, native save, C-ABI): [`docs/bedrock_validation.md`](../docs/bedrock_validation.md).
+Broader testing notes (H-DRIFT buckets, legacy matrices): [`docs/testing_and_validation.md`](../docs/testing_and_validation.md). **v0.79.0 Bedrock Validation** (MHA/KV, native save, C-ABI): [`docs/bedrock_validation.md`](../docs/bedrock_validation.md). **v0.80.0 Native Ship** (ENTITY, WebGPU v1.0.4, GPU validation): [`docs/v080_release.md`](../docs/v080_release.md).
 
 ---
 
@@ -67,8 +106,8 @@ The suite runs **separate** checks for forward, backward, training, and weights.
 | **Backward** | Timing | 25-pass avg | 25-pass avg | — | Informational only |
 | **Training** | Loss decrease | `TrainingModeCPUSC` (runs) | `TrainingModeCPUMC` (reported loss) | — | `trainingOK` on MC loss init→final |
 | **Training** | Timing | SC wall time | MC wall time | — | Informational only |
-| **Weights** | Save/reload **before** train | — | — | — | Serialize → deserialize → forward + native blob match (`B-OK`) |
-| **Weights** | Save/reload **after** MC train | — | — | — | Same on trained net (`A-OK`, `Native`) |
+| **Weights** | Save/reload **before** train | — | — | — | JSON **and** `.entity` serialize → deserialize → forward + native blob match (`B-OK`) |
+| **Weights** | Save/reload **after** MC train | — | — | — | Same on trained net (`A-OK`, `Native`); `.entity` ~25% smaller than JSON on disk |
 
 **FP32 Master lifecycle (`ReleaseFP32MasterWhenIdle`):**
 

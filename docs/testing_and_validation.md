@@ -11,7 +11,11 @@ The **Lucy** tree (`lucy/`) drives broad layer suites: forward/backward parity, 
 | Log | Menu | Contents |
 |-----|------|----------|
 | `lucy/lucy_testing_output/log.txt` | Dense L1 / GPU parity / layer matrices | Forward/backward parity, ASM timers, GPU tables |
-| `lucy/lucy_testing_output/seven_layer.txt` | **[7] Seven-layer CPU suite** | 10 layer types × 21 dtypes × 1³/2³/3³ grids, SC/MC, train, save/reload |
+| `lucy/lucy_testing_output/seven_layer.txt` | **[7] Seven-layer CPU suite** | 10 layer types × 21 dtypes × 1³/2³/3³ grids, SC/MC, train, **JSON + `.entity` save/reload** |
+
+Per-dtype checkpoints are written under the same folder: `tag_DType.json` (debug lane) and `tag_DType.entity` (native lane). The memory table compares both file sizes side by side.
+
+**Observed compression (full [7] run):** `.entity` averages **~28% smaller** than JSON across 546 dtype×suite rows; all `json=PASS entity=PASS`. Quant dtype (Int4 vs Float64) still dominates absolute size — ENTITY removes Base64 overhead, not topology JSON. Details and sample tables: [entity.md — observed compression](entity.md#size-vs-json--observed-compression-lucy-7).
 
 Both files are meant for human review and regression diffing (adapter name, per-dtype rows, summary tallies).
 

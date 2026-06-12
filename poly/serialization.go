@@ -214,8 +214,15 @@ func initializeWeights(l *VolumetricLayer) {
 		if l.NumKVHeads == 0 {
 			l.NumKVHeads = l.NumHeads
 		}
+		q := l.QueryDim
+		if q == 0 {
+			q = l.DModel
+		}
 		kv := l.NumKVHeads * l.HeadDim
-		wCount = 2*l.DModel*l.DModel + 2*l.DModel*kv + 2*l.DModel + 2*kv
+		if kv == 0 {
+			kv = l.DModel
+		}
+		wCount = q*l.DModel + kv*l.DModel + kv*l.DModel + l.DModel*q + q + kv + kv + l.DModel
 	case LayerRNN:
 		wCount = l.InputHeight*l.OutputHeight + l.OutputHeight*l.OutputHeight + l.OutputHeight
 	case LayerLSTM:

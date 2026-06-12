@@ -38,7 +38,9 @@ The project has transitioned to the **Multi-numerical POLYmorphic Volumetric Til
 - **Bit-Packed Persistence**: An idempotent serialization tunnel that achieves up to **98.4% compression**, allowing extreme model sizes to fit in consumer RAM/VRAM.
 
 ## 📂 Project Structure
-- **[`poly/`](./poly/)**: The current-generation engine core (M-POLY-VTD). This is where active development happens.
+- **[`poly/`](./poly/)**: The current-generation engine core (M-POLY-VTD). Active development.
+- **[`lucy/`](./lucy/)**: Interactive harness — Poly Talk, ENTITY Talk, seven-layer CPU suite, HF download.
+- **[`planetbridging/`](./planetbridging/)**: Planet → Loom bridging POC (**v0.5.0** complete in-tree; **releases after Loom 0.80**).
 - **[`legacy/`](./legacy/)**: Historical codebase and previous iterations of Loom.
 
 ## 🛠️ Getting Started
@@ -54,18 +56,16 @@ Loom provides bit-exact reproducibility across:
 ## 📊 Versioning & Roadmap
 Loom uses a mathematical versioning system derived from a strictly verified checklist in [`poly/README.md`](./poly/README.md) (row counts and completion ratio are maintained there).
 
-### **Current Version: 0.79.0 — CURRENT** (from **0.78.0**)
-- **Completion Ratio**: 78.2% (**111 / 142** checklist rows — *Bedrock Validation* wave)
-- **Status**: **0.79.0 "Bedrock Validation"** hardens the **Go CPU** bedrock on top of **0.78.0 "ASM CPU"**: **Lucy seven-layer suite** (10 layer types × 21 dtypes × volumetric grids, train + native save/reload), **MHA `[B,S,D]` layout** and **KV train/decode split**, **BitNet/native ternary** checkpoint parity, **Poly Talk** decode fixes, and **C-ABI 461/461** (`LoomSyncInferenceWeights`). Still: **Plan 9 Dense forward** (`UseAsmForward`), **Donate Compute**, **TANHI**, **native JSON per dtype**, **Qwen3-class** ingest, **SC/MC tiling**, and **WebGPU** training/inference.
+### **Current Version: 0.80.0 — CURRENT** (from **0.79.0**)
+- **Completion Ratio**: 80.3% (**114 / 142** checklist rows)
+- **Codename**: **0.80.0 "Native Ship"** — **ENTITY** native checkpoints, **WebGPU v29** (`github.com/openfluke/webgpu@v1.0.4`), cross-platform GPU validation, **Planet Bridging POC** complete in-tree (published separately after Loom).
+- **Status**: Shippable native `.entity` brains; Lucy **[8] ENTITY Talk**; production GPU on Metal, Windows ARM64 Vulkan, Linux Intel + NVIDIA. See [`docs/v080_release.md`](./docs/v080_release.md).
     - > [!NOTE]
-    - > **What shipped in 0.79:** See [`docs/bedrock_validation.md`](./docs/bedrock_validation.md) for the full fix list and how to re-run **[7]** in Lucy.
+    - > **Planet Bridging** ([`planetbridging/`](./planetbridging/)) reached **v0.5.0** POC (all standard layer types: PyTorch/TF/JAX → live stream → Loom). It **releases after Loom 0.80** — hub export (Loom → ONNX/GGUF) is Planet Bridging **v1.0**.
 - **Milestones**:
-    - **v0.75.0 "Multi-Core Symphony"** ✅ — Tiling across the dispatcher; stabilized volumetric hopping; `welvet` parity.
-    - **v0.76.0 "Operation Mesh"** ✅ — Wire protocols, LM tooling burst, RAM-aware load path, telemetry. See [poly/README.md § v0.76.0](./poly/README.md#v0760--operation-mesh-previous).
-    - **v0.78.0 "ASM CPU"** ✅ — Dense forward Plan 9 kernels (21 dtypes), Lucy ASM columns, native save/load per dtype. See [poly/README.md § v0.78.0](./poly/README.md#v0780--asm-cpu-previous).
-    - **v0.79.0 "Bedrock Validation"** ✅ — Seven-layer CPU regression, MHA/KV/persistence, C-ABI 100%. See [poly/README.md § v0.79.0](./poly/README.md#v0790--bedrock-validation-current) and [docs/bedrock_validation.md](./docs/bedrock_validation.md).
-- **Next Target — v0.8.0 "Edge-First"**: Thermal-aware scheduling, UMA pinning, command-buffer graphing for mobile and wearable deployment.
-- **Next Steps**: Dense backward asm; Command Graph Buffering; Thermal-Aware hardware scheduling.
+    - **v0.79.0 "Bedrock Validation"** ✅ — Seven-layer CPU suite, MHA/KV, C-ABI 461/461. See [`docs/bedrock_validation.md`](./docs/bedrock_validation.md).
+    - **v0.80.0 "Native Ship"** ✅ — ENTITY format, openfluke webgpu v1.0.4, multi-GPU Lucy validation. See [`docs/v080_release.md`](./docs/v080_release.md).
+- **Next Target — v0.81**: ASM rollout (Dense backward, SwiGLU, MHA); GPU fusion; publish **Planet Bridging v0.5.0** once Loom tag is public.
 
 For a detailed breakdown of the roadmap and version calculation, see [poly/README.md](./poly/README.md#📊-true-version-calculation).
 

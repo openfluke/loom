@@ -11,13 +11,13 @@ M-POLY-VTD is a next-generation neural inference engine designed for high-perfor
 | :--- | :--- | :--- |
 | **Go** | Portable CPU: SC/MC tiled loops, all layers, 21 dtypes | ✅ baseline |
 | **`poly/asm`** | Hot CPU inner loops (`.s`, not CGO) | 🚧 **Dense forward** (all 21 dtypes); more layers → more speed |
-| **WebGPU** | GPU forward / backward / training (WGSL from Go) | ✅ production |
+| **WebGPU** | GPU forward / backward / training (WGSL from Go) | ✅ production — **openfluke/webgpu v1.0.4** (wgpu-native v29) |
 
 **CPU gets faster as asm lands.** Dense forward on Lucy (arm64 Metal, 8×1024→512) is ~**1.7–2.5×** Go SC for Int4/Ternary/low-bit and up to ~**3.2×** Go MC for Uint4/Ternary/FP4 (best MC **Uint4 ~3.55×**; best SC **Uint8 ~2.46×**). Float64 can still be slower than Go on SC/MC — tile tuning, not a dead asm path. Backward, SwiGLU, MHA, and CNN asm are the next wins. Internals: [`asm/README.md`](asm/README.md).
 
-### Where we are now — **v0.79.0 “Bedrock Validation”** (was **v0.78.0 “ASM CPU”**)
+### Where we are now — **v0.80.0 “Native Ship”** (was **v0.79.0 “Bedrock Validation”**)
 
-**Device-aware** = **Go** vs **`poly/asm`** on CPU (`UseAsmForward`), or **WebGPU** when `UseGPU` is on.
+**Device-aware** = **Go** vs **`poly/asm`** on CPU (`UseAsmForward`), or **WebGPU** when `UseGPU` is on. Production GPU uses **[openfluke/webgpu](https://github.com/openfluke/webgpu) v1.0.4** (wgpu-native **v29**).
 
 ## Core Pillars
 
@@ -169,7 +169,7 @@ cd welvet/typescript
 npm test
 ```
 
-**Verified Results (Loom v0.79.0):**
+**Verified Results (Loom v0.80.0):**
 - **[PASS]** Internal WASM Exports (8/8)
 - **[PASS]** Network Wrapper Methods (16/16)
 - **[PASS]** NEAT Population Methods (8/8)
@@ -620,10 +620,13 @@ Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`po
 - [x] Training Method Comparison Analysis
 - **Lucy / log interpretation** — [`docs/testing_and_validation.md`](../docs/testing_and_validation.md) (parity legend, `lucy/lucy_testing_output/log.txt`, poly file map for suites)
 - [x] **Lucy seven-layer CPU suite** — 10 layer types × 21 dtypes × 1³/2³/3³ grids, SC/MC fwd/bwd, train, native save/reload (`lucy/examples/seven_layer/`, `seven_layer.txt`)
+- [x] **ENTITY native checkpoints** — `.entity` binary format; Lucy [7] JSON+entity parity; Lucy [8] HF→entity→GPU chat ([`docs/entity.md`](../docs/entity.md))
+- [x] **WebGPU v29 module** — `github.com/openfluke/webgpu@v1.0.4`; cross-platform GPU validated (Metal, Win ARM64 Vulkan, Linux Intel + NVIDIA)
+- [x] **Planet Bridging POC** — planets→Loom complete for 12 layer types ([`planetbridging/`](../planetbridging/)); **separate release after Loom 0.80**
 - [x] **C-ABI functional parity** — `welvet/cabi/internal/check` at **461/461** (100%); includes `LoomSyncInferenceWeights`
 - [x] **MHA volumetric layout + KV** — `[B,S,D]` parsing, training vs decode cache policy, backward Q/K norm parity (`mha_layout.go`, `mha.go`)
 
-**Ecosystem Progress: 22 / 25**
+**Ecosystem Progress: 25 / 25**
 
 ---
 
@@ -654,7 +657,16 @@ Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`po
 
 ---
 
-## v0.79.0 — *Bedrock Validation* (current)
+## v0.80.0 — *Native Ship* (current)
+
+- **ENTITY** — native `.entity` checkpoints (`poly/entity.go`); topology + native-packed weights; ~25% smaller than JSON; idempotent round-trip tests.
+- **Lucy [8] ENTITY Talk** — HF → `ImportHFToEntity` → optional Q4 bake → GPU chat without runtime safetensors.
+- **WebGPU v29** — `github.com/openfluke/webgpu@v1.0.4`; standalone openfluke module; futures + `WGPUStringView` Go bindings (no C shims).
+- **GPU validated** — Metal (Apple M5), Windows ARM64 Vulkan (Snapdragon), Linux Intel Iris Xe + NVIDIA RTX 3050 Mobile (Lucy Poly Talk / ENTITY Talk, SmolLM2-135M Q4).
+- **Planet Bridging POC** — v0.5.0 in [`planetbridging/`](../planetbridging/): 13 bedrocks, PyTorch/TF/JAX live stream → Loom; **releases after Loom 0.80**.
+- **Docs** — [`docs/v080_release.md`](../docs/v080_release.md), [`docs/entity.md`](../docs/entity.md).
+
+## v0.79.0 — *Bedrock Validation* (previous)
 
 - **Lucy [7] seven-layer suite** — volumetric JSON grids, **10 layer families** × **21 dtypes**, CPU **SC/MC**, **train**, **save/reload** before and after training (`lucy/examples/seven_layer/`).
 - **MHA** — `mhaParseLayout` for `[B,S,D]`; `mhaPrepareKVForForward` (train reset vs decode cache); backward matches forward Q/K RMS norm; Poly Talk KV offset fixed.
@@ -686,14 +698,17 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 | 2. Architectural Layers | 32 | 37 |
 | 3. ASM CPU | 5 | 17 |
 | 4. Training Automation | 14 | 18 |
-| 5. Deployment Ecosystem | 22 | 25 |
+| 5. Deployment Ecosystem | 25 | 25 |
 | 6. LLM & Tokenization | 15 | 15 |
-| **GRAND TOTAL** | **111** | **142** |
+| **GRAND TOTAL** | **114** | **142** |
 
-### **Completion Ratio: 78.2%**
+### **Completion Ratio: 80.3%**
 
-## **Version 0.79.0 — CURRENT**
-*(**v0.79.0 "Bedrock Validation"** — from **0.78.0**. **Seven-layer** CPU regression, **MHA/KV** + **native save/reload** fixes, **C-ABI 100%**. Stack still **Go + asm + WebGPU**. **Dense forward** asm unchanged. **Next:** **v0.8.0 Edge-First**; asm rollout — Dense backward, SwiGLU, MHA, CNN.)*
+## **Version 0.80.0 — CURRENT**
+*(**v0.80.0 "Native Ship"** — from **0.79.0**. **ENTITY** native checkpoints, **openfluke/webgpu v1.0.4**, multi-platform GPU proof, **Planet Bridging POC** complete in-tree. **Next:** publish Loom tag → **Planet Bridging v0.5.0**; **v0.81** ASM rollout + GPU fusion.)*
+
+## **v0.79.0 — Bedrock Validation** (previous)
+*(Seven-layer CPU regression, MHA/KV, C-ABI 100%.)*
 
 ## **v0.78.0 — ASM CPU** (previous)
 *(Plan 9 **Dense forward** ~**2–3.5×** Go MC on quant dtypes; native JSON per dtype on save.)*

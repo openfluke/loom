@@ -9,6 +9,7 @@ volumetric tiled-tensor dispatcher (M-POLY-VTD) with support for
 
 import sys
 import json
+import base64
 import ctypes
 import platform
 from pathlib import Path
@@ -310,6 +311,26 @@ _LoomDeserializeNetwork = _sym("LoomDeserializeNetwork")
 if _LoomDeserializeNetwork:
     _LoomDeserializeNetwork.restype = ctypes.c_longlong
     _LoomDeserializeNetwork.argtypes = [ctypes.c_char_p, ctypes.c_int]
+
+_LoomSerializeEntity = _sym("LoomSerializeEntity")
+if _LoomSerializeEntity:
+    _LoomSerializeEntity.restype = ctypes.c_char_p
+    _LoomSerializeEntity.argtypes = [ctypes.c_longlong]
+
+_LoomDeserializeEntity = _sym("LoomDeserializeEntity")
+if _LoomDeserializeEntity:
+    _LoomDeserializeEntity.restype = ctypes.c_longlong
+    _LoomDeserializeEntity.argtypes = [ctypes.c_char_p, ctypes.c_int]
+
+_LoomLayerPersistenceFromEntity = _sym("LoomLayerPersistenceFromEntity")
+if _LoomLayerPersistenceFromEntity:
+    _LoomLayerPersistenceFromEntity.restype = ctypes.c_char_p
+    _LoomLayerPersistenceFromEntity.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+
+_LoomSyncInferenceWeights = _sym("LoomSyncInferenceWeights")
+if _LoomSyncInferenceWeights:
+    _LoomSyncInferenceWeights.restype = None
+    _LoomSyncInferenceWeights.argtypes = [ctypes.c_longlong]
 
 _LoomConfigureTrainingMode = _sym("LoomConfigureTrainingMode")
 if _LoomConfigureTrainingMode:
@@ -1464,6 +1485,38 @@ def deserialize_network(wire: str) -> int:
     if h < 0:
         raise RuntimeError("LoomDeserializeNetwork failed")
     return int(h)
+
+
+def serialize_entity(handle: int) -> bytes:
+    if not _LoomSerializeEntity:
+        raise RuntimeError("LoomSerializeEntity not available")
+    result = _check(_parse_json(_LoomSerializeEntity(int(handle))), "serialize_entity")
+    return base64.b64decode(result["b64"])
+
+
+def deserialize_entity(wire: bytes) -> int:
+    if not _LoomDeserializeEntity:
+        raise RuntimeError("LoomDeserializeEntity not available")
+    buf = (ctypes.c_char * len(wire)).from_buffer_copy(wire)
+    h = _LoomDeserializeEntity(buf, len(wire))
+    if h < 0:
+        raise RuntimeError("LoomDeserializeEntity failed")
+    return int(h)
+
+
+def layer_persistence_from_entity(wire: bytes, layer_index: int) -> dict:
+    if not _LoomLayerPersistenceFromEntity:
+        raise RuntimeError("LoomLayerPersistenceFromEntity not available")
+    buf = (ctypes.c_char * len(wire)).from_buffer_copy(wire)
+    return _check(
+        _parse_json(_LoomLayerPersistenceFromEntity(buf, len(wire), int(layer_index))),
+        "layer_persistence_from_entity",
+    )
+
+
+def sync_inference_weights(handle: int) -> None:
+    if _LoomSyncInferenceWeights:
+        _LoomSyncInferenceWeights(int(handle))
 
 
 def configure_training_mode(handle: int, mode: int) -> None:
@@ -2860,9 +2913,19 @@ class Network:
     def serialize(self) -> str:
         return serialize_network(self._handle)
 
+    def serialize_entity(self) -> bytes:
+        return serialize_entity(self._handle)
+
     @classmethod
     def deserialize(cls, wire: str) -> "Network":
         return cls(_handle=deserialize_network(wire))
+
+    @classmethod
+    def deserialize_entity(cls, wire: bytes) -> "Network":
+        return cls(_handle=deserialize_entity(wire))
+
+    def sync_inference_weights(self) -> None:
+        sync_inference_weights(self._handle)
 
     # --- Model I/O ---
 

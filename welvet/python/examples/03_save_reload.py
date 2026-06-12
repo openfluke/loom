@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example 3: Serialize network wire and reload (native Loom checkpoint format)."""
+"""Example 3: JSON wire and native .entity checkpoint roundtrip."""
 
 import math
 
@@ -27,18 +27,27 @@ def main() -> None:
     })
 
     before = net.forward_polymorphic(inp, in_shape)
+
     wire = net.serialize()
     assert isinstance(wire, str) and len(wire) > 32
+    from_wire = Network.deserialize(wire)
+    drift_wire = max(abs(a - b) for a, b in zip(before, from_wire.forward_polymorphic(inp, in_shape)))
+    from_wire.free()
 
-    reloaded = Network.deserialize(wire)
-    after = reloaded.forward_polymorphic(inp, in_shape)
-
-    drift = max(abs(a - b) for a, b in zip(before, after))
-    reloaded.free()
+    blob = net.serialize_entity()
+    assert isinstance(blob, (bytes, bytearray)) and len(blob) > 32
+    from_entity = Network.deserialize_entity(blob)
+    from_entity.sync_inference_weights()
+    drift_entity = max(abs(a - b) for a, b in zip(before, from_entity.forward_polymorphic(inp, in_shape)))
+    from_entity.free()
     net.free()
 
-    assert drift < 1e-5, f"reload drift too large: {drift}"
-    print("03_save_reload OK — max|Δ|=%.2e wire_bytes=%d" % (drift, len(wire)))
+    assert drift_wire < 1e-5, f"JSON reload drift too large: {drift_wire}"
+    assert drift_entity < 1e-5, f"entity reload drift too large: {drift_entity}"
+    print(
+        "03_save_reload OK — max|Δ| wire=%.2e entity=%.2e wire_bytes=%d entity_bytes=%d"
+        % (drift_wire, drift_entity, len(wire), len(blob))
+    )
 
 
 if __name__ == "__main__":

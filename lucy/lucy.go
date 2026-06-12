@@ -38,54 +38,16 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 			log.Fatalf("Forward benchmark requires %q in the HuggingFace cache.", bitNetBenchModelNeedle)
 		}
 		fmt.Printf("\n📊 Forward benchmark: auto-selecting [%d] %s (CPU, deterministic)\n", idx, name)
-		deterministic = true
-	} else {
-		detInput := readInput(reader, "🎯 Deterministic mode? (1=yes / 0=no) [0]: ", "0")
-		deterministic = detInput == "1"
 	}
 
-	useTiling := true
-	tileSize := -1 // auto-detect
-
-	var useGPU bool
-	if forwardBenchOnly {
-		useGPU = false
-		fmt.Println("🎮 GPU: off (benchmark uses CPU BitNet + pipeline wavefront stats)")
-	} else {
-		fmt.Print("🎮 Enable GPU Acceleration? (1=yes / 0=no) [0]: ")
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-		useGPU = input == "1"
-	}
-
-	var tilingMode string
-	if forwardBenchOnly {
-		tilingMode, tileSize = parseLLMExecutionMode("2")
-	} else {
-		fmt.Println("\n🚀 Select Execution Mode:")
-		fmt.Println("  [1] Tiled — GPU: single-workgroup; CPU: multi-core tiled")
-		fmt.Println("  [2] Tiled — GPU: multi-workgroup; CPU: multi-core tiled")
-		execModeInput := readInput(reader, "Choice [2]: ", "2")
-		tilingMode, tileSize = parseLLMExecutionMode(execModeInput)
-	}
-
-	if useGPU {
-		fmt.Print("💎 Weight Precision? (4=Q4_0 / 8=INT8 / 32=FP32) [4]: ")
-		precInput, _ := reader.ReadString('\n')
-		precInput = strings.TrimSpace(precInput)
-		if precInput == "32" {
-			weightDType = poly.DTypeFloat32
-		} else if precInput == "8" {
-			weightDType = poly.DTypeInt8
-		} else {
-			weightDType = poly.DTypeInt4
-		}
-	}
-
-	sequentialGPULoad := false
-	if useGPU {
-		sequentialGPULoad = readInput(reader, "📥 Load weights block-by-block into GPU (lower peak host RAM; skips holding full checkpoint map)? (1=yes / 0=no) [0]: ", "0") == "1"
-	}
+	launch := readPolyTalkLaunchOptions(reader)
+	deterministic = launch.deterministic
+	useGPU := launch.useGPU
+	useTiling := launch.useTiling
+	tilingMode := launch.tilingMode
+	tileSize := launch.tileSize
+	weightDType = launch.weightDType
+	sequentialGPULoad := launch.sequentialGPULoad
 
 	var modelName string
 	var selectedIdx int
@@ -103,39 +65,17 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		}
 		modelName = models[selectedIdx-1]
 	}
+	applyModelSpecificLaunchOptions(reader, modelName, &launch)
+	useBitNetCPU := launch.useBitNetCPU
+	useBitNetGPU := launch.useBitNetGPU
+	useTernaryPTQCPU := launch.useTernaryPTQCPU
+	useBitNetPacked := launch.useBitNetPacked
+	deterministic = launch.deterministic
+	weightDType = launch.weightDType
 	modelNameLower := strings.ToLower(modelName)
 	isQwen := strings.Contains(modelNameLower, "qwen")
 	isBitNetModel := strings.Contains(modelNameLower, "bitnet") || strings.Contains(modelNameLower, "1bit")
-	useBitNetCPU := false
-	useBitNetGPU := false
-	useTernaryPTQCPU := false
-	if isBitNetModel {
-		if useGPU {
-			useBitNetGPU = true
-			weightDType = poly.DTypeTernary
-			sequentialGPULoad = false
-			fmt.Println("🧪 BitNet model detected; enabling experimental WebGPU packed ternary inference.")
-		} else {
-			useBitNetCPU = true
-			fmt.Println("🧮 BitNet model detected; enabling CPU packed ternary inference.")
-		}
-	} else if !useGPU {
-		quantInput := readInput(reader, "🧮 CPU weight precision? (32=FP32 / ternary=experimental PTQ) [32]: ", "32")
-		switch strings.ToLower(strings.TrimSpace(quantInput)) {
-		case "ternary", "t", "bitnet", "1bit", "b1.58", "158":
-			useTernaryPTQCPU = true
-			fmt.Println("⚠️  Ternary PTQ is experimental. It is not equivalent to BitNet training and may produce bad text.")
-		}
-	}
-	useBitNetPacked := useBitNetCPU || useBitNetGPU
 	template := templateForModel(modelName)
-	activeSystemPrompt := defaultSystemPromptForModel(modelName)
-	if deterministic && isQwen {
-		fmt.Println("⚠️  Qwen deterministic=1 can leak planning text. Keeping deterministic=1 because you explicitly selected it.")
-	}
-	if deterministic && strings.Contains(strings.ToLower(modelName), "instruct") && strings.Contains(strings.ToLower(modelName), "1.7b") {
-		fmt.Println("⚠️  Deterministic=1 can collapse into punctuation-only outputs on 1.7B instruct models. Use Deterministic=0 for normal chat quality.")
-	}
 
 	snapshotDir, err := poly.HFResolveSnapshotDir(hubDir, modelName)
 	if err != nil {
@@ -443,111 +383,7 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		fmt.Printf("🧯 Special-token mask active (%d banned IDs)\n", len(bannedTokens))
 	}
 
-	addSpecialTokens := false
-	if strings.Contains(modelNameLower, "microsoft/bitnet-b1.58-2b-4t") {
-		addSpecialTokens = true
-	}
-	encode := func(text string) []uint32 { return tk.Encode(text, addSpecialTokens) }
-	decode := func(tokens []uint32) string { return tk.Decode(tokens, false) }
-
-	if forwardBenchOnly {
-		if !isBitNetModel || useGPU {
-			log.Fatalf("Forward benchmark requires BitNet b1.58 loaded on CPU (no GPU).")
-		}
-		runForwardScheduleComparison(tr, encode, activeSystemPrompt, numLayers)
-		forwardBenchOnly = false
-		return
-	}
-
-	configureCPUForwardMode(reader, tr, useGPU)
-
-	maxTokens = 2048
-	if isBitNetModel {
-		maxTokens = 192
-	}
-
-	layerTrace := readInput(reader, "\n📼 Layer action recording? (1=yes / 0=no) [0]: ", "0") == "1"
-	layerTraceMaxTokens := 8
-	layerTracePrefill := false
-	repeatDecoderBlock := -1
-	if layerTrace {
-		fmt.Println("ℹ️  Each new token runs through all decoder blocks (30 layers → ~181 sub-steps per token).")
-		fmt.Println("   Prefill (your whole prompt) is a separate full pass unless you opt in below.")
-		if useGPU {
-			fmt.Println("ℹ️  Traced decode uses CPU stepped forward; untraced prefill can still use GPU.")
-		}
-		tokInput := readInput(reader, "🔢 How many new tokens to trace per turn? [8]: ", "8")
-		fmt.Sscanf(tokInput, "%d", &layerTraceMaxTokens)
-		if layerTraceMaxTokens < 1 {
-			layerTraceMaxTokens = 1
-		}
-		layerTracePrefill = readInput(reader, "📥 Also trace prefill (full prompt through all layers)? (1=yes / 0=no) [0]: ", "0") == "1"
-		repeatInput := readInput(reader, fmt.Sprintf("🔁 Repeat a decoder block after its first pass? (1-%d, 0=off) [0]: ", numLayers), "0")
-		var repeatOneBased int
-		fmt.Sscanf(repeatInput, "%d", &repeatOneBased)
-		if repeatOneBased >= 1 && repeatOneBased <= numLayers {
-			repeatDecoderBlock = repeatOneBased - 1
-			fmt.Printf("   Block %d will run twice; repeat pass is logged as REPEAT.\n", repeatOneBased)
-		}
-		maxTokens = layerTraceMaxTokens
-	}
-
-	temp := float32(0.7)
-	if deterministic {
-		temp = 0
-	}
-	minTokens := 8
-	if layerTrace {
-		minTokens = 1
-	}
-	opts := poly.GenOptions{
-		MaxTokens:             maxTokens,
-		MinTokens:             minTokens,
-		Temperature:           temp,
-		TopK:                  40,
-		Deterministic:         deterministic,
-		EOSTokens:             eosTokens,
-		BannedTokens:          bannedTokens,
-		RepetitionPenalty:     1.1,
-		RepetitionWindow:      64,
-		MaxConsecutiveRepeats: 3,
-		NoRepeatNGram:         3,
-		LayerTrace:            layerTrace,
-		LayerTraceMaxTokens:   layerTraceMaxTokens,
-		LayerTracePrefill:     layerTracePrefill,
-		RepeatDecoderBlock:    repeatDecoderBlock,
-	}
-	if layerTrace {
-		opts.Silent = true
-		stepsPerTok := numLayers*6 + 1
-		if layerTracePrefill {
-			fmt.Printf("📼 Trace mode: prefill + up to %d decode token(s) (~%d sub-layer lines each phase).\n", layerTraceMaxTokens, stepsPerTok)
-		} else {
-			fmt.Printf("📼 Trace mode: up to %d decode token(s) only (~%d sub-layer lines per token; prefill not traced).\n", layerTraceMaxTokens, stepsPerTok)
-		}
-	}
-
-	for {
-		fmt.Print("\nYou: ")
-		userMsg, _ := reader.ReadString('\n')
-		userMsg = strings.TrimSpace(userMsg)
-		if userMsg == "exit" || userMsg == "quit" {
-			break
-		}
-
-		fmt.Print("GlitchBot: ")
-		reply, _ := tr.Generate(encode, decode, chatTurns, activeSystemPrompt, userMsg, opts)
-		if layerTrace {
-			fmt.Printf("\n(decoded) %s\n", reply)
-		} else {
-			fmt.Println()
-		}
-
-		chatTurns = append(chatTurns, poly.Turn{
-			User:      userMsg,
-			Assistant: reply,
-		})
-	}
+	runPolyTalkChatSession(reader, modelName, numLayers, launch, useGPU)
 }
 
 func configureCPUForwardMode(reader *bufio.Reader, tr *poly.Transformer[float32], useGPU bool) {

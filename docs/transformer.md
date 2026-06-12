@@ -546,3 +546,18 @@ transformer := poly.NewTransformer[float32](
 )
 transformer.EnableTiling(0)  // auto-detect tile size
 ```
+
+---
+
+## Native checkpoints: HF → `.entity` (Lucy [8])
+
+Poly Talk loads HF safetensors every run. **ENTITY Talk** converts once to a Lucy-owned `.entity` file and chats from that checkpoint at runtime (tokenizer still from HF snapshot).
+
+| Path | Entry |
+|:-----|:------|
+| Convert + chat UI | Lucy menu **[8]** — `lucy/hf_entity.go` |
+| Import API | `poly.ImportHFToEntity` — [`hf_import.go`](../poly/hf_import.go) |
+| Save/load | `SaveEntityTransformer` / `LoadEntityTransformer` — [`entity.go`](../poly/entity.go) |
+| Q4 bake on disk | [`entity_q4.go`](../poly/entity_q4.go) — decoder MHA/SwiGLU only in v1 |
+
+Full format semantics, the **HF → native citizen** unlock (graft, parallel, remote links, 3D grid), and Q4 scope tables: **[entity.md](entity.md)** — sections *The unlock* and *LLM transformer checkpoints*.

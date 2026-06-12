@@ -10,7 +10,7 @@
 #   ./build_unix.sh darwin arm64
 #   ./build_unix.sh darwin universal         # fat binary (macOS only)
 #   ./build_unix.sh windows amd64
-#   ./build_unix.sh windows arm64
+#   ./build_unix.sh windows arm64   # or ./build_windows_arm64.sh (full pipeline + lucy)
 #   ./build_unix.sh android arm64            # NDK: ANDROID_HOME/ndk or ANDROID_NDK_HOME
 #   ./build_unix.sh android x86_64
 #   ./build_unix.sh ios arm64                # device (macOS only)
@@ -158,6 +158,14 @@ if [ -z "$TARGET_ARCH" ] && [ "$TARGET_OS" != "all" ]; then
     aarch64|arm64) TARGET_ARCH="arm64"  ;;
     *) echo "Cannot auto-detect 64-bit arch from: $(uname -m)"; exit 1 ;;
   esac
+fi
+
+if [ "$TARGET_OS" = "windows" ] && [ "$TARGET_ARCH" = "arm64" ]; then
+  _sync="$(dirname "$0")/scripts/sync_webgpu_windows_lib.sh"
+  if [ -f "$_sync" ]; then
+    echo "Syncing GNU webgpu lib for windows/arm64..."
+    bash "$_sync" arm64
+  fi
 fi
 
 if [ "$TARGET_OS" = "all" ]; then
