@@ -1,7 +1,7 @@
 {
   "name": "@openfluke/welvet",
-  "version": "0.79.0",
-  "description": "M-POLY-VTD AI Engine (Loom v0.79.0) — WASM/TS bindings: 21 dtypes, volumetric grid, train, serialize, WebGPU, DNA/NEAT",
+  "version": "0.80.0",
+  "description": "M-POLY-VTD AI Engine (Loom v0.80.0) — WASM/TS bindings: 21 dtypes, volumetric grid, train, .entity checkpoints, WebGPU, DNA/NEAT",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

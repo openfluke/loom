@@ -1,11 +1,11 @@
 # @openfluke/welvet
 
-**M-POLY-VTD AI Engine (Loom v0.79.0)** — Isomorphic TypeScript/WASM bindings for the [Loom](https://github.com/openfluke/loom) deterministic neural VM: 21 numerical types, volumetric 3D grids, CPU/GPU training paths, DNA evolution, and bit-packed save/reload.
+**M-POLY-VTD AI Engine (Loom v0.80.0)** — Isomorphic TypeScript/WASM bindings for the [Loom](https://github.com/openfluke/loom) deterministic neural VM: 21 numerical types, volumetric 3D grids, CPU/GPU training paths, DNA evolution, JSON + native **`.entity`** checkpoints.
 
 [![npm version](https://img.shields.io/npm/v/@openfluke/welvet.svg)](https://www.npmjs.com/package/@openfluke/welvet)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-> **Loom core:** [README](https://github.com/openfluke/loom/blob/main/README.md) · **Docs index:** [`docs/index.md`](https://github.com/openfluke/loom/blob/main/docs/index.md) · **Bedrock validation (v0.79):** [`docs/bedrock_validation.md`](https://github.com/openfluke/loom/blob/main/docs/bedrock_validation.md)
+> **Loom core:** [README](https://github.com/openfluke/loom/blob/main/README.md) · **Docs index:** [`docs/index.md`](https://github.com/openfluke/loom/blob/main/docs/index.md) · **v0.80 Native Ship (ENTITY):** [`docs/v080_release.md`](https://github.com/openfluke/loom/blob/main/docs/v080_release.md) · **Bedrock validation (v0.79):** [`docs/bedrock_validation.md`](https://github.com/openfluke/loom/blob/main/docs/bedrock_validation.md)
 
 ## What this package is
 
@@ -17,7 +17,9 @@
 | **[`welvet` on PyPI](https://pypi.org/project/welvet/)** | Servers, notebooks — ctypes C-ABI |
 | **Go `poly/`** | Reference, Lucy harness, maximum CPU parallelism |
 
-**v0.79.0 "Bedrock Validation"** (see [release notes](https://github.com/openfluke/loom/blob/main/docs/bedrock_validation.md)): seven-layer CPU regression (10 layer types × 21 dtypes × train × native save/reload), MHA `[B,S,D]` layout, KV train/decode split, C-ABI **461/461**. The TypeScript seven-layer suite exercises the same paths via WASM.
+**v0.80.0 "Native Ship"** (see [release notes](https://github.com/openfluke/loom/blob/main/docs/v080_release.md)) is the **ENTITY** release: native **`.entity`** checkpoints in WASM/TS with CABI parity — `serializeEntity()`, `deserializeLoomEntity()`, selective layer load, transformer entity wire, and `test:entity-roundtrip` (10 layer types × 21 dtypes, ~7s).
+
+**v0.79.0 "Bedrock Validation"** ([notes](https://github.com/openfluke/loom/blob/main/docs/bedrock_validation.md)) laid the foundation: seven-layer CPU regression, MHA `[B,S,D]` layout, KV train/decode split. Use `test:seven-layer` for the full Lucy **[7]** train + JSON save/reload run.
 
 ## Features
 
@@ -26,7 +28,7 @@
 - **Volumetric grid**: `depth × rows × cols` cells, multiple layers per cell (Lucy-style JSON).
 - **Training**: `train()` / `trainNetwork()` with CPU SC/MC modes (parity on WASM; true multicore on native CABI).
 - **Polymorphic forward/backward**: shape-aware tensors (e.g. MHA `[batch, seq, d_model]`).
-- **Persistence**: `serialize()` + `deserializeLoomNetwork()` wire checkpoints.
+- **Persistence**: JSON wire (`serialize()` + `deserializeLoomNetwork()`) and native **`.entity`** binary (`serializeEntity()` + `deserializeLoomEntity()`).
 - **WebGPU** (browser): optional acceleration after `setupWebGPU()`.
 - **DNA & NEAT**: extract/compare DNA, splice, populations.
 
@@ -203,12 +205,21 @@ console.log(raw.loss_history);
 
 See [`docs/training.md`](https://github.com/openfluke/loom/blob/main/docs/training.md) for loss types, tween/target propagation, and GPU training on native builds.
 
-### 6. Save / reload (native wire format)
+### 6. Save / reload
+
+Two checkpoint lanes — same trained brain, different on-disk encoding:
+
+| Lane | Serialize | Deserialize | Best for |
+|------|-----------|-------------|----------|
+| **JSON wire** | `net.serialize()` → `string` | `deserializeLoomNetwork(wire)` | Debug, diffing, transparent inspection |
+| **`.entity` wire** | `net.serializeEntity()` → `Uint8Array` | `deserializeLoomEntity(bytes)` | Ship to device — ~25% smaller than JSON, native-packed dtypes |
+
+#### JSON wire (debug)
 
 ```typescript
 await init();
 
-const wire = net.serialize(); // JSON wire string
+const wire = net.serialize(); // JSON string
 const reloaded = (globalThis as any).deserializeLoomNetwork(wire);
 
 const a = net.sequentialForward(input);
@@ -217,6 +228,71 @@ reloaded.free();
 ```
 
 Same format as Go `SerializeNetwork` / Python `Network.deserialize()` — see [`docs/serialization.md`](https://github.com/openfluke/loom/blob/main/docs/serialization.md).
+
+#### Native `.entity` wire (ship lane)
+
+Binary checkpoint: full volumetric topology + native-packed weights (all 21 dtypes). CABI parity with Lucy menu **[7]** entity save/reload.
+
+```typescript
+import type { Network } from "@openfluke/welvet";
+
+await init();
+
+// After morph/train, sync inference weights so serialize matches forward
+if (typeof net.syncInferenceWeights === "function") {
+  net.syncInferenceWeights();
+}
+
+const wire = net.serializeEntity(); // Uint8Array — write to fluffy.entity
+
+const reloaded = (globalThis as any).deserializeLoomEntity(wire) as Network;
+
+// Seven-layer / Lucy parity: clear layer state before comparing forwards
+if (typeof reloaded.resetLayerState === "function") {
+  reloaded.resetLayerState();
+}
+
+const a = net.forwardPolymorphic(input, shapeJson);
+const b = reloaded.forwardPolymorphic(input, shapeJson);
+
+reloaded.free();
+```
+
+**Selective load** (topology always loaded; only listed layer indices get weight blobs):
+
+```typescript
+const indices = JSON.stringify([0, 2, 4]); // top-level layer indices
+const partial = (globalThis as any).deserializeEntityWithOptions(wire, indices);
+partial.free();
+```
+
+**Single layer** (topology + one layer’s weights):
+
+```typescript
+const layerNet = (globalThis as any).deserializeEntityLayer(wire, 0);
+layerNet.free();
+```
+
+**Inspect native persistence** (parity / tests — base64 raw blob + scale):
+
+```typescript
+const meta = JSON.parse(
+  (globalThis as any).layerPersistenceFromEntity(wire, 0)
+);
+// { weights: "<base64>", scale: number, native: true }
+```
+
+**Universal transformer** (decoder + embeddings / LM head / final norm in one `.entity`):
+
+```typescript
+const etHandle = (globalThis as any).deserializeEntityTransformer(wire);
+const trHandle = (globalThis as any).buildTransformerFromEntity(etHandle /*, DType.FLOAT32 */);
+(globalThis as any).freeEntityTransformer(etHandle);
+```
+
+Network helpers used in the seven-layer suite: `resetLayerState()`, `syncInferenceWeights()`, `setReleaseFP32MasterWhenIdle(bool)`, `setUseExactDType(bool)`. Long test runs can call `loomGC()` (Go `runtime.GC()` in WASM).
+
+Format spec: [`docs/entity.md`](https://github.com/openfluke/loom/blob/main/docs/entity.md).
 
 ### 7. WebGPU (browser)
 
@@ -258,11 +334,14 @@ console.log(pop.bestFitness());
 
 ## Seven-layer validation (TypeScript → WASM → Loom)
 
-The Lucy **[7]** suite logic lives in **`welvet/seven_layer/`** (copied to `dist/seven_layer/` on build). It is the bedrock gate from v0.79: forward/backward SC/MC, train, save/reload, 21 dtypes.
+The Lucy **[7]** suite logic lives in **`welvet/seven_layer/`** (copied to `dist/seven_layer/` on build). **v0.80** adds the fast `.entity` gate; the full suite still covers forward/backward SC/MC, train, and JSON save/reload from v0.79.
 
 ```bash
 cd welvet/typescript
 npm run build
+
+# Fast .entity gate — 10 layer types × 21 dtypes, no training (~7s)
+npm run test:entity-roundtrip
 
 # Full suite (slow — MHA/CNN3 take a while)
 npm run test:seven-layer
@@ -298,10 +377,11 @@ python benchmark_seven_layer.py --layer Dense
 
 ```bash
 npm test              # cabi + benchmarks + coverage + consumer_demo
-npm run test:consumer # README / npm quick-start smoke (forwardPolymorphic, train, serialize)
-npm run test:cabi     # WASM export / functional smoke
-npm run test:bench    # Layer micro-benchmarks
-npm run test:coverage # Export coverage vs Go parity list
+npm run test:consumer        # README / npm quick-start smoke (forwardPolymorphic, train, serialize)
+npm run test:entity-roundtrip # .entity serialize/deserialize — 10 layers × 21 dtypes (~7s)
+npm run test:cabi            # WASM export / functional smoke
+npm run test:bench           # Layer micro-benchmarks
+npm run test:coverage        # Export coverage vs Go parity list
 ```
 
 ## API surface (after `init()`)
@@ -311,9 +391,12 @@ Globals injected by WASM (also wrapped by this package):
 | Category | Methods |
 |----------|---------|
 | **Lifecycle** | `createLoomNetwork(json)`, `deserializeLoomNetwork(wire)`, `loadLoomNetwork(path)` |
-| **Network** | `sequentialForward`, `forwardPolymorphic(data, shapeJson)`, `backwardPolymorphic(...)`, `train(...)`, `serialize`, `morphLayer`, `setTrainingMode(mode)`, `getInfo`, `extractDNA`, `initGPU`, `syncToGPU` / `syncToCPU`, `free` |
+| **Network** | `sequentialForward`, `forwardPolymorphic(data, shapeJson)`, `backwardPolymorphic(...)`, `train(...)`, `serialize`, **`serializeEntity()`**, `morphLayer`, `setTrainingMode(mode)`, `getInfo`, `extractDNA`, `initGPU`, `syncToGPU` / `syncToCPU`, `resetLayerState`, `syncInferenceWeights`, `setReleaseFP32MasterWhenIdle`, `setUseExactDType`, `free` |
+| **`.entity` globals** | `deserializeLoomEntity(bytes)`, `deserializeEntityWithOptions(bytes, layerIndicesJSON?)`, `deserializeEntityLayer(bytes, layerIndex)`, `layerPersistenceFromEntity(bytes, layerIndex)`, `deserializeEntityTransformer(bytes)`, `buildTransformerFromEntity(handle, dtype?)`, `freeEntityTransformer(handle)`, `entityGPUWeightDType(storedDType, useGPU)`, `packQ4_0GPU(weightsJSON)`, `loomGC()` |
 | **Evolution** | `createLoomNEATPopulation`, `compareLoomDNA`, `defaultNEATConfig`, `defaultSpliceConfig` |
 | **Browser** | `setupWebGPU()` |
+
+Deserialize helpers for `.entity` are WASM globals (same pattern as `deserializeLoomNetwork`). `serializeEntity()` is on the network handle returned by `createNetwork()`.
 
 TypeScript exports: `init`, `initBrowser`, `createNetwork`, `trainNetwork`, `compareDNA`, `createNEATPopulation`, `createTransformer`, `setupWebGPU`, `DType`, `LayerType`, `Activation`, and types in `dist/index.d.ts`.
 
@@ -326,7 +409,9 @@ TypeScript exports: `init`, `initBrowser`, `createNetwork`, `trainNetwork`, `com
 | 21 dtypes / morph | [`docs/numerical_types.md`](https://github.com/openfluke/loom/blob/main/docs/numerical_types.md) |
 | Training | [`docs/training.md`](https://github.com/openfluke/loom/blob/main/docs/training.md) |
 | Transformers / MHA | [`docs/transformer.md`](https://github.com/openfluke/loom/blob/main/docs/transformer.md) |
-| Save/load | [`docs/serialization.md`](https://github.com/openfluke/loom/blob/main/docs/serialization.md) |
+| Save/load (JSON) | [`docs/serialization.md`](https://github.com/openfluke/loom/blob/main/docs/serialization.md) |
+| `.entity` format | [`docs/entity.md`](https://github.com/openfluke/loom/blob/main/docs/entity.md) |
+| v0.80 Native Ship (ENTITY) | [`docs/v080_release.md`](https://github.com/openfluke/loom/blob/main/docs/v080_release.md) |
 | v0.79 bedrock suite | [`docs/bedrock_validation.md`](https://github.com/openfluke/loom/blob/main/docs/bedrock_validation.md) |
 | Snippets | [`docs/quick_reference.md`](https://github.com/openfluke/loom/blob/main/docs/quick_reference.md) |
 
@@ -334,8 +419,9 @@ TypeScript exports: `init`, `initBrowser`, `createNetwork`, `trainNetwork`, `com
 
 | Component | Version |
 |-----------|---------|
-| **Loom engine (poly)** | **0.79.0** — Bedrock Validation |
-| **npm `@openfluke/welvet`** | **0.79.0** (rebuild WASM from this repo to match latest `main`) |
+| **Loom engine (poly)** | **0.80.0** — Native Ship (ENTITY) |
+| **npm `@openfluke/welvet`** | **0.80.0** (rebuild WASM from this repo to match latest `main`) |
+| *Previous baseline* | *0.79.0 — Bedrock Validation* |
 
 ## License
 

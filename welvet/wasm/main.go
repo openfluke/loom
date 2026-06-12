@@ -1,7 +1,7 @@
 //go:build js && wasm
 // +build js,wasm
 
-// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.79.0)
+// welvet WASM — M-POLY-VTD AI Engine for JavaScript/TypeScript (Loom v0.80.0)
 //
 // Exposes the poly.VolumetricNetwork API to JavaScript via WebAssembly.
 // Supports 21 numerical types, step mesh propagation, target propagation,
@@ -19,7 +19,7 @@ import (
 )
 
 // loomEngineVersion must match @openfluke/welvet LOOM_ENGINE_VERSION (welvet/typescript/src/index.ts).
-const loomEngineVersion = "0.79.0"
+const loomEngineVersion = "0.80.0"
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Global Registries

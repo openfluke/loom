@@ -40,7 +40,7 @@ function wasmEngineVersion(): string | undefined {
 }
 
 export async function runConsumerDemo(): Promise<void> {
-  assert(LOOM_ENGINE_VERSION === "0.79.0", `expected Loom 0.79.0, got ${LOOM_ENGINE_VERSION}`);
+  assert(LOOM_ENGINE_VERSION === "0.80.0", `expected Loom 0.80.0, got ${LOOM_ENGINE_VERSION}`);
 
   await init();
 
