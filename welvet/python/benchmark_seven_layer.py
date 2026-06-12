@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from welvet import Network, train
+from welvet import Network, layer_persistence_from_entity, train
 from seven_layer_spec import (
     ALL_DTYPES,
     LAYER_SUITES,
@@ -25,7 +25,6 @@ from seven_layer_spec import (
     train_epochs_for_grid,
     sin_target,
     max_abs_diff,
-    mse_loss,
     training_ok,
     training_lr,
 )
@@ -85,15 +84,33 @@ def _bench_backward_cabi(net, inp, in_shape, tgt, tgt_shape, mode):
 
 
 
-def _check_save_reload_cabi(net, inp, shape, tgt, tgt_shape, tol, after):
+def _check_save_reload_cabi(net, inp, shape, tol, after):
     out0 = net.forward_polymorphic(inp, shape)
     wire = net.serialize()
     reloaded = Network.deserialize(wire)
     out1 = reloaded.forward_polymorphic(inp, shape)
     reloaded.free()
-    diff = max_abs_diff(out0, out1)
-    mult = 100 if after else 1
-    return diff <= tol * mult
+    return max_abs_diff(out0, out1) <= tol * (100 if after else 1)
+
+
+def _entity_native_ok(net, wire):
+    n = net.info().get("total_layers", 0)
+    for i in range(n):
+        r = layer_persistence_from_entity(wire, i)
+        if r.get("error") or not r.get("native") or not r.get("weights"):
+            return False
+    return True
+
+
+def _check_save_reload_entity_cabi(net, inp, shape, tol, after):
+    out0 = net.forward_polymorphic(inp, shape)
+    wire = net.serialize_entity()
+    reloaded = Network.deserialize_entity(wire)
+    out1 = reloaded.forward_polymorphic(inp, shape)
+    fwd_ok = max_abs_diff(out0, out1) <= tol * (100 if after else 1)
+    native_ok = _entity_native_ok(net, wire)
+    reloaded.free()
+    return fwd_ok and native_ok
 
 
 def run_suite(suite, layer_filter=None):
@@ -103,7 +120,7 @@ def run_suite(suite, layer_filter=None):
         iters = bench_iters_for_grid(g)
         label = f"{suite.name} {g[0]}×{g[1]}×{g[2]}"
         print(f"\n{'═' * 70}")
-        print(f"  {label} — Python → Loom CABI (CPU SC/MC · train · save/reload)")
+        print(f"  {label} — Python → Loom CABI (CPU SC/MC · train · JSON + .entity save/reload)")
         print(f"{'═' * 70}")
 
         for name, json_name, dtype, tol in ALL_DTYPES:
@@ -111,6 +128,7 @@ def run_suite(suite, layer_filter=None):
             try:
                 net = Network(suite.build(g, json_name))
                 net.morph_all(dtype)
+                net.sync_inference_weights()
 
                 inp, in_shape = suite.make_input(g)
                 batch = 1 if suite.is_embedding else 4
@@ -129,7 +147,8 @@ def run_suite(suite, layer_filter=None):
                 det_tol = max(tol, 1e-10)
                 det_ok = fwd_scmc <= det_tol and bwd_scmc <= det_tol * 10
 
-                before_ok = _check_save_reload_cabi(net, inp, in_shape, tgt, tgt_shape, tol, False)
+                json_before_ok = _check_save_reload_cabi(net, inp, in_shape, tol, False)
+                entity_before_ok = _check_save_reload_entity_cabi(net, inp, in_shape, tol, False)
 
                 lr = training_lr(dtype)
                 net_sc = Network(suite.build(g, json_name))
@@ -146,18 +165,30 @@ def run_suite(suite, layer_filter=None):
                 requires_learn = suite.primary != "RESIDUAL" and not suite.no_learn
                 learned = training_ok(loss_init, loss_final, dtype) or not requires_learn
 
-                after_ok = _check_save_reload_cabi(net_mc, inp, in_shape, tgt, tgt_shape, tol, True)
-                overall = before_ok and after_ok and learned and det_ok
+                json_after_ok = _check_save_reload_cabi(net_mc, inp, in_shape, tol, True)
+                entity_after_ok = _check_save_reload_entity_cabi(net_mc, inp, in_shape, tol, True)
+                overall = (
+                    json_before_ok and entity_before_ok
+                    and json_after_ok and entity_after_ok
+                    and learned and det_ok
+                )
 
                 net.free()
                 net_mc.free()
 
                 if overall:
                     passed += 1
-                    print(f"PASS  loss {loss_init:.4e}→{loss_final:.4e} det={det_ok} reload={after_ok}")
+                    print(
+                        f"PASS  loss {loss_init:.4e}→{loss_final:.4e} det={det_ok} "
+                        f"json={json_after_ok} entity={entity_after_ok}"
+                    )
                 else:
                     failed += 1
-                    print(f"FAIL  loss {loss_init:.4e}→{loss_final:.4e} learn={learned} save={before_ok and after_ok} det={det_ok}")
+                    print(
+                        f"FAIL  loss {loss_init:.4e}→{loss_final:.4e} learn={learned} "
+                        f"json={json_before_ok and json_after_ok} "
+                        f"entity={entity_before_ok and entity_after_ok} det={det_ok}"
+                    )
             except Exception as e:
                 failed += 1
                 print(f"ERR   {e}")

@@ -91,18 +91,47 @@ func LoomLoadEntityWithOptions(path *C.char, layerIndicesJSON *C.char) C.longlon
 	return C.longlong(id)
 }
 
-//export LoomDeserializeEntityLayer
-func LoomDeserializeEntityLayer(dataBuf *C.char, length C.int, layerIndex C.int) C.longlong {
-	n, err := poly.DeserializeEntityLayer(entityBytes(dataBuf, length), int(layerIndex))
-	if err != nil {
-		return -1
-	}
+func registerEntityNetwork(n *poly.VolumetricNetwork) C.longlong {
 	networkMu.Lock()
 	id := networkNextID
 	networkNextID++
 	networks[id] = n
 	networkMu.Unlock()
 	return C.longlong(id)
+}
+
+//export LoomSerializeEntity
+func LoomSerializeEntity(networkHandle C.longlong) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok {
+		return errJSON("invalid network handle")
+	}
+	data, err := poly.SerializeEntity(n)
+	if err != nil {
+		return errJSON(err.Error())
+	}
+	out, _ := json.Marshal(map[string]string{
+		"b64": base64.StdEncoding.EncodeToString(data),
+	})
+	return C.CString(string(out))
+}
+
+//export LoomDeserializeEntity
+func LoomDeserializeEntity(dataBuf *C.char, length C.int) C.longlong {
+	n, err := poly.DeserializeEntity(entityBytes(dataBuf, length))
+	if err != nil {
+		return -1
+	}
+	return registerEntityNetwork(n)
+}
+
+//export LoomDeserializeEntityLayer
+func LoomDeserializeEntityLayer(dataBuf *C.char, length C.int, layerIndex C.int) C.longlong {
+	n, err := poly.DeserializeEntityLayer(entityBytes(dataBuf, length), int(layerIndex))
+	if err != nil {
+		return -1
+	}
+	return registerEntityNetwork(n)
 }
 
 //export LoomLayerPersistenceFromEntity
