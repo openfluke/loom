@@ -78,6 +78,9 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 			useGPU = false
 		} else {
 			applyGlitchTilingFlags(tr.Network, true, cfg.useTiling, cfg.tilingMode)
+			if cfg.fromEntity && cfg.weightDType == poly.DTypeTernary {
+				tr.Network.UseExactDType = true
+			}
 			if cfg.sequentialGPULoad {
 				for li := 0; li < cfg.numLayers; li++ {
 					base := li * 4
@@ -134,7 +137,7 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 	}
 	if !useGPU {
 		applyGlitchTilingFlags(tr.Network, false, cfg.useTiling, cfg.tilingMode)
-		if cfg.useBitNetCPU || cfg.useTernaryPTQCPU {
+		if cfg.useBitNetCPU || cfg.useTernaryPTQCPU || (cfg.fromEntity && cfg.weightDType == poly.DTypeTernary) {
 			tr.Network.UseExactDType = true
 		}
 		tr.SyncInferenceCPU()

@@ -270,8 +270,14 @@ func entityBlobLayerPath(blobPath string) string {
 	if i := strings.Index(blobPath, ".q4_0."); i >= 0 {
 		return blobPath[:i]
 	}
+	if i := strings.Index(blobPath, ".bitnet_ternary."); i >= 0 {
+		return blobPath[:i]
+	}
 	if strings.HasSuffix(blobPath, ".biases") {
 		return strings.TrimSuffix(blobPath, ".biases")
+	}
+	if strings.HasSuffix(blobPath, ".inner_norm") {
+		return strings.TrimSuffix(blobPath, ".inner_norm")
 	}
 	if strings.HasSuffix(blobPath, ".q_norm") {
 		return strings.TrimSuffix(blobPath, ".q_norm")

@@ -234,6 +234,9 @@ func entityTransformerWeightDType(hdr *EntityHeader) DType {
 		if entityBlobIsQ4_0(blob) {
 			return DTypeInt4
 		}
+		if entityBlobIsBitNetTernary(blob) {
+			return DTypeTernary
+		}
 	}
 	for _, blob := range hdr.Blobs {
 		if !strings.HasPrefix(blob.Path, "layers.") || !blob.Native {
@@ -287,6 +290,10 @@ func restoreEntityTransformerLayerFields(et *EntityTransformer) {
 	for i := range et.Network.Layers {
 		l := &et.Network.Layers[i]
 		switch l.Type {
+		case LayerSwiGLU:
+			if et.Dims.Activation != 0 {
+				l.Activation = et.Dims.Activation
+			}
 		case LayerMultiHeadAttention:
 			if queryDim > 0 {
 				l.QueryDim = queryDim
@@ -309,6 +316,9 @@ func PrepareEntityTransformerInference(et *EntityTransformer) {
 	if et == nil || et.Network == nil {
 		return
 	}
+	if et.WeightDType == DTypeTernary {
+		et.Network.UseExactDType = true
+	}
 	restoreEntityTransformerLayerFields(et)
 	dt := et.WeightDType
 	if dt == 0 {
@@ -328,6 +338,10 @@ func PrepareEntityTransformerInference(et *EntityTransformer) {
 		}
 		if l.WeightStore.HasAnyQ4_0() {
 			l.DType = DTypeInt4
+			continue
+		}
+		if l.WeightStore.HasAnyBitNetTernary() {
+			l.DType = DTypeTernary
 			continue
 		}
 		if dt == DTypeFloat32 {
@@ -488,12 +502,20 @@ func deserializeEntityNetwork(hdr *EntityHeader, data []byte, opts *EntityLoadOp
 			if err := applyEntityQ4_0Blob(l, blob.Path, raw, blob); err != nil {
 				return nil, err
 			}
+		case entityBlobIsBitNetTernary(blob):
+			if err := applyEntityBitNetTernaryBlob(l, blob.Path, raw); err != nil {
+				return nil, err
+			}
 		case strings.HasSuffix(blob.Path, ".biases"):
 			if err := applyEntityBiasBlob(l, raw); err != nil {
 				return nil, err
 			}
 		case strings.HasSuffix(blob.Path, ".q_norm"), strings.HasSuffix(blob.Path, ".k_norm"):
 			if err := applyEntityMHANormBlob(l, blob.Path, raw); err != nil {
+				return nil, err
+			}
+		case strings.HasSuffix(blob.Path, ".inner_norm"):
+			if err := applyEntityBitNetAuxBlob(l, blob.Path, raw); err != nil {
 				return nil, err
 			}
 		default:
@@ -639,13 +661,17 @@ func canonicalEntityLayerSpec(ls *PersistenceLayerSpec) {
 }
 
 func collectEntityWeightBlobs(l *VolumetricLayer, path string, payload *bytes.Buffer, blobs *[]EntityWeightBlob, entityQuant DType) {
-	if entityQuant == DTypeInt4 && (l.Type == LayerMultiHeadAttention || l.Type == LayerSwiGLU) {
+	if entityQuant == DTypeTernary && (l.Type == LayerMultiHeadAttention || l.Type == LayerSwiGLU) {
+		if l.WeightStore != nil && l.WeightStore.hasBitNetCPUPacked() {
+			collectEntityBitNetLayer(l, path, payload, blobs)
+		}
+	} else if entityQuant == DTypeInt4 && (l.Type == LayerMultiHeadAttention || l.Type == LayerSwiGLU) {
 		if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
 			collectEntityQ4_0Layer(l, path, payload, blobs)
 		}
 	} else if l.WeightStore != nil {
 		dt := l.DType
-		if l.Type == LayerRMSNorm || entityQuant == DTypeInt4 {
+		if l.Type == LayerRMSNorm || entityQuant == DTypeInt4 || entityQuant == DTypeTernary {
 			dt = DTypeFloat32
 		}
 		scale := l.WeightStore.Scale
@@ -807,7 +833,7 @@ func buildEntityTransformerSpec(et *EntityTransformer) *EntityTransformerSpec {
 			IntermediateSize: et.Dims.IntermediateSize,
 			RMSNormEps:       et.Dims.RMSNormEps,
 			RoPEFreqBase:     et.Dims.RoPEFreqBase,
-			Activation:       fmt.Sprintf("%v", et.Dims.Activation),
+			Activation:       et.Dims.Activation.String(),
 		},
 	}
 	return spec

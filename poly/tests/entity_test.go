@@ -312,3 +312,89 @@ func TestEntityQ4_0CPUMaterialize(t *testing.T) {
 		t.Fatal("MHA Q weights all zero after Q4_0 CPU materialize")
 	}
 }
+
+func TestEntityBitNetTernaryBlobRoundTrip(t *testing.T) {
+	m := &BitNetTernaryMatrix{
+		Rows:     8,
+		Cols:     4,
+		RowWords: 1,
+		Offset:   0,
+		Scale:    0.05,
+		Words:    []uint32{0x49249249, 0x92492492, 0x24924924, 0x49249249, 0x92492492, 0x24924924, 0x49249249, 0x92492492},
+	}
+	raw := EncodeEntityBitNetTernaryBlob(m)
+	got, err := DecodeEntityBitNetTernaryBlob(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Rows != m.Rows || got.Cols != m.Cols || got.Offset != m.Offset || got.Scale != m.Scale || len(got.Words) != len(m.Words) {
+		t.Fatalf("round-trip mismatch: %+v vs %+v", got, m)
+	}
+}
+
+// Large HF BitNet layouts use bitNetPackedKey(offset)=10000+offset with offset in the
+// millions, so matrix keys exceed 20000. Collect must persist every *BitNetTernaryMatrix.
+func TestEntityBitNetCollectLargeOffsetKeys(t *testing.T) {
+	net := NewVolumetricNetwork(1, 1, 1, 4)
+	InitHFDecoderBlocks(net, HFDecoderDims{
+		NumLayers:        1,
+		HiddenSize:       8,
+		NumHeads:         2,
+		NumKVHeads:       1,
+		HeadDim:          4,
+		QueryDim:         8,
+		KVDim:            4,
+		IntermediateSize: 16,
+		Activation:       ActivationReLU2,
+	})
+	mha := &net.Layers[1]
+	mha.WeightStore = NewWeightStore(1)
+	mha.WeightStore.CPUPacked = map[DType]any{
+		DType(10000): &BitNetTernaryMatrix{Rows: 8, Cols: 8, RowWords: 1, Offset: 0, Scale: 1, Words: []uint32{1, 2, 3, 4, 5, 6, 7, 8}},
+		DType(6563600): &BitNetTernaryMatrix{Rows: 4, Cols: 8, RowWords: 1, Offset: 6553600, Scale: 2, Words: []uint32{9, 10, 11, 12}},
+		DType(20000):       float32(1),
+		DType(6573600): float32(2),
+	}
+	wire, err := SerializeEntityTransformer(&EntityTransformer{
+		Network:      net,
+		Architecture: HFArchLlamaStyleDecoder,
+		HiddenSize:   8,
+		VocabSize:    4,
+		Dims: HFDecoderDims{
+			NumLayers: 1, HiddenSize: 8, NumHeads: 2, NumKVHeads: 1, HeadDim: 4,
+			QueryDim: 8, KVDim: 4, IntermediateSize: 16, Activation: ActivationReLU2,
+		},
+		WeightDType: DTypeTernary,
+		Embeddings:  deterministicWeights(32),
+		LMHead:      deterministicWeights(32),
+		FinalNorm:   deterministicWeights(8),
+		HasFinalNorm: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr, err := ParseEntityHeader(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for _, b := range hdr.Blobs {
+		if strings.Contains(b.Path, "layers.1.bitnet_ternary.") {
+			keys = append(keys, b.Path)
+		}
+	}
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 bitnet blobs for MHA (Q+K offsets), got %d: %v", len(keys), keys)
+	}
+	reloaded, err := DeserializeEntityTransformer(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rl := &reloaded.Network.Layers[1]
+	if _, ok := rl.WeightStore.GetBitNetTernaryMatrix(0, 8, 8); !ok {
+		t.Fatal("missing Q matrix after entity round-trip")
+	}
+	if _, ok := rl.WeightStore.GetBitNetTernaryMatrix(6553600, 4, 8); !ok {
+		t.Fatal("missing K matrix after entity round-trip (large offset key was dropped)")
+	}
+}

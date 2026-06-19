@@ -89,6 +89,16 @@ func applyModelSpecificLaunchOptions(reader *bufio.Reader, modelName string, cfg
 			cfg.useBitNetCPU = true
 			fmt.Println("🧮 BitNet model detected; enabling CPU packed ternary inference.")
 		}
+	} else if entityStoredDType == poly.DTypeTernary {
+		if cfg.useGPU {
+			cfg.useBitNetGPU = true
+			cfg.weightDType = poly.DTypeTernary
+			weightDType = poly.DTypeTernary
+			fmt.Println("🧪 BitNet .entity — GPU packed ternary inference.")
+		} else {
+			cfg.useBitNetCPU = true
+			fmt.Println("🧮 BitNet .entity — CPU packed ternary inference.")
+		}
 	} else if !cfg.useGPU {
 		if entityStoredDType == poly.DTypeInt4 {
 			fmt.Println("🧮 CPU: baked Q4_0 .entity — dequantizing to FP32 for tiled forward.")

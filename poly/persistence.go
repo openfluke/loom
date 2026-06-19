@@ -108,7 +108,7 @@ func serializeLayer(l *VolumetricLayer) PersistenceLayerSpec {
 	ls := PersistenceLayerSpec{
 		Z: l.Z, Y: l.Y, X: l.X, L: l.L,
 		Type:       fmt.Sprintf("%v", l.Type),
-		Activation: fmt.Sprintf("%v", l.Activation),
+		Activation: l.Activation.String(),
 		DType:      l.DType.String(),
 
 		InputHeight:   l.InputHeight,

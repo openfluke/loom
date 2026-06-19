@@ -337,6 +337,10 @@ func ParseActivationType(s string) ActivationType {
 		return ActivationSigmoid
 	case "LEAKYRELU", "LEAKY_RELU":
 		return ActivationLeakyReLU
+	case "RELU2":
+		return ActivationReLU2
+	case "6":
+		return ActivationReLU2
 	case "LINEAR":
 		return ActivationLinear
 	default:
