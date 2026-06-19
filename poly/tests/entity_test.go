@@ -2,6 +2,7 @@ package poly_test
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 
@@ -219,5 +220,95 @@ func TestEntityTransformerRoundTrip(t *testing.T) {
 	}
 	if len(netOnly.Layers) != 4 {
 		t.Fatalf("network-only layers = %d, want 4", len(netOnly.Layers))
+	}
+}
+
+func TestQ4_0GPUPackedRoundTrip(t *testing.T) {
+	data := make([]float32, 128)
+	for i := range data {
+		data[i] = float32(i)*0.01 - 0.5
+	}
+	scales, packed := PackQ4_0GPU(data)
+	out := DequantizeQ4_0GPUPacked(scales, packed)
+	if len(out) != len(data) {
+		t.Fatalf("dequant len = %d, want %d", len(out), len(data))
+	}
+	var maxErr float32
+	for i := range data {
+		d := float32(math.Abs(float64(data[i] - out[i])))
+		if d > maxErr {
+			maxErr = d
+		}
+	}
+	if maxErr > 0.2 {
+		t.Fatalf("max Q4_0 round-trip error %v too large", maxErr)
+	}
+}
+
+func TestEntityQ4_0CPUMaterialize(t *testing.T) {
+	dims := HFDecoderDims{
+		NumLayers:        1,
+		HiddenSize:       4,
+		NumHeads:         2,
+		NumKVHeads:       2,
+		HeadDim:          2,
+		QueryDim:         4,
+		KVDim:            4,
+		IntermediateSize: 8,
+		RMSNormEps:       1e-5,
+		RoPEFreqBase:     10000,
+		Activation:       ActivationSilu,
+	}
+	net := NewVolumetricNetwork(1, 1, 1, 4)
+	InitHFDecoderBlocks(net, dims)
+	for i := range net.Layers {
+		if net.Layers[i].WeightStore != nil {
+			copy(net.Layers[i].WeightStore.Master, deterministicWeights(len(net.Layers[i].WeightStore.Master)))
+		}
+	}
+	et := NewEntityTransformer(net, HFArchLlamaStyleDecoder, dims,
+		deterministicWeights(8*4), deterministicWeights(8*4), deterministicWeights(4), true)
+	et.WeightDType = DTypeInt4
+	wire, err := SerializeEntityTransformer(et)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := DeserializeEntityTransformer(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	PrepareEntityTransformerInference(reloaded)
+	mha := &reloaded.Network.Layers[1]
+	if !mha.WeightStore.HasAnyQ4_0() {
+		t.Fatal("expected baked Q4_0 on MHA")
+	}
+	mha.Network = reloaded.Network
+	mha.SyncToCPU()
+	if mha.DType != DTypeFloat32 {
+		t.Fatalf("MHA DType = %v, want FP32 after CPU materialize", mha.DType)
+	}
+	q := mha.QueryDim
+	if q == 0 {
+		q = mha.DModel
+	}
+	qwSize := q * mha.DModel
+	if len(mha.WeightStore.Master) < qwSize {
+		t.Fatalf("MHA Master len = %d, want >= %d", len(mha.WeightStore.Master), qwSize)
+	}
+	weights := mha.WeightStore.GetActive(DTypeFloat32)
+	if weights == nil {
+		t.Fatal("MHA GetActive(FP32) nil after materialize")
+	}
+	w := weights.([]float32)
+	var sumAbs float32
+	for _, v := range w[:qwSize] {
+		if v < 0 {
+			sumAbs -= v
+		} else {
+			sumAbs += v
+		}
+	}
+	if sumAbs == 0 {
+		t.Fatal("MHA Q weights all zero after Q4_0 CPU materialize")
 	}
 }

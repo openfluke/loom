@@ -73,7 +73,7 @@ func readPolyTalkLaunchOptions(reader *bufio.Reader) polyTalkLaunch {
 	return cfg
 }
 
-func applyModelSpecificLaunchOptions(reader *bufio.Reader, modelName string, cfg *polyTalkLaunch) {
+func applyModelSpecificLaunchOptions(reader *bufio.Reader, modelName string, cfg *polyTalkLaunch, entityStoredDType poly.DType) {
 	modelNameLower := strings.ToLower(modelName)
 	isBitNetModel := strings.Contains(modelNameLower, "bitnet") || strings.Contains(modelNameLower, "1bit")
 	isQwen := strings.Contains(modelNameLower, "qwen")
@@ -90,11 +90,15 @@ func applyModelSpecificLaunchOptions(reader *bufio.Reader, modelName string, cfg
 			fmt.Println("🧮 BitNet model detected; enabling CPU packed ternary inference.")
 		}
 	} else if !cfg.useGPU {
-		quantInput := readInput(reader, "🧮 CPU weight precision? (32=FP32 / ternary=experimental PTQ) [32]: ", "32")
-		switch strings.ToLower(strings.TrimSpace(quantInput)) {
-		case "ternary", "t", "bitnet", "1bit", "b1.58", "158":
-			cfg.useTernaryPTQCPU = true
-			fmt.Println("⚠️  Ternary PTQ is experimental. It is not equivalent to BitNet training and may produce bad text.")
+		if entityStoredDType == poly.DTypeInt4 {
+			fmt.Println("🧮 CPU: baked Q4_0 .entity — dequantizing to FP32 for tiled forward.")
+		} else {
+			quantInput := readInput(reader, "🧮 CPU weight precision? (32=FP32 / ternary=experimental PTQ) [32]: ", "32")
+			switch strings.ToLower(strings.TrimSpace(quantInput)) {
+			case "ternary", "t", "bitnet", "1bit", "b1.58", "158":
+				cfg.useTernaryPTQCPU = true
+				fmt.Println("⚠️  Ternary PTQ is experimental. It is not equivalent to BitNet training and may produce bad text.")
+			}
 		}
 	}
 	cfg.useBitNetPacked = cfg.useBitNetCPU || cfg.useBitNetGPU

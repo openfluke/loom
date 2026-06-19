@@ -303,7 +303,8 @@ func restoreEntityTransformerLayerFields(et *EntityTransformer) {
 }
 
 // PrepareEntityTransformerInference restores layer fields and unpacks legacy native INT4 blobs.
-// Q4_0 baked checkpoints skip Unpack — GPU upload uses cached blocks via uploadQ4_0Cached.
+// Q4_0 baked checkpoints skip Unpack on load — GPU uses uploadQ4_0Cached; CPU materializes
+// FP32 Master in VolumetricLayer.SyncToCPU via MaterializeQ4_0ForCPU.
 func PrepareEntityTransformerInference(et *EntityTransformer) {
 	if et == nil || et.Network == nil {
 		return

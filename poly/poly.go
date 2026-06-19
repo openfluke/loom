@@ -1859,6 +1859,7 @@ func (l *VolumetricLayer) SyncToCPU() {
 	}
 
 	if l.WeightStore != nil {
+		l.MaterializeQ4_0ForCPU()
 		for dtype, buf := range l.WeightStore.GPUWeights {
 			_ = dtype
 			_ = buf

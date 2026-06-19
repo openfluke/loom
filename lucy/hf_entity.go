@@ -367,7 +367,7 @@ func readEntityTalkLaunchOptions(reader *bufio.Reader, modelID string, storedDTy
 		cfg.sequentialGPULoad = readInput(reader, "📥 Block-by-block GPU upload? (1=yes / 0=no) [0]: ", "0") == "1"
 	}
 
-	applyModelSpecificLaunchOptions(reader, modelID, &cfg)
+	applyModelSpecificLaunchOptions(reader, modelID, &cfg, storedDType)
 	deterministic = cfg.deterministic
 	weightDType = storedDType
 	return cfg

@@ -65,7 +65,7 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		}
 		modelName = models[selectedIdx-1]
 	}
-	applyModelSpecificLaunchOptions(reader, modelName, &launch)
+	applyModelSpecificLaunchOptions(reader, modelName, &launch, 0)
 	useBitNetCPU := launch.useBitNetCPU
 	useBitNetGPU := launch.useBitNetGPU
 	useTernaryPTQCPU := launch.useTernaryPTQCPU
