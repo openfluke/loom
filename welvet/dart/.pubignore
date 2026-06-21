@@ -1,0 +1,7 @@
+# Keep pub.dev package lean where possible (binaries still required per platform).
+example/
+ffigen.yaml
+welvet.iml
+.dart_tool/
+build/
+# examples/ is included — runnable scripts for pub.dev README

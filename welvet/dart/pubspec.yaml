@@ -1,0 +1,43 @@
+name: welvet
+description: >-
+  Loom M-POLY-VTD AI engine for Flutter/Dart — 21 numerical types, WebGPU,
+  native .entity checkpoints, and Welvet C-ABI FFI bindings.
+version: 0.80.0
+license: Apache-2.0
+homepage: https://github.com/openfluke/loom
+repository: https://github.com/openfluke/loom/tree/main/welvet/dart
+issue_tracker: https://github.com/openfluke/loom/issues
+documentation: https://github.com/openfluke/loom/tree/main/welvet/dart
+
+environment:
+  sdk: ^3.11.5
+  flutter: '>=3.3.0'
+
+executables:
+  seven_layer: seven_layer
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.0
+  plugin_platform_interface: ^2.0.2
+
+dev_dependencies:
+  ffigen: ^20.1.1
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        ffiPlugin: true
+      ios:
+        ffiPlugin: true
+      linux:
+        ffiPlugin: true
+      macos:
+        ffiPlugin: true
+      windows:
+        ffiPlugin: true

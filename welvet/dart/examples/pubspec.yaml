@@ -1,0 +1,10 @@
+name: welvet_examples
+description: Runnable examples for the welvet Dart package (see README on pub.dev).
+publish_to: none
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  welvet:
+    path: ../
