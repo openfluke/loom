@@ -276,19 +276,20 @@ Not a manual upload — use the CLI (like `npm publish` / `twine upload`):
 ```bash
 flutter pub login
 cd loom/welvet/dart
-bash tool/copy_native.sh --all    # optional: ship natives in package
-bash tool/publish.sh               # dry-run + tests
-bash tool/publish.sh --publish
+bash tool/publish.sh                         # dry-run (desktop: mac + linux + windows)
+bash tool/publish.sh --publish               # upload desktop slice (~59 MB)
 ```
 
-**Size:** full mobile + desktop natives can be ~100MB+. Consider desktop-only slices for pub.dev (same tradeoff as PyPI). Monorepo users can use `copy_native.sh` after clone.
+**Binaries stay out of git.** `publish.sh` runs `copy_native.sh` locally, copies the package to a temp dir outside the repo, strips iOS/Android natives, and uploads from there.
+
+**Size:** pub.dev rejects uploads over **100 MB** compressed. Default **desktop** slice (macOS + Linux + Windows) fits; iOS/Android are omitted (use `copy_native.sh` in the monorepo for mobile).
 
 ## Version alignment
 
 | Component | Version |
 |-----------|---------|
 | **Loom engine (poly)** | **0.80.0** |
-| **pub `welvet`** | **0.80.0** |
+| **pub `welvet`** | **0.80.1** |
 | **npm `@openfluke/welvet`** | **0.80.0** |
 | **PyPI `welvet`** | **0.80.0** |
 

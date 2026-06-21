@@ -2,7 +2,7 @@ name: welvet
 description: >-
   Loom M-POLY-VTD AI engine for Flutter/Dart — 21 numerical types, WebGPU,
   native .entity checkpoints, and Welvet C-ABI FFI bindings.
-version: 0.80.0
+version: 0.80.1
 license: Apache-2.0
 homepage: https://github.com/openfluke/loom
 repository: https://github.com/openfluke/loom/tree/main/welvet/dart
