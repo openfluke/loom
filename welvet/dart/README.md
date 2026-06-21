@@ -72,13 +72,13 @@ Without `native/` artifacts, `loomAvailable` is false — run `copy_native.sh` f
 
 ## Examples (runnable)
 
-Scripts in [`examples/`](examples/) mirror Python `welvet/python/examples/` and the npm README quick-start.
+Scripts in [`tool/examples/`](tool/examples/) mirror Python `welvet/python/examples/` and the npm README quick-start.
 
 ```bash
 cd loom/welvet/dart
 bash tool/copy_native.sh
 
-cd examples
+cd tool/examples
 dart pub get
 dart run 01_dense_forward.dart
 dart run run_all.dart          # runs 01–05
@@ -86,11 +86,11 @@ dart run run_all.dart          # runs 01–05
 
 | Script | What it shows |
 |--------|----------------|
-| [`01_dense_forward.dart`](examples/01_dense_forward.dart) | Volumetric JSON → `forwardPolymorphic` + `sequentialForward` |
-| [`02_morph_and_train.dart`](examples/02_morph_and_train.dart) | `morphLayer(INT8)`, CPU MC `train()` |
-| [`03_save_reload.dart`](examples/03_save_reload.dart) | JSON wire + `.entity` roundtrip |
-| [`04_mha_forward.dart`](examples/04_mha_forward.dart) | MHA with `[batch, seq, d_model]` |
-| [`05_dna_compare.dart`](examples/05_dna_compare.dart) | `extractDNA` + `compareDNA` |
+| [`01_dense_forward.dart`](tool/examples/01_dense_forward.dart) | Volumetric JSON → `forwardPolymorphic` + `sequentialForward` |
+| [`02_morph_and_train.dart`](tool/examples/02_morph_and_train.dart) | `morphLayer(INT8)`, CPU MC `train()` |
+| [`03_save_reload.dart`](tool/examples/03_save_reload.dart) | JSON wire + `.entity` roundtrip |
+| [`04_mha_forward.dart`](tool/examples/04_mha_forward.dart) | MHA with `[batch, seq, d_model]` |
+| [`05_dna_compare.dart`](tool/examples/05_dna_compare.dart) | `extractDNA` + `compareDNA` |
 
 Flutter demo app: [`example/`](example/) (plugin template — `flutter run` from `example/`).
 

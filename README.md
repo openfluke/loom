@@ -4,6 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@openfluke/welvet.svg)](https://www.npmjs.com/package/@openfluke/welvet)
 [![PyPI version](https://img.shields.io/pypi/v/welvet.svg)](https://pypi.org/project/welvet/)
 [![PyPI downloads](https://img.shields.io/pypi/dm/welvet.svg)](https://pypi.org/project/welvet/)
+[![pub package](https://img.shields.io/pub/v/welvet.svg)](https://pub.dev/packages/welvet)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 **"The SQLite of AI" — A Polyglot Neural Engine with Bit-Exact Reproducibility**
@@ -41,7 +42,7 @@ The project has transitioned to the **Multi-numerical POLYmorphic Volumetric Til
 - **[`poly/`](./poly/)**: The current-generation engine core (M-POLY-VTD). Active development.
 - **[`lucy/`](./lucy/)**: Interactive harness — Poly Talk, ENTITY Talk, seven-layer CPU suite, HF download.
 - **[`planetbridging/`](./planetbridging/)**: Planet → Loom bridging POC (**v0.5.0** complete in-tree; **releases after Loom 0.80**).
-- **[`legacy/`](./legacy/)**: Historical codebase and previous iterations of Loom.
+- **[`welvet/dart/`](./welvet/dart/)**: Flutter/Dart FFI plugin — [`welvet` on pub.dev](https://pub.dev/packages/welvet) (`flutter pub add welvet`).
 
 ## 🛠️ Getting Started
 For technical deep-dives into M-POLY-VTD, refer to the **[`docs/`](./docs/)** index ([`docs/index.md`](./docs/index.md)) and benchmarks within the [`poly/`](./poly/) core. Topics include deployment, GPU, layers — plus **donate compute** (LAN TCP, [`docs/donate_compute.md`](./docs/donate_compute.md)) and **TANHI** UDP layer telemetry for the SoulGlitch HUD ([`docs/tanhi.md`](./docs/tanhi.md)).
@@ -51,6 +52,7 @@ Loom provides bit-exact reproducibility across:
 - [**TypeScript/Node.js**](https://www.npmjs.com/package/@openfluke/welvet) (@openfluke/welvet)
 - **Browser** (WASM + WebGPU)
 - [**Python**](https://pypi.org/project/welvet/) (`pip install welvet`)
+- [**Flutter/Dart**](https://pub.dev/packages/welvet) (`welvet` FFI plugin — iOS, Android, Linux, macOS, Windows)
 - **C#/.NET** (Welvet) - *(In Development)*
 
 ## 📊 Versioning & Roadmap

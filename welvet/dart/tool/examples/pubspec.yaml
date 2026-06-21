@@ -7,4 +7,4 @@ environment:
 
 dependencies:
   welvet:
-    path: ../
+    path: ../../

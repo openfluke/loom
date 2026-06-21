@@ -4,4 +4,6 @@ ffigen.yaml
 welvet.iml
 .dart_tool/
 build/
-# examples/ is included — runnable scripts for pub.dev README
+tool/examples/.dart_tool/
+tool/examples/pubspec.lock
+# examples/ is included — runnable scripts live in tool/examples/
