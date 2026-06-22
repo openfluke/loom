@@ -92,7 +92,7 @@ dart run run_all.dart          # runs 01–05
 | [`04_mha_forward.dart`](tool/examples/04_mha_forward.dart) | MHA with `[batch, seq, d_model]` |
 | [`05_dna_compare.dart`](tool/examples/05_dna_compare.dart) | `extractDNA` + `compareDNA` |
 
-Flutter demo app: [`example/`](example/) (plugin template — `flutter run` from `example/`).
+Flutter demo app: [loom-flutter-quickstart](https://github.com/openfluke/loom-flutter-quickstart) on GitHub, or see [docs/flutter.md](../../docs/flutter.md).
 
 ## Quick start
 

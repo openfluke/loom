@@ -18,7 +18,7 @@ M-POLY-VTD is a neural inference and training engine built from first principles
 │                                                                             │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │               POLYGLOT BINDINGS (C-ABI FFI Layer)                    │   │
-│  │  Python │ TS (@openfluke/welvet) │ C# │ Java │ Dart │ WASM Browser    │   │
+│  │  Python │ TS (@openfluke/welvet) │ Flutter (pub.dev welvet) │ C# │ Java │ WASM Browser │
 │  └─────────────────────────────┬────────────────────────────────────────┘   │
 │                                │                                            │
 │                                ▼                                            │

@@ -4,13 +4,47 @@ Concise, copy-paste-ready patterns for the most common `poly/` tasks. Each snipp
 
 ---
 
-## 📦 TypeScript / Node.js Installation
+## 📦 TypeScript / Node.js / Flutter Installation
 
 ```bash
 npm install @openfluke/welvet
 ```
 
-See [deployment.md](deployment.md) for full isomorphic details.
+```yaml
+# Flutter — pubspec.yaml
+dependencies:
+  welvet: ^0.80.4
+```
+
+See [deployment.md](deployment.md) for npm/WASM · [flutter.md](flutter.md) for Flutter FFI and examples.
+
+---
+
+## Flutter / Dart (`welvet`)
+
+```dart
+import 'dart:convert';
+import 'package:welvet/loom_ffi.dart';
+
+final handle = loomLib.createNetwork(jsonEncode({
+  'id': 'demo', 'depth': 1, 'rows': 1, 'cols': 1, 'layers_per_cell': 1,
+  'layers': [{
+    'z': 0, 'y': 0, 'x': 0, 'l': 0,
+    'type': 'dense', 'dtype': 'float32',
+    'input_height': 16, 'output_height': 8, 'activation': 'relu',
+  }],
+}));
+
+loomLib.configureTrainingMode(handle, 2);
+final out = loomParseFloatArray(
+  loomLib.forwardPolymorphic(handle, input, [1, 16]),
+);
+loomLib.freeNetwork(handle);
+```
+
+See [flutter.md](flutter.md) for training, mesh step, DNA, checkpoints, and the loom-flutter-quickstart showcase app.
+
+---
 
 ## Creating a Network
 

@@ -10,6 +10,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 |:-----|:------------|
 | [overview.md](overview.md) | Big-picture architecture: the 3D grid, six design pillars, key types |
 | [deployment.md](deployment.md) | **Polyglot Ecosystem**: NPM deployment, TypeScript SDK, WASM bridge, and Browser/Node usage |
+| [flutter.md](flutter.md) | **Flutter / Dart**: `welvet` on pub.dev, FFI quick start, runnable examples, loom-flutter-quickstart showcase |
 | [donate_compute.md](donate_compute.md) | **Donate compute**: LAN TCP protocol (`donate_compute_*.go`), framed JSON, model push vs local LM, client/server API |
 | [tanhi.md](tanhi.md) | **TANHI**: UDP JSON-line layer telemetry (`poly/tanhi.go`), SoulGlitch HUD, env/C-ABI, wire format |
 | [numerical_types.md](numerical_types.md) | All 21 DTypes, the `Numeric` generic constraint, `WeightStore` lifecycle, `MorphToFloat32ForGPU` PTQ simulation, Q4_0, and compression ratios |
@@ -39,6 +40,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **New to the codebase?** Read [overview.md](overview.md) first for the architecture picture, then [layers.md](layers.md) to see what layer types are available.
 **Deploying to Web or JS?** Read [deployment.md](deployment.md).
+
+**Building a Flutter or Dart app?** Read [flutter.md](flutter.md) and clone [loom-flutter-quickstart](https://github.com/openfluke/loom-flutter-quickstart).
 
 **Sharing inference over LAN (donor node / TCP)?** Read [donate_compute.md](donate_compute.md).
 

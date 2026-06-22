@@ -1,6 +1,30 @@
-# Deployment: TypeScript, WASM, and NPM
+# Deployment: TypeScript, WASM, Flutter, and NPM
 
-Loom is designed to be **isomorphic**, meaning the exact same mathematical engine runs in both Node.js (backend) and the Browser (frontend) via a bit-perfect WebAssembly (WASM) bridge.
+Loom is designed to be **isomorphic** across runtimes: the same mathematical engine runs in Node.js and the browser (WASM), and the same **Welvet C-ABI** is exposed to **Flutter/Dart** via [`welvet` on pub.dev](https://pub.dev/packages/welvet).
+
+---
+
+## 📱 Flutter & Dart
+
+Use the FFI plugin for mobile and desktop Flutter apps — no Python or Node runtime.
+
+```yaml
+dependencies:
+  welvet: ^0.80.4
+```
+
+```dart
+import 'package:welvet/loom_ffi.dart';
+
+if (!loomAvailable) throw StateError(loomLibLastError ?? 'welvet');
+final handle = loomLib.createNetwork(jsonConfig);
+```
+
+- **Full guide:** [flutter.md](flutter.md)
+- **Interactive demos:** [loom-flutter-quickstart](https://github.com/openfluke/loom-flutter-quickstart) (30+ CPU examples, Apache-2.0)
+- **Production reference:** SoulGlitch (Play Store) embeds the same C-ABI on Android/iOS
+
+Desktop natives ship in the pub.dev package; iOS/Android require vendored binaries (see [flutter.md — Platform notes](flutter.md#platform-notes)).
 
 ---
 
