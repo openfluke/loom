@@ -1,3 +1,15 @@
+## 0.80.4
+
+- macOS: SoulGlitch-style loading — `libwelvet.dylib` in app Frameworks + package `native/` for tests; drop vendored-link / post_install hacks.
+
+## 0.80.3
+
+- macOS Flutter apps: vend `Frameworks/welvet.dylib` with `@rpath/welvet.dylib` install name; `force_load` into plugin; add `welvet_post_install.rb` Podfile hook for Runner dyld path.
+
+## 0.80.2
+
+- Fix native library discovery for pub.dev consumers: resolve `package:welvet` root via `package_config.json` instead of cwd-relative paths.
+
 ## 0.80.1
 
 - Fix pub.dev tarball: include prebuilt `native/` and `macos/Frameworks/` binaries (0.80.0 omitted them due to `.gitignore`).

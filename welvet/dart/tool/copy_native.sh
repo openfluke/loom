@@ -79,9 +79,11 @@ if $RUN_MACOS; then
   if [[ -n "$mac_src" ]]; then
     cp_file "$mac_src" "$NAT/macos_universal/libwelvet.dylib"
     cp_file "$mac_src" "$ROOT/macos/Frameworks/libwelvet.dylib"
+    install_name_tool -id "@rpath/libwelvet.dylib" "$ROOT/macos/Frameworks/libwelvet.dylib"
   else
     fallback "$SOUL_NAT/macos/libwelvet.dylib" "$NAT/macos_universal/libwelvet.dylib" && \
-      cp_file "$NAT/macos_universal/libwelvet.dylib" "$ROOT/macos/Frameworks/libwelvet.dylib" || \
+      cp_file "$NAT/macos_universal/libwelvet.dylib" "$ROOT/macos/Frameworks/libwelvet.dylib" && \
+      install_name_tool -id "@rpath/libwelvet.dylib" "$ROOT/macos/Frameworks/libwelvet.dylib" || \
       echo "  ✗ macOS dylib"
   fi
 fi

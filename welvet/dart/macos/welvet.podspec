@@ -1,9 +1,9 @@
 #
-# Welvet FFI plugin — macOS (prebuilt libwelvet.dylib).
+# Welvet FFI plugin — macOS (prebuilt libwelvet.dylib, copied into app Frameworks).
 #
 Pod::Spec.new do |s|
   s.name             = 'welvet'
-  s.version          = '0.80.1'
+  s.version          = '0.80.4'
   s.summary          = 'Loom Welvet C-ABI bindings for Flutter/Dart'
   s.description      = <<-DESC
 Flutter FFI plugin bundling prebuilt Welvet (Loom M-POLY-VTD) natives.

@@ -35,15 +35,57 @@ DynamicLibrary _openFirst(List<String> candidates) {
   );
 }
 
+/// Installed `welvet` package root (pub-cache tarball) for VM / `flutter test`.
+String? _welvetPackageRoot() {
+  var dir = Directory.current;
+  while (true) {
+    final config = File('${dir.path}/.dart_tool/package_config.json');
+    if (!config.existsSync()) {
+      final parent = dir.parent;
+      if (parent.path == dir.path) return null;
+      dir = parent;
+      continue;
+    }
+    try {
+      final packages =
+          (jsonDecode(config.readAsStringSync()) as Map)['packages'] as List?;
+      if (packages == null) return null;
+      final projectRoot = config.parent.parent.path;
+      for (final pkg in packages) {
+        final map = pkg as Map<String, dynamic>;
+        if (map['name'] != 'welvet') continue;
+        final rootUri = map['rootUri'] as String;
+        if (rootUri.startsWith('file:')) {
+          return Uri.parse(rootUri).toFilePath();
+        }
+        final resolved =
+            Uri.directory(projectRoot).resolve(rootUri).toFilePath();
+        if (Directory('$resolved/native').existsSync()) return resolved;
+      }
+    } catch (_) {}
+    return null;
+  }
+}
+
+String _macosAppFrameworksLib() {
+  final frameworksDir = File(Platform.resolvedExecutable).parent.parent.path;
+  return '$frameworksDir/Frameworks/libwelvet.dylib';
+}
+
 List<String> _packageNativeCandidates(String subdir, String fileName) {
   final env = _welvetNativeDirFromEnv();
   if (env != null) {
     return ['$env/$fileName', '$env/lib$fileName'];
   }
-  return [
+  final candidates = <String>[
     'native/$subdir/$fileName',
     '../native/$subdir/$fileName',
   ];
+  final root = _welvetPackageRoot();
+  if (root != null) {
+    candidates.insert(0, '$root/native/$subdir/$fileName');
+  }
+  return candidates;
 }
 
 DynamicLibrary _loadLib() {
@@ -66,7 +108,9 @@ DynamicLibrary _loadLib() {
       ..._packageNativeCandidates('linux_arm64', 'libwelvet.so'),
     ]);
   } else if (Platform.isMacOS) {
+    // SoulGlitch: libwelvet.dylib in app Frameworks; VM tests use package native/.
     return _openFirst([
+      _macosAppFrameworksLib(),
       'libwelvet.dylib',
       ..._packageNativeCandidates('macos_universal', 'libwelvet.dylib'),
       ..._packageNativeCandidates('macos_arm64', 'libwelvet.dylib'),
