@@ -230,7 +230,7 @@ packages:
       path: ".."
       relative: true
     source: path
-    version: "0.80.5"
+    version: "0.80.6"
   welvet_android:
     dependency: "direct overridden"
     description:
@@ -244,7 +244,7 @@ packages:
       path: "../packages/welvet_apple"
       relative: true
     source: path
-    version: "0.80.5"
+    version: "0.80.6"
   welvet_linux:
     dependency: "direct overridden"
     description:

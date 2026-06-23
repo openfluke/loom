@@ -3,7 +3,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'welvet_apple'
-  s.version          = '0.80.5'
+  s.version          = '0.80.6'
   s.summary          = 'iOS natives for welvet (Loom Welvet C-ABI)'
   s.description      = <<-DESC
 Federated Flutter FFI plugin — iOS Welvet.xcframework for package:welvet.

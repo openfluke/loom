@@ -1,8 +1,8 @@
 name: welvet
 description: >-
-  Loom M-POLY-VTD AI engine for Flutter/Dart (desktop: macOS, Linux, Windows).
-  Mobile natives ship via welvet_android and welvet_apple on pub.dev.
-version: 0.80.5
+  Loom M-POLY-VTD AI engine for Flutter/Dart (Linux, Windows desktop).
+  Apple (iOS + macOS) and Android natives ship via federated packages on pub.dev.
+version: 0.80.6
 license: Apache-2.0
 homepage: https://github.com/openfluke/loom
 repository: https://github.com/openfluke/loom/tree/main/welvet/dart
@@ -24,7 +24,7 @@ dependencies:
   welvet_linux: ^0.80.5
   welvet_windows: ^0.80.5
   welvet_android: ^0.80.5
-  welvet_apple: ^0.80.5
+  welvet_apple: ^0.80.6
 
 dev_dependencies:
   ffigen: ^20.1.1
@@ -42,6 +42,6 @@ flutter:
       linux:
         default_package: welvet_linux
       macos:
-        ffiPlugin: true
+        default_package: welvet_apple
       windows:
         default_package: welvet_windows

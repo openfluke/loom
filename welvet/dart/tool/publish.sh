@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Publish main welvet to pub.dev (https://pub.dev/packages/welvet).
 #
-# Desktop Dart API + macOS natives. Linux/Windows/Android/iOS natives ship in
-# welvet_linux, welvet_windows, welvet_android, welvet_apple (publish those first).
+# Dart API only. Platform natives ship in welvet_linux, welvet_windows,
+# welvet_android, welvet_apple (iOS + macOS).
 #
 # Usage:
 #   bash tool/publish.sh                    # dry-run
@@ -29,8 +29,6 @@ STAGE="$(mktemp -d "${TMPDIR:-/tmp}/welvet-publish.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 
 echo "=== welvet (main) publish ==="
-echo "copy_native (macOS)..."
-(cd "$ROOT" && bash tool/copy_native.sh --macos)
 
 echo "Running tests in source tree (pubspec_overrides for local impl packages)..."
 (cd "$ROOT" && flutter pub get && flutter test)
@@ -50,11 +48,8 @@ rsync -a \
   --exclude 'linux/' \
   --exclude 'windows/' \
   --exclude 'src/' \
-  --exclude 'native/android/' \
-  --exclude 'native/linux_amd64/' \
-  --exclude 'native/linux_arm64/' \
-  --exclude 'native/windows_amd64/' \
-  --exclude 'native/windows_arm64/' \
+  --exclude 'macos/' \
+  --exclude 'native/' \
   "$ROOT/" "$STAGE/"
 
 cat >"$STAGE/.gitignore" <<'EOF'

@@ -22,7 +22,7 @@ This is the **pub.dev** package page content (same role as [`@openfluke/welvet` 
 
 ## Features
 
-- **Flutter FFI plugin** — federated natives: desktop in `welvet` (macOS) + `welvet_linux` / `welvet_windows`; mobile via `welvet_android` / `welvet_apple` (pulled automatically).
+- **Flutter FFI plugin** — federated natives: `welvet_linux` / `welvet_windows` (desktop); `welvet_apple` (iOS + macOS); `welvet_android` (pulled automatically via `welvet`).
 - **21 DTypes** — runtime `morphLayer()` per layer index.
 - **Volumetric grid** — `depth × rows × cols` cells, Lucy-style JSON networks.
 - **Training** — `loomLib.train()` with CPU SC/MC modes (`configureTrainingMode`).
@@ -35,25 +35,25 @@ This is the **pub.dev** package page content (same role as [`@openfluke/welvet` 
 
 ```yaml
 dependencies:
-  welvet: ^0.80.5
+  welvet: ^0.80.6
 ```
 
 ```dart
 import 'package:welvet/loom_ffi.dart';
 import 'package:welvet/welvet.dart'; // welvetVersion
 
-print(welvetVersion); // 0.80.5
+print(welvetVersion); // 0.80.6
 ```
 
-**Supported platforms (64-bit):** macOS, Linux (x86_64 + ARM64), Windows (x86_64 + ARM64). iOS and Android work via federated packages (`welvet_apple`, `welvet_android`) that `welvet` depends on — you only add `welvet` in `pubspec.yaml`.
+**Supported platforms (64-bit):** Linux, Windows, iOS, macOS, Android — add only `welvet` in `pubspec.yaml`; federated impl packages are pulled per platform.
 
 | Package | Platforms | Architectures |
 |---------|-----------|---------------|
-| [`welvet`](https://pub.dev/packages/welvet) | macOS | universal / arm64 |
+| [`welvet`](https://pub.dev/packages/welvet) | Dart API (all) | — |
 | [`welvet_linux`](https://pub.dev/packages/welvet_linux) | Linux | x86_64, ARM64 |
 | [`welvet_windows`](https://pub.dev/packages/welvet_windows) | Windows | x86_64, ARM64 |
 | [`welvet_android`](https://pub.dev/packages/welvet_android) | Android | arm64-v8a, x86_64 |
-| [`welvet_apple`](https://pub.dev/packages/welvet_apple) | iOS | device + simulator (XCFramework) |
+| [`welvet_apple`](https://pub.dev/packages/welvet_apple) | **iOS + macOS** | XCFramework + universal dylib |
 
 ### Monorepo / path dependency
 
@@ -310,7 +310,7 @@ bash tool/publish.sh --publish
 | Component | Version |
 |-----------|---------|
 | **Loom engine (poly)** | **0.80.0** |
-| **pub `welvet` (+ federated impl)** | **0.80.5** |
+| **pub `welvet` (+ federated impl)** | **0.80.6** |
 | **npm `@openfluke/welvet`** | **0.80.0** |
 | **PyPI `welvet`** | **0.80.0** |
 

@@ -2,7 +2,7 @@
 
 Loom runs in **Flutter** and plain **Dart** through the [`welvet`](https://pub.dev/packages/welvet) FFI plugin. Same Welvet C-ABI as Python ctypes and TypeScript WASM — `createNetwork`, polymorphic forward/backward, CPU training, DNA, JSON + `.entity` checkpoints, mesh step, and LLM exports when your native build includes them.
 
-> **v0.80.5** — Federated natives on pub.dev: main `welvet` (macOS + Dart API) plus `welvet_linux`, `welvet_windows`, `welvet_android`, `welvet_apple` for per-OS binaries under the 100 MB limit.
+> **v0.80.6** — Federated natives on pub.dev: main `welvet` (Dart API) plus `welvet_linux`, `welvet_windows`, `welvet_android`, `welvet_apple` (iOS + macOS) for per-OS binaries under the 100 MB limit.
 
 ---
 
@@ -217,14 +217,14 @@ SoulGlitch uses path-vendored `welvet` + XCFramework on iOS; see SoulGlitch macO
 
 | Platform | Package | Notes |
 |----------|---------|--------|
-| **macOS** | [`welvet`](https://pub.dev/packages/welvet) | `libwelvet.dylib` in plugin Frameworks |
+| **macOS** | [`welvet_apple`](https://pub.dev/packages/welvet_apple) | `libwelvet.dylib` in plugin Frameworks |
 | **Linux** | [`welvet_linux`](https://pub.dev/packages/welvet_linux) | x86_64 + ARM64 `.so` (auto via `welvet` dep) |
 | **Windows** | [`welvet_windows`](https://pub.dev/packages/welvet_windows) | x86_64 + ARM64 `.dll` |
 | **Android** | [`welvet_android`](https://pub.dev/packages/welvet_android) | arm64-v8a + x86_64 |
 | **iOS** | [`welvet_apple`](https://pub.dev/packages/welvet_apple) | `Welvet.xcframework` |
 | **Web** | — | Use [@openfluke/welvet](deployment.md) WASM in browser |
 
-Add only `welvet: ^0.80.5` in `pubspec.yaml` — Flutter pulls the correct impl package per platform.
+Add only `welvet: ^0.80.6` in `pubspec.yaml` — Flutter pulls the correct impl package per platform.
 
 Monorepo developers can refresh natives:
 

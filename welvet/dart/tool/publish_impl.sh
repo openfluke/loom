@@ -35,7 +35,7 @@ copy_flags_for_pkg() {
     welvet_linux) echo "--linux" ;;
     welvet_windows) echo "--windows" ;;
     welvet_android) echo "--android" ;;
-    welvet_apple) echo "--ios" ;;
+    welvet_apple) echo "--ios --macos" ;;
     *) echo "Unknown package: $PKG_NAME" >&2; exit 1 ;;
   esac
 }
@@ -49,7 +49,7 @@ strip_impl_natives() {
         for d in "$stage/native"/*; do
           [[ -e "$d" ]] || continue
           base="${d##*/}"
-          [[ "$base" == linux_amd64 || "$base" == linux_arm64" ]] || rm -rf "$d"
+          [[ "$base" == "linux_amd64" || "$base" == "linux_arm64" ]] || rm -rf "$d"
         done
       fi
       ;;
@@ -58,7 +58,7 @@ strip_impl_natives() {
         for d in "$stage/native"/*; do
           [[ -e "$d" ]] || continue
           base="${d##*/}"
-          [[ "$base" == windows_amd64 || "$base" == windows_arm64" ]] || rm -rf "$d"
+          [[ "$base" == "windows_amd64" || "$base" == "windows_arm64" ]] || rm -rf "$d"
         done
       fi
       ;;
@@ -71,19 +71,28 @@ strip_impl_natives() {
         for d in "$stage/native/android"/*; do
           [[ -e "$d" ]] || continue
           base="${d##*/}"
-          [[ "$base" == arm64-v8a || "$base" == x86_64" ]] || rm -rf "$d"
+          [[ "$base" == "arm64-v8a" || "$base" == "x86_64" ]] || rm -rf "$d"
         done
       fi
       if [[ -d "$stage/native" ]]; then
         for d in "$stage/native"/*; do
           [[ -e "$d" ]] || continue
           base="${d##*/}"
-          [[ "$base" == android" ]] || rm -rf "$d"
+          [[ "$base" == "android" ]] || rm -rf "$d"
         done
       fi
       ;;
     welvet_apple)
-      rm -rf "$stage/native"
+      rm -rf "$stage/native/linux_amd64" "$stage/native/linux_arm64" \
+        "$stage/native/windows_amd64" "$stage/native/windows_arm64" \
+        "$stage/native/android"
+      if [[ -d "$stage/native" ]]; then
+        for d in "$stage/native"/*; do
+          [[ -e "$d" ]] || continue
+          base="${d##*/}"
+          [[ "$base" == "macos_universal" || "$base" == "macos_arm64" || "$base" == "macos_amd64" ]] || rm -rf "$d"
+        done
+      fi
       ;;
   esac
 }

@@ -75,7 +75,7 @@ String? _implPackageForPlatform() {
   if (Platform.isLinux) return 'welvet_linux';
   if (Platform.isWindows) return 'welvet_windows';
   if (Platform.isAndroid) return 'welvet_android';
-  if (Platform.isIOS) return 'welvet_apple';
+  if (Platform.isIOS || Platform.isMacOS) return 'welvet_apple';
   return null;
 }
 

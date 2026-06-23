@@ -1,3 +1,8 @@
+## 0.80.6
+
+- macOS natives moved to `welvet_apple` (with iOS); main `welvet` is Dart-only + federated deps.
+- Depends on `welvet_apple` ^0.80.6 for iOS and macOS.
+
 ## 0.80.5
 
 - **Federated FFI plugin** — split natives across `welvet_linux`, `welvet_windows`, `welvet_android`, `welvet_apple` so each pub.dev tarball stays under the 100 MB limit (x86_64 + ARM64 per platform).

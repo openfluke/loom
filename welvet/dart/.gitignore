@@ -32,8 +32,4 @@ migrate_working_dir/
 /build/
 /coverage/
 packages/*/native/
-native/android/
-native/linux_amd64/
-native/linux_arm64/
-native/windows_amd64/
-native/windows_arm64/
+native/

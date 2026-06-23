@@ -9,4 +9,4 @@ export 'src/seven_layer_spec.dart';
 export 'src/seven_layer_runner.dart';
 
 /// Package version (matches loom/welvet/python PyPI release).
-const String welvetVersion = '0.80.5';
+const String welvetVersion = '0.80.6';

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copy pre-built loom/welvet/cabi artifacts into federated package native/ trees.
 #
-# Main `welvet` keeps macOS only; Linux/Windows/Android/iOS ship in packages/*.
+# Main `welvet` is Dart-only; all platform natives ship in packages/*.
 #
 # Usage:
 #   bash tool/copy_native.sh              # host platforms
@@ -18,7 +18,6 @@ PKG_LINUX="$ROOT/packages/welvet_linux"
 PKG_WINDOWS="$ROOT/packages/welvet_windows"
 PKG_ANDROID="$ROOT/packages/welvet_android"
 PKG_APPLE="$ROOT/packages/welvet_apple"
-MAC_NAT="$ROOT/native"
 
 RUN_MACOS=false RUN_LINUX=false RUN_ANDROID=false RUN_WINDOWS=false RUN_IOS=false
 
@@ -101,21 +100,22 @@ if $RUN_LINUX; then
 fi
 
 if $RUN_MACOS; then
+  nat="$PKG_APPLE/native"
   mac_src=""
   for c in macos_universal/welvet.dylib macos_arm64/welvet.dylib; do
     [[ -f "$DIST/$c" ]] && mac_src="$DIST/$c" && break
   done
   if [[ -n "$mac_src" ]]; then
-    cp_file "$mac_src" "$MAC_NAT/macos_universal/libwelvet.dylib"
-    cp_file "$mac_src" "$ROOT/macos/Frameworks/libwelvet.dylib"
-    install_name_tool -id "@rpath/libwelvet.dylib" "$ROOT/macos/Frameworks/libwelvet.dylib"
+    cp_file "$mac_src" "$nat/macos_universal/libwelvet.dylib"
+    cp_file "$mac_src" "$PKG_APPLE/macos/Frameworks/libwelvet.dylib"
+    install_name_tool -id "@rpath/libwelvet.dylib" "$PKG_APPLE/macos/Frameworks/libwelvet.dylib"
   else
-    fallback "$SOUL_NAT/macos/libwelvet.dylib" "$MAC_NAT/macos_universal/libwelvet.dylib" && \
-      cp_file "$MAC_NAT/macos_universal/libwelvet.dylib" "$ROOT/macos/Frameworks/libwelvet.dylib" && \
-      install_name_tool -id "@rpath/libwelvet.dylib" "$ROOT/macos/Frameworks/libwelvet.dylib" || \
+    fallback "$SOUL_NAT/macos/libwelvet.dylib" "$nat/macos_universal/libwelvet.dylib" && \
+      cp_file "$nat/macos_universal/libwelvet.dylib" "$PKG_APPLE/macos/Frameworks/libwelvet.dylib" && \
+      install_name_tool -id "@rpath/libwelvet.dylib" "$PKG_APPLE/macos/Frameworks/libwelvet.dylib" || \
       echo "  ✗ macOS dylib"
   fi
-  prune_native_dir "$MAC_NAT" macos_universal macos_arm64 macos_amd64
+  prune_native_dir "$nat" macos_universal macos_arm64 macos_amd64
 fi
 
 if $RUN_WINDOWS; then
