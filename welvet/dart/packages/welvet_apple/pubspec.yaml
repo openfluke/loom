@@ -1,0 +1,26 @@
+name: welvet_apple
+description: >-
+  iOS native libraries (Welvet.xcframework) for welvet — Loom Welvet C-ABI FFI.
+  Add via `welvet` on pub.dev; do not depend on this package directly unless you
+  know you need iOS-only artifacts.
+version: 0.80.5
+license: Apache-2.0
+homepage: https://github.com/openfluke/loom
+repository: https://github.com/openfluke/loom/tree/main/welvet/dart/packages/welvet_apple
+issue_tracker: https://github.com/openfluke/loom/issues
+
+environment:
+  sdk: ^3.11.5
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  plugin_platform_interface: ^2.0.2
+
+flutter:
+  plugin:
+    implements: welvet
+    platforms:
+      ios:
+        ffiPlugin: true

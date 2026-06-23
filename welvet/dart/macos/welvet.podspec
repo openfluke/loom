@@ -3,7 +3,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'welvet'
-  s.version          = '0.80.4'
+  s.version          = '0.80.5'
   s.summary          = 'Loom Welvet C-ABI bindings for Flutter/Dart'
   s.description      = <<-DESC
 Flutter FFI plugin bundling prebuilt Welvet (Loom M-POLY-VTD) natives.

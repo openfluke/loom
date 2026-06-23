@@ -1,3 +1,10 @@
+## 0.80.5
+
+- **Federated FFI plugin** — split natives across `welvet_linux`, `welvet_windows`, `welvet_android`, `welvet_apple` so each pub.dev tarball stays under the 100 MB limit (x86_64 + ARM64 per platform).
+- Main `welvet` ships macOS natives + all Dart APIs; Linux/Windows/Android/iOS resolve via `default_package` impl deps.
+- `loom_ffi_io` loads natives from federated impl package roots via `package_config.json`.
+- Publish: `tool/publish_all.sh` (impl packages first, then main).
+
 ## 0.80.4
 
 - macOS: SoulGlitch-style loading — `libwelvet.dylib` in app Frameworks + package `native/` for tests; drop vendored-link / post_install hacks.

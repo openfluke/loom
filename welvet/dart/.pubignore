@@ -5,5 +5,8 @@ welvet.iml
 .dart_tool/
 build/
 tool/examples/.dart_tool/
+pubspec_overrides.yaml
+packages/*/native/
+packages/welvet_apple/ios/Welvet.xcframework/
 tool/examples/pubspec.lock
 # examples/ is included — runnable scripts live in tool/examples/

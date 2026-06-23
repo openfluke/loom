@@ -230,7 +230,35 @@ packages:
       path: ".."
       relative: true
     source: path
-    version: "0.80.4"
+    version: "0.80.5"
+  welvet_android:
+    dependency: "direct overridden"
+    description:
+      path: "../packages/welvet_android"
+      relative: true
+    source: path
+    version: "0.80.5"
+  welvet_apple:
+    dependency: "direct overridden"
+    description:
+      path: "../packages/welvet_apple"
+      relative: true
+    source: path
+    version: "0.80.5"
+  welvet_linux:
+    dependency: "direct overridden"
+    description:
+      path: "../packages/welvet_linux"
+      relative: true
+    source: path
+    version: "0.80.5"
+  welvet_windows:
+    dependency: "direct overridden"
+    description:
+      path: "../packages/welvet_windows"
+      relative: true
+    source: path
+    version: "0.80.5"
 sdks:
   dart: ">=3.11.5 <4.0.0"
   flutter: ">=3.18.0-18.0.pre.54"

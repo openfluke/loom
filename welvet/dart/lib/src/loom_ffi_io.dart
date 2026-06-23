@@ -35,8 +35,8 @@ DynamicLibrary _openFirst(List<String> candidates) {
   );
 }
 
-/// Installed `welvet` package root (pub-cache tarball) for VM / `flutter test`.
-String? _welvetPackageRoot() {
+/// Installed package root for [packageName] (pub-cache or path dependency).
+String? _packageRootByName(String packageName) {
   var dir = Directory.current;
   while (true) {
     final config = File('${dir.path}/.dart_tool/package_config.json');
@@ -53,18 +53,30 @@ String? _welvetPackageRoot() {
       final projectRoot = config.parent.parent.path;
       for (final pkg in packages) {
         final map = pkg as Map<String, dynamic>;
-        if (map['name'] != 'welvet') continue;
+        if (map['name'] != packageName) continue;
         final rootUri = map['rootUri'] as String;
         if (rootUri.startsWith('file:')) {
           return Uri.parse(rootUri).toFilePath();
         }
         final resolved =
             Uri.directory(projectRoot).resolve(rootUri).toFilePath();
-        if (Directory('$resolved/native').existsSync()) return resolved;
+        return resolved;
       }
     } catch (_) {}
     return null;
   }
+}
+
+/// Installed `welvet` package root (pub-cache tarball) for VM / `flutter test`.
+String? _welvetPackageRoot() => _packageRootByName('welvet');
+
+/// Federated implementation package that ships natives for the current OS.
+String? _implPackageForPlatform() {
+  if (Platform.isLinux) return 'welvet_linux';
+  if (Platform.isWindows) return 'welvet_windows';
+  if (Platform.isAndroid) return 'welvet_android';
+  if (Platform.isIOS) return 'welvet_apple';
+  return null;
 }
 
 String _macosAppFrameworksLib() {
@@ -81,6 +93,13 @@ List<String> _packageNativeCandidates(String subdir, String fileName) {
     'native/$subdir/$fileName',
     '../native/$subdir/$fileName',
   ];
+  final implPkg = _implPackageForPlatform();
+  if (implPkg != null) {
+    final implRoot = _packageRootByName(implPkg);
+    if (implRoot != null) {
+      candidates.insert(0, '$implRoot/native/$subdir/$fileName');
+    }
+  }
   final root = _welvetPackageRoot();
   if (root != null) {
     candidates.insert(0, '$root/native/$subdir/$fileName');

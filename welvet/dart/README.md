@@ -22,7 +22,7 @@ This is the **pub.dev** package page content (same role as [`@openfluke/welvet` 
 
 ## Features
 
-- **Flutter FFI plugin** — natives bundled per platform (Android, iOS, Linux, macOS, Windows).
+- **Flutter FFI plugin** — federated natives: desktop in `welvet` (macOS) + `welvet_linux` / `welvet_windows`; mobile via `welvet_android` / `welvet_apple` (pulled automatically).
 - **21 DTypes** — runtime `morphLayer()` per layer index.
 - **Volumetric grid** — `depth × rows × cols` cells, Lucy-style JSON networks.
 - **Training** — `loomLib.train()` with CPU SC/MC modes (`configureTrainingMode`).
@@ -35,17 +35,25 @@ This is the **pub.dev** package page content (same role as [`@openfluke/welvet` 
 
 ```yaml
 dependencies:
-  welvet: ^0.80.0
+  welvet: ^0.80.5
 ```
 
 ```dart
 import 'package:welvet/loom_ffi.dart';
 import 'package:welvet/welvet.dart'; // welvetVersion
 
-print(welvetVersion); // 0.80.0
+print(welvetVersion); // 0.80.5
 ```
 
-**Supported platforms (64-bit):** Linux (x86_64, ARM64), macOS (universal/arm64), Windows (x86_64, ARM64), Android (arm64-v8a, x86_64), iOS (device + simulator via XCFramework).
+**Supported platforms (64-bit):** macOS, Linux (x86_64 + ARM64), Windows (x86_64 + ARM64). iOS and Android work via federated packages (`welvet_apple`, `welvet_android`) that `welvet` depends on — you only add `welvet` in `pubspec.yaml`.
+
+| Package | Platforms | Architectures |
+|---------|-----------|---------------|
+| [`welvet`](https://pub.dev/packages/welvet) | macOS | universal / arm64 |
+| [`welvet_linux`](https://pub.dev/packages/welvet_linux) | Linux | x86_64, ARM64 |
+| [`welvet_windows`](https://pub.dev/packages/welvet_windows) | Windows | x86_64, ARM64 |
+| [`welvet_android`](https://pub.dev/packages/welvet_android) | Android | arm64-v8a, x86_64 |
+| [`welvet_apple`](https://pub.dev/packages/welvet_apple) | iOS | device + simulator (XCFramework) |
 
 ### Monorepo / path dependency
 
@@ -271,25 +279,38 @@ Helpers: `loomAvailable`, `loomLibLastError`, `loomParseFloatArray`, `loomParseR
 
 ## Publishing to pub.dev
 
-Not a manual upload — use the CLI (like `npm publish` / `twine upload`):
+Federated layout keeps each tarball under pub.dev's **100 MB** limit (x86 + ARM per OS in separate packages).
 
 ```bash
 flutter pub login
 cd loom/welvet/dart
-bash tool/publish.sh                         # dry-run (desktop: mac + linux + windows)
-bash tool/publish.sh --publish               # upload desktop slice (~59 MB)
+bash tool/copy_native.sh --all
+
+# Dry-run all packages (impl first, then main)
+bash tool/publish_all.sh
+
+# Upload (impl packages must publish before main welvet resolves on pub.dev)
+bash tool/publish_all.sh --publish
 ```
 
-**Binaries stay out of git.** `publish.sh` runs `copy_native.sh` locally, copies the package to a temp dir outside the repo, strips iOS/Android natives, and uploads from there.
+Per-package:
 
-**Size:** pub.dev rejects uploads over **100 MB** compressed. Default **desktop** slice (macOS + Linux + Windows) fits; iOS/Android are omitted (use `copy_native.sh` in the monorepo for mobile).
+```bash
+bash tool/publish_impl.sh welvet_linux --publish
+bash tool/publish_impl.sh welvet_windows --publish
+bash tool/publish_impl.sh welvet_android --publish
+bash tool/publish_impl.sh welvet_apple --publish
+bash tool/publish.sh --publish
+```
+
+**Binaries stay out of git.** Scripts run `copy_native.sh` locally, stage outside the repo, and upload from temp dirs. Monorepo dev uses `pubspec_overrides.yaml` (not published) for path impl packages.
 
 ## Version alignment
 
 | Component | Version |
 |-----------|---------|
 | **Loom engine (poly)** | **0.80.0** |
-| **pub `welvet`** | **0.80.1** |
+| **pub `welvet` (+ federated impl)** | **0.80.5** |
 | **npm `@openfluke/welvet`** | **0.80.0** |
 | **PyPI `welvet`** | **0.80.0** |
 

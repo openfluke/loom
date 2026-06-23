@@ -2,7 +2,7 @@
 
 Loom runs in **Flutter** and plain **Dart** through the [`welvet`](https://pub.dev/packages/welvet) FFI plugin. Same Welvet C-ABI as Python ctypes and TypeScript WASM — `createNetwork`, polymorphic forward/backward, CPU training, DNA, JSON + `.entity` checkpoints, mesh step, and LLM exports when your native build includes them.
 
-> **v0.80.4** — Desktop natives ship inside the pub.dev tarball (macOS, Linux, Windows). iOS/Android need vendored natives (see [Platform notes](#platform-notes) below).
+> **v0.80.5** — Federated natives on pub.dev: main `welvet` (macOS + Dart API) plus `welvet_linux`, `welvet_windows`, `welvet_android`, `welvet_apple` for per-OS binaries under the 100 MB limit.
 
 ---
 
@@ -215,13 +215,16 @@ SoulGlitch uses path-vendored `welvet` + XCFramework on iOS; see SoulGlitch macO
 
 ## Platform notes
 
-| Platform | pub.dev `welvet` tarball | Notes |
-|----------|--------------------------|--------|
-| **macOS** | ✅ `libwelvet.dylib` via plugin | `flutter run -d macos` |
-| **Linux** | ✅ `libwelvet.so` | x86_64 / arm64 |
-| **Windows** | ✅ `welvet.dll` | x86_64 |
-| **iOS / Android** | ⚠️ not in pub slice (size limit) | Vendored natives + path dep, as in SoulGlitch |
-| **Web** | ❌ | Use [@openfluke/welvet](deployment.md) WASM in browser |
+| Platform | Package | Notes |
+|----------|---------|--------|
+| **macOS** | [`welvet`](https://pub.dev/packages/welvet) | `libwelvet.dylib` in plugin Frameworks |
+| **Linux** | [`welvet_linux`](https://pub.dev/packages/welvet_linux) | x86_64 + ARM64 `.so` (auto via `welvet` dep) |
+| **Windows** | [`welvet_windows`](https://pub.dev/packages/welvet_windows) | x86_64 + ARM64 `.dll` |
+| **Android** | [`welvet_android`](https://pub.dev/packages/welvet_android) | arm64-v8a + x86_64 |
+| **iOS** | [`welvet_apple`](https://pub.dev/packages/welvet_apple) | `Welvet.xcframework` |
+| **Web** | — | Use [@openfluke/welvet](deployment.md) WASM in browser |
+
+Add only `welvet: ^0.80.5` in `pubspec.yaml` — Flutter pulls the correct impl package per platform.
 
 Monorepo developers can refresh natives:
 
@@ -229,6 +232,8 @@ Monorepo developers can refresh natives:
 cd welvet/cabi/internal/build && ./build_unix.sh all
 cd ../../dart && bash tool/copy_native.sh --all
 ```
+
+Local monorepo dev uses `pubspec_overrides.yaml` for path impl packages (not published).
 
 ---
 
