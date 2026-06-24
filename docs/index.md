@@ -18,6 +18,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [dispatch.md](dispatch.md) | `DispatchLayer` routing, the 3D grid traversal, tiled parallel execution, `IsRemoteLink` spatial hopping, and the GPU dispatch path |
 | [training.md](training.md) | CPU and GPU training pipelines, loss functions, gradient flow, tween / neural target propagation (chain-rule and gap-based modes), link budgets |
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
+| [memory_history.md](memory_history.md) | **Memory history**: timed load-path samples, terminal chart/diagnosis, block-wise GPU upload + sequential global weight release |
 | [windows_arm64.md](windows_arm64.md) | **Windows on ARM**: index → [`README_WINDOWS_ARM64.md`](../welvet/cabi/internal/build/README_WINDOWS_ARM64.md) (recovery script + `build_unix.sh windows arm64`) |
 | [step.md](step.md) | The step mesh engine: `StepState`, one-clock-cycle forward, spatial feedback via remote links, BPTT, online learning |
 | [dna.md](dna.md) | Topological network fingerprinting: `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection, recursive extraction for all 19 layer types |
@@ -50,6 +51,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Want to train a model?** Read [training.md](training.md) and [dispatch.md](dispatch.md).
 
 **Using the GPU?** Read [gpu.md](gpu.md).
+
+**Debugging GPU load RAM spikes (Lucy ENTITY/Poly Talk)?** Read [memory_history.md](memory_history.md).
 
 **Loading a HuggingFace model?** Read [transformer.md](transformer.md) and [serialization.md](serialization.md).
 
@@ -90,7 +93,10 @@ poly/
 ├── serialization.go     BuildNetworkFromJSON, ParseLayerType/DType/Activation
 ├── persistence.go       SerializeNetwork, DeserializeNetwork, bit-packing, EncodeNativeWeightsRaw
 ├── entity.go            SerializeEntity, LoadEntity, DeserializeEntity — native `.entity` checkpoints
-├── transformer.go       Transformer[T], NewTransformer, Generate
+├── transformer.go       Transformer[T], NewTransformer, Generate, SyncGlobalWeightsToGPUSequential
+├── memory_history.go    Load-path MemoryHistory, terminal chart, diagnosis
+├── memory_history_chart.go  Braille/sparkline renderers for memory timeline
+├── process_memory_unix.go   Process RSS sampling (getrusage)
 ├── wgpu_context.go      WGPUContext, InitWGPU, BeginFrame, FlushFrame
 ├── wgpu_forward.go      GPU forward dispatch, ForwardTokenIDsWGPU
 ├── wgpu_backward_shaders.go  WGSL shader strings for dense backward

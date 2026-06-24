@@ -21,6 +21,8 @@ Both files are meant for human review and regression diffing (adapter name, per-
 
 **Seven-layer suite (v0.79+):** See [`bedrock_validation.md`](bedrock_validation.md) for what the harness gates (MHA layout, KV decode, native ternary save, C-ABI `SyncInferenceWeights`). Run `cd lucy && go run .` → **[7]** or **[0]**.
 
+**GPU load memory timeline (Lucy [1] / [8]):** Enable *Measure memory during GPU load* at the prompt, or set `LOOM_MEMORY_HISTORY=1`. After load, Lucy prints a braille chart, sample table, and diagnosis (block release, sequential globals, peak host+gpu overlap). See [memory_history.md](memory_history.md).
+
 ---
 
 ## How to read parity summary lines

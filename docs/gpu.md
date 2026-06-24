@@ -157,6 +157,31 @@ MHA (INT4):
 
 The internal DType codes (100–102 for SwiGLU components, 200–203 for MHA projections) are a namespacing trick to store multiple named GPU buffers in the single `GPUWeights map[DType]any` without adding new struct fields.
 
+### Inference load: release CPU weights after GPU upload
+
+For LLM inference (Lucy, SoulGlitch `LoomCreateLLM`), holding CPU **and** GPU copies of every layer during upload doubles peak RAM. Two mechanisms address this:
+
+**Per-layer (decoder blocks):** after `layer.SyncToGPU()`, call `layer.ReleaseInferenceHostWeights()` to drop CPU `Master` / `Versions` / `CPUPacked` once `GPUWeights` exist. Implemented in [`weights.go`](../poly/weights.go).
+
+**Global transformer weights (embeddings, LM head, final norm):** use `Transformer.SyncGlobalWeightsToGPUSequential()` instead of bulk `Transformer.SyncToGPU()`. Each global tensor uploads, then its CPU slice is cleared before the next starts. See [memory_history.md](memory_history.md) for measured before/after peaks.
+
+```
+Block loop (sequentialGPULoad):
+  for each transformer block:
+    SyncToGPU() on 4 layers
+    ReleaseInferenceHostWeights() on those 4 layers
+
+Globals:
+  SyncEmbeddingsToGPU  → ReleaseEmbeddingsHost
+  SyncLMHeadToGPU      → ReleaseLMHeadHost   (aliases buffer when tied to embeddings)
+  SyncFinalNormToGPU   → ReleaseFinalNormHost
+
+Final sweep:
+  ForwardTokenIDsWGPU warmup → ReleaseInferenceHostWeights() on full transformer
+```
+
+Bulk `SyncToGPU()` on layers or `Transformer.SyncToGPU()` without release remains valid for **training** and legacy paths but is not the recommended inference load policy.
+
 ---
 
 ## Forward Dispatch (wgpu_forward.go)

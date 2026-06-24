@@ -340,18 +340,44 @@ ctx, err := poly.InitWGPU()
 if err != nil { log.Fatal("GPU init failed:", err) }
 network.GPUContext = ctx
 
-// Sync all layer weights to VRAM
+// Training / bulk sync (keeps CPU weights until explicit release):
 for i := range network.Layers {
     network.Layers[i].SyncToGPU()
 }
+```
 
+### LLM inference load (lower peak RAM)
+
+For transformers, prefer block-wise upload + sequential globals — see [memory_history.md](memory_history.md):
+
+```go
+for li := 0; li < numLayers; li++ {
+    base := li * 4
+    for j := 0; j < 4; j++ {
+        layer := &tr.Network.Layers[base+j]
+        _ = layer.SyncToGPU()
+        layer.ReleaseInferenceHostWeights()
+    }
+}
+_ = tr.SyncGlobalWeightsToGPUSequential()
+tr.ReleaseInferenceHostWeights()
+```
+
+Optional diagnostics:
+
+```go
+os.Setenv("LOOM_MEMORY_HISTORY", "1")
+poly.GlobalMemoryHistory.BeginSession("gpu_load")
+poly.RecordFromTransformer(poly.GlobalMemoryHistory, tr, "after_block_1")
+_ = poly.GlobalMemoryHistory.FinishSession() // terminal chart
+```
+
+```go
 // Fill per-dtype maps: CPUTileSizes (CPU) + GPUSCTileSizes / GPUMCTileSizes (GPU).
 // GPU inference: EnableMultiCoreTiling false → SC, true → MC (wgpu_forward reads Network.*).
-// CPU polymorphic code uses GetCPUTileSize only — no separate SC/MC layer maps.
 network.EnableMultiCoreTiling = true
 network.RefreshRuntimeTileSizes()
 
-// GPU batch training
 config := poly.TrainingConfig{UseGPU: true, LearningRate: 0.001, Epochs: 100}
 result := poly.Train[float32](network, data, config)
 ```

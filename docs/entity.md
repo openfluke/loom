@@ -168,6 +168,40 @@ Model-specific metadata persisted in the header includes expanded `query_dim` / 
 
 Tokenizer and chat template still come from the HF snapshot; only **weights** move native.
 
+### GPU load and memory diagnostics
+
+After `LoadEntityTransformer`, weights live on CPU until GPU setup runs. Lucy **[8]** uses the same path as Poly Talk **[1]**:
+
+1. `setupTransformerForInference` (`lucy/inference_setup.go`) — optional block-by-block decoder upload with `ReleaseInferenceHostWeights()` per block  
+2. `SyncGlobalWeightsToGPUSequential()` — embeddings → LM head → final norm, releasing CPU after each  
+3. GPU warmup + `ReleaseInferenceHostWeights()` + `GC`
+
+When **Measure memory during GPU load** is enabled, Lucy prints a terminal chart and diagnosis via `poly.GlobalMemoryHistory` (see [memory_history.md](memory_history.md)).
+
+Welvet **`LoomCreateLLM`** (safetensors snapshot dir) implements the same GPU policy in `welvet/cabi/llm_ext.go`. Entity-only C ABI exports (`LoomLoadEntityTransformerAs`, `LoomBuildTransformerFromEntity`) **deserialize and build the transformer on CPU only** — the app must run the Lucy GPU sequence separately until a dedicated entity+GPU export exists.
+
+#### GPU load after entity deserialize
+
+Minimum inference GPU setup (Go):
+
+```go
+tr.Network.InitWGPU()
+for li := 0; li < numLayers; li++ {
+    base := li * 4
+    for j := 0; j < 4; j++ {
+        layer := &tr.Network.Layers[base+j]
+        _ = layer.SyncToGPU()
+        layer.ReleaseInferenceHostWeights()
+    }
+}
+_ = tr.SyncGlobalWeightsToGPUSequential()
+_, _ = tr.ForwardTokenIDsWGPU([]uint32{0}, nil, true, true)
+tr.Reset()
+tr.ReleaseInferenceHostWeights()
+```
+
+Do **not** use bulk `tr.SyncToGPU()` alone after a full entity load on memory-constrained devices — that was the ~2.6 GB overlap bug fixed by sequential globals.
+
 ---
 
 ## Name and identity
@@ -448,4 +482,5 @@ Weights stay on `EncodeNativeWeightsRaw`; the big disk wins are in **topology + 
 - [numerical_types.md](numerical_types.md) — 21 DTypes
 - [quantization.md](quantization.md) — Scale, Morph, native packing, Q4_0
 - [testing_and_validation.md](testing_and_validation.md) — Lucy [7] logs and tables
+- [memory_history.md](memory_history.md) — GPU load timeline, block upload, sequential globals (Lucy [8])
 - [bedrock_validation.md](bedrock_validation.md) — seven-layer CPU suite overview

@@ -1358,6 +1358,7 @@ func (ws *WeightStore) ApplyGradientsNative(dtype DType, gradWeights *Tensor[flo
 
 // ReleaseInferenceHostWeights drops CPU-side Master/Versions/CPUPacked after GPUWeights are
 // populated. Intended for inference-only paths so VRAM holds the active weights.
+// Baked Q4_0 entity caches are also dropped after uploadQ4_0Cached copies to GPU.
 func (ws *WeightStore) ReleaseInferenceHostWeights() {
 	if ws == nil || len(ws.GPUWeights) == 0 {
 		return
@@ -1365,6 +1366,8 @@ func (ws *WeightStore) ReleaseInferenceHostWeights() {
 	ws.Master = nil
 	ws.Versions = nil
 	ws.CPUPacked = nil
+	ws.Q4_0Scales = nil
+	ws.Q4_0Packed = nil
 }
 
 // Release explicitly destroys all WGPU weight and scale buffers.
