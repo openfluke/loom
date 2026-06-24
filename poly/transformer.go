@@ -169,44 +169,126 @@ func (t *Transformer[T]) SetRMSNormEps(eps float64) {
 	}
 }
 
+func (t *Transformer[T]) lmHeadTiedToEmbeddings() bool {
+	return slicesShareBackingStoreFloat32(t.LMHead, t.Embeddings)
+}
+
+// SyncEmbeddingsToGPU uploads token embeddings to VRAM.
+func (t *Transformer[T]) SyncEmbeddingsToGPU() error {
+	if !t.Network.UseGPU || t.Network.GPUContext == nil {
+		return fmt.Errorf("GPU not enabled")
+	}
+	if t.Embeddings == nil || t.Network.GPUEmbeddings != nil {
+		return nil
+	}
+	buf, err := t.Network.GPUContext.CreatePersistentBuffer(t.Embeddings, "Embeddings")
+	if err != nil {
+		return err
+	}
+	t.Network.GPUEmbeddings = buf
+	return nil
+}
+
+// ReleaseEmbeddingsHost drops CPU embeddings after GPUEmbeddings exists.
+// When LM head weights are tied, both slices are cleared together.
+func (t *Transformer[T]) ReleaseEmbeddingsHost() {
+	if t.Network.GPUEmbeddings == nil {
+		return
+	}
+	if t.lmHeadTiedToEmbeddings() {
+		t.Embeddings = nil
+		t.LMHead = nil
+		return
+	}
+	t.Embeddings = nil
+}
+
+// SyncLMHeadToGPU uploads the LM head (or aliases tied embeddings).
+func (t *Transformer[T]) SyncLMHeadToGPU() error {
+	if !t.Network.UseGPU || t.Network.GPUContext == nil {
+		return fmt.Errorf("GPU not enabled")
+	}
+	if t.Network.GPULMHead != nil {
+		return nil
+	}
+	if t.lmHeadTiedToEmbeddings() {
+		if t.Network.GPUEmbeddings == nil {
+			return fmt.Errorf("LM head tied to embeddings but GPUEmbeddings is nil")
+		}
+		t.Network.GPULMHead = t.Network.GPUEmbeddings
+		return nil
+	}
+	if t.LMHead == nil {
+		return nil
+	}
+	buf, err := t.Network.GPUContext.CreatePersistentBuffer(t.LMHead, "LMHead")
+	if err != nil {
+		return err
+	}
+	t.Network.GPULMHead = buf
+	return nil
+}
+
+// ReleaseLMHeadHost drops CPU LM head weights when a distinct GPULMHead buffer exists.
+func (t *Transformer[T]) ReleaseLMHeadHost() {
+	if t.Network.GPULMHead == nil || t.lmHeadTiedToEmbeddings() {
+		return
+	}
+	t.LMHead = nil
+}
+
+// SyncFinalNormToGPU uploads the transformer's final RMSNorm weights.
+func (t *Transformer[T]) SyncFinalNormToGPU() error {
+	if t.finalNormLayer == nil {
+		return nil
+	}
+	return t.finalNormLayer.SyncToGPU()
+}
+
+// ReleaseFinalNormHost drops CPU final-norm weights after GPU sync.
+func (t *Transformer[T]) ReleaseFinalNormHost() {
+	t.FinalNorm = nil
+	if t.finalNormLayer != nil {
+		t.finalNormLayer.ReleaseInferenceHostWeights()
+	}
+}
+
+// SyncGlobalWeightsToGPUSequential uploads embeddings, LM head, and final norm one at a
+// time, releasing each CPU copy immediately after its GPU buffer is created.
+func (t *Transformer[T]) SyncGlobalWeightsToGPUSequential() error {
+	if !t.Network.UseGPU || t.Network.GPUContext == nil {
+		return fmt.Errorf("GPU not enabled")
+	}
+	t.Network.GPUContext.ResetCache()
+	if err := t.SyncEmbeddingsToGPU(); err != nil {
+		return fmt.Errorf("embeddings: %w", err)
+	}
+	t.ReleaseEmbeddingsHost()
+	if err := t.SyncLMHeadToGPU(); err != nil {
+		return fmt.Errorf("lm head: %w", err)
+	}
+	t.ReleaseLMHeadHost()
+	if err := t.SyncFinalNormToGPU(); err != nil {
+		return fmt.Errorf("final norm: %w", err)
+	}
+	t.ReleaseFinalNormHost()
+	return nil
+}
+
 func (t *Transformer[T]) SyncToGPU() error {
 	if !t.Network.UseGPU || t.Network.GPUContext == nil {
 		return fmt.Errorf("GPU not enabled")
 	}
-	ctx := t.Network.GPUContext
-	ctx.ResetCache()
+	t.Network.GPUContext.ResetCache()
 
-	// Sync Embeddings
-	if t.Embeddings != nil && t.Network.GPUEmbeddings == nil {
-		buf, err := ctx.CreatePersistentBuffer(t.Embeddings, "Embeddings")
-		if err != nil {
-			return err
-		}
-		t.Network.GPUEmbeddings = buf
+	if err := t.SyncEmbeddingsToGPU(); err != nil {
+		return err
 	}
-
-	// Sync LMHead
-	if t.LMHead != nil && t.Network.GPULMHead == nil {
-		// Check for tied weights (same memory address)
-		isTied := false
-		if t.Embeddings != nil && len(t.LMHead) == len(t.Embeddings) && &t.LMHead[0] == &t.Embeddings[0] {
-			isTied = true
-		}
-
-		if isTied && t.Network.GPUEmbeddings != nil {
-			t.Network.GPULMHead = t.Network.GPUEmbeddings
-		} else {
-			buf, err := ctx.CreatePersistentBuffer(t.LMHead, "LMHead")
-			if err != nil {
-				return err
-			}
-			t.Network.GPULMHead = buf
-		}
+	if err := t.SyncLMHeadToGPU(); err != nil {
+		return err
 	}
-
-	// Sync Final Norm
-	if t.finalNormLayer != nil {
-		t.finalNormLayer.SyncToGPU()
+	if err := t.SyncFinalNormToGPU(); err != nil {
+		return err
 	}
 
 	return nil

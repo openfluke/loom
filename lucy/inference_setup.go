@@ -147,10 +147,9 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 				}
 				recordMemoryHistory("bulk_sync_done")
 			}
-			if err := tr.SyncToGPU(); err != nil {
-				log.Fatalf("❌ Embedding / LM head GPU sync: %v", err)
+			if err := syncTransformerGlobalWeightsSequential(tr); err != nil {
+				log.Fatalf("❌ Global weight GPU sync: %v", err)
 			}
-			recordMemoryHistory("embeddings_on_gpu")
 
 			_, _ = tr.ForwardTokenIDsWGPU([]uint32{0}, nil, true, true)
 			tr.Reset()

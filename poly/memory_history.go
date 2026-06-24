@@ -258,28 +258,50 @@ func (h *MemoryHistory) printMemoryLoadDiagnosis() {
 		}
 	}
 
-	embeddings, hasEmb := findMemorySample(samples, "embeddings_on_gpu")
+	embSync, hasEmbSync := findMemorySample(samples, "embeddings_after_sync")
+	embRelease, hasEmbRelease := findMemorySample(samples, "embeddings_after_release")
+	// Legacy label from older builds.
+	embeddings, hasEmbLegacy := findMemorySample(samples, "embeddings_on_gpu")
 	released, hasRel := findMemorySample(samples, "host_weights_released")
+	globalsDone, hasGlobalsDone := findMemorySample(samples, "final_norm_after_release")
 
-	if hasLastBlock && hasEmb {
-		fmt.Printf("   after last block: host %.0f MB + gpu %.0f MB still on CPU side\n",
+	if hasLastBlock {
+		fmt.Printf("   after last decoder block: host %.0f MB | gpu %.0f MB\n",
 			lastBlockRelease.HostWeightsMB, lastBlockRelease.GPUWeightsMB)
+	}
+
+	if hasEmbSync && hasEmbRelease {
+		overlap := embSync.HostWeightsMB + embSync.GPUWeightsMB
+		fmt.Printf("   embeddings sync: host %.0f MB + gpu %.0f MB = %.0f MB peak overlap\n",
+			embSync.HostWeightsMB, embSync.GPUWeightsMB, overlap)
+		hostDrop := embSync.HostWeightsMB - embRelease.HostWeightsMB
+		if hostDrop > 50 {
+			fmt.Printf("   ✓ embeddings CPU released after GPU upload (−%.0f MB host)\n", hostDrop)
+		} else if embSync.HostWeightsMB > 100 {
+			fmt.Println("   ✗ embeddings CPU not released after GPU upload")
+		}
+	} else if hasLastBlock && hasEmbLegacy {
 		fmt.Printf("   at embeddings_on_gpu: host %.0f MB + gpu %.0f MB = %.0f MB Poly overlap\n",
 			embeddings.HostWeightsMB, embeddings.GPUWeightsMB, embeddings.HostWeightsMB+embeddings.GPUWeightsMB)
 		if embeddings.HostWeightsMB > 100 && embeddings.GPUWeightsMB > lastBlockRelease.GPUWeightsMB+100 {
-			fmt.Println("   ⚠ DOUBLING: embeddings/LM-head GPU upload ran while ~1 GB+ CPU weights still resident")
+			fmt.Println("   ⚠ DOUBLING: global GPU upload ran while CPU weights still resident")
 			fmt.Printf("      RSS jumped %.0f → %.0f MB at this step\n", lastBlockRelease.ProcessRSSMB, embeddings.ProcessRSSMB)
 		}
+	}
+
+	if hasGlobalsDone {
+		fmt.Printf("   after global sequential upload: host %.0f MB | gpu %.0f MB\n",
+			globalsDone.HostWeightsMB, globalsDone.GPUWeightsMB)
 	}
 
 	if hasRel {
 		fmt.Printf("   after final release: host %.0f MB | gpu %.0f MB (steady state)\n",
 			released.HostWeightsMB, released.GPUWeightsMB)
 	}
-	if hasEmb && hasRel && embeddings.ProcessRSSMB > 0 {
+	if hasGlobalsDone && hasRel && hasLastBlock {
 		rssDelta := released.ProcessRSSMB - lastBlockRelease.ProcessRSSMB
 		if rssDelta > 50 {
-			fmt.Printf("   process RSS still +%.0f MB vs end of block upload (Go/OS may not return pages immediately)\n", rssDelta)
+			fmt.Printf("   process RSS +%.0f MB vs end of block upload (Go/OS may retain pages until pressure)\n", rssDelta)
 		}
 	}
 }

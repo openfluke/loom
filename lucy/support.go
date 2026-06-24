@@ -127,6 +127,38 @@ func finishMemoryHistorySession() {
 	_ = poly.GlobalMemoryHistory.FinishSession()
 }
 
+func syncTransformerGlobalWeightsSequential(tr *poly.Transformer[float32]) error {
+	if tr == nil || tr.Network == nil || tr.Network.GPUContext == nil {
+		return fmt.Errorf("GPU not ready for global weight sync")
+	}
+	tr.Network.GPUContext.ResetCache()
+
+	recordMemoryHistory("embeddings_before_sync")
+	if err := tr.SyncEmbeddingsToGPU(); err != nil {
+		return err
+	}
+	recordMemoryHistory("embeddings_after_sync")
+	tr.ReleaseEmbeddingsHost()
+	recordMemoryHistory("embeddings_after_release")
+
+	recordMemoryHistory("lm_head_before_sync")
+	if err := tr.SyncLMHeadToGPU(); err != nil {
+		return err
+	}
+	recordMemoryHistory("lm_head_after_sync")
+	tr.ReleaseLMHeadHost()
+	recordMemoryHistory("lm_head_after_release")
+
+	recordMemoryHistory("final_norm_before_sync")
+	if err := tr.SyncFinalNormToGPU(); err != nil {
+		return err
+	}
+	recordMemoryHistory("final_norm_after_sync")
+	tr.ReleaseFinalNormHost()
+	recordMemoryHistory("final_norm_after_release")
+	return nil
+}
+
 func readInput(reader *bufio.Reader, prompt string, Default string) string {
 	fmt.Print(prompt)
 	txt, _ := reader.ReadString('\n')
