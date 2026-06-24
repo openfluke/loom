@@ -18,7 +18,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [dispatch.md](dispatch.md) | `DispatchLayer` routing, the 3D grid traversal, tiled parallel execution, `IsRemoteLink` spatial hopping, and the GPU dispatch path |
 | [training.md](training.md) | CPU and GPU training pipelines, loss functions, gradient flow, tween / neural target propagation (chain-rule and gap-based modes), link budgets |
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
-| [memory_history.md](memory_history.md) | **Memory history**: timed load-path samples, terminal chart/diagnosis, block-wise GPU upload + sequential global weight release |
+| [memory_history.md](memory_history.md) | **Memory history**: GPU load chart/diagnosis; block-wise HF→`.entity` import; block-wise GPU upload + sequential global release |
 | [windows_arm64.md](windows_arm64.md) | **Windows on ARM**: index → [`README_WINDOWS_ARM64.md`](../welvet/cabi/internal/build/README_WINDOWS_ARM64.md) (recovery script + `build_unix.sh windows arm64`) |
 | [step.md](step.md) | The step mesh engine: `StepState`, one-clock-cycle forward, spatial feedback via remote links, BPTT, online learning |
 | [dna.md](dna.md) | Topological network fingerprinting: `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection, recursive extraction for all 19 layer types |
@@ -53,6 +53,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Using the GPU?** Read [gpu.md](gpu.md).
 
 **Debugging GPU load RAM spikes (Lucy ENTITY/Poly Talk)?** Read [memory_history.md](memory_history.md).
+
+**Converting HF safetensors to `.entity` (Lucy [8])?** See [entity.md — convert memory](entity.md#hf--entity-convert-memory) and [memory_history.md](memory_history.md).
 
 **Loading a HuggingFace model?** Read [transformer.md](transformer.md) and [serialization.md](serialization.md).
 

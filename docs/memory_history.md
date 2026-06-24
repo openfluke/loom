@@ -1,6 +1,6 @@
-# Memory history and GPU load diagnostics
+# Memory history, GPU load, and HF→entity convert
 
-This page covers **`poly/memory_history.go`**: timed samples during LLM GPU upload, the in-terminal chart Lucy prints after load, and how that ties to the **block-wise decoder + sequential global** upload path that avoids holding full CPU and GPU weight copies at once.
+This page covers **`poly/memory_history.go`**: timed samples during LLM GPU upload, the in-terminal chart Lucy prints after load, and how memory policy ties to **block-wise safetensor import** (HF → `.entity` convert) and **block-wise GPU upload** (`.entity` → chat) so we do not hold full CPU and GPU weight copies at once.
 
 ---
 
@@ -8,7 +8,9 @@ This page covers **`poly/memory_history.go`**: timed samples during LLM GPU uplo
 
 When a transformer moves from CPU weights to GPU buffers, peak RAM matters — especially on mobile (SoulGlitch / iOS) and when loading large `.entity` checkpoints.
 
-Two failure modes were measured on Lucy ENTITY Talk **[8]** (Qwen3-0.6B, GPU, block upload):
+Two failure modes were measured on Lucy ENTITY Talk **[8]** (Qwen3-0.6B):
+
+### GPU load (`.entity` → chat, GPU enabled)
 
 | Phase | Old behavior | Fixed behavior |
 |:------|:-------------|:---------------|
@@ -16,7 +18,17 @@ Two failure modes were measured on Lucy ENTITY Talk **[8]** (Qwen3-0.6B, GPU, bl
 | **Globals** (embeddings, LM head, final norm) | Single `SyncToGPU()` uploaded all globals while ~1187 MB CPU weights still resident → **~2637 MB** host+gpu overlap | `SyncGlobalWeightsToGPUSequential()` uploads one global tensor, releases CPU, then next → **~2044 MB** peak overlap |
 | **Steady state** | Host weights eventually dropped | Host **0 MB**, GPU **~1451 MB** |
 
-The remaining ~2044 MB peak is a **brief per-tensor overlap** during each global upload (CPU slice still present until that tensor’s GPU buffer exists). It is not the old “entire model doubled at once” bug.
+The remaining ~2044 MB GPU-load peak is a **brief per-tensor overlap** during each global upload (CPU slice still present until that tensor’s GPU buffer exists). It is not the old “entire model doubled at once” bug.
+
+### HF → `.entity` convert (safetensors → save)
+
+| Phase | Old behavior | Fixed behavior |
+|:------|:-------------|:---------------|
+| **Import** | `LoadSafetensors()` into one map, then `LoadWithPrefixes()` **copied** into `WeightStore.Master` while the map stayed resident → **~2× decoder weights** until GC | Globals first, then **one decoder block at a time** + `ReleaseTransientSafetensorMap()` after each block |
+| **BitNet** | Already block-wise via `ImportHFBitNetCheckpointDir` | Unchanged |
+| **Save** | `SerializeEntityTransformer` still builds payload + final file buffer while `Master` + globals exist | Expected encode overlap (not the old full-map doubling) |
+
+Memory history is **not** wired to the convert step yet — only GPU chat load. Convert success is visible in the Lucy terminal (see below).
 
 ---
 
@@ -124,6 +136,63 @@ Source files:
 
 ---
 
+## HF → `.entity` convert (import memory)
+
+Lucy **[8]** convert (`lucy/hf_entity.go` → `convertEntityEntry`) and `poly.ImportHFToEntity` both use [`ImportHFCheckpointDir`](../poly/hf_import.go) for llama-style models (Qwen, SmolLM2, Llama/Mistral/Gemma/Phi-style). **BitNet** uses [`ImportHFBitNetCheckpointDir`](../poly/hf_import.go) (already block-wise).
+
+### Block-wise import policy (llama-style)
+
+```go
+// 1. Globals only
+LoadSafetensorsSelective(f, HFWeightIsGlobal)
+mapper.MapWeights(globalTensors) // embeddings, lm_head, final_norm
+
+// 2. One transformer block at a time
+for li := 0; li < numLayers; li++ {
+    LoadSafetensorsSelective(sf, HFWeightMatchesLayer(k, li))
+    LoadWithPrefixes(net, layerMap)   // copy into WeightStore.Master
+    ReleaseTransientSafetensorMap(layerMap)
+}
+ReleaseTransientSafetensorMap(globalTensors, embeddings, lmHead, finalNorm)
+
+// 3. Bake quant at save (Q4 / INT8 / FP32) — Import always loads FP32 master
+SaveEntityTransformer(path, et)
+```
+
+`copyWeights` in [`prefix_safetensor.go`](../poly/prefix_safetensor.go) **copies** HF slices into `Master`; without per-block release, the full safetensor map and the network both held decoder weights.
+
+### Terminal signature (Lucy convert)
+
+After the fix, a Qwen3-0.6B reconvert prints **three global** `✓ Loaded …` lines, then **`num_hidden_layers`** lines of `✅ Finished loading weights with prefixes.` (28 for Qwen3-0.6B). The old bulk path printed one bulk load without per-block messages.
+
+Example:
+
+```text
+⏳ Converting Qwen/Qwen3-0.6B → lucy_entities/Qwen--Qwen3-0.6B.entity [Q4 (INT4)] …
+  ✓ Loaded model.embed_tokens.weight: … (role: embeddings)
+  ✓ Loaded model.norm.weight: … (role: final_norm)
+  ✓ Loaded lm_head.weight: … (role: lm_head)
+✅ Finished loading weights with prefixes.   ← block 1
+…                                            ← repeat per layer
+   ✅ Qwen--Qwen3-0.6B.entity  …
+```
+
+### Supported converts
+
+All models Lucy marks **llama-style** or **bitnet-style** in the ENTITY Talk catalog — same set as before the fix; only peak RAM during import improved.
+
+| Path | API | Block-wise import |
+|:-----|:----|:------------------|
+| Lucy `[8]` convert | `convertEntityEntry` | ✅ |
+| Programmatic | `ImportHFToEntity` / `ImportHFCheckpointDir` | ✅ |
+| BitNet | `ImportHFBitNetCheckpointDir` | ✅ (raw HFStored, per-block release) |
+
+### Save-step overlap (expected)
+
+`SerializeEntityTransformer` still holds decoder `Master`, FP32 globals, a growing `payload` buffer, and the final `[]byte` while writing the file. Q4 bake reads `Master` and writes packed blobs into `payload`. That is normal encode pressure, not the old “entire safetensors map + entire network” bug.
+
+---
+
 ## GPU load path (what the history measures)
 
 Lucy centralizes inference GPU setup in `lucy/inference_setup.go` → `setupTransformerForInference`. Welvet SoulGlitch mirrors the same policy in `welvet/cabi/llm_ext.go` (`LoomCreateLLM`).
@@ -169,12 +238,13 @@ debug.FreeOSMemory()
 
 ### Where each policy is used
 
-| Caller | Decoder upload | Global upload |
-|:-------|:---------------|:--------------|
-| Lucy `setupTransformerForInference` | Block-wise + release | `SyncGlobalWeightsToGPUSequential` |
-| Welvet `LoomCreateLLM` (safetensors) | Block-wise + release | `SyncGlobalWeightsToGPUSequential` |
-| Welvet `LoomSyncToGPU` / bulk `SyncToGPU()` | All layers, no mid-release | Bulk, no mid-release |
-| Training / demos calling `SyncToGPU()` directly | Varies | Bulk |
+| Caller | Import / convert | Decoder upload | Global upload |
+|:-------|:-----------------|:---------------|:--------------|
+| Lucy `[8]` HF → `.entity` | Block-wise + `ReleaseTransientSafetensorMap` | — | — |
+| Lucy `setupTransformerForInference` | — | Block-wise + release | `SyncGlobalWeightsToGPUSequential` |
+| Welvet `LoomCreateLLM` (safetensors) | Block-wise (chat load) | Block-wise + release | `SyncGlobalWeightsToGPUSequential` |
+| Welvet `LoomSyncToGPU` / bulk `SyncToGPU()` | — | All layers, no mid-release | Bulk, no mid-release |
+| Training / demos calling `SyncToGPU()` directly | Varies | Varies | Bulk |
 
 **Entity on SoulGlitch:** `LoomLoadEntityTransformerAs` builds a full CPU transformer only. GPU setup must follow the Lucy sequence above (or a future `LoomCreateLLMFromEntity` export). See [entity.md — GPU load](entity.md#gpu-load-after-entity-deserialize).
 
@@ -182,10 +252,8 @@ debug.FreeOSMemory()
 
 ## Further peak reduction (roadmap)
 
-Sequential global upload fixed the worst doubling. To push peak overlap below ~2 GB on small LLMs:
-
-- Stream or mmap entity globals so embeddings/LM head never exist as full FP32 CPU slices before GPU upload
-- Quantize-on-upload for globals (v1 entity keeps globals FP32 on disk)
+- **GPU load:** stream or mmap entity globals so embeddings/LM head never exist as full FP32 CPU slices before GPU upload; quantize-on-upload for globals (v1 entity keeps globals FP32 on disk)
+- **Convert:** stream entity encode to disk and drop each layer’s `Master` after its blobs are written; optional memory history during convert (same chart as GPU load)
 
 ---
 

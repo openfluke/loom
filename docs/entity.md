@@ -110,6 +110,8 @@ net := NewVolumetricNetwork(1, 1, 1, dims.NumLayers*4)
 InitHFDecoderBlocks(net, dims)
 ```
 
+Import is **block-wise** to avoid doubling peak RAM: globals load first, then each transformer block’s safetensors are loaded, copied into `WeightStore.Master`, and the transient map is released before the next block. See [memory_history.md — HF → .entity convert](memory_history.md#hf--entity-convert-import-memory).
+
 ENTITY Talk chat uses this linear layout. Nothing in the format prevents expanding to `2×2×N`, parallel experts, or remote links — that is topology editing on a loaded `VolumetricNetwork`, then `SaveEntityTransformer`.
 
 ### What the format unlocks
@@ -123,6 +125,7 @@ ENTITY Talk chat uses this linear layout. Nothing in the format prevents expandi
 | Graft multiple networks into one parallel layer | ✅ [`grafting.go`](../poly/grafting.go) | ❌ |
 | NEAT / topology evolution | ✅ [`evolution.md`](evolution.md) | ❌ |
 | Selective layer load + block-wise GPU upload | ✅ `DeserializeEntityWithOptions` | ✅ block upload prompt |
+| Block-wise HF → `.entity` import (lower convert RAM) | ✅ `ImportHFCheckpointDir` | ✅ Lucy `[8]` convert |
 | Merge two LLMs with mismatched hidden size / vocab | ❌ shapes must align | ❌ |
 
 **Principle:** anything Lucy **[7]** could do to a trained `.entity`, you can now *in principle* do to an imported LLM `.entity` — graft a side branch, add an experimental layer, mix dtypes, evolve topology around a frozen decoder core. Wiring those flows into product UI is separate work; the **format bridge** is the prerequisite, and it exists.
@@ -167,6 +170,21 @@ RMSNorm stays FP32 intentionally — quantizing norm gamma corrupts the forward 
 Model-specific metadata persisted in the header includes expanded `query_dim` / `kv_dim` (Qwen-style MHA), MHA `q_norm` / `k_norm` auxiliary blobs, and `lm_head_tied`.
 
 Tokenizer and chat template still come from the HF snapshot; only **weights** move native.
+
+### HF → `.entity` convert (memory)
+
+Lucy **[8]** convert (`convertEntityEntry`) calls:
+
+| Model kind | Import API | Memory policy |
+|:-----------|:-----------|:----------------|
+| Llama-style (Qwen, SmolLM2, …) | `ImportHFCheckpointDir` | Globals first → one block at a time → `ReleaseTransientSafetensorMap` per block |
+| BitNet | `ImportHFBitNetCheckpointDir` | Same block-wise pattern (raw `HFStoredTensor` + release) |
+
+Lucy always imports **FP32 master**; the quant you pick at convert (Q4 / INT8 / FP32) is baked in `SaveEntityTransformer` only.
+
+**How to tell the new path ran:** after three global `✓ Loaded …` lines, the terminal prints one `✅ Finished loading weights with prefixes.` **per transformer block** (e.g. 28× for Qwen3-0.6B). The old bulk import printed a single load pass while holding the full safetensor map and network copies.
+
+**Save step:** encoding the `.entity` file still briefly holds `Master`, globals, and the serialized buffer — expected, separate from the import doubling bug. Details: [memory_history.md](memory_history.md).
 
 ### GPU load and memory diagnostics
 

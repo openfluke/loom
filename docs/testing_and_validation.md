@@ -23,6 +23,8 @@ Both files are meant for human review and regression diffing (adapter name, per-
 
 **GPU load memory timeline (Lucy [1] / [8]):** Enable *Measure memory during GPU load* at the prompt, or set `LOOM_MEMORY_HISTORY=1`. After load, Lucy prints a braille chart, sample table, and diagnosis (block release, sequential globals, peak host+gpu overlap). See [memory_history.md](memory_history.md).
 
+**HF → `.entity` convert:** Block-wise import is visible in the terminal (one `Finished loading weights with prefixes` per decoder block). Convert is not charted yet; see [entity.md — convert memory](entity.md#hf--entity-convert-memory).
+
 ---
 
 ## How to read parity summary lines
