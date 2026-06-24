@@ -362,6 +362,7 @@ func promptEntityConversion(reader *bufio.Reader, entries []entityCatalogEntry) 
 }
 
 func readEntityTalkLaunchOptions(reader *bufio.Reader, modelID string, storedDType poly.DType) polyTalkLaunch {
+	poly.ResetMemoryHistoryRecording()
 	cfg := polyTalkLaunch{
 		weightDType: storedDType,
 		useTiling:   true,
@@ -386,6 +387,7 @@ func readEntityTalkLaunchOptions(reader *bufio.Reader, modelID string, storedDTy
 
 	if cfg.useGPU {
 		cfg.sequentialGPULoad = readInput(reader, "📥 Block-by-block GPU upload? (1=yes / 0=no) [0]: ", "0") == "1"
+		cfg.measureMemoryLoad = promptMeasureMemoryDuringGPULoad(reader)
 	}
 
 	applyModelSpecificLaunchOptions(reader, modelID, &cfg, storedDType)
@@ -496,6 +498,10 @@ func runEntityTalkMode(reader *bufio.Reader) {
 		isQwen:            isQwen,
 		rmsNormEps:        et.Dims.RMSNormEps,
 		fromEntity:        true,
+	}
+	if launch.useGPU && poly.MemoryHistoryEnabled() {
+		beginMemoryHistorySession("entity_gpu_load")
+		recordMemoryHistory("entity_cpu_weights_loaded")
 	}
 	useGPU := setupTransformerForInference(tr, infCfg)
 

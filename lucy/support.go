@@ -102,6 +102,31 @@ func printPostLoadMemorySnapshot(tr *poly.Transformer[float32]) {
 		m.HostWeightsMB, m.GPUWeightsMB, m.GPUKVMB)
 }
 
+func promptMeasureMemoryDuringGPULoad(reader *bufio.Reader) bool {
+	enabled := readInput(reader,
+		"📈 Measure memory during GPU load? (terminal chart after load — CPU weights vs GPU upload vs release) (1=yes / 0=no) [1]: ",
+		"1") == "1"
+	poly.SetMemoryHistoryRecording(enabled)
+	if enabled {
+		fmt.Println("   Recording at each step: host weights → GPU sync → CPU release (chart prints when load finishes).")
+	}
+	return enabled
+}
+
+func beginMemoryHistorySession(name string) {
+	if poly.MemoryHistoryEnabled() {
+		poly.GlobalMemoryHistory.BeginSession(name)
+	}
+}
+
+func recordMemoryHistory(label string) {
+	poly.RecordFromTransformer(poly.GlobalMemoryHistory, tr, label)
+}
+
+func finishMemoryHistorySession() {
+	_ = poly.GlobalMemoryHistory.FinishSession()
+}
+
 func readInput(reader *bufio.Reader, prompt string, Default string) string {
 	fmt.Print(prompt)
 	txt, _ := reader.ReadString('\n')

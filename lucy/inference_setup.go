@@ -62,6 +62,24 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 	}
 
 	useGPU := cfg.useGPU
+	trackMemory := useGPU && poly.MemoryHistoryEnabled()
+	if trackMemory {
+		fmt.Println("📈 Memory timeline recording — terminal chart prints when GPU load finishes.")
+		if len(poly.GlobalMemoryHistory.Samples()) == 0 {
+			session := "gpu_load"
+			if cfg.fromEntity {
+				session = "entity_gpu_load"
+			}
+			beginMemoryHistorySession(session)
+		}
+		recordMemoryHistory("inference_setup_start")
+	}
+	defer func() {
+		if trackMemory {
+			finishMemoryHistorySession()
+		}
+	}()
+
 	if useGPU {
 		if cfg.sequentialGPULoad && !cfg.fromEntity {
 			fmt.Printf("⏳ GPU init + block-wise weight upload (%d transformer blocks)...\n", cfg.numLayers)
@@ -77,6 +95,7 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 			fmt.Printf("❌ Failed: %v\n", err)
 			useGPU = false
 		} else {
+			recordMemoryHistory("wgpu_ready")
 			applyGlitchTilingFlags(tr.Network, true, cfg.useTiling, cfg.tilingMode)
 			if cfg.fromEntity && cfg.weightDType == poly.DTypeTernary {
 				tr.Network.UseExactDType = true
@@ -84,6 +103,7 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 			if cfg.sequentialGPULoad {
 				for li := 0; li < cfg.numLayers; li++ {
 					base := li * 4
+					recordMemoryHistory(fmt.Sprintf("block_%02d_before_sync", li+1))
 					for j := 0; j < 4; j++ {
 						idx := base + j
 						layer := &tr.Network.Layers[idx]
@@ -101,12 +121,15 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 							log.Fatalf("❌ GPU sync block %d layer %d: %v", li, j, err)
 						}
 					}
+					recordMemoryHistory(fmt.Sprintf("block_%02d_after_sync", li+1))
 					for j := 0; j < 4; j++ {
 						(&tr.Network.Layers[base+j]).ReleaseInferenceHostWeights()
 					}
+					recordMemoryHistory(fmt.Sprintf("block_%02d_after_release", li+1))
 					fmt.Printf("   ✓ Block %d/%d on GPU\n", li+1, cfg.numLayers)
 				}
 			} else {
+				recordMemoryHistory("bulk_sync_start")
 				for i := range tr.Network.Layers {
 					if tr.Network.Layers[i].Type == poly.LayerRMSNorm {
 						tr.Network.Layers[i].DType = poly.DTypeFloat32
@@ -122,16 +145,20 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 						log.Fatalf("❌ GPU sync layer %d: %v", i, err)
 					}
 				}
+				recordMemoryHistory("bulk_sync_done")
 			}
 			if err := tr.SyncToGPU(); err != nil {
 				log.Fatalf("❌ Embedding / LM head GPU sync: %v", err)
 			}
+			recordMemoryHistory("embeddings_on_gpu")
 
 			_, _ = tr.ForwardTokenIDsWGPU([]uint32{0}, nil, true, true)
 			tr.Reset()
 			tr.ReleaseInferenceHostWeights()
+			recordMemoryHistory("host_weights_released")
 			runtime.GC()
 			debug.FreeOSMemory()
+			recordMemoryHistory("after_gc")
 			fmt.Println("✅ Success!")
 		}
 	}

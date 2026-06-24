@@ -10,21 +10,23 @@ import (
 )
 
 type polyTalkLaunch struct {
-	deterministic     bool
-	useGPU            bool
-	useTiling         bool
-	tilingMode        string
-	tileSize          int
-	weightDType       poly.DType
-	sequentialGPULoad bool
-	useBitNetCPU      bool
-	useBitNetGPU      bool
-	useTernaryPTQCPU  bool
-	useBitNetPacked   bool
+	deterministic      bool
+	useGPU             bool
+	useTiling          bool
+	tilingMode         string
+	tileSize           int
+	weightDType        poly.DType
+	sequentialGPULoad  bool
+	measureMemoryLoad  bool
+	useBitNetCPU       bool
+	useBitNetGPU       bool
+	useTernaryPTQCPU   bool
+	useBitNetPacked    bool
 }
 
 func readPolyTalkLaunchOptions(reader *bufio.Reader) polyTalkLaunch {
 	var cfg polyTalkLaunch
+	poly.ResetMemoryHistoryRecording()
 
 	if forwardBenchOnly {
 		cfg.deterministic = true
@@ -68,6 +70,7 @@ func readPolyTalkLaunchOptions(reader *bufio.Reader) polyTalkLaunch {
 
 	if cfg.useGPU {
 		cfg.sequentialGPULoad = readInput(reader, "📥 Load weights block-by-block into GPU (lower peak host RAM; skips holding full checkpoint map)? (1=yes / 0=no) [0]: ", "0") == "1"
+		cfg.measureMemoryLoad = promptMeasureMemoryDuringGPULoad(reader)
 	}
 
 	return cfg
