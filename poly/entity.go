@@ -118,9 +118,11 @@ func (h *EntityHeader) HasTransformer() bool {
 }
 
 // EntityLoadOptions controls selective weight loading from an .entity file.
-// When LayerIndices is non-nil, only blobs under layers.<index> are decoded.
+// When LayerIndices is non-empty, only blobs under layers.<index> are decoded.
+// SkipLayerWeights loads topology only (no layers.* blobs) for staged GPU mount.
 type EntityLoadOptions struct {
-	LayerIndices []int
+	LayerIndices     []int
+	SkipLayerWeights bool
 }
 
 // SerializeEntity writes a VolumetricNetwork to the native .entity wire format.
@@ -183,11 +185,11 @@ func DeserializeEntityTransformer(data []byte) (*EntityTransformer, error) {
 	if !hdr.HasTransformer() {
 		return nil, fmt.Errorf("entity file has no transformer section (network-only checkpoint)")
 	}
-	net, err := deserializeEntityNetwork(hdr, data, nil)
+	net, err := deserializeEntityNetwork(hdr, entityBlobReaderFromBytes(data, hdr), nil)
 	if err != nil {
 		return nil, err
 	}
-	embeddings, lmHead, finalNorm, err := loadEntityTransformerGlobals(hdr, data, hdr.Transformer)
+	embeddings, lmHead, finalNorm, err := loadEntityTransformerGlobals(hdr, entityBlobReaderFromBytes(data, hdr), hdr.Transformer)
 	if err != nil {
 		return nil, err
 	}
@@ -355,6 +357,49 @@ func PrepareEntityTransformerInference(et *EntityTransformer) {
 	}
 }
 
+// PrepareEntityTransformerLayerIndices restores inference fields for specific top-level layer indices.
+func PrepareEntityTransformerLayerIndices(et *EntityTransformer, indices []int) {
+	if et == nil || et.Network == nil || len(indices) == 0 {
+		return
+	}
+	dt := et.WeightDType
+	if dt == 0 {
+		dt = DTypeFloat32
+	}
+	for _, idx := range indices {
+		if idx < 0 || idx >= len(et.Network.Layers) {
+			continue
+		}
+		l := &et.Network.Layers[idx]
+		if l.WeightStore == nil {
+			continue
+		}
+		if l.Type == LayerRMSNorm {
+			l.DType = DTypeFloat32
+			if _, ok := l.WeightStore.Versions[DTypeFloat32]; ok {
+				l.WeightStore.Unpack(DTypeFloat32)
+			}
+			continue
+		}
+		if l.WeightStore.HasAnyQ4_0() {
+			l.DType = DTypeInt4
+			continue
+		}
+		if l.WeightStore.HasAnyBitNetTernary() {
+			l.DType = DTypeTernary
+			continue
+		}
+		if dt == DTypeFloat32 {
+			l.DType = DTypeFloat32
+			continue
+		}
+		l.DType = dt
+		if _, ok := l.WeightStore.Versions[dt]; ok {
+			l.WeightStore.Unpack(dt)
+		}
+	}
+}
+
 // LoadEntityTransformer reads a universal-transformer .entity checkpoint from disk.
 func LoadEntityTransformer(path string) (*EntityTransformer, error) {
 	data, err := os.ReadFile(path)
@@ -472,7 +517,59 @@ func ParseEntityHeader(data []byte) (*EntityHeader, error) {
 	}, nil
 }
 
-func deserializeEntityNetwork(hdr *EntityHeader, data []byte, opts *EntityLoadOptions) (*VolumetricNetwork, error) {
+type entityBlobReader func(blob EntityWeightBlob) ([]byte, error)
+
+func entityBlobReaderFromBytes(data []byte, hdr *EntityHeader) entityBlobReader {
+	return func(blob EntityWeightBlob) ([]byte, error) {
+		return readEntityBlobBytes(hdr, data, blob)
+	}
+}
+
+func readEntityBlobBytes(hdr *EntityHeader, data []byte, blob EntityWeightBlob) ([]byte, error) {
+	end := int(blob.Offset) + int(blob.Length)
+	if end > len(data)-hdr.DataOffset {
+		return nil, fmt.Errorf("entity blob %q out of range", blob.Path)
+	}
+	raw := data[hdr.DataOffset+int(blob.Offset) : hdr.DataOffset+end]
+	return raw, nil
+}
+
+func applyEntityBlobToNetwork(net *VolumetricNetwork, blob EntityWeightBlob, raw []byte) error {
+	layerPath := entityBlobLayerPath(blob.Path)
+	l, err := layerAtEntityPath(net, layerPath)
+	if err != nil {
+		return err
+	}
+	switch {
+	case entityBlobIsQ4_0(blob):
+		if err := applyEntityQ4_0Blob(l, blob.Path, raw, blob); err != nil {
+			return err
+		}
+	case entityBlobIsBitNetTernary(blob):
+		if err := applyEntityBitNetTernaryBlob(l, blob.Path, raw); err != nil {
+			return err
+		}
+	case strings.HasSuffix(blob.Path, ".biases"):
+		if err := applyEntityBiasBlob(l, raw); err != nil {
+			return err
+		}
+	case strings.HasSuffix(blob.Path, ".q_norm"), strings.HasSuffix(blob.Path, ".k_norm"):
+		if err := applyEntityMHANormBlob(l, blob.Path, raw); err != nil {
+			return err
+		}
+	case strings.HasSuffix(blob.Path, ".inner_norm"):
+		if err := applyEntityBitNetAuxBlob(l, blob.Path, raw); err != nil {
+			return err
+		}
+	default:
+		if err := applyEntityWeightBlob(l, raw, blob); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deserializeEntityNetwork(hdr *EntityHeader, readBlob entityBlobReader, opts *EntityLoadOptions) (*VolumetricNetwork, error) {
 	net := NewVolumetricNetwork(hdr.Network.Depth, hdr.Network.Rows, hdr.Network.Cols, hdr.Network.LayersPerCell)
 	for _, ls := range hdr.Network.Layers {
 		l := net.GetLayer(ls.Z, ls.Y, ls.X, ls.L)
@@ -484,44 +581,18 @@ func deserializeEntityNetwork(hdr *EntityHeader, data []byte, opts *EntityLoadOp
 		if !strings.HasPrefix(blob.Path, "layers.") {
 			continue
 		}
+		if opts != nil && opts.SkipLayerWeights {
+			continue
+		}
 		if opts != nil && len(opts.LayerIndices) > 0 && !entityBlobLayerAllowed(blob.Path, opts.LayerIndices) {
 			continue
 		}
-		end := int(blob.Offset) + int(blob.Length)
-		if end > len(data)-hdr.DataOffset {
-			return nil, fmt.Errorf("entity blob %q out of range", blob.Path)
-		}
-		raw := data[hdr.DataOffset+int(blob.Offset) : hdr.DataOffset+end]
-		layerPath := entityBlobLayerPath(blob.Path)
-		l, err := layerAtEntityPath(net, layerPath)
+		raw, err := readBlob(blob)
 		if err != nil {
 			return nil, err
 		}
-		switch {
-		case entityBlobIsQ4_0(blob):
-			if err := applyEntityQ4_0Blob(l, blob.Path, raw, blob); err != nil {
-				return nil, err
-			}
-		case entityBlobIsBitNetTernary(blob):
-			if err := applyEntityBitNetTernaryBlob(l, blob.Path, raw); err != nil {
-				return nil, err
-			}
-		case strings.HasSuffix(blob.Path, ".biases"):
-			if err := applyEntityBiasBlob(l, raw); err != nil {
-				return nil, err
-			}
-		case strings.HasSuffix(blob.Path, ".q_norm"), strings.HasSuffix(blob.Path, ".k_norm"):
-			if err := applyEntityMHANormBlob(l, blob.Path, raw); err != nil {
-				return nil, err
-			}
-		case strings.HasSuffix(blob.Path, ".inner_norm"):
-			if err := applyEntityBitNetAuxBlob(l, blob.Path, raw); err != nil {
-				return nil, err
-			}
-		default:
-			if err := applyEntityWeightBlob(l, raw, blob); err != nil {
-				return nil, err
-			}
+		if err := applyEntityBlobToNetwork(net, blob, raw); err != nil {
+			return nil, err
 		}
 	}
 	return net, nil
@@ -539,7 +610,7 @@ func DeserializeEntityWithOptions(data []byte, opts *EntityLoadOptions) (*Volume
 	if err != nil {
 		return nil, err
 	}
-	return deserializeEntityNetwork(hdr, data, opts)
+	return deserializeEntityNetwork(hdr, entityBlobReaderFromBytes(data, hdr), opts)
 }
 
 // DeserializeEntityLayer loads topology plus weights for one top-level layer index.
@@ -895,16 +966,15 @@ func collectEntityGlobalBlob(name string, weights []float32, payload *bytes.Buff
 	})
 }
 
-func loadEntityTransformerGlobals(hdr *EntityHeader, data []byte, spec *EntityTransformerSpec) (embeddings, lmHead, finalNorm []float32, err error) {
+func loadEntityTransformerGlobals(hdr *EntityHeader, readBlob entityBlobReader, spec *EntityTransformerSpec) (embeddings, lmHead, finalNorm []float32, err error) {
 	for _, blob := range hdr.Blobs {
 		if !strings.HasPrefix(blob.Path, "transformer.") {
 			continue
 		}
-		end := int(blob.Offset) + int(blob.Length)
-		if end > len(data)-hdr.DataOffset {
-			return nil, nil, nil, fmt.Errorf("entity blob %q out of range", blob.Path)
+		raw, readErr := readBlob(blob)
+		if readErr != nil {
+			return nil, nil, nil, readErr
 		}
-		raw := data[hdr.DataOffset+int(blob.Offset) : hdr.DataOffset+end]
 		decoded, decErr := DecodeWeightsRaw(raw)
 		if decErr != nil {
 			return nil, nil, nil, fmt.Errorf("entity blob %q: %w", blob.Path, decErr)
