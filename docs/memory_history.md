@@ -25,10 +25,10 @@ The remaining ~2044 MB GPU-load peak is a **brief per-tensor overlap** during ea
 | Phase | Old behavior | Fixed behavior |
 |:------|:-------------|:---------------|
 | **Import** | `LoadSafetensors()` into one map, then `LoadWithPrefixes()` **copied** into `WeightStore.Master` while the map stayed resident → **~2× decoder weights** until GC | Globals first, then **one decoder block at a time** + `ReleaseTransientSafetensorMap()` after each block |
-| **BitNet** | Already block-wise via `ImportHFBitNetCheckpointDir` | Unchanged |
-| **Save** | `SerializeEntityTransformer` still builds payload + final file buffer while `Master` + globals exist | Expected encode overlap (not the old full-map doubling) |
+| **Encode + save** | Full FP32 decoder in RAM through `SerializeEntityTransformer` (all layers + growing `[]byte` payload + final file buffer) | **Low-RAM path:** [`ImportHFSaveEntityTransformerBlockwise`](../poly/hf_entity_convert.go) — Q4/FP32 bake **one block at a time** into a **streaming payload file**, `releaseEntityConvertLayerWeights()` after each block, then `writeEntityWireStreaming()` (header + `io.Copy` payload — no full-file `[]byte`) |
+| **BitNet** | Already block-wise via `ImportHFBitNetCheckpointDir` | Unchanged (still `SaveEntityTransformer` one-shot) |
 
-Memory history is **not** wired to the convert step yet — only GPU chat load. Convert success is visible in the Lucy terminal (see below).
+Memory history is **not** wired to the convert step yet — only GPU chat load. Convert progress is visible via `HFEntityConvertProgress` callbacks (SoulGlitch task UI) or Lucy safetensor import logs (see below).
 
 ---
 
@@ -132,15 +132,25 @@ Source files:
 | [`memory_history_chart.go`](../poly/memory_history_chart.go) | Braille chart + sparklines |
 | [`process_memory_unix.go`](../poly/process_memory_unix.go) | RSS via `getrusage` |
 | [`process_memory_stub.go`](../poly/process_memory_stub.go) | RSS stub on unsupported OS |
+| [`hf_entity_convert.go`](../poly/hf_entity_convert.go) | `ImportHFSaveEntityTransformerBlockwise(Progress)` |
+| [`entity_convert_io.go`](../poly/entity_convert_io.go) | Streaming payload acc, per-block Q4 encode, `writeEntityWireStreaming` |
+| [`hf_import.go`](../poly/hf_import.go) | Block-wise safetensor import (`ImportHFCheckpointDir`) |
 | [`poly/tests/memory_history_test.go`](../poly/tests/memory_history_test.go) | Unit tests |
 
 ---
 
-## HF → `.entity` convert (import memory)
+## HF → `.entity` convert (import + encode memory)
 
-Lucy **[8]** convert (`lucy/hf_entity.go` → `convertEntityEntry`) and `poly.ImportHFToEntity` both use [`ImportHFCheckpointDir`](../poly/hf_import.go) for llama-style models (Qwen, SmolLM2, Llama/Mistral/Gemma/Phi-style). **BitNet** uses [`ImportHFBitNetCheckpointDir`](../poly/hf_import.go) (already block-wise).
+There are **two llama-style convert lanes** in poly today:
 
-### Block-wise import policy (llama-style)
+| Lane | API | Peak RAM during convert | Who uses it |
+|:-----|:----|:------------------------|:------------|
+| **Standard** | `ImportHFCheckpointDir` → `SaveEntityTransformer` | Block-wise safetensor import, then **full FP32 network** held through encode | Lucy `[8]` `convertEntityEntry`, `ImportHFToEntity` |
+| **Low-RAM encode** | `ImportHFSaveEntityTransformerBlockwise` (+ optional `Progress`) | **~one decoder block** FP32 + globals briefly at start + payload temp file on disk | SoulGlitch / mvp-simulation (iOS/macOS `.entity` convert) |
+
+Both lanes share the same **block-wise safetensor import** in [`hf_import.go`](../poly/hf_import.go). The low-RAM lane adds **block-wise encode** in [`hf_entity_convert.go`](../poly/hf_entity_convert.go) + [`entity_convert_io.go`](../poly/entity_convert_io.go).
+
+### Block-wise safetensor import (both lanes)
 
 ```go
 // 1. Globals only
@@ -154,16 +164,45 @@ for li := 0; li < numLayers; li++ {
     ReleaseTransientSafetensorMap(layerMap)
 }
 ReleaseTransientSafetensorMap(globalTensors, embeddings, lmHead, finalNorm)
-
-// 3. Bake quant at save (Q4 / INT8 / FP32) — Import always loads FP32 master
-SaveEntityTransformer(path, et)
 ```
 
 `copyWeights` in [`prefix_safetensor.go`](../poly/prefix_safetensor.go) **copies** HF slices into `Master`; without per-block release, the full safetensor map and the network both held decoder weights.
 
-### Terminal signature (Lucy convert)
+### Block-wise encode + streaming save (low-RAM lane only)
 
-After the fix, a Qwen3-0.6B reconvert prints **three global** `✓ Loaded …` lines, then **`num_hidden_layers`** lines of `✅ Finished loading weights with prefixes.` (28 for Qwen3-0.6B). The old bulk path printed one bulk load without per-block messages.
+```go
+// ImportHFSaveEntityTransformerBlockwiseProgress(modelDir, entityPath, weightDType, progress)
+
+// 1. Encode globals → payload temp file; drop embeddings/lm_head/final_norm from RAM
+collectEntityGlobalBlobAcc("embeddings", …)
+if !entityLMHeadTied(embeddings, lmHead) {
+    collectEntityGlobalBlobAcc("lm_head", …)  // same rule as SaveEntityTransformer
+}
+collectEntityGlobalBlobAcc("final_norm", …)
+embeddings, lmHead, finalNorm = nil; GC
+
+// 2. Per transformer block
+for li := 0; li < numLayers; li++ {
+    LoadSafetensorsSelective + LoadWithPrefixes  // one block FP32 in net
+    ReleaseTransientSafetensorMap(layerMap)
+    for j := 0; j < 4; j++ {
+        collectEntityWeightBlobsAcc(&net.Layers[base+j], …, weightDType) // Q4_0 bake if INT4
+        releaseEntityConvertLayerWeights(&net.Layers[base+j])             // drop Master
+    }
+    GC
+}
+
+// 3. Write .entity: fixed header + JSON blob index + io.Copy(payload file)
+writeEntityWireStreaming(entityPath, net, trSpec, blobs, payloadPath)
+```
+
+**What gets Q4-baked:** decoder **MHA + SwiGLU** only (via `collectEntityQ4_0LayerAcc`). **RMSNorm**, MHA **q_norm/k_norm**, **embeddings**, **lm_head**, **final_norm** stay **FP32** — same rules as [`entity_q4.go`](../poly/entity_q4.go) / `SaveEntityTransformer`.
+
+**Progress callback** (`HFEntityConvertProgress`): `blockIndex` is 1-based per packed block; `detail` like `packed block 14/28`. SoulGlitch maps this to its convert task progress bar.
+
+### Terminal signature (Lucy standard convert)
+
+When using **`ImportHFCheckpointDir` + `SaveEntityTransformer`** (Lucy `[8]` `convertEntityEntry`), a Qwen3-0.6B reconvert prints **three global** `✓ Loaded …` lines, then **`num_hidden_layers`** lines of `✅ Finished loading weights with prefixes.` (28 for Qwen3-0.6B). The old bulk path printed one bulk load without per-block messages.
 
 Example:
 
@@ -177,19 +216,21 @@ Example:
    ✅ Qwen--Qwen3-0.6B.entity  …
 ```
 
+The **low-RAM lane** does not print those per-block safetensor lines (import is silent); use **`HFEntityConvertProgress`** or reconvert on Mac with Lucy to compare.
+
 ### Supported converts
 
-All models Lucy marks **llama-style** or **bitnet-style** in the ENTITY Talk catalog — same set as before the fix; only peak RAM during import improved.
+| Path | API | Safetensor import | Encode / save |
+|:-----|:----|:------------------|:----------------|
+| Lucy `[8]` convert | `convertEntityEntry` | ✅ block-wise | `SaveEntityTransformer` (full network in RAM during encode) |
+| Programmatic (standard) | `ImportHFToEntity` / `ImportHFCheckpointDir` + `SaveEntityTransformer` | ✅ block-wise | Full network during encode |
+| Programmatic (low-RAM) | `ImportHFSaveEntityTransformerBlockwise(Progress)` | ✅ block-wise | ✅ block-wise encode + streaming payload |
+| SoulGlitch convert | mvp → `ImportHFSaveEntityTransformerBlockwiseProgress` | ✅ | ✅ (+ CHGLUE standalone wrapper streams loom bytes — app layer) |
+| BitNet | `ImportHFBitNetCheckpointDir` + `SaveEntityTransformer` | ✅ (packed ternary per block) | One-shot save |
 
-| Path | API | Block-wise import |
-|:-----|:----|:------------------|
-| Lucy `[8]` convert | `convertEntityEntry` | ✅ |
-| Programmatic | `ImportHFToEntity` / `ImportHFCheckpointDir` | ✅ |
-| BitNet | `ImportHFBitNetCheckpointDir` | ✅ (raw HFStored, per-block release) |
+### Remaining encode overlap (expected)
 
-### Save-step overlap (expected)
-
-`SerializeEntityTransformer` still holds decoder `Master`, FP32 globals, a growing `payload` buffer, and the final `[]byte` while writing the file. Q4 bake reads `Master` and writes packed blobs into `payload`. That is normal encode pressure, not the old “entire safetensors map + entire network” bug.
+Even the low-RAM lane still holds **one block’s FP32 weights** plus the **globals encode spike** at the start (embeddings + lm_head for large-vocab models are large). That is much smaller than holding **all blocks** through `SerializeEntityTransformer`, but not zero — see roadmap below.
 
 ---
 
@@ -240,7 +281,8 @@ debug.FreeOSMemory()
 
 | Caller | Import / convert | Decoder upload | Global upload |
 |:-------|:-----------------|:---------------|:--------------|
-| Lucy `[8]` HF → `.entity` | Block-wise + `ReleaseTransientSafetensorMap` | — | — |
+| Lucy `[8]` HF → `.entity` | Block-wise import + `SaveEntityTransformer` | — | — |
+| SoulGlitch / mvp HF → `.entity` | `ImportHFSaveEntityTransformerBlockwiseProgress` | — | — |
 | Lucy `setupTransformerForInference` | — | Block-wise + release | `SyncGlobalWeightsToGPUSequential` |
 | Welvet `LoomCreateLLM` (safetensors) | Block-wise (chat load) | Block-wise + release | `SyncGlobalWeightsToGPUSequential` |
 | Welvet `LoomSyncToGPU` / bulk `SyncToGPU()` | — | All layers, no mid-release | Bulk, no mid-release |
@@ -253,7 +295,8 @@ debug.FreeOSMemory()
 ## Further peak reduction (roadmap)
 
 - **GPU load:** stream or mmap entity globals so embeddings/LM head never exist as full FP32 CPU slices before GPU upload; quantize-on-upload for globals (v1 entity keeps globals FP32 on disk)
-- **Convert:** stream entity encode to disk and drop each layer’s `Master` after its blobs are written; optional memory history during convert (same chart as GPU load)
+- **Convert:** optional memory history during convert (same chart as GPU load); stream globals encode in two passes to shrink the initial globals spike on mobile
+- **Load:** staged `DeserializeEntityWithOptions` + block GPU upload without full-file deserialize peak (see [entity.md](entity.md))
 
 ---
 

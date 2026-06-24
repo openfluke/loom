@@ -4,7 +4,7 @@
 
 Native Loom checkpoint files. One `.entity` file = one saved brain: **full volumetric topology + all native-packed weights** in a single binary artifact.
 
-Implementation: [`poly/entity.go`](../poly/entity.go)
+Implementation: [`poly/entity.go`](../poly/entity.go), HF convert helpers [`poly/hf_entity_convert.go`](../poly/hf_entity_convert.go) + [`poly/entity_convert_io.go`](../poly/entity_convert_io.go)
 
 Validated in Lucy menu **[7] Seven-layer CPU suite** — JSON and `.entity` save/reload run side by side for all 21 dtypes (`lucy/examples/seven_layer/runner.go`). Lucy **[8] ENTITY Talk** converts HF LLMs to `.entity` and runs GPU chat from native checkpoints (`lucy/hf_entity.go`).
 
@@ -126,6 +126,7 @@ ENTITY Talk chat uses this linear layout. Nothing in the format prevents expandi
 | NEAT / topology evolution | ✅ [`evolution.md`](evolution.md) | ❌ |
 | Selective layer load + block-wise GPU upload | ✅ `DeserializeEntityWithOptions` | ✅ block upload prompt |
 | Block-wise HF → `.entity` import (lower convert RAM) | ✅ `ImportHFCheckpointDir` | ✅ Lucy `[8]` convert |
+| Block-wise HF → `.entity` encode (mobile-safe convert) | ✅ `ImportHFSaveEntityTransformerBlockwise` | ✅ SoulGlitch / mvp-simulation |
 | Merge two LLMs with mismatched hidden size / vocab | ❌ shapes must align | ❌ |
 
 **Principle:** anything Lucy **[7]** could do to a trained `.entity`, you can now *in principle* do to an imported LLM `.entity` — graft a side branch, add an experimental layer, mix dtypes, evolve topology around a frozen decoder core. Wiring those flows into product UI is separate work; the **format bridge** is the prerequisite, and it exists.
@@ -148,12 +149,24 @@ See [parallel_sequential.md](parallel_sequential.md), [evolution.md](evolution.m
 
 Lucy menu **[8] ENTITY Talk** (`lucy/hf_entity.go`) converts supported HF models (SmolLM2, Qwen, Llama-style) to universal-transformer `.entity` files and runs GPU chat without loading safetensors at runtime.
 
-Flow:
+Flow (standard — Lucy `[8]` on desktop):
 
 ```
-HF cache  →  ImportHFToEntity (FP32 master)  →  SerializeEntityTransformer (Q4_0 bake if INT4)
+HF cache  →  ImportHFCheckpointDir (block-wise FP32 import)
+         →  SaveEntityTransformer (Q4_0 bake if INT4)
          →  lucy_entities/*.entity  →  LoadEntityTransformer  →  chat
 ```
+
+Flow (low-RAM encode — SoulGlitch / mobile):
+
+```
+HF cache  →  ImportHFSaveEntityTransformerBlockwiseProgress
+         →  per-block Q4 bake → streaming payload temp file
+         →  writeEntityWireStreaming → *.entity (+ app CHGLUE wrapper)
+         →  LoadEntityTransformer  →  chat
+```
+
+See [memory_history.md — HF → `.entity` convert](memory_history.md#hf--entity-convert-import--encode-memory) for the full step list and peak-RAM comparison.
 
 ### Q4 on disk vs GPU (v1)
 
@@ -173,18 +186,26 @@ Tokenizer and chat template still come from the HF snapshot; only **weights** mo
 
 ### HF → `.entity` convert (memory)
 
-Lucy **[8]** convert (`convertEntityEntry`) calls:
+Two **llama-style** convert lanes — see [memory_history.md](memory_history.md#hf--entity-convert-import--encode-memory) for diagrams and peak-RAM tables.
 
-| Model kind | Import API | Memory policy |
-|:-----------|:-----------|:----------------|
-| Llama-style (Qwen, SmolLM2, …) | `ImportHFCheckpointDir` | Globals first → one block at a time → `ReleaseTransientSafetensorMap` per block |
-| BitNet | `ImportHFBitNetCheckpointDir` | Same block-wise pattern (raw `HFStoredTensor` + release) |
+| Model kind | Standard lane | Low-RAM lane |
+|:-----------|:--------------|:-------------|
+| Llama-style (Qwen, SmolLM2, …) | `ImportHFCheckpointDir` → `SaveEntityTransformer` | `ImportHFSaveEntityTransformerBlockwise(Progress)` |
+| BitNet | `ImportHFBitNetCheckpointDir` → `SaveEntityTransformer` | (same — already packed per block) |
 
-Lucy always imports **FP32 master**; the quant you pick at convert (Q4 / INT8 / FP32) is baked in `SaveEntityTransformer` only.
+**Standard lane** (Lucy `[8]` `convertEntityEntry`): block-wise safetensor import, then **full FP32 network** in RAM while `SaveEntityTransformer` bakes Q4 and builds the file buffer.
 
-**How to tell the new path ran:** after three global `✓ Loaded …` lines, the terminal prints one `✅ Finished loading weights with prefixes.` **per transformer block** (e.g. 28× for Qwen3-0.6B). The old bulk import printed a single load pass while holding the full safetensor map and network copies.
+**Low-RAM lane** ([`hf_entity_convert.go`](../poly/hf_entity_convert.go), [`entity_convert_io.go`](../poly/entity_convert_io.go)):
 
-**Save step:** encoding the `.entity` file still briefly holds `Master`, globals, and the serialized buffer — expected, separate from the import doubling bug. Details: [memory_history.md](memory_history.md).
+1. Encode **globals** to a **payload temp file**; release FP32 globals from RAM  
+2. For each block: import safetensors → `collectEntityWeightBlobsAcc` (Q4_0 if INT4) → `releaseEntityConvertLayerWeights` → GC  
+3. `writeEntityWireStreaming` — header + blob index + `io.Copy` payload (no full-file `[]byte`)
+
+**Quant policy (both lanes):** Q4 bakes **MHA + SwiGLU** only; **RMSNorm**, **q_norm/k_norm**, **embeddings**, **lm_head**, **final_norm** stay **FP32**. Header `lm_head_tied` uses `entityLMHeadTied()` — same as `SaveEntityTransformer` (separate `lm_head` blob when HF provides distinct slices).
+
+**Lucy terminal signature** (standard lane only): three global `✓ Loaded …` lines, then one `✅ Finished loading weights with prefixes.` **per block** (28× for Qwen3-0.6B). The low-RAM lane uses `HFEntityConvertProgress` instead (`packed block N/M`).
+
+**SoulGlitch:** wraps the loom `.entity` in a CHGLUE standalone file (tokenizer embedded); convert progress appears in the app task UI, not Lucy logs.
 
 ### GPU load and memory diagnostics
 
@@ -318,7 +339,9 @@ No Base64. No FP32-only export constraint (unlike `SaveSafetensors`).
 | `SaveEntity(path, net)` / `LoadEntity(path)` | File I/O |
 | `SerializeEntityTransformer(et)` / `DeserializeEntityTransformer(data)` | Universal transformer: decoder + embeddings/LM head/final norm |
 | `SaveEntityTransformer` / `LoadEntityTransformer` / `LoadEntityTransformerAs[T]` | File I/O + `NewTransformer` wiring |
-| `ImportHFToEntity(modelDir, path, opts)` | HF snapshot → universal `.entity` ([`hf_import.go`](../poly/hf_import.go)) |
+| `ImportHFToEntity(modelDir, path, opts)` | HF snapshot → universal `.entity` (standard lane) ([`hf_import.go`](../poly/hf_import.go)) |
+| `ImportHFSaveEntityTransformerBlockwise(modelDir, path, weightDType)` | Low-RAM convert: block-wise import **and** encode ([`hf_entity_convert.go`](../poly/hf_entity_convert.go)) |
+| `ImportHFSaveEntityTransformerBlockwiseProgress(..., progress)` | Same + `HFEntityConvertProgress` callback (`packed block N/M`) |
 | `ParseEntityHeader(data)` | Header only (no weight decode; mmap-friendly planning) |
 | `LayerPersistenceFromEntity(data, layerIndex)` | Raw blob + scale + native for one layer (parity checks) |
 | `EntityBlobBytes(data, blobIndex)` | Raw bytes for blob `i` without dtype decode |

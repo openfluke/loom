@@ -18,7 +18,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [dispatch.md](dispatch.md) | `DispatchLayer` routing, the 3D grid traversal, tiled parallel execution, `IsRemoteLink` spatial hopping, and the GPU dispatch path |
 | [training.md](training.md) | CPU and GPU training pipelines, loss functions, gradient flow, tween / neural target propagation (chain-rule and gap-based modes), link budgets |
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
-| [memory_history.md](memory_history.md) | **Memory history**: GPU load chart/diagnosis; block-wise HF→`.entity` import; block-wise GPU upload + sequential global release |
+| [memory_history.md](memory_history.md) | **Memory history**: GPU load chart/diagnosis; block-wise HF→`.entity` import **and** block-wise encode (`ImportHFSaveEntityTransformerBlockwise`); GPU upload + sequential global release |
 | [windows_arm64.md](windows_arm64.md) | **Windows on ARM**: index → [`README_WINDOWS_ARM64.md`](../welvet/cabi/internal/build/README_WINDOWS_ARM64.md) (recovery script + `build_unix.sh windows arm64`) |
 | [step.md](step.md) | The step mesh engine: `StepState`, one-clock-cycle forward, spatial feedback via remote links, BPTT, online learning |
 | [dna.md](dna.md) | Topological network fingerprinting: `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection, recursive extraction for all 19 layer types |
@@ -54,7 +54,9 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **Debugging GPU load RAM spikes (Lucy ENTITY/Poly Talk)?** Read [memory_history.md](memory_history.md).
 
-**Converting HF safetensors to `.entity` (Lucy [8])?** See [entity.md — convert memory](entity.md#hf--entity-convert-memory) and [memory_history.md](memory_history.md).
+**Converting HF safetensors to `.entity` on mobile (SoulGlitch)?** See [entity.md — convert memory](entity.md#hf--entity-convert-memory) and [memory_history.md — low-RAM lane](memory_history.md#hf--entity-convert-import--encode-memory) (`ImportHFSaveEntityTransformerBlockwise`).
+
+**Converting HF safetensors to `.entity` on Mac (Lucy [8])?** Same docs — Lucy uses the **standard** lane (`ImportHFCheckpointDir` + `SaveEntityTransformer`).
 
 **Loading a HuggingFace model?** Read [transformer.md](transformer.md) and [serialization.md](serialization.md).
 
@@ -95,6 +97,9 @@ poly/
 ├── serialization.go     BuildNetworkFromJSON, ParseLayerType/DType/Activation
 ├── persistence.go       SerializeNetwork, DeserializeNetwork, bit-packing, EncodeNativeWeightsRaw
 ├── entity.go            SerializeEntity, LoadEntity, DeserializeEntity — native `.entity` checkpoints
+├── entity_convert_io.go Block-wise ENTITY encode: streaming payload, Q4 bake helpers, writeEntityWireStreaming
+├── hf_entity_convert.go ImportHFSaveEntityTransformerBlockwise(Progress) — mobile-safe HF→`.entity`
+├── hf_import.go         ImportHFCheckpointDir, ImportHFToEntity, ImportHFBitNetCheckpointDir
 ├── transformer.go       Transformer[T], NewTransformer, Generate, SyncGlobalWeightsToGPUSequential
 ├── memory_history.go    Load-path MemoryHistory, terminal chart, diagnosis
 ├── memory_history_chart.go  Braille/sparkline renderers for memory timeline
