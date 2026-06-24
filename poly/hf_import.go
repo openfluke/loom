@@ -214,17 +214,50 @@ func ImportHFCheckpointDir(modelDir string, opts HFImportOptions) (*HFImportResu
 		return nil, fmt.Errorf("parse decoder dims: %w", err)
 	}
 
-	allTensors := make(map[string][]float32)
-	skipped := 0
+	// Load globals first, then one decoder block at a time. Loading the full
+	// safetensors map and copyWeights into WeightStore.Master doubled peak RAM
+	// (map + network copies) until GC — same class of bug as bulk GPU upload.
+	globalTensors := make(map[string][]float32)
 	for _, f := range safetensorFiles {
-		part, err := LoadSafetensors(f)
+		part, err := LoadSafetensorsSelective(f, HFWeightIsGlobal)
 		if err != nil {
-			return nil, fmt.Errorf("load %s: %w", filepath.Base(f), err)
+			return nil, fmt.Errorf("load globals from %s: %w", filepath.Base(f), err)
 		}
 		for k, v := range part {
-			allTensors[k] = v
+			globalTensors[k] = v
 		}
 	}
+
+	mapper := NewPrefixWeightMapper()
+	embeddings, lmHead, finalNorm, hasFinalNorm := mapper.MapWeights(globalTensors)
+
+	net := NewVolumetricNetwork(1, 1, 1, dims.NumLayers*4)
+	InitHFDecoderBlocks(net, dims)
+
+	layerFiles := BuildLayerShardIndex(safetensorFiles, dims.NumLayers)
+	tensorsLoaded := len(globalTensors)
+	for li := 0; li < dims.NumLayers; li++ {
+		layerMap := make(map[string][]float32)
+		for _, sf := range layerFiles[li] {
+			part, err := LoadSafetensorsSelective(sf, func(k string) bool {
+				return HFWeightMatchesLayer(k, li)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("load block %d from %s: %w", li, filepath.Base(sf), err)
+			}
+			for k, v := range part {
+				layerMap[k] = v
+				tensorsLoaded++
+			}
+		}
+		if err := LoadWithPrefixes(net, layerMap); err != nil {
+			return nil, err
+		}
+		ReleaseTransientSafetensorMap(layerMap)
+	}
+	ReleaseTransientSafetensorMap(globalTensors, embeddings, lmHead, finalNorm)
+
+	skipped := 0
 	headerCount := 0
 	for _, f := range safetensorFiles {
 		names, err := SafetensorsTensorNames(f)
@@ -232,17 +265,8 @@ func ImportHFCheckpointDir(modelDir string, opts HFImportOptions) (*HFImportResu
 			headerCount += len(names)
 		}
 	}
-	if headerCount > len(allTensors) {
-		skipped = headerCount - len(allTensors)
-	}
-
-	mapper := NewPrefixWeightMapper()
-	embeddings, lmHead, finalNorm, hasFinalNorm := mapper.MapWeights(allTensors)
-
-	net := NewVolumetricNetwork(1, 1, 1, dims.NumLayers*4)
-	InitHFDecoderBlocks(net, dims)
-	if err := LoadWithPrefixes(net, allTensors); err != nil {
-		return nil, err
+	if headerCount > tensorsLoaded {
+		skipped = headerCount - tensorsLoaded
 	}
 
 	MorphHFDecoderWeights(net, opts.WeightDType)
@@ -256,7 +280,7 @@ func ImportHFCheckpointDir(modelDir string, opts HFImportOptions) (*HFImportResu
 		LMHead:          lmHead,
 		FinalNorm:       finalNorm,
 		HasFinalNorm:    hasFinalNorm,
-		TensorsLoaded:   len(allTensors),
+		TensorsLoaded:   tensorsLoaded,
 		TensorsSkipped:  skipped,
 		SafetensorFiles: safetensorFiles,
 	}, nil
