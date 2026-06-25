@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"runtime"
-	"runtime/debug"
 
 	"github.com/openfluke/loom/poly"
 )
@@ -62,13 +60,18 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 	}
 
 	useGPU := cfg.useGPU
-	trackMemory := useGPU && poly.MemoryHistoryEnabled()
+	trackMemory := poly.MemoryHistoryEnabled()
 	if trackMemory {
-		fmt.Println("📈 Memory timeline recording — terminal chart prints when GPU load finishes.")
 		if len(poly.GlobalMemoryHistory.Samples()) == 0 {
-			session := "gpu_load"
+			session := "cpu_load"
 			if cfg.fromEntity {
-				session = "entity_gpu_load"
+				session = "entity_cpu_load"
+			}
+			if useGPU {
+				session = "gpu_load"
+				if cfg.fromEntity {
+					session = "entity_gpu_load"
+				}
 			}
 			beginMemoryHistorySession(session)
 		}
@@ -126,6 +129,7 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 						(&tr.Network.Layers[base+j]).ReleaseInferenceHostWeights()
 					}
 					recordMemoryHistory(fmt.Sprintf("block_%02d_after_release", li+1))
+					poly.ReleaseInferenceTransientMemory()
 					fmt.Printf("   ✓ Block %d/%d on GPU\n", li+1, cfg.numLayers)
 				}
 			} else {
@@ -146,6 +150,11 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 					}
 				}
 				recordMemoryHistory("bulk_sync_done")
+				for i := range tr.Network.Layers {
+					tr.Network.Layers[i].ReleaseInferenceHostWeights()
+				}
+				poly.ReleaseInferenceTransientMemory()
+				recordMemoryHistory("decoder_host_released")
 			}
 			if err := syncTransformerGlobalWeightsSequential(tr); err != nil {
 				log.Fatalf("❌ Global weight GPU sync: %v", err)
@@ -155,8 +164,7 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 			tr.Reset()
 			tr.ReleaseInferenceHostWeights()
 			recordMemoryHistory("host_weights_released")
-			runtime.GC()
-			debug.FreeOSMemory()
+			poly.ReleaseInferenceTransientMemory()
 			recordMemoryHistory("after_gc")
 			fmt.Println("✅ Success!")
 		}
@@ -166,7 +174,15 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 		if cfg.useBitNetCPU || cfg.useTernaryPTQCPU || (cfg.fromEntity && cfg.weightDType == poly.DTypeTernary) {
 			tr.Network.UseExactDType = true
 		}
+		if trackMemory {
+			recordMemoryHistory("cpu_sync_before")
+		}
 		tr.SyncInferenceCPU()
+		if trackMemory {
+			recordMemoryHistory("cpu_sync_after")
+			poly.ReleaseInferenceTransientMemory()
+			recordMemoryHistory("after_gc")
+		}
 	}
 	return useGPU
 }

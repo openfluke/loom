@@ -406,12 +406,14 @@ func PrepareEntityTransformerLayerIndices(et *EntityTransformer, indices []int) 
 }
 
 // LoadEntityTransformer reads a universal-transformer .entity checkpoint from disk.
+// Uses random-access blob reads (EntityFile) so the full file is not slurped into RAM.
 func LoadEntityTransformer(path string) (*EntityTransformer, error) {
-	data, err := os.ReadFile(path)
+	et, err := LoadEntityTransformerFromFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return DeserializeEntityTransformer(data)
+	ReleaseInferenceTransientMemory()
+	return et, nil
 }
 
 // LoadEntityTransformerAs reads a checkpoint and returns a runnable Transformer.

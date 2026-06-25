@@ -386,9 +386,9 @@ func readEntityTalkLaunchOptions(reader *bufio.Reader, modelID string, storedDTy
 	cfg.tilingMode, cfg.tileSize = parseLLMExecutionMode(execModeInput)
 
 	if cfg.useGPU {
-		cfg.sequentialGPULoad = readInput(reader, "📥 Block-by-block GPU upload? (1=yes / 0=no) [0]: ", "0") == "1"
-		cfg.measureMemoryLoad = promptMeasureMemoryDuringGPULoad(reader)
+		cfg.sequentialGPULoad = readInput(reader, "📥 Block-by-block GPU upload? (1=yes / 0=no) [1]: ", "1") == "1"
 	}
+	cfg.measureMemoryLoad = promptMeasureMemoryDuringLoad(reader)
 
 	applyModelSpecificLaunchOptions(reader, modelID, &cfg, storedDType)
 	deterministic = cfg.deterministic
@@ -463,18 +463,42 @@ func runEntityTalkMode(reader *bufio.Reader) {
 		log.Fatalf("❌ %v", err)
 	}
 
+	if launch.measureMemoryLoad {
+		session := "entity_cpu_load"
+		if launch.useGPU {
+			session = "entity_gpu_load"
+		}
+		beginMemoryHistorySession(session)
+		fmt.Println("📈 Memory timeline recording — terminal chart prints when load finishes.")
+		recordMemoryHistoryRuntime("before_entity_load")
+	}
+
 	et, err := poly.LoadEntityTransformer(pick.EntityPath)
 	if err != nil {
 		log.Fatalf("❌ LoadEntityTransformer: %v", err)
+	}
+	if launch.measureMemoryLoad {
+		recordMemoryHistoryRuntime("entity_file_decoded")
 	}
 	if et.WeightDType != 0 {
 		storedDType = et.WeightDType
 	}
 	poly.PrepareEntityTransformerInference(et)
 	template := templateForModel(pick.ModelID)
-	tr = poly.BuildTransformerFromEntity[float32](et, template)
-
 	numLayers := et.Dims.NumLayers
+	if numLayers <= 0 && et.Network != nil {
+		numLayers = len(et.Network.Layers) / 4
+	}
+	hiddenSize := et.HiddenSize
+	rmsNormEps := et.Dims.RMSNormEps
+	vocabSize := et.VocabSize
+	tr = poly.BuildTransformerFromEntity[float32](et, template)
+	et = nil
+	poly.ReleaseInferenceTransientMemory()
+	if launch.measureMemoryLoad {
+		recordMemoryHistory("entity_cpu_weights_loaded")
+	}
+
 	if numLayers <= 0 {
 		numLayers = len(tr.Network.Layers) / 4
 	}
@@ -494,20 +518,16 @@ func runEntityTalkMode(reader *bufio.Reader) {
 		weightDType:       gpuWeightDType,
 		sequentialGPULoad: launch.sequentialGPULoad,
 		numLayers:         numLayers,
-		hiddenSize:        et.HiddenSize,
+		hiddenSize:        hiddenSize,
 		isQwen:            isQwen,
-		rmsNormEps:        et.Dims.RMSNormEps,
+		rmsNormEps:        rmsNormEps,
 		fromEntity:        true,
-	}
-	if launch.useGPU && poly.MemoryHistoryEnabled() {
-		beginMemoryHistorySession("entity_gpu_load")
-		recordMemoryHistory("entity_cpu_weights_loaded")
 	}
 	useGPU := setupTransformerForInference(tr, infCfg)
 
 	applyGlitchTanhiIfRequested(reader, tr.Network)
 
-	fmt.Printf("\n✅ ENTITY loaded! (%d layers, vocab=%d, quant=%s)\n", numLayers, et.VocabSize, entityDTypeLabel(storedDType))
+	fmt.Printf("\n✅ ENTITY loaded! (%d layers, vocab=%d, quant=%s)\n", numLayers, vocabSize, entityDTypeLabel(storedDType))
 	fmt.Printf("   %s\n", formatHFToEntitySize(pick.HFSafetensorsBytes, pick.EntityBytes))
 	printPostLoadMemorySnapshot(tr)
 	if len(poly.TokenizerBannedSpecialExceptEOS(tk, eosTokens)) > 0 {

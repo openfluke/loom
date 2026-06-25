@@ -271,10 +271,12 @@ func (t *Transformer[T]) SyncGlobalWeightsToGPUSequential() error {
 	}
 	t.ReleaseEmbeddingsHost()
 	t.ReleaseLMHeadHost()
+	ReleaseInferenceTransientMemory()
 	if err := t.SyncFinalNormToGPU(); err != nil {
 		return fmt.Errorf("final norm: %w", err)
 	}
 	t.ReleaseFinalNormHost()
+	ReleaseInferenceTransientMemory()
 	return nil
 }
 

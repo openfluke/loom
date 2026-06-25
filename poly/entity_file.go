@@ -219,5 +219,10 @@ func LoadEntityTransformerFromFileAt(path string, baseOffset int64, maxLoomEnd i
 		return nil, err
 	}
 	defer ef.Close()
-	return ef.LoadEntityTransformer()
+	et, err := ef.LoadEntityTransformer()
+	if err != nil {
+		return nil, err
+	}
+	ReleaseInferenceTransientMemory()
+	return et, nil
 }

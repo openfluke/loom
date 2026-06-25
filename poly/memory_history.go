@@ -135,6 +135,14 @@ func RecordFromTransformer[T Numeric](h *MemoryHistory, tr *Transformer[T], labe
 	h.Record(label, fp, vram)
 }
 
+// RecordRuntimeOnly captures heap/RSS without a Transformer (e.g. before BuildTransformerFromEntity).
+func RecordRuntimeOnly(h *MemoryHistory, label string) {
+	if h == nil || !MemoryHistoryEnabled() {
+		return
+	}
+	h.Record(label, MemoryFootprint{}, 0)
+}
+
 // Samples returns a copy of recorded samples.
 func (h *MemoryHistory) Samples() []MemorySample {
 	if h == nil {

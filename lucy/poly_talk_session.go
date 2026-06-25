@@ -70,8 +70,8 @@ func readPolyTalkLaunchOptions(reader *bufio.Reader) polyTalkLaunch {
 
 	if cfg.useGPU {
 		cfg.sequentialGPULoad = readInput(reader, "📥 Load weights block-by-block into GPU (lower peak host RAM; skips holding full checkpoint map)? (1=yes / 0=no) [0]: ", "0") == "1"
-		cfg.measureMemoryLoad = promptMeasureMemoryDuringGPULoad(reader)
 	}
+	cfg.measureMemoryLoad = promptMeasureMemoryDuringLoad(reader)
 
 	return cfg
 }
@@ -86,7 +86,6 @@ func applyModelSpecificLaunchOptions(reader *bufio.Reader, modelName string, cfg
 			cfg.useBitNetGPU = true
 			cfg.weightDType = poly.DTypeTernary
 			weightDType = poly.DTypeTernary
-			cfg.sequentialGPULoad = false
 			fmt.Println("🧪 BitNet model detected; enabling experimental WebGPU packed ternary inference.")
 		} else {
 			cfg.useBitNetCPU = true

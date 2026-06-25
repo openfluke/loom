@@ -102,15 +102,19 @@ func printPostLoadMemorySnapshot(tr *poly.Transformer[float32]) {
 		m.HostWeightsMB, m.GPUWeightsMB, m.GPUKVMB)
 }
 
-func promptMeasureMemoryDuringGPULoad(reader *bufio.Reader) bool {
+func promptMeasureMemoryDuringLoad(reader *bufio.Reader) bool {
 	enabled := readInput(reader,
-		"📈 Measure memory during GPU load? (terminal chart after load — CPU weights vs GPU upload vs release) (1=yes / 0=no) [1]: ",
+		"📈 Measure memory during load? (terminal chart after mount — host weights, GPU upload, RSS) (1=yes / 0=no) [1]: ",
 		"1") == "1"
 	poly.SetMemoryHistoryRecording(enabled)
 	if enabled {
-		fmt.Println("   Recording at each step: host weights → GPU sync → CPU release (chart prints when load finishes).")
+		fmt.Println("   Recording at each step: entity decode → mount (CPU or GPU) → release (chart prints when load finishes).")
 	}
 	return enabled
+}
+
+func recordMemoryHistoryRuntime(label string) {
+	poly.RecordRuntimeOnly(poly.GlobalMemoryHistory, label)
 }
 
 func beginMemoryHistorySession(name string) {
@@ -147,8 +151,10 @@ func syncTransformerGlobalWeightsSequential(tr *poly.Transformer[float32]) error
 
 	tr.ReleaseEmbeddingsHost()
 	recordMemoryHistory("embeddings_after_release")
+	poly.ReleaseInferenceTransientMemory()
 	tr.ReleaseLMHeadHost()
 	recordMemoryHistory("lm_head_after_release")
+	poly.ReleaseInferenceTransientMemory()
 
 	recordMemoryHistory("final_norm_before_sync")
 	if err := tr.SyncFinalNormToGPU(); err != nil {
@@ -157,6 +163,7 @@ func syncTransformerGlobalWeightsSequential(tr *poly.Transformer[float32]) error
 	recordMemoryHistory("final_norm_after_sync")
 	tr.ReleaseFinalNormHost()
 	recordMemoryHistory("final_norm_after_release")
+	poly.ReleaseInferenceTransientMemory()
 	return nil
 }
 
