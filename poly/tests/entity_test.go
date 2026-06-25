@@ -50,6 +50,15 @@ func TestEntityRoundTripMatchesJSONPersistence(t *testing.T) {
 			if !NativeWeightsEncoded(wantActive, gotActive, dtype) {
 				t.Fatal("native weight blob mismatch after entity round-trip")
 			}
+			if dtype == DTypeInt8 {
+				reloaded.UseGPU = false
+				in := NewTensor[float32](1, 2)
+				in.Data[0], in.Data[1] = 0.2, -0.1
+				ForwardPolymorphic(reloaded, in)
+				if got.WeightStore.GetActive(dtype) == nil {
+					t.Fatal("GetActive returned nil after int8 entity reload forward")
+				}
+			}
 		})
 	}
 }

@@ -651,10 +651,8 @@ func DecodeNativeWeightsRaw(bytes []byte, dt DType) (any, error) {
 		}
 		return w, nil
 	case DTypeInt8:
-		w := make([]int8, len(bytes))
-		for i := range w {
-			w[i] = int8(bytes[i])
-		}
+		w := make([]uint8, len(bytes))
+		copy(w, bytes)
 		return w, nil
 	case DTypeUint8, DTypeFP8E4M3, DTypeFP8E5M2:
 		w := make([]uint8, len(bytes))

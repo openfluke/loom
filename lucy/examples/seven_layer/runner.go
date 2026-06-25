@@ -283,18 +283,17 @@ func RunLayerSuite(s LayerSuite) bool {
 			fmt.Println("BUILD ERR")
 			continue
 		}
-		configureTrainingNet(net, tc, s.PrimaryType)
 		applyDType(net, tc)
-		configureInferenceNet(net)
 		input := s.MakeInput()
 		target := s.MakeTarget(net, input)
 
 		mem0 := readMemSnapshot()
 		row.MemHeap = formatBytes(mem0.HeapAlloc)
 		row.MemSys = formatBytes(mem0.Sys)
-		row.WeightBytes = formatBytes(networkWeightBytes(net)) + " (infer)"
 
 		// Forward determinism: CPU Go SC vs MC (Go tiled path; ASM checked separately for floats).
+		// Benchmark with Master + Versions intact (v0.78 lucy/testing style). Dropping FP32 Master
+		// via configureInferenceNet before forward leaves CPU tiled paths relying on Versions alone.
 		fwdSC := captureForward(net, input, false, false)
 		fwdMC := captureForward(net, input, true, false)
 		row.FwdSCDur = formatDur(fwdSC.dur)
@@ -307,6 +306,10 @@ func RunLayerSuite(s LayerSuite) bool {
 		row.BwdSCDur = formatDur(bwdSC.dur)
 		row.BwdMCDur = formatDur(bwdMC.dur)
 		row.BwdSCMC = maxAbsDiff(append(bwdSC.dx, bwdSC.dw...), append(bwdMC.dx, bwdMC.dw...))
+
+		// Infer-native weight accounting only (after parity benches; not on forward hot path).
+		configureInferenceNet(net)
+		row.WeightBytes = formatBytes(networkWeightBytes(net)) + " (infer)"
 
 		// ASM forward (Dense float paths only — native quant uses integer matmul in ASM).
 		if asmSt.ForwardCapable && requiresAsmDeterminism(tc.dtype) {

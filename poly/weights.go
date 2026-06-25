@@ -542,6 +542,21 @@ func (ws *WeightStore) HeRandomize(seed int64, inputSize int) {
 	ws.GPUWeights = make(map[DType]any)
 }
 
+func nativeU8WeightsView(v any) ([]uint8, bool) {
+	switch w := v.(type) {
+	case []uint8:
+		return w, len(w) > 0
+	case []int8:
+		out := make([]uint8, len(w))
+		for i, b := range w {
+			out[i] = uint8(b)
+		}
+		return out, len(out) > 0
+	default:
+		return nil, false
+	}
+}
+
 func (ws *WeightStore) GetActive(dtype DType) any {
 	if dtype == DTypeFloat32 {
 		if len(ws.Master) > 0 {
@@ -597,8 +612,8 @@ func (ws *WeightStore) GetActive(dtype DType) any {
 			return f
 		}
 	case DTypeInt8, DTypeUint8, DTypeInt4, DTypeUint4, DTypeInt2, DTypeUint2, DTypeTernary, DTypeBinary, DTypeFP4:
-		raw, ok := v.([]uint8)
-		if !ok || len(raw) == 0 {
+		raw, ok := nativeU8WeightsView(v)
+		if !ok {
 			return nil
 		}
 		out := make([]float32, len(raw))

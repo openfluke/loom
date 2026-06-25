@@ -74,18 +74,10 @@ func morphWeightsU8(ws *WeightStore, dtype DType) []uint8 {
 		return nil
 	}
 	ws.Morph(dtype)
-	switch w := ws.Versions[dtype].(type) {
-	case []uint8:
-		return w
-	case []int8:
-		out := make([]uint8, len(w))
-		for i, v := range w {
-			out[i] = uint8(v)
-		}
-		return out
-	default:
-		return nil
+	if raw, ok := nativeU8WeightsView(ws.Versions[dtype]); ok {
+		return raw
 	}
+	return nil
 }
 
 func dtypeNativeSignedDot(dtype DType) bool {
