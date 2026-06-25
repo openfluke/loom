@@ -34,6 +34,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [bedrock_validation.md](bedrock_validation.md) | **v0.79.0** — seven-layer CPU suite, MHA/KV/persistence fixes, C-ABI 100%, what shipped vs roadmap |
 | [v080_release.md](v080_release.md) | **v0.80.0** — ENTITY native checkpoints, WebGPU v1.0.4, cross-platform GPU, Planet Bridging POC |
 | [`../poly/asm/README.md`](../poly/asm/README.md) | **Plan 9 CPU kernels**: `UseAsmForward`, dense forward routing, dot/matmul layout, Lucy speedup interpretation |
+| [asm-and-volumetric-exploration.md](asm-and-volumetric-exploration.md) | **Archive (Jun 2026)**: BitNet W8A8 ASM, I2_S scaffolding, volumetric executor v1, Lucy `[7]` findings — exploratory work removed from tree |
 
 ---
 
