@@ -223,9 +223,7 @@ func applyEntityMHANormBlob(l *VolumetricLayer, path string, raw []byte) error {
 }
 
 func applyEntityQ4_0Blob(l *VolumetricLayer, path string, raw []byte, blob EntityWeightBlob) error {
-	if l.WeightStore == nil {
-		return fmt.Errorf("no WeightStore for %q", path)
-	}
+	ensureLayerWeightStore(l)
 	parts := strings.Split(blob.Path, ".")
 	if len(parts) < 4 || parts[len(parts)-2] != "q4_0" {
 		return fmt.Errorf("invalid q4_0 path %q", blob.Path)
@@ -245,6 +243,7 @@ func applyEntityQ4_0Blob(l *VolumetricLayer, path string, raw []byte, blob Entit
 }
 
 func applyEntityBiasBlob(l *VolumetricLayer, raw []byte) error {
+	ensureLayerWeightStore(l)
 	bias, err := DecodeWeightsRaw(raw)
 	if err != nil {
 		return err
@@ -252,9 +251,6 @@ func applyEntityBiasBlob(l *VolumetricLayer, raw []byte) error {
 	h, inter := l.InputHeight, l.OutputHeight
 	wSize := h * inter
 	need := 3*wSize + len(bias)
-	if l.WeightStore == nil {
-		return fmt.Errorf("no WeightStore for bias blob")
-	}
 	if len(l.WeightStore.Master) < need {
 		l.WeightStore.Master = make([]float32, need)
 	}

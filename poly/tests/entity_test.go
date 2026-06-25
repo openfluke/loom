@@ -98,8 +98,8 @@ func TestEntityLayerSelectiveLoad(t *testing.T) {
 	}
 	l0 := partial.GetLayer(0, 0, 0, 0)
 	l1 := partial.GetLayer(0, 0, 1, 0)
-	if l0.WeightStore == nil || len(l0.WeightStore.Master) == 0 {
-		t.Fatal("layer 0 should have initialized weights from topology init")
+	if l0.WeightStore != nil && (len(l0.WeightStore.Master) > 0 || l0.WeightStore.Versions[DTypeFloat32] != nil) {
+		t.Fatal("layer 0 should not have weights when selectively loading layer 1 only")
 	}
 	if l1.WeightStore == nil || l1.WeightStore.Versions[DTypeFloat32] == nil && len(l1.WeightStore.Master) == 0 {
 		t.Fatal("layer 1 should have loaded entity blob")
@@ -396,5 +396,49 @@ func TestEntityBitNetCollectLargeOffsetKeys(t *testing.T) {
 	}
 	if _, ok := rl.WeightStore.GetBitNetTernaryMatrix(6553600, 4, 8); !ok {
 		t.Fatal("missing K matrix after entity round-trip (large offset key was dropped)")
+	}
+}
+
+func TestEntityTopologyOnlySkipsWeightAllocation(t *testing.T) {
+	dims := HFDecoderDims{
+		NumLayers:        1,
+		HiddenSize:       64,
+		NumHeads:         4,
+		NumKVHeads:       4,
+		HeadDim:          16,
+		QueryDim:         64,
+		KVDim:            64,
+		IntermediateSize: 128,
+		RMSNormEps:       1e-5,
+		RoPEFreqBase:     10000,
+		Activation:       ActivationSilu,
+	}
+	net := NewVolumetricNetwork(1, 1, 1, 4)
+	InitHFDecoderBlocks(net, dims)
+	for i := range net.Layers {
+		if net.Layers[i].WeightStore != nil {
+			copy(net.Layers[i].WeightStore.Master, deterministicWeights(len(net.Layers[i].WeightStore.Master)))
+		}
+	}
+	hidden := dims.HiddenSize
+	vocab := 32
+	embeddings := deterministicWeights(vocab * hidden)
+	et := NewEntityTransformer(net, HFArchLlamaStyleDecoder, dims, embeddings, embeddings, deterministicWeights(hidden), true)
+	et.WeightDType = DTypeTernary
+	wire, err := SerializeEntityTransformer(et)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topology, err := DeserializeEntityWithOptions(wire, &EntityLoadOptions{SkipLayerWeights: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, l := range topology.Layers {
+		if l.Type != LayerMultiHeadAttention && l.Type != LayerSwiGLU {
+			continue
+		}
+		if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
+			t.Fatalf("layer %d (%v): topology-only load allocated Master len=%d", i, l.Type, len(l.WeightStore.Master))
+		}
 	}
 }

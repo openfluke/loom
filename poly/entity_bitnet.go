@@ -140,9 +140,7 @@ func collectEntityBitNetAuxBlobs(l *VolumetricLayer, path string, payload *bytes
 }
 
 func applyEntityBitNetTernaryBlob(l *VolumetricLayer, blobPath string, raw []byte) error {
-	if l.WeightStore == nil {
-		return fmt.Errorf("no WeightStore for %q", blobPath)
-	}
+	ensureLayerWeightStore(l)
 	parts := strings.Split(blobPath, ".")
 	if len(parts) < 4 || parts[len(parts)-2] != "bitnet_ternary" {
 		return fmt.Errorf("invalid bitnet ternary path %q", blobPath)

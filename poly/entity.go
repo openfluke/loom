@@ -547,6 +547,7 @@ func applyEntityBlobToNetwork(net *VolumetricNetwork, blob EntityWeightBlob, raw
 	if err != nil {
 		return err
 	}
+	ensureLayerWeightStore(l)
 	switch {
 	case entityBlobIsQ4_0(blob):
 		if err := applyEntityQ4_0Blob(l, blob.Path, raw, blob); err != nil {
@@ -815,9 +816,7 @@ func collectEntityWeightBlobs(l *VolumetricLayer, path string, payload *bytes.Bu
 }
 
 func applyEntityWeightBlob(l *VolumetricLayer, raw []byte, blob EntityWeightBlob) error {
-	if l.WeightStore == nil {
-		return fmt.Errorf("no WeightStore for entity blob %q", blob.Path)
-	}
+	ensureLayerWeightStore(l)
 	l.WeightStore.Scale = blob.Scale
 	dt := ParseDType(blob.DType)
 	l.DType = dt
@@ -827,8 +826,10 @@ func applyEntityWeightBlob(l *VolumetricLayer, raw []byte, blob EntityWeightBlob
 			return err
 		}
 		l.WeightStore.SetLoadedWeights(dt, decoded)
-		if dt != DTypeFloat32 {
-			l.WeightStore.Unpack(dt)
+		if len(l.WeightStore.Master) == 0 && dt == DTypeFloat32 {
+			if w, ok := decoded.([]float32); ok {
+				l.WeightStore.Master = w
+			}
 		}
 		return nil
 	}
@@ -1003,7 +1004,7 @@ func loadEntityTransformerGlobals(hdr *EntityHeader, readBlob entityBlobReader, 
 		if readErr != nil {
 			return nil, nil, nil, readErr
 		}
-		decoded, decErr := DecodeWeightsRaw(raw)
+		decoded, decErr := DecodeWeightsRawOwned(raw)
 		raw = nil
 		if decErr != nil {
 			return nil, nil, nil, fmt.Errorf("entity blob %q: %w", blob.Path, decErr)
@@ -1031,4 +1032,10 @@ func loadEntityTransformerGlobals(hdr *EntityHeader, readBlob entityBlobReader, 
 		return nil, nil, nil, fmt.Errorf("entity transformer: missing final_norm blob")
 	}
 	return embeddings, lmHead, finalNorm, nil
+}
+
+func ensureLayerWeightStore(l *VolumetricLayer) {
+	if l != nil && l.WeightStore == nil {
+		l.WeightStore = NewWeightStore(0)
+	}
 }

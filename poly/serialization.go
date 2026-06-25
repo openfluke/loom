@@ -198,7 +198,28 @@ func applyLayerSpec(l *VolumetricLayer, ls LayerSpec) error {
 	return nil
 }
 
+// finalizeLayerDimensions applies MHA/SwiGLU dimension defaults without allocating WeightStore.
+// Used for .entity topology load (weights arrive later via blob reader).
+func finalizeLayerDimensions(l *VolumetricLayer) {
+	switch l.Type {
+	case LayerMultiHeadAttention:
+		if l.NumHeads > 0 && l.HeadDim == 0 {
+			l.HeadDim = l.DModel / l.NumHeads
+		}
+		if l.NumKVHeads == 0 {
+			l.NumKVHeads = l.NumHeads
+		}
+		if l.QueryDim == 0 {
+			l.QueryDim = l.DModel
+		}
+	}
+	if l.SeqLength <= 0 {
+		l.SeqLength = 1
+	}
+}
+
 func initializeWeights(l *VolumetricLayer) {
+	finalizeLayerDimensions(l)
 	var wCount int
 	switch l.Type {
 	case LayerDense:
@@ -208,12 +229,6 @@ func initializeWeights(l *VolumetricLayer) {
 	case LayerLayerNorm:
 		wCount = 2 * l.InputHeight
 	case LayerMultiHeadAttention:
-		if l.NumHeads > 0 && l.HeadDim == 0 {
-			l.HeadDim = l.DModel / l.NumHeads
-		}
-		if l.NumKVHeads == 0 {
-			l.NumKVHeads = l.NumHeads
-		}
 		q := l.QueryDim
 		if q == 0 {
 			q = l.DModel
@@ -259,10 +274,6 @@ func initializeWeights(l *VolumetricLayer) {
 		wCount = l.VocabSize * l.EmbeddingDim
 	case LayerKMeans:
 		wCount = l.NumClusters * l.InputHeight
-	}
-
-	if l.SeqLength <= 0 {
-		l.SeqLength = 1
 	}
 
 	if wCount > 0 {

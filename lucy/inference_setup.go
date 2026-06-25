@@ -203,7 +203,7 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 			tr.Reset()
 			tr.ReleaseInferenceHostWeights()
 			recordMemoryHistory("host_weights_released")
-			poly.ReleaseInferenceTransientMemory()
+			poly.AggressiveReleaseMemoryToOS()
 			recordMemoryHistory("after_gc")
 			fmt.Println("✅ Success!")
 		}
@@ -222,8 +222,10 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 		tr.SyncInferenceCPU()
 		if trackMemory {
 			recordMemoryHistory("cpu_sync_after")
-			poly.ReleaseInferenceTransientMemory()
+			poly.AggressiveReleaseMemoryToOS()
 			recordMemoryHistory("after_gc")
+		} else {
+			poly.AggressiveReleaseMemoryToOS()
 		}
 	}
 	return useGPU

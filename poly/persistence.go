@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"unsafe"
 )
 
 // PersistenceNetworkSpec represents the serializable state of a VolumetricNetwork.
@@ -259,8 +260,11 @@ func applyPersistenceLayerSpec(l *VolumetricLayer, ls PersistenceLayerSpec) erro
 	l.TileSize = ls.TileSize
 	l.IsDisabled = ls.IsDisabled
 
-	// Initialize weights based on populated fields
-	initializeWeights(l)
+	if ls.Weights != "" {
+		initializeWeights(l)
+	} else {
+		finalizeLayerDimensions(l)
+	}
 
 	if ls.Weights != "" {
 		if l.WeightStore == nil {
@@ -365,6 +369,19 @@ func DecodeWeightsRaw(bytes []byte) ([]float32, error) {
 		w[i] = math.Float32frombits(binary.LittleEndian.Uint32(bytes[i*4:]))
 	}
 	return w, nil
+}
+
+// DecodeWeightsRawOwned reinterprets an owned little-endian byte buffer as []float32
+// without a second heap allocation. The caller must not retain or mutate raw afterward.
+func DecodeWeightsRawOwned(raw []byte) ([]float32, error) {
+	if len(raw)%4 != 0 {
+		return nil, fmt.Errorf("invalid weight byte length: %d", len(raw))
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	n := len(raw) / 4
+	return unsafe.Slice((*float32)(unsafe.Pointer(unsafe.SliceData(raw))), n), nil
 }
 
 // encodeWeights converts float32 slice to base64 string (Little Endian).
