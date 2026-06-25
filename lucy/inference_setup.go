@@ -21,6 +21,36 @@ type inferenceConfig struct {
 	useTernaryPTQCPU  bool
 	rmsNormEps        float64
 	fromEntity        bool
+	entityFile        *poly.EntityFile
+	entityBundle      *poly.EntityTransformer
+}
+
+func loadEntityDecoderBlock(tr *poly.Transformer[float32], cfg inferenceConfig, blockIndex int) error {
+	if cfg.entityFile == nil {
+		return nil
+	}
+	base := blockIndex * 4
+	indices := []int{base, base + 1, base + 2, base + 3}
+	if err := cfg.entityFile.LoadNetworkLayerWeights(tr.Network, indices); err != nil {
+		return fmt.Errorf("load block %d weights: %w", blockIndex, err)
+	}
+	if cfg.entityBundle != nil {
+		poly.PrepareEntityTransformerLayerIndices(cfg.entityBundle, indices)
+	}
+	poly.ReleaseInferenceTransientMemory()
+	return nil
+}
+
+func loadEntityDecoderBlocks(tr *poly.Transformer[float32], cfg inferenceConfig) error {
+	if cfg.entityFile == nil {
+		return nil
+	}
+	for li := 0; li < cfg.numLayers; li++ {
+		if err := loadEntityDecoderBlock(tr, cfg, li); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizeInferenceConfig(cfg *inferenceConfig) {
@@ -105,6 +135,12 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 			}
 			if cfg.sequentialGPULoad {
 				for li := 0; li < cfg.numLayers; li++ {
+					if err := loadEntityDecoderBlock(tr, cfg, li); err != nil {
+						log.Fatalf("❌ %v", err)
+					}
+					if cfg.entityFile != nil {
+						recordMemoryHistory(fmt.Sprintf("block_%02d_weights_loaded", li+1))
+					}
 					base := li * 4
 					recordMemoryHistory(fmt.Sprintf("block_%02d_before_sync", li+1))
 					for j := 0; j < 4; j++ {
@@ -133,6 +169,9 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 					fmt.Printf("   ✓ Block %d/%d on GPU\n", li+1, cfg.numLayers)
 				}
 			} else {
+				if err := loadEntityDecoderBlocks(tr, cfg); err != nil {
+					log.Fatalf("❌ %v", err)
+				}
 				recordMemoryHistory("bulk_sync_start")
 				for i := range tr.Network.Layers {
 					if tr.Network.Layers[i].Type == poly.LayerRMSNorm {
@@ -176,6 +215,9 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 		}
 		if trackMemory {
 			recordMemoryHistory("cpu_sync_before")
+		}
+		if err := loadEntityDecoderBlocks(tr, cfg); err != nil {
+			log.Fatalf("❌ %v", err)
 		}
 		tr.SyncInferenceCPU()
 		if trackMemory {

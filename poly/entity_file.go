@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 )
 
 // EntityFile reads .entity weight blobs via ReadAt without loading the full file into RAM.
@@ -188,23 +187,7 @@ func (ef *EntityFile) LoadNetworkLayerWeights(net *VolumetricNetwork, layerIndic
 	if len(layerIndices) == 0 {
 		return nil
 	}
-	opts := &EntityLoadOptions{LayerIndices: layerIndices}
-	for _, blob := range ef.hdr.Blobs {
-		if !strings.HasPrefix(blob.Path, "layers.") {
-			continue
-		}
-		if !entityBlobLayerAllowed(blob.Path, opts.LayerIndices) {
-			continue
-		}
-		raw, err := ef.readBlob(blob)
-		if err != nil {
-			return err
-		}
-		if err := applyEntityBlobToNetwork(net, blob, raw); err != nil {
-			return err
-		}
-	}
-	return nil
+	return applyEntityNetworkLayerBlobs(net, ef.hdr, ef.blobReader(), &EntityLoadOptions{LayerIndices: layerIndices})
 }
 
 // LoadEntityTransformerFromFile reads a universal-transformer .entity from disk without loading the full file into RAM.

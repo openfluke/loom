@@ -216,10 +216,10 @@ func (h *MemoryHistory) PrintTerminalSummary() {
 		return
 	}
 	fmt.Println("\n   sample log")
-	fmt.Println("   t(s)   host MB  gpu MB  vram MB   rss MB   label")
+	fmt.Println("   t(s)   host MB  gpu MB  vram MB   rss MB  heap MB   label")
 	for _, s := range samples {
-		fmt.Printf("   %5.2f %8.2f %8.2f %8.2f %8.2f  %s\n",
-			s.ElapsedSec, s.HostWeightsMB, s.GPUWeightsMB, s.VRAMTotalMB, s.ProcessRSSMB, s.Label)
+		fmt.Printf("   %5.2f %8.2f %8.2f %8.2f %8.2f %8.2f  %s\n",
+			s.ElapsedSec, s.HostWeightsMB, s.GPUWeightsMB, s.VRAMTotalMB, s.ProcessRSSMB, s.HeapSysMB, s.Label)
 	}
 	if peak := h.peakHostGPUOverlapMB(samples); peak > 0 {
 		fmt.Printf("\n   ⚠ peak host+gpu Poly weights overlap: %.2f MB\n", peak)
@@ -242,6 +242,25 @@ func (h *MemoryHistory) printMemoryLoadDiagnosis() {
 	}
 
 	fmt.Println("\n   diagnosis")
+
+	if topo, ok := findMemorySample(samples, "entity_topology_loaded"); ok {
+		if before, ok2 := findMemorySample(samples, "before_entity_load"); ok2 {
+			rssJump := topo.ProcessRSSMB - before.ProcessRSSMB
+			if rssJump > 500 {
+				fmt.Printf("   entity topology+globals: RSS +%.0f MB (heapSys %.0f MB) — decoder blocks load during mount\n",
+					rssJump, topo.HeapSysMB)
+			}
+		}
+	}
+	if decoded, ok := findMemorySample(samples, "entity_file_decoded"); ok {
+		if before, ok2 := findMemorySample(samples, "before_entity_load"); ok2 {
+			rssJump := decoded.ProcessRSSMB - before.ProcessRSSMB
+			if rssJump > 500 && decoded.HostWeightsMB < 100 {
+				fmt.Printf("   ⚠ full entity decode RSS +%.0f MB before Poly host built (heapSys %.0f MB)\n",
+					rssJump, decoded.HeapSysMB)
+			}
+		}
+	}
 
 	// Per-block decoder release: compare first block after_sync vs after_release.
 	if sync, ok1 := findMemorySample(samples, "block_01_after_sync"); ok1 {

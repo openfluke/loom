@@ -473,12 +473,18 @@ func runEntityTalkMode(reader *bufio.Reader) {
 		recordMemoryHistoryRuntime("before_entity_load")
 	}
 
-	et, err := poly.LoadEntityTransformer(pick.EntityPath)
+	ef, err := poly.OpenEntityFile(pick.EntityPath)
 	if err != nil {
-		log.Fatalf("❌ LoadEntityTransformer: %v", err)
+		log.Fatalf("❌ OpenEntityFile: %v", err)
+	}
+	defer ef.Close()
+
+	et, err := ef.LoadEntityTransformerTopology()
+	if err != nil {
+		log.Fatalf("❌ LoadEntityTransformerTopology: %v", err)
 	}
 	if launch.measureMemoryLoad {
-		recordMemoryHistoryRuntime("entity_file_decoded")
+		recordMemoryHistoryRuntime("entity_topology_loaded")
 	}
 	if et.WeightDType != 0 {
 		storedDType = et.WeightDType
@@ -493,8 +499,6 @@ func runEntityTalkMode(reader *bufio.Reader) {
 	rmsNormEps := et.Dims.RMSNormEps
 	vocabSize := et.VocabSize
 	tr = poly.BuildTransformerFromEntity[float32](et, template)
-	et = nil
-	poly.ReleaseInferenceTransientMemory()
 	if launch.measureMemoryLoad {
 		recordMemoryHistory("entity_cpu_weights_loaded")
 	}
@@ -522,8 +526,12 @@ func runEntityTalkMode(reader *bufio.Reader) {
 		isQwen:            isQwen,
 		rmsNormEps:        rmsNormEps,
 		fromEntity:        true,
+		entityFile:        ef,
+		entityBundle:      et,
 	}
 	useGPU := setupTransformerForInference(tr, infCfg)
+	et = nil
+	poly.ReleaseInferenceTransientMemory()
 
 	applyGlitchTanhiIfRequested(reader, tr.Network)
 

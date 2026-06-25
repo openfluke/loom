@@ -584,6 +584,15 @@ func deserializeEntityNetwork(hdr *EntityHeader, readBlob entityBlobReader, opts
 			return nil, err
 		}
 	}
+	if err := applyEntityNetworkLayerBlobs(net, hdr, readBlob, opts); err != nil {
+		return nil, err
+	}
+	return net, nil
+}
+
+// applyEntityNetworkLayerBlobs decodes layers.* weight blobs into net.
+// Drops each raw blob after apply and GCs after each transformer sub-block (layer index % 4 == 3).
+func applyEntityNetworkLayerBlobs(net *VolumetricNetwork, hdr *EntityHeader, readBlob entityBlobReader, opts *EntityLoadOptions) error {
 	for _, blob := range hdr.Blobs {
 		if !strings.HasPrefix(blob.Path, "layers.") {
 			continue
@@ -596,13 +605,17 @@ func deserializeEntityNetwork(hdr *EntityHeader, readBlob entityBlobReader, opts
 		}
 		raw, err := readBlob(blob)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := applyEntityBlobToNetwork(net, blob, raw); err != nil {
-			return nil, err
+			return err
+		}
+		raw = nil
+		if idx := entityBlobTopLayerIndex(blob.Path); idx >= 0 && idx%4 == 3 {
+			ReleaseInferenceTransientMemory()
 		}
 	}
-	return net, nil
+	return nil
 }
 
 // DeserializeEntity reconstructs a VolumetricNetwork from an .entity byte slice.
@@ -872,13 +885,21 @@ func layerAtEntityPath(net *VolumetricNetwork, path string) (*VolumetricLayer, e
 	return l, nil
 }
 
-func entityBlobLayerAllowed(path string, indices []int) bool {
+func entityBlobTopLayerIndex(path string) int {
 	parts := strings.Split(path, ".")
 	if len(parts) < 2 || parts[0] != "layers" {
-		return false
+		return -1
 	}
 	idx, err := strconv.Atoi(parts[1])
 	if err != nil {
+		return -1
+	}
+	return idx
+}
+
+func entityBlobLayerAllowed(path string, indices []int) bool {
+	idx := entityBlobTopLayerIndex(path)
+	if idx < 0 {
 		return false
 	}
 	for _, want := range indices {
@@ -983,18 +1004,21 @@ func loadEntityTransformerGlobals(hdr *EntityHeader, readBlob entityBlobReader, 
 			return nil, nil, nil, readErr
 		}
 		decoded, decErr := DecodeWeightsRaw(raw)
+		raw = nil
 		if decErr != nil {
 			return nil, nil, nil, fmt.Errorf("entity blob %q: %w", blob.Path, decErr)
 		}
 		switch blob.Path {
 		case "transformer.embeddings":
 			embeddings = decoded
+			ReleaseInferenceTransientMemory()
 		case "transformer.lm_head":
 			lmHead = decoded
 		case "transformer.final_norm":
 			finalNorm = decoded
 		}
 	}
+	ReleaseInferenceTransientMemory()
 	if len(embeddings) == 0 {
 		return nil, nil, nil, fmt.Errorf("entity transformer: missing embeddings blob")
 	}
