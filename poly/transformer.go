@@ -52,6 +52,9 @@ type Transformer[T Numeric] struct {
 	lmHeadPackedTernary *BitNetTernaryMatrix
 	lmHeadPackedLen     int
 
+	// lmHeadTied: LM head shares embedding table (entity LMHeadTied or slice alias).
+	lmHeadTied bool
+
 	// layerTrace is non-nil during Generate when GenOptions.LayerTrace is set.
 	layerTrace *layerTraceState
 }
@@ -211,7 +214,7 @@ func (t *Transformer[T]) SyncLMHeadToGPU() error {
 	if t.Network.GPULMHead != nil {
 		return nil
 	}
-	if t.lmHeadTiedToEmbeddings() {
+	if t.lmHeadTiedToEmbeddings() || (t.lmHeadTied && t.Network.GPUEmbeddings != nil) {
 		if t.Network.GPUEmbeddings == nil {
 			return fmt.Errorf("LM head tied to embeddings but GPUEmbeddings is nil")
 		}
@@ -263,10 +266,10 @@ func (t *Transformer[T]) SyncGlobalWeightsToGPUSequential() error {
 	if err := t.SyncEmbeddingsToGPU(); err != nil {
 		return fmt.Errorf("embeddings: %w", err)
 	}
-	t.ReleaseEmbeddingsHost()
 	if err := t.SyncLMHeadToGPU(); err != nil {
 		return fmt.Errorf("lm head: %w", err)
 	}
+	t.ReleaseEmbeddingsHost()
 	t.ReleaseLMHeadHost()
 	if err := t.SyncFinalNormToGPU(); err != nil {
 		return fmt.Errorf("final norm: %w", err)

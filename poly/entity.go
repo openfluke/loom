@@ -266,7 +266,12 @@ func BuildTransformerFromEntity[T Numeric](et *EntityTransformer, template Templ
 	if !et.HasFinalNorm {
 		finalNorm = nil
 	}
-	return NewTransformer[T](et.Network, et.Embeddings, et.LMHead, finalNorm, template)
+	tr := NewTransformer[T](et.Network, et.Embeddings, et.LMHead, finalNorm, template)
+	tr.lmHeadTied = et.LMHeadTied
+	if !tr.lmHeadTied {
+		tr.lmHeadTied = entityLMHeadTied(et.Embeddings, et.LMHead)
+	}
+	return tr
 }
 
 // EntityGPUWeightDType picks GPU upload quant for a loaded .entity checkpoint.
