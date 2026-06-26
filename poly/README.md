@@ -5,18 +5,20 @@ M-POLY-VTD is a next-generation neural inference engine designed for high-perfor
 
 ### The Loom stack
 
-**Loom runs on Go for correctness, WebGPU for GPU throughput, and is extending to NPUs and networked execution.** One volumetric dispatcher; pick the backend per device and workload.
+**Loom’s portable core runs on Go and WebGPU**, with **vendor silicon** (Intel NPU today; Qualcomm NPU, Google TPU next) plugged in through **`poly/accel`** + external C ABI plugins in [chaosglue `npu/`](https://github.com/openfluke/chaosglue/tree/main/npu). **Networked execution** (`donate_compute_*.go`) is the distributed complement. One volumetric dispatcher; pick the backend per device and workload.
 
 | Backend | Role | Status |
 | :--- | :--- | :--- |
 | **Go** | Portable CPU: SC/MC tiled loops, all layers, 21 dtypes — reference + training fallback | ✅ baseline |
 | **WebGPU** | GPU forward / backward / training (WGSL from Go) | ✅ production — **[openfluke/webgpu](https://github.com/openfluke/webgpu) v1.0.4** (wgpu-native v29) |
-| **NPU** | On-device AI accelerators (Intel NPU, Qualcomm Hexagon/QNN) | 🚧 planned — compile from ENTITY / `WeightStore` |
+| **`poly/accel`** | Vendor NPU/TPU via `libloom_accel_*.so` (`dlopen`, CGO) | 🧪 **v0.81 experimental** — **Intel CPU+NPU** on Linux; **Qualcomm NPU**, **Google TPU** planned |
 | **Network** | Remote inference & compute offload (`donate_compute_*.go`) | 🚧 protocol shipped · live inference wiring next |
 
-**Performance work is GPU-first.** Decoder inference and training speedups come from WebGPU fusion (`BeginFrame`/`FlushFrame`), completing **GPU backward** for SwiGLU/MHA/Embedding, then **NPU lowering** and **networked step execution**. CPU Go paths remain the bedrock parity surface (Lucy **[7]**).
+**Performance work is GPU-first** for decoder stacks, with **NPU offload** for medium/large MAC-heavy layers where compile tax amortizes. CPU Go paths remain the bedrock parity surface (Lucy **[7]**).
 
-### Where we are now — **v0.80.0 “Native Ship”** (was **v0.79.0 “Bedrock Validation”**)
+**Vendor accel** = init-once compile + steady infer through `DispatchLayer`. See **[`docs/accelerators.md`](../docs/accelerators.md)** and Lucy menu **[9]** (`nine_layer`).
+
+### Where we are now — **v0.81.0 “Accelerator Bridge”** (was **v0.80.0 “Native Ship”**)
 
 **Device-aware** = **Go** on CPU, **WebGPU** when `UseGPU` is on, with **NPU** and **distributed mesh** backends on the roadmap. Production GPU uses **openfluke/webgpu v1.0.4** (wgpu-native **v29**).
 
@@ -90,7 +92,7 @@ A comprehensive suite is provided to measure the speed, memory, and bit-level fi
 
 ### Running checks in this repo
 
-Layer matrices, GPU parity tables, and training transcripts are exercised from **`lucy/`** (`lucy_testing_output/log.txt`). The **seven-layer CPU bedrock suite** writes `lucy_testing_output/seven_layer.txt` (menu **[7]**). See [`docs/testing_and_validation.md`](../docs/testing_and_validation.md) and [`docs/bedrock_validation.md`](../docs/bedrock_validation.md).
+Layer matrices, GPU parity tables, and training transcripts are exercised from **`lucy/`** (`lucy_testing_output/log.txt`). The **seven-layer CPU bedrock suite** writes `lucy_testing_output/seven_layer.txt` (menu **[7]**). The **Intel NPU bridge suite** writes `lucy_testing_output/nine_layer.txt` (menu **[9]**). See [`docs/testing_and_validation.md`](../docs/testing_and_validation.md), [`docs/bedrock_validation.md`](../docs/bedrock_validation.md), and [`docs/accelerators.md`](../docs/accelerators.md).
 
 ```bash
 go test ./poly/...
@@ -657,7 +659,16 @@ Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on 
 
 ---
 
-## v0.80.0 — *Native Ship* (current)
+## v0.81.0 — *Accelerator Bridge* (current)
+
+- **`poly/accel/`** — runtime `dlopen` of vendor plugins; stable C ABI (`loom_accel.h` in chaosglue).
+- **Intel OpenVINO** — `libloom_accel_intel.so`: CPU + NPU forward via `DispatchLayer`; `SyncToAccel` (compile once, infer many); weight upload for MatMul / Conv / MHA-MatMul.
+- **Lucy [9]** — `nine_layer` suite: timing + seven-style drift spectrum; menu **[4]/[5]** DispatchLayer matrix (90 cells on full run).
+- **Experimental** — Linux + `CGO_ENABLED=1` + OpenVINO/NPU driver on `LD_LIBRARY_PATH`. Forward only; training/backward still Loom CPU.
+- **Planned vendors** — Qualcomm NPU (`libloom_accel_qcom.so`), Google TPU (`libloom_accel_google.so`) — same ABI, separate chaosglue trees.
+- **Docs** — [`docs/v081_release.md`](../docs/v081_release.md), [`docs/accelerators.md`](../docs/accelerators.md). Evidence: [chaosglue integration assessment](https://github.com/openfluke/chaosglue/blob/main/npu/docs/2025-06-26-loom-dispatch-integration-assessment.md).
+
+## v0.80.0 — *Native Ship* (previous)
 
 - **ENTITY** — native `.entity` checkpoints (`poly/entity.go`); topology + native-packed weights; ~25% smaller than JSON; idempotent round-trip tests.
 - **Lucy [8] ENTITY Talk** — HF → `ImportHFToEntity` → optional Q4 bake → GPU chat without runtime safetensors.
@@ -700,13 +711,16 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 
 ### **Completion Ratio: 76.7%**
 
-## **Version 0.80.0 — CURRENT**
-*(**v0.80.0 "Native Ship"** — ENTITY native checkpoints, **openfluke/webgpu v1.0.4**, multi-platform GPU proof, **Planet Bridging POC** complete in-tree. **Next:** **v0.81** GPU backward (SwiGLU/MHA/Embedding) · **v0.82** Intel/Qualcomm NPU · **v0.83+** Donate Compute live + HA step mesh.)*
+## **Version 0.81.0 — CURRENT**
+*(**v0.81.0 "Accelerator Bridge"** — from **0.80.0**. Experimental **Intel CPU+NPU** via `poly/accel`; Lucy **[9]**; Qualcomm NPU + Google TPU on roadmap. Checklist **112 / 146** (76.7%). **Next:** AccelPlanner, JSON `exec`, GPU backward (SwiGLU/MHA), parity hardening.)*
+
+## **Version 0.80.0** (previous)
+*(**v0.80.0 "Native Ship"** — ENTITY, openfluke/webgpu v1.0.4, multi-platform GPU.)*
 
 ## **v0.79.0 — Bedrock Validation** (previous)
 *(Seven-layer CPU regression, MHA/KV, C-ABI 100%.)*
 
-## **v0.80–0.81 Roadmap**
-*(Complete GPU backward for decoder stacks. NPU lowering from ENTITY. Networked inference via Donate Compute. HA step mesh — later.)*
+## **v0.81–v0.82 Roadmap**
+*(**AccelPlanner** + JSON `exec`; Intel parity for MatMul/norms; **Qualcomm** + **Google TPU** CABI stubs; complete **GPU backward** for SwiGLU/MHA/Embedding; **Donate Compute** live inference; HA step mesh — later.)*
 
 

@@ -32,6 +32,11 @@ func main() {
 	fmt.Println("Initializing Lucy Bloom Rivers …")
 	printPlatformInfo()
 	reader := bufio.NewReader(os.Stdin)
+	if os.Getenv("LOOM_NINE_LAYER") == "1" {
+		_ = os.Unsetenv("LOOM_NINE_LAYER")
+		examples.RunNineLayerMenu(reader)
+		return
+	}
 	mode := readInput(reader, "\n[1] Poly Talk (HuggingFace cache)\n"+
 		"[2] Tests — dense mid-stream adaptation benchmark\n"+
 		"[3] Layer testing — CPU/GPU suites (optional save to "+lucytesting.DefaultOutputDir+")\n"+
@@ -40,6 +45,7 @@ func main() {
 		"[6] Five-layer examples — per-layer .go tutorials (→ "+lucytesting.DefaultOutputDir+"/five_layer.txt)\n"+
 		"[7] Seven-layer CPU suite — JSON · SC/MC/ASM · train · save/reload (→ "+lucytesting.DefaultOutputDir+"/seven_layer.txt)\n"+
 		"[8] ENTITY Talk — HF cache → .entity convert → chat (Qwen/SmolLM2/Llama-style)\n"+
+		"[9] Intel NPU bridge — Loom ↔ libloom_accel_intel.so · all layers/dtypes (→ "+lucytesting.DefaultOutputDir+"/nine_layer.txt)\n"+
 		"Choice [1]: ", "1")
 	switch strings.TrimSpace(mode) {
 	case "2":
@@ -57,6 +63,8 @@ func main() {
 		examples.RunSevenLayerMenu(reader)
 	case "8":
 		runEntityTalkMode(reader)
+	case "9":
+		examples.RunNineLayerMenu(reader)
 	default:
 		runHuggingFaceMode(reader)
 	}

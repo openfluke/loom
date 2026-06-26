@@ -58,16 +58,14 @@ Loom provides bit-exact reproducibility across:
 ## 📊 Versioning & Roadmap
 Loom uses a mathematical versioning system derived from a strictly verified checklist in [`poly/README.md`](./poly/README.md) (row counts and completion ratio are maintained there).
 
-### **Current Version: 0.80.0 — CURRENT** (from **0.79.0**)
-- **Completion Ratio**: 80.3% (**114 / 142** checklist rows)
-- **Codename**: **0.80.0 "Native Ship"** — **ENTITY** native checkpoints, **WebGPU v29** (`github.com/openfluke/webgpu@v1.0.4`), cross-platform GPU validation, **Planet Bridging POC** complete in-tree (published separately after Loom).
-- **Status**: Shippable native `.entity` brains; Lucy **[8] ENTITY Talk**; production GPU on Metal, Windows ARM64 Vulkan, Linux Intel + NVIDIA. See [`docs/v080_release.md`](./docs/v080_release.md).
-    - > [!NOTE]
-    - > **Planet Bridging** ([`planetbridging/`](./planetbridging/)) reached **v0.5.0** POC (all standard layer types: PyTorch/TF/JAX → live stream → Loom). It **releases after Loom 0.80** — hub export (Loom → ONNX/GGUF) is Planet Bridging **v1.0**.
+### **Current Version: 0.81.0 — CURRENT** (from **0.80.0**)
+- **Completion Ratio**: 76.7% (**112 / 146** checklist rows on `adjustments`)
+- **Codename**: **0.81.0 "Accelerator Bridge"** — experimental **Intel CPU+NPU** via `poly/accel`; Lucy **[9]**; **Qualcomm NPU** and **Google TPU** on roadmap.
+- **Status**: Vendor plugin model shipped on Linux (`CGO_ENABLED=1`); GPU + ENTITY from 0.80 remain production paths. See [`docs/v081_release.md`](./docs/v081_release.md) and [`docs/accelerators.md`](./docs/accelerators.md).
 - **Milestones**:
-    - **v0.79.0 "Bedrock Validation"** ✅ — Seven-layer CPU suite, MHA/KV, C-ABI 461/461. See [`docs/bedrock_validation.md`](./docs/bedrock_validation.md).
-    - **v0.80.0 "Native Ship"** ✅ — ENTITY format, openfluke webgpu v1.0.4, multi-GPU Lucy validation. See [`docs/v080_release.md`](./docs/v080_release.md).
-- **Next Target — v0.81**: ASM rollout (Dense backward, SwiGLU, MHA); GPU fusion; publish **Planet Bridging v0.5.0** once Loom tag is public.
+    - **v0.79.0 "Bedrock Validation"** ✅ — See [`docs/bedrock_validation.md`](./docs/bedrock_validation.md).
+    - **v0.80.0 "Native Ship"** ✅ — See [`docs/v080_release.md`](./docs/v080_release.md).
+- **Next Target — v0.82**: AccelPlanner + JSON `exec`; GPU backward (SwiGLU/MHA); Qualcomm/Google CABI stubs; Donate Compute live inference.
 
 For a detailed breakdown of the roadmap and version calculation, see [poly/README.md](./poly/README.md#📊-true-version-calculation).
 

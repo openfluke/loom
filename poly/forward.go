@@ -7,6 +7,11 @@ import (
 // DispatchLayer acts as the universal routing hub for all layer types.
 // This is the "Jump Table" that handles numerical metamorphosis across 50+ layer types.
 func DispatchLayer[T Numeric](layer *VolumetricLayer, input, skip *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if skip == nil {
+		if pre, post, ok := DispatchAccelForward(layer, input); ok {
+			return pre, post
+		}
+	}
 	switch layer.Type {
 	case LayerResidual:
 		return ResidualForwardPolymorphic(layer, input, skip)

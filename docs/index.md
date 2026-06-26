@@ -1,4 +1,4 @@
-# Loom / poly Documentation Index (v0.80.0)
+# Loom / poly Documentation Index (v0.81.0)
 
 This directory contains comprehensive documentation for the `poly/` package — the **M-POLY-VTD** (Multi-numerical POLYmorphic Volumetric Tiled-tensor Dispatcher) engine that powers the Loom neural framework. For the live checklist and completion ratio, see [`poly/README.md`](../poly/README.md#-true-version-calculation).
 
@@ -19,6 +19,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [training.md](training.md) | CPU and GPU training pipelines, loss functions, gradient flow, tween / neural target propagation (chain-rule and gap-based modes), link budgets |
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
 | [memory_history.md](memory_history.md) | **Memory history**: GPU load chart/diagnosis; block-wise HF→`.entity` import **and** block-wise encode (`ImportHFSaveEntityTransformerBlockwise`); GPU upload + sequential global release |
+| [accelerators.md](accelerators.md) | **Vendor NPU/TPU** — `poly/accel`, Intel OpenVINO CPU+NPU (experimental v0.81), Qualcomm + Google TPU planned, `SyncToAccel`, Lucy [9] |
 | [windows_arm64.md](windows_arm64.md) | **Windows on ARM**: index → [`README_WINDOWS_ARM64.md`](../welvet/cabi/internal/build/README_WINDOWS_ARM64.md) (recovery script + `build_unix.sh windows arm64`) |
 | [step.md](step.md) | The step mesh engine: `StepState`, one-clock-cycle forward, spatial feedback via remote links, BPTT, online learning |
 | [dna.md](dna.md) | Topological network fingerprinting: `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection, recursive extraction for all 19 layer types |
@@ -33,6 +34,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [testing_and_validation.md](testing_and_validation.md) | **Lucy logs**, parity table legend, how to read `lucy_testing_output/log.txt`, Dense **Go÷ASM** benchmarks, and a compact map of `poly/` files the suites hit |
 | [bedrock_validation.md](bedrock_validation.md) | **v0.79.0** — seven-layer CPU suite, MHA/KV/persistence fixes, C-ABI 100%, what shipped vs roadmap |
 | [v080_release.md](v080_release.md) | **v0.80.0** — ENTITY native checkpoints, WebGPU v1.0.4, cross-platform GPU, Planet Bridging POC |
+| [v081_release.md](v081_release.md) | **v0.81.0** — Intel NPU bridge (`poly/accel`), Lucy [9], vendor plugin model, Qualcomm/Google TPU roadmap |
 | [`../poly/asm/README.md`](../poly/asm/README.md) | **Plan 9 CPU kernels**: `UseAsmForward`, dense forward routing, dot/matmul layout, Lucy speedup interpretation |
 | [asm-and-volumetric-exploration.md](asm-and-volumetric-exploration.md) | **Archive (Jun 2026)**: BitNet W8A8 ASM, I2_S scaffolding, volumetric executor v1, Lucy `[7]` findings — exploratory work removed from tree |
 
@@ -52,6 +54,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Want to train a model?** Read [training.md](training.md) and [dispatch.md](dispatch.md).
 
 **Using the GPU?** Read [gpu.md](gpu.md).
+
+**Offloading to Intel NPU (experimental)?** Read [accelerators.md](accelerators.md) — build chaosglue CABI, `LOOM_ACCEL_INTEL_SO`, `SyncToAccel`, Lucy **[9]**.
 
 **Debugging GPU load RAM spikes (Lucy ENTITY/Poly Talk)?** Read [memory_history.md](memory_history.md).
 
@@ -81,7 +85,9 @@ This directory contains comprehensive documentation for the `poly/` package — 
 poly/
 ├── poly.go              Core types: LayerType, DType, Tensor[T], VolumetricNetwork
 ├── weights.go           WeightStore, Morph, Unpack, ApplyGradients
-├── forward.go           DispatchLayer, ForwardPolymorphic
+├── forward.go           DispatchLayer, ForwardPolymorphic (+ vendor accel hook)
+├── accel/               Vendor plugin loader (Intel NPU/CPU; dlopen C ABI)
+├── accel_intel.go       SyncToAccel, DispatchAccelForward
 ├── backward.go          DispatchLayerBackward, BackwardPolymorphic
 ├── training.go          Train, TrainingConfig, CalculateLoss, ComputeLossGradient
 ├── dense.go             DenseForwardPolymorphic, tiled fast-paths

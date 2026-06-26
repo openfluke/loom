@@ -1,21 +1,30 @@
 fabric
 
-# Generated documentation artifacts
+# Generated documentation
 *.docx
 
 # Downloaded models (HuggingFace, etc.)
 models/
 wasm/models
 
-# Compiled binaries (C ABI)
+# Lucy menu test logs ([7] seven_layer, [9] nine_layer, etc.)
+lucy/lucy_testing_output/
+lucy/dist/
+lucy/lucy_entities/
+
+# Local Go binary from `go run` / `go build` in lucy/
+lucy/lucy
+
+# Legacy C ABI compiled artifacts (welvet/cabi has its own .gitignore)
 cabi/compiled/
 cabi/*.so
 cabi/*.dylib
 cabi/*.dll
 cabi/*.h
 cabi/libloom.*
+cabi/*.zip
 
-# Wrapper artifacts (covered by sub-repo gitignores, but extra safety here)
+# Legacy wrapper build trees
 wrapper/python/dist/
 wrapper/python/build/
 wrapper/python/**/*.egg-info/
@@ -27,17 +36,14 @@ wrapper/java/target/
 wrapper/typescript/node_modules/
 wrapper/typescript/dist/
 
-# Zip archives
-cabi/*.zip
-
 # macOS
 .DS_Store
 **/.DS_Store
 **/._*
+
+# Misc local / scratch
 docs/readmes
-
 *.wasm
-
 all_layers_all_modes_results.json
 all_layers_all_modes_all_numerical
 internal_testing/
