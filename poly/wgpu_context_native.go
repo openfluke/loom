@@ -4,7 +4,9 @@ package poly
 
 import (
 	"fmt"
+	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,38 @@ var (
 	mu             sync.Mutex // Protects global initialization
 )
 
+// resolveWGPUInstanceBackends picks wgpu-native backends for CreateInstance.
+// Override with LOOM_WGPU_BACKEND=dx12|vulkan|metal|all (all = wgpu default probe).
+func resolveWGPUInstanceBackends() (*wgpu.InstanceDescriptor, string) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOOM_WGPU_BACKEND"))) {
+	case "all":
+		return nil, "all"
+	case "dx12", "d3d12":
+		return &wgpu.InstanceDescriptor{Backends: wgpu.InstanceBackendDX12}, "dx12"
+	case "vulkan", "vk":
+		return &wgpu.InstanceDescriptor{Backends: wgpu.InstanceBackendVulkan}, "vulkan"
+	case "metal":
+		return &wgpu.InstanceDescriptor{Backends: wgpu.InstanceBackendMetal}, "metal"
+	case "gl", "opengl":
+		return &wgpu.InstanceDescriptor{Backends: wgpu.InstanceBackendGL}, "gl"
+	}
+
+	switch runtime.GOOS {
+	case "android":
+		return &wgpu.InstanceDescriptor{Backends: wgpu.InstanceBackendVulkan}, "vulkan"
+	case "darwin", "ios":
+		return &wgpu.InstanceDescriptor{Backends: wgpu.InstanceBackendMetal}, "metal"
+	case "windows":
+		if runtime.GOARCH == "arm64" {
+			return &wgpu.InstanceDescriptor{Backends: wgpu.InstanceBackendVulkan}, "vulkan"
+		}
+		// amd64: DX12 avoids Vulkan loader hangs on many NVIDIA/Intel Windows setups.
+		return &wgpu.InstanceDescriptor{Backends: wgpu.InstanceBackendDX12}, "dx12"
+	default: // linux and other unix-like native targets
+		return &wgpu.InstanceDescriptor{Backends: wgpu.InstanceBackendVulkan}, "vulkan"
+	}
+}
+
 // InitWGPU initializes the WebGPU context for the network (native wgpu-native).
 func (n *VolumetricNetwork) InitWGPU() error {
 	if n.GPUContext != nil {
@@ -30,24 +64,11 @@ func (n *VolumetricNetwork) InitWGPU() error {
 	// 1. One-time Global Initialization
 	if sharedDevice == nil {
 		if sharedInstance == nil {
-			// Force Vulkan at instance level — newer wgpu-native ignores
-			// RequestAdapterOptions.BackendType; the correct API is InstanceExtras.backends.
-			var instanceDesc *wgpu.InstanceDescriptor
-			if runtime.GOOS == "android" || runtime.GOOS == "windows" {
-				Alog("Forcing Vulkan via InstanceDescriptor.Backends...")
-				instanceDesc = &wgpu.InstanceDescriptor{
-					Backends: wgpu.InstanceBackendVulkan,
-				}
-			}
+			instanceDesc, backendLabel := resolveWGPUInstanceBackends()
+			fmt.Printf("[wgpu] CreateInstance (backend=%s)...\n", backendLabel)
+			t0 := time.Now()
 			sharedInstance = wgpu.CreateInstance(instanceDesc)
-			if sharedInstance == nil {
-				// Fallback: no backend constraint
-				Alog("⚠️  Vulkan instance failed, retrying with all backends...")
-				sharedInstance = wgpu.CreateInstance(nil)
-			}
-			if sharedInstance == nil {
-				return fmt.Errorf("failed to create WGPU instance")
-			}
+			fmt.Printf("[wgpu] CreateInstance ok (%v)\n", time.Since(t0))
 		}
 
 		if sharedAdapter == nil {
@@ -55,7 +76,10 @@ func (n *VolumetricNetwork) InitWGPU() error {
 				PowerPreference: wgpu.PowerPreferenceHighPerformance,
 			}
 
+			fmt.Println("[wgpu] RequestAdapter (HighPerformance)...")
+			t0 := time.Now()
 			adapter, err := sharedInstance.RequestAdapter(opts)
+			fmt.Printf("[wgpu] RequestAdapter done (%v)\n", time.Since(t0))
 			if err != nil {
 				return fmt.Errorf("failed to request adapter: %v", err)
 			}
