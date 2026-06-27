@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $llvmRoot = 'C:\llvm-mingw'
 $llvmBin = Join-Path $llvmRoot 'bin'
 if (-not (Test-Path $llvmBin)) {
-    throw "llvm-mingw not found at $llvmBin — run loom\scripts\windows_amd64_install_webgpu.ps1 first."
+    throw "llvm-mingw not found at $llvmBin - run loom\scripts\windows_amd64_install_webgpu.ps1 first."
 }
 
 $env:CGO_ENABLED = '1'
