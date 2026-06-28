@@ -218,9 +218,9 @@ func RunMultiHopDemo() {
 	_ = poly.ConfigureNetworkForMode(netPre, poly.TrainingModeCPUMC)
 	_ = poly.ConfigureNetworkForMode(netPost, poly.TrainingModeCPUMC)
 
-	var weights []float32
-	if len(netPre.Layers) > 0 && netPre.Layers[0].WeightStore != nil {
-		weights = append([]float32(nil), netPre.Layers[0].WeightStore.Master...)
+	var weights []byte
+	if len(netPre.Layers) > 0 {
+		weights = poly.LayerWeightBytesForAccel(&netPre.Layers[0])
 	}
 	desc := accel.LayerDesc{LayerName: "MatMul", DType: "FP32", SizeLabel: "medium"}
 	compiled, err := plug.CompileLayer(desc, weights)

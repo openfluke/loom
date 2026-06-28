@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define LOOM_ACCEL_API_VERSION 1
+#define LOOM_ACCEL_API_VERSION 2
 
 typedef struct loom_accel_plugin loom_accel_plugin;
 typedef struct loom_accel_compiled_layer loom_accel_compiled_layer;
@@ -34,15 +34,17 @@ int loom_accel_npu_available(void);
 loom_accel_plugin* loom_accel_plugin_open(const char* device);
 void loom_accel_plugin_close(loom_accel_plugin* plugin);
 
-/* Expected weight blob size in bytes (FP32 elements). 0 if layer uses baked defaults. */
+/* Expected weight blob size in bytes (native layout per desc->dtype). 0 if baked defaults. */
 size_t loom_accel_weight_bytes(const loom_accel_layer_desc* desc);
 
-/* Compile once at network init. weights may be NULL (vendor defaults). */
+/* Compile once at network init. weight_bytes may be NULL (vendor defaults).
+ * FP32/INT8: little-endian float32 per element (INT8 uses dequantized values).
+ * FP16: little-endian IEEE half per element. */
 int loom_accel_compile_layer(
     loom_accel_plugin* plugin,
     const loom_accel_layer_desc* desc,
-    const float* weights,
-    size_t weight_count,
+    const void* weight_bytes,
+    size_t weight_byte_len,
     loom_accel_compiled_layer** out,
     double* compile_ms,
     char* err,

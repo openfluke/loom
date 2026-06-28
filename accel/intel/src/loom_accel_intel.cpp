@@ -119,25 +119,29 @@ ov::AnyMap compile_cfg_for(const DTypeCase& dt, const std::string& device) {
     return cfg;
 }
 
-std::shared_ptr<ov::op::v0::Constant> constant_from_floats(
+std::shared_ptr<ov::op::v0::Constant> constant_from_bytes(
     ov::element::Type dtype,
     const ov::Shape& shape,
-    const float* src,
-    size_t count) {
+    const void* src,
+    size_t byte_len) {
     const size_t need = ov::shape_size(shape);
-    if (src == nullptr || count < need) {
+    if (src == nullptr || byte_len == 0) {
         return nullptr;
     }
     if (dtype == ov::element::f32) {
-        std::vector<float> data(src, src + need);
+        if (byte_len < need * sizeof(float)) {
+            return nullptr;
+        }
+        std::vector<float> data(need);
+        std::memcpy(data.data(), src, need * sizeof(float));
         return ov::op::v0::Constant::create(dtype, shape, data);
     }
     if (dtype == ov::element::f16) {
-        std::vector<ov::float16> data;
-        data.reserve(need);
-        for (size_t i = 0; i < need; ++i) {
-            data.push_back(ov::float16(src[i]));
+        if (byte_len < need * sizeof(ov::float16)) {
+            return nullptr;
         }
+        std::vector<ov::float16> data(need);
+        std::memcpy(data.data(), src, need * sizeof(ov::float16));
         return ov::op::v0::Constant::create(dtype, shape, data);
     }
     return nullptr;
@@ -148,17 +152,17 @@ std::shared_ptr<ov::Model> rebuild_with_weights(
     const char* layer_name,
     ov::element::Type dtype,
     const layer_models::ShapeSpec& shapes,
-    const float* weights,
-    size_t weight_count) {
+    const void* weight_bytes,
+    size_t weight_byte_len) {
     using namespace ov::op;
 
-    if (weights == nullptr || weight_count == 0) {
+    if (weight_bytes == nullptr || weight_byte_len == 0) {
         return model;
     }
 
     if (std::string(layer_name) == "MatMul" || std::string(layer_name) == "MHA-MatMul") {
         const ov::Shape wshape{size_t(shapes.dim), size_t(shapes.dim)};
-        auto w = constant_from_floats(dtype, wshape, weights, weight_count);
+        auto w = constant_from_bytes(dtype, wshape, weight_bytes, weight_byte_len);
         if (!w) {
             return model;
         }
@@ -172,7 +176,7 @@ std::shared_ptr<ov::Model> rebuild_with_weights(
             size_t(shapes.c1_filters),
             size_t(shapes.c1_in_c),
             size_t(shapes.c1_kernel)};
-        auto w = constant_from_floats(dtype, wshape, weights, weight_count);
+        auto w = constant_from_bytes(dtype, wshape, weight_bytes, weight_byte_len);
         if (!w) {
             return model;
         }
@@ -199,7 +203,7 @@ std::shared_ptr<ov::Model> rebuild_with_weights(
             size_t(shapes.c2_in_c),
             size_t(shapes.c2_kernel),
             size_t(shapes.c2_kernel)};
-        auto w = constant_from_floats(dtype, wshape, weights, weight_count);
+        auto w = constant_from_bytes(dtype, wshape, weight_bytes, weight_byte_len);
         if (!w) {
             return model;
         }
@@ -239,6 +243,14 @@ size_t weight_float_count(const char* layer_name, const layer_models::ShapeSpec&
                size_t(shapes.c2_kernel);
     }
     return 0;
+}
+
+size_t weight_byte_count(const char* layer_name, const layer_models::ShapeSpec& shapes, const char* dtype_label) {
+    const size_t count = weight_float_count(layer_name, shapes);
+    if (dtype_label != nullptr && std::string(dtype_label) == "FP16") {
+        return count * sizeof(uint16_t);
+    }
+    return count * sizeof(float);
 }
 
 struct CompiledLayer {
@@ -319,14 +331,14 @@ size_t loom_accel_weight_bytes(const loom_accel_layer_desc* desc) {
     if (shapes == nullptr) {
         return 0;
     }
-    return weight_float_count(desc->layer_name, *shapes) * sizeof(float);
+    return weight_byte_count(desc->layer_name, *shapes, desc->dtype);
 }
 
 int loom_accel_compile_layer(
     loom_accel_plugin* plugin,
     const loom_accel_layer_desc* desc,
-    const float* weights,
-    size_t weight_count,
+    const void* weight_bytes,
+    size_t weight_byte_len,
     loom_accel_compiled_layer** out,
     double* compile_ms,
     char* err,
@@ -351,7 +363,7 @@ int loom_accel_compile_layer(
 
     try {
         auto model = layer->build(dtype->elem, *shapes);
-        model = rebuild_with_weights(model, desc->layer_name, dtype->elem, *shapes, weights, weight_count);
+        model = rebuild_with_weights(model, desc->layer_name, dtype->elem, *shapes, weight_bytes, weight_byte_len);
 
         const auto cfg = compile_cfg_for(*dtype, plugin->impl.device);
         const auto t0 = Clock::now();

@@ -82,7 +82,7 @@ func RunBridgeSuite(sizes []string, onlyLayer ...string) {
 			for _, dtypeLabel := range m.DTypes {
 				base := bridgeRow{Size: sizeName, Layer: layer.Name, DType: dtypeLabel}
 
-				var weights []float32
+				var weights []byte
 				var inBuf []byte
 				if layer.Loom != nil {
 					var note string
@@ -112,7 +112,7 @@ func RunBridgeSuite(sizes []string, onlyLayer ...string) {
 	printBridgeTable(rows, m)
 }
 
-func fillCABI(row *bridgeRow, plug accel.Plugin, desc accel.LayerDesc, weights []float32, inBuf []byte, dtypeLabel string, warmup, iters int) {
+func fillCABI(row *bridgeRow, plug accel.Plugin, desc accel.LayerDesc, weights []byte, inBuf []byte, dtypeLabel string, warmup, iters int) {
 	compiled, err := plug.CompileLayer(desc, weights)
 	if err != nil {
 		row.Note = err.Error()
@@ -159,7 +159,7 @@ func loomForwardAndWeights(
 	profile SizeProfile,
 	dtypeLabel string,
 	warmup, iters int,
-) (loomMs, handoverMs float64, weights []float32, inBuf []byte, note string) {
+) (loomMs, handoverMs float64, weights []byte, inBuf []byte, note string) {
 	if layer.Loom == nil {
 		return 0, 0, nil, nil, "no Loom layer type"
 	}
@@ -199,8 +199,8 @@ func loomForwardAndWeights(
 	}
 	loomMs = median(samples)
 
-	if len(net.Layers) > 0 && net.Layers[0].WeightStore != nil && len(net.Layers[0].WeightStore.Master) > 0 {
-		weights = append([]float32(nil), net.Layers[0].WeightStore.Master...)
+	if len(net.Layers) > 0 {
+		weights = poly.LayerWeightBytesForAccel(&net.Layers[0])
 	}
 
 	inAny := makeLayerInput(inKind, profile, dt)

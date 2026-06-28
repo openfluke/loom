@@ -18,7 +18,7 @@ typedef loom_accel_plugin* (*fn_plugin_open)(const char*);
 typedef void (*fn_plugin_close)(loom_accel_plugin*);
 typedef size_t (*fn_weight_bytes)(const loom_accel_layer_desc*);
 typedef int (*fn_compile_layer)(
-    loom_accel_plugin*, const loom_accel_layer_desc*, const float*, size_t,
+    loom_accel_plugin*, const loom_accel_layer_desc*, const void*, size_t,
     loom_accel_compiled_layer**, double*, char*, size_t);
 typedef void (*fn_release_layer)(loom_accel_compiled_layer*);
 typedef int (*fn_io_bytes)(loom_accel_compiled_layer*, size_t*, size_t*, char*, size_t);
@@ -105,8 +105,8 @@ static loom_accel_plugin* intel_plugin_open(loom_intel_api* api, const char* dev
 static void intel_plugin_close(loom_intel_api* api, loom_accel_plugin* p) { api->plugin_close(p); }
 static size_t intel_weight_bytes(loom_intel_api* api, const loom_accel_layer_desc* d) { return api->weight_bytes(d); }
 static int intel_compile_layer(loom_intel_api* api, loom_accel_plugin* p, const loom_accel_layer_desc* d,
-    const float* w, size_t wc, loom_accel_compiled_layer** out, double* cms, char* err, size_t el) {
-    return api->compile_layer(p, d, w, wc, out, cms, err, el);
+    const void* w, size_t wlen, loom_accel_compiled_layer** out, double* cms, char* err, size_t el) {
+    return api->compile_layer(p, d, w, wlen, out, cms, err, el);
 }
 static void intel_release_layer(loom_intel_api* api, loom_accel_compiled_layer* l) { api->release_layer(l); }
 static int intel_io_bytes(loom_intel_api* api, loom_accel_compiled_layer* l, size_t* inb, size_t* outb, char* err, size_t el) {
@@ -136,8 +136,6 @@ import "C"
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"unsafe"
 )
 
@@ -229,15 +227,15 @@ func (p *intelPlugin) WeightBytes(desc LayerDesc) (uintptr, error) {
 	return uintptr(n), nil
 }
 
-func (p *intelPlugin) CompileLayer(desc LayerDesc, weights []float32) (*CompileResult, error) {
+func (p *intelPlugin) CompileLayer(desc LayerDesc, weightBytes []byte) (*CompileResult, error) {
 	cdesc := cLayerDesc(desc)
 	defer freeLayerDesc(cdesc)
 
-	var wptr *C.float
-	var wcount C.size_t
-	if len(weights) > 0 {
-		wptr = (*C.float)(unsafe.Pointer(&weights[0]))
-		wcount = C.size_t(len(weights))
+	var wptr unsafe.Pointer
+	var wlen C.size_t
+	if len(weightBytes) > 0 {
+		wptr = unsafe.Pointer(&weightBytes[0])
+		wlen = C.size_t(len(weightBytes))
 	}
 
 	var out *C.loom_accel_compiled_layer
@@ -245,7 +243,7 @@ func (p *intelPlugin) CompileLayer(desc LayerDesc, weights []float32) (*CompileR
 	errBuf := make([]byte, 512)
 	rc := C.intel_compile_layer(
 		&p.api,
-		p.plugin, cdesc, wptr, wcount, &out, &compileMs,
+		p.plugin, cdesc, wptr, wlen, &out, &compileMs,
 		(*C.char)(unsafe.Pointer(&errBuf[0])), C.size_t(len(errBuf)),
 	)
 	if rc != 0 {

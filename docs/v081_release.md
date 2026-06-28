@@ -22,10 +22,10 @@ First public **vendor accelerator** path: Loom forwards individual layers throug
 
 | Item | Detail |
 |------|--------|
-| **`accel_intel.go`** | `DiscoverAccel`, `SyncToAccel`, `DispatchAccelForward`, weight → FP32 bytes |
+| **`accel_intel.go`** | `DiscoverAccel`, `SyncToAccel`, `DispatchAccelForward`, `LayerWeightBytesForAccel` (FP32/FP16/INT8) |
 | **`forward.go`** | `DispatchLayer` calls accel when `layer.ExecTarget.UseAccel()` |
 | **`VolumetricLayer`** | `ExecTarget`, `AccelBinding` fields |
-| **Init-once** | `SyncToAccel(sizeLabel)` compiles + uploads weights; steady infer reuses handle |
+| **Init-once** | `SyncToAccel(sizeLabel)` compiles + uploads dtype-aware weights; steady infer reuses handle |
 
 ### Lucy [9] — Intel NPU bridge suite
 

@@ -30,20 +30,32 @@ func intelDepsSearchDirs() []string {
 	var dirs []string
 	if root := loomRoot(); root != "" {
 		dirs = append(dirs, filepath.Join(root, "accel", "intel", "deps"))
+		// Chaosglue checkout: loom/ and npu/ are siblings under the repo root.
+		dirs = append(dirs, filepath.Join(root, "..", "npu", "intel", "example", "deps"))
 	}
 	if p := findUpward("accel", "intel", "deps"); p != "" {
+		dirs = append(dirs, p)
+	}
+	if p := findUpward("npu", "intel", "example", "deps"); p != "" {
 		dirs = append(dirs, p)
 	}
 	return dedupePaths(dirs)
 }
 
-// loomRoot is the Loom module root (directory containing go.mod for github.com/openfluke/loom).
+// loomRoot is the Loom module root (directory containing accel/intel for the poly module).
 func loomRoot() string {
 	if v := os.Getenv("LOOM_ROOT"); v != "" {
 		return v
 	}
+	if p := findUpward("accel", "intel", "build", intelPluginName); p != "" {
+		// .../loom/accel/intel/build/libloom_accel_intel.so → .../loom
+		return filepath.Clean(filepath.Join(filepath.Dir(p), "..", "..", ".."))
+	}
 	if p := findUpward("go.mod"); p != "" {
-		return filepath.Dir(p)
+		dir := filepath.Dir(p)
+		if fileExists(filepath.Join(dir, "accel", "intel", "build", intelPluginName)) {
+			return dir
+		}
 	}
 	return ""
 }

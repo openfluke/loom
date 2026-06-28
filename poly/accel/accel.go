@@ -34,7 +34,7 @@ type Plugin interface {
 	VendorID() string
 	Device() string
 	WeightBytes(desc LayerDesc) (uintptr, error)
-	CompileLayer(desc LayerDesc, weights []float32) (*CompileResult, error)
+	CompileLayer(desc LayerDesc, weightBytes []byte) (*CompileResult, error)
 	Close()
 }
 

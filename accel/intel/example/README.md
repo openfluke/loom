@@ -1,48 +1,67 @@
-# Monolithic MLP — CPU vs NPU demo
+# MatMul stack — Loom weights → Intel NPU demo
 
-Runs a **5-layer feed-forward network** through Loom with the same weights:
+Runs a **3-layer MatMul network** (Dense + LINEAR only) through Loom with **dtype-aware weight upload** on every backend:
 
 | Backend | How |
-|---|---|
-| **Loom CPU** | Go `poly` kernels |
-| **Intel CPU** | OpenVINO via `libloom_accel_intel.so` |
-| **Intel NPU** | OpenVINO NPU plugin (Linux + Core Ultra) |
+|---------|-----|
+| **Loom CPU** | Go `poly` MatMul |
+| **Intel CPU** | `SyncToAccel` uploads weights → OpenVINO compile → infer |
+| **Intel NPU** | Same weight upload, NPU device plugin |
 
-## Prerequisites
-
-Build the plugin (from repo root or `accel/intel/`):
-
-```bash
-cd accel/intel
-./install_openvino.sh
-source ./setup_env.sh
-./build.sh
-```
-
-**Linux + NPU:** `CGO_ENABLED=1`, Intel NPU driver installed.
-
-**macOS:** Loom CPU-only smoke test (`go run .`); full Intel/NPU path needs Linux.
+**Why MatMul only?** Only MatMul / Conv / MHA-MatMul bake Loom weights into the Intel graph. ReLU, LayerNorm, Softmax use **fixed** OpenVINO graphs and ignore Loom weights — not a weight-transfer demo.
 
 ## Run
 
 ```bash
-cd accel/intel/example
+cd accel/intel
+source ./setup_env.sh
+./build.sh
+
+cd example
 source ../setup_env.sh
 CGO_ENABLED=1 go run .
 ```
 
-Optional env vars:
+## Expected output
 
-- `LOOM_ACCEL_INTEL_SO` — path to plugin (auto-discovered from `accel/intel/build/` if unset)
-- `LOOM_ROOT` — Loom module root if not running from inside the repo tree
-- `INTEL_OPENVINO_DIR` — OpenVINO install (set by `setup_env.sh`)
+```
+╔══════════════════════════════════════════════════════════════╗
+║  MatMul stack — same Loom weights → Intel CPU / NPU          ║
+╚══════════════════════════════════════════════════════════════╝
+  Plugin: .../loom/accel/intel/build/libloom_accel_intel.so
+  NPU: available
+  Network: 3× MatMul (Dense LINEAR), FP32, 16×256 — weights via SyncToAccel
+
+  ┌─────────────┬──────────┬──────────┬───────────┬──────────────┬────────┐
+  │ Backend     │ median ms│ p95 ms   │ compile ms│ vs Loom drift│ status │
+  ├─────────────┼──────────┼──────────┼───────────┼──────────────┼────────┤
+  │ Loom CPU    │    0.45  │    0.62  │      0.00 │ —            │ OK     │
+  │ Intel CPU (2.1x) │  0.21  │    0.38  │    110.00 │ 1.2e-02      │ OK     │
+  │ Intel NPU (0.4x) │  1.10  │    1.45  │    170.00 │ 1.2e-02      │ OK     │
+  └─────────────┴──────────┴──────────┴───────────┴──────────────┴────────┘
+
+  Weights: one network, fixed seed — SyncToAccel uploads per-layer dtype (FP32 native bytes in this demo).
+```
+
+- **One network build**, seed `42` — all three backends see identical weights.
+- **compile ms** — one-time `SyncToAccel` per backend (3 layers × ~40–60 ms).
+- **drift** — Loom vs Intel output (should be small for MatMul-only).
+- Timings vary; NPU loses on tiny stacks, wins on large tiers in the layer bench.
 
 ## Network
 
 ```
 Input [16×256]
-  → Dense+ReLU → Dense+ReLU → Dense → LayerNorm → Softmax
+  → MatMul → MatMul → MatMul
 Output [16×256]
 ```
 
-Uses **medium** shapes from `../bench_manifest.json` (matches OpenVINO graphs in the plugin).
+Medium shapes from `../bench_manifest.json`.
+
+## Env vars
+
+| Variable | Purpose |
+|----------|---------|
+| `LOOM_ACCEL_INTEL_SO` | Plugin path (auto: `accel/intel/build/`) |
+| `LOOM_ROOT` | Loom module root if cwd is outside repo |
+| `INTEL_OPENVINO_DIR` | Set by `setup_env.sh` |

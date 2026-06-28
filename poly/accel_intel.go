@@ -56,7 +56,7 @@ func syncLayerToAccel(l *VolumetricLayer, reg *accel.Registry, sizeLabel string)
 	if plug == nil {
 		return fmt.Errorf("no plugin for %s", l.ExecTarget)
 	}
-	compiled, err := plug.CompileLayer(desc, layerWeightsFP32(l))
+	compiled, err := plug.CompileLayer(desc, LayerWeightBytesForAccel(l))
 	if err != nil {
 		return err
 	}
@@ -127,20 +127,60 @@ func intelBenchLayerName(l *VolumetricLayer) (string, bool) {
 	}
 }
 
-func layerWeightsFP32(l *VolumetricLayer) []float32 {
+func LayerWeightBytesForAccel(l *VolumetricLayer) []byte {
 	if l == nil || l.WeightStore == nil {
 		return nil
 	}
-	if len(l.WeightStore.Master) > 0 {
-		out := make([]float32, len(l.WeightStore.Master))
-		copy(out, l.WeightStore.Master)
-		return out
+	dt := l.DType
+	if dt != DTypeFloat32 {
+		l.WeightStore.Morph(dt)
 	}
-	w := l.WeightStore.GetActive(l.DType)
-	if w == nil {
+	switch dt {
+	case DTypeFloat32:
+		w := l.WeightStore.GetActive(DTypeFloat32)
+		f32, ok := w.([]float32)
+		if !ok || len(f32) == 0 {
+			return nil
+		}
+		out := make([]byte, len(f32)*4)
+		for i, v := range f32 {
+			binary.LittleEndian.PutUint32(out[i*4:], math.Float32bits(v))
+		}
+		return out
+	case DTypeFloat16:
+		if native := l.WeightStore.GetNative(DTypeFloat16); native != nil {
+			if u16, ok := native.([]uint16); ok && len(u16) > 0 {
+				out := make([]byte, len(u16)*2)
+				for i, v := range u16 {
+					binary.LittleEndian.PutUint16(out[i*2:], v)
+				}
+				return out
+			}
+		}
+		w := l.WeightStore.GetActive(DTypeFloat16)
+		f32 := CastWeights[float32](w)
+		if len(f32) == 0 {
+			return nil
+		}
+		out := make([]byte, len(f32)*2)
+		for i, v := range f32 {
+			binary.LittleEndian.PutUint16(out[i*2:], float32ToFloat16Bits(v))
+		}
+		return out
+	case DTypeInt8:
+		w := l.WeightStore.GetActive(DTypeInt8)
+		f32 := CastWeights[float32](w)
+		if len(f32) == 0 {
+			return nil
+		}
+		out := make([]byte, len(f32)*4)
+		for i, v := range f32 {
+			binary.LittleEndian.PutUint32(out[i*4:], math.Float32bits(v))
+		}
+		return out
+	default:
 		return nil
 	}
-	return CastWeights[float32](w)
 }
 
 // DispatchAccelForward runs a layer through a compiled Intel binding.

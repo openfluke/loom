@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define LOOM_ACCEL_API_VERSION 1
+#define LOOM_ACCEL_API_VERSION 2
 
 typedef struct loom_accel_plugin loom_accel_plugin;
 typedef struct loom_accel_compiled_layer loom_accel_compiled_layer;
@@ -31,8 +31,8 @@ size_t loom_accel_weight_bytes(const loom_accel_layer_desc* desc);
 int loom_accel_compile_layer(
     loom_accel_plugin* plugin,
     const loom_accel_layer_desc* desc,
-    const float* weights,
-    size_t weight_count,
+    const void* weight_bytes,
+    size_t weight_byte_len,
     loom_accel_compiled_layer** out,
     double* compile_ms,
     char* err,
