@@ -50,8 +50,8 @@ ForwardPolymorphic
 
 ## Intel (shipped — experimental)
 
-**Plugin:** `libloom_accel_intel.so` (OpenVINO inside)  
-**Build:** `accel/intel/`
+**Plugin:** `libloom_accel_intel.so` (OpenVINO inside) — **one shared object** per build (`accel/intel/build/`; no `.so.1` soname)  
+**Build:** `accel/intel/` (`./build.sh` after `source setup_env.sh`)
 
 ### Requirements
 
@@ -236,6 +236,34 @@ Or: `./run_npu_bridge.sh` (sources `accel/intel/setup_env.sh` explicitly).
 Output: timing table (Loom vs Intel CPU vs Intel NPU, speedup ratios) + seven-style drift spectrum + manifest histogram.
 
 Log: `lucy_testing_output/nine_layer.txt` — see [`testing_and_validation.md`](testing_and_validation.md#nine-layer-intel-bridge-nine_layertxt).
+
+---
+
+## Welvet C-ABI (non-Go bindings)
+
+C / Flutter / Python callers use **`welvet/cabi`** (`welvet.so` / `welvet.h`) instead of importing `poly` directly. Intel offload mirrors the Go flow:
+
+```c
+// Pseudocode — see welvet.h for exact signatures
+long accel = LoomDiscoverAccel(NULL);           // optional LOOM_ACCEL_INTEL_SO path
+long net   = LoomBuildNetworkFromJSON(spec_json);
+LoomNetworkAttachAccel(net, accel);
+LoomSetLayerExecTarget(net, layer_idx, ExecIntelNPU);
+LoomSyncToAccel(net, "medium");
+LoomDispatchAccelForward(net, layer_idx, input_handle);
+```
+
+| Export | Maps to `poly` |
+|--------|----------------|
+| `LoomDiscoverAccel` | `DiscoverAccel` |
+| `LoomSyncToAccel` | `VolumetricNetwork.SyncToAccel` |
+| `LoomLayerWeightBytesForAccel` | `LayerWeightBytesForAccel` |
+| `LoomDispatchAccelForward` | `DispatchAccelForward` |
+
+**Build Linux:** `cd welvet/cabi/internal/build && ./build_linux.sh` → `dist/linux_amd64/welvet.so` (and `arm64`).  
+**Parity:** `cd welvet/cabi/internal/check && go run .` → **489/489**.
+
+The Intel plugin (`libloom_accel_intel.so`) is still a **separate** dlopen artifact — Welvet does not link OpenVINO at compile time.
 
 ---
 

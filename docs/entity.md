@@ -4,7 +4,7 @@
 
 Native Loom checkpoint files. One `.entity` file = one saved brain: **full volumetric topology + all native-packed weights** in a single binary artifact.
 
-Implementation: [`poly/entity.go`](../poly/entity.go), HF convert helpers [`poly/hf_entity_convert.go`](../poly/hf_entity_convert.go) + [`poly/entity_convert_io.go`](../poly/entity_convert_io.go)
+Implementation: [`poly/entity.go`](../poly/entity.go), [`poly/entity_file.go`](../poly/entity_file.go), HF convert helpers [`poly/hf_entity_convert.go`](../poly/hf_entity_convert.go) + [`poly/entity_convert_io.go`](../poly/entity_convert_io.go)
 
 Validated in Lucy menu **[7] Seven-layer CPU suite** — JSON and `.entity` save/reload run side by side for all 21 dtypes (`lucy/examples/seven_layer/runner.go`). Lucy **[8] ENTITY Talk** converts HF LLMs to `.entity` and runs GPU chat from native checkpoints (`lucy/hf_entity.go`).
 
@@ -167,6 +167,22 @@ HF cache  →  ImportHFSaveEntityTransformerBlockwiseProgress
 ```
 
 See [memory_history.md — HF → `.entity` convert](memory_history.md#hf--entity-convert-import--encode-memory) for the full step list and peak-RAM comparison.
+
+### Random-access `.entity` reads (`EntityFile`)
+
+For large checkpoints, `poly/entity_file.go` avoids loading the entire file into RAM. **`ReadAt`** pulls only the header and requested weight blobs.
+
+| API | Purpose |
+|-----|---------|
+| `OpenEntityFile` / `OpenEntityFileAt` | Open path; optional byte offset for CHGLUE-wrapped loom sections |
+| `LoadEntityTransformer` | Full transformer checkpoint via blob reads |
+| `LoadEntityTransformerTopology` | Topology + globals only (`SkipLayerWeights`) |
+| `LoadNetworkLayerWeights(net, indices)` | Hydrate specific top-level layer indices into an existing `VolumetricNetwork` |
+| `LoadEntityTransformerFromFile` | Convenience: open, load, close |
+
+**C-ABI:** `LoomOpenEntityFile`, `LoomLoadEntityTransformerFromFile`, `LoomLoadEntityTransformerTopology`, `LoomLoadNetworkLayerWeights`, `LoomPrepareEntityTransformerLayerIndices`.
+
+Use this for **selective layer load** (e.g. block-by-block GPU upload) without holding every decoder block in host RAM at once. See also the capability row *Selective layer load* in the table above.
 
 ### Q4 on disk vs GPU (v1)
 

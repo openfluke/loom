@@ -26,6 +26,8 @@ final handle = loomLib.createNetwork(jsonConfig);
 
 Desktop natives ship in the pub.dev package; iOS/Android require vendored binaries (see [flutter.md — Platform notes](flutter.md#platform-notes)).
 
+**Building Linux Welvet from source:** `cd welvet/cabi/internal/build && ./build_linux.sh` → `dist/linux_amd64/welvet.so` + `welvet.h` for FFI packaging.
+
 ---
 
 ## 📦 The NPM Package: `@openfluke/welvet`

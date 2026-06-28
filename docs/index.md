@@ -21,6 +21,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [memory_history.md](memory_history.md) | **Memory history**: GPU load chart/diagnosis; block-wise HF→`.entity` import **and** block-wise encode (`ImportHFSaveEntityTransformerBlockwise`); GPU upload + sequential global release |
 | [accelerators.md](accelerators.md) | **Vendor NPU/TPU** — `poly/accel`, Intel OpenVINO CPU+NPU (experimental v0.81), Qualcomm + Google TPU planned, `SyncToAccel`, Lucy [9] |
 | [windows_arm64.md](windows_arm64.md) | **Windows on ARM**: index → [`README_WINDOWS_ARM64.md`](../welvet/cabi/internal/build/README_WINDOWS_ARM64.md) (recovery script + `build_unix.sh windows arm64`) |
+| [`../welvet/cabi/internal/build/build_linux.sh`](../welvet/cabi/internal/build/build_linux.sh) | **Linux C-ABI build** — `dist/linux_amd64/` or `linux_arm64/` (`welvet.so` + `welvet.h`); wrapper over `build_unix.sh` |
 | [step.md](step.md) | The step mesh engine: `StepState`, one-clock-cycle forward, spatial feedback via remote links, BPTT, online learning |
 | [dna.md](dna.md) | Topological network fingerprinting: `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection, recursive extraction for all 19 layer types |
 | [evolution.md](evolution.md) | DNA Splice / Genetic Crossover and NEAT-style Topology Evolution: `SpliceDNA`, `NEATMutate`, `NEATPopulation`, all 3 crossover modes, all 6 mutation types |
@@ -32,7 +33,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, Qwen-style expanded-query + Q/K norm support, `Transformer[T]` generation type; CPU vs GPU tiling behavior |
 | [quick_reference.md](quick_reference.md) | Concise copy-paste snippets for all common operations |
 | [testing_and_validation.md](testing_and_validation.md) | **Lucy logs**, parity table legend, how to read `lucy_testing_output/log.txt`, Dense **Go÷ASM** benchmarks, and a compact map of `poly/` files the suites hit |
-| [bedrock_validation.md](bedrock_validation.md) | **v0.79.0** — seven-layer CPU suite, MHA/KV/persistence fixes, C-ABI 100%, what shipped vs roadmap |
+| [bedrock_validation.md](bedrock_validation.md) | **v0.79.0** — seven-layer CPU suite, MHA/KV/persistence fixes; C-ABI **489/489** (v0.81 accel + entity exports) |
 | [v080_release.md](v080_release.md) | **v0.80.0** — ENTITY native checkpoints, WebGPU v1.0.4, cross-platform GPU, Planet Bridging POC |
 | [v081_release.md](v081_release.md) | **v0.81.0** — Intel NPU bridge (`poly/accel`), Lucy [9], vendor plugin model, Qualcomm/Google TPU roadmap |
 | [`../poly/asm/README.md`](../poly/asm/README.md) | **Plan 9 CPU kernels**: `UseAsmForward`, dense forward routing, dot/matmul layout, Lucy speedup interpretation |
@@ -55,7 +56,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **Using the GPU?** Read [gpu.md](gpu.md).
 
-**Offloading to Intel NPU (experimental)?** Read [accelerators.md](accelerators.md) — build `accel/intel`, `SyncToAccel`, Lucy **[9]** or `accel/intel/example`.
+**Offloading to Intel NPU (experimental)?** Read [accelerators.md](accelerators.md) — build `accel/intel`, `SyncToAccel`, Lucy **[9]** or `accel/intel/example`. C/FFI: build Welvet with [`build_linux.sh`](../welvet/cabi/internal/build/build_linux.sh).
 
 **Debugging GPU load RAM spikes (Lucy ENTITY/Poly Talk)?** Read [memory_history.md](memory_history.md).
 

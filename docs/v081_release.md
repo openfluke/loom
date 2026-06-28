@@ -16,7 +16,7 @@ First public **vendor accelerator** path: Loom forwards individual layers throug
 | **Package** | `poly/accel/` — `Discover`, `Registry`, `Plugin`, `CompiledLayer` |
 | **C ABI** | `loom_accel.h` in chaosglue (Loom does not vendor OpenVINO) |
 | **Linux** | `dlopen` via CGO (`CGO_ENABLED=1`) |
-| **Intel plugin** | `libloom_accel_intel.so` — built from `chaosglue/npu/intel/cabi/` |
+| **Intel plugin** | `libloom_accel_intel.so` — built from `loom/accel/intel/` (single `.so`, no versioned soname) |
 
 ### Dispatch integration
 
@@ -35,6 +35,21 @@ First public **vendor accelerator** path: Loom forwards individual layers throug
 | **Tables** | Timing (Loom / Intel CPU / Intel NPU, speedup) + seven-style drift spectrum |
 | **Log** | `lucy_testing_output/nine_layer.txt` |
 | **Proof** | 90 cells: Intel infer **💎 EXACT** repeat-forward; Conv2D large **~22×** NPU vs Loom |
+
+### Welvet C-ABI (489/489 parity)
+
+Non-Go bindings can drive the same accel and entity-file paths without reimplementing `poly/`:
+
+| Export family | Purpose |
+|---------------|---------|
+| `LoomDiscoverAccel` / `LoomNetworkAttachAccel` / `LoomSyncToAccel` | Plugin load, attach to `VolumetricNetwork`, compile + weight bake |
+| `LoomDispatchAccelForward` / `LoomLayerWeightBytesForAccel` | Per-layer Intel forward + weight byte introspection |
+| `LoomOpenEntityFile` / `LoomLoadEntityTransformerFromFile` | Random-access `.entity` without slurping full file |
+| `LoomLoadNetworkLayerWeights` | Hydrate selected layer indices from an open `EntityFile` |
+
+Parity check: `cd welvet/cabi/internal/check && go run .` → **489/489**.
+
+Linux build: `cd welvet/cabi/internal/build && ./build_linux.sh` (or `./build_unix.sh linux amd64`). Output: `dist/linux_<arch>/welvet.so` + `welvet.h`.
 
 ### Documentation
 
@@ -116,7 +131,8 @@ Loom code path is identical: `DiscoverAccel` → `ExecTarget` → `SyncToAccel` 
 | Intel dispatch | `poly/accel_intel.go`, `poly/forward.go` |
 | Types | `poly/poly.go` (`ExecTarget`, `AccelBinding`, `net.Accel`) |
 | Lucy suite | `lucy/examples/nine_layer/` |
-| CABI | `accel/intel/include/loom_accel.h`, `accel/intel/src/` |
+| Intel plugin C++ | `accel/intel/include/loom_accel.h`, `accel/intel/src/` |
+| Welvet C-ABI | `welvet/cabi/accel_ext.go`, `entity_ext.go`, `transformer_ext.go` |
 
 ---
 

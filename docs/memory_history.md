@@ -58,6 +58,7 @@ For meaningful charts, use **GPU + block upload + measure memory**.
 |:---------|:-------|
 | `LOOM_MEMORY_HISTORY=1` | Enable sampling without the Lucy prompt (off by default) |
 | `LOOM_MEMORY_HISTORY_JSON=/path/out.json` | After load, write samples as JSON in addition to the terminal report |
+| `LoomMemoryHistoryWriteJSON(path)` | Same JSON dump from Welvet C-ABI (`poly.GlobalMemoryHistory.WriteJSON`) — for FFI apps without env access |
 | `COLUMNS=100` | Widen the braille chart (default 80, max 120) |
 
 Lucy’s runtime prompt override takes precedence over env when set.
