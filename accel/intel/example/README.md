@@ -65,3 +65,5 @@ Medium shapes from `../bench_manifest.json`.
 | `LOOM_ACCEL_INTEL_SO` | Plugin path (auto: `accel/intel/build/`) |
 | `LOOM_ROOT` | Loom module root if cwd is outside repo |
 | `INTEL_OPENVINO_DIR` | Set by `setup_env.sh` |
+
+**Build output:** one file — `build/libloom_accel_intel.so` (no `.so.1` symlinks). Do not delete it; Loom `dlopen`s that exact name.

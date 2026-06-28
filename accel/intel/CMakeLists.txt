@@ -44,10 +44,10 @@ target_include_directories(loom_accel_intel
 
 target_link_libraries(loom_accel_intel PRIVATE openvino::runtime)
 
+# Single shipped artifact: libloom_accel_intel.so (no .so.1 version symlinks).
+# Loom dlopen() and LOOM_ACCEL_INTEL_SO expect that exact filename.
 set_target_properties(loom_accel_intel PROPERTIES
     OUTPUT_NAME "loom_accel_intel"
-    VERSION 1.0.0
-    SOVERSION 1
     BUILD_RPATH "${LOOM_ACCEL_RPATH}"
     INSTALL_RPATH "${LOOM_ACCEL_RPATH}"
 )
