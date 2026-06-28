@@ -4,7 +4,7 @@
 
 Native Loom checkpoint files. One `.entity` file = one saved brain: **full volumetric topology + all native-packed weights** in a single binary artifact.
 
-Implementation: [`poly/entity.go`](../poly/entity.go)
+Implementation: [`poly/entity.go`](../poly/entity.go), [`poly/entity_file.go`](../poly/entity_file.go), HF convert helpers [`poly/hf_entity_convert.go`](../poly/hf_entity_convert.go) + [`poly/entity_convert_io.go`](../poly/entity_convert_io.go)
 
 Validated in Lucy menu **[7] Seven-layer CPU suite** — JSON and `.entity` save/reload run side by side for all 21 dtypes (`lucy/examples/seven_layer/runner.go`). Lucy **[8] ENTITY Talk** converts HF LLMs to `.entity` and runs GPU chat from native checkpoints (`lucy/hf_entity.go`).
 
@@ -110,6 +110,8 @@ net := NewVolumetricNetwork(1, 1, 1, dims.NumLayers*4)
 InitHFDecoderBlocks(net, dims)
 ```
 
+Import is **block-wise** to avoid doubling peak RAM: globals load first, then each transformer block’s safetensors are loaded, copied into `WeightStore.Master`, and the transient map is released before the next block. See [memory_history.md — HF → .entity convert](memory_history.md#hf--entity-convert-import-memory).
+
 ENTITY Talk chat uses this linear layout. Nothing in the format prevents expanding to `2×2×N`, parallel experts, or remote links — that is topology editing on a loaded `VolumetricNetwork`, then `SaveEntityTransformer`.
 
 ### What the format unlocks
@@ -123,6 +125,8 @@ ENTITY Talk chat uses this linear layout. Nothing in the format prevents expandi
 | Graft multiple networks into one parallel layer | ✅ [`grafting.go`](../poly/grafting.go) | ❌ |
 | NEAT / topology evolution | ✅ [`evolution.md`](evolution.md) | ❌ |
 | Selective layer load + block-wise GPU upload | ✅ `DeserializeEntityWithOptions` | ✅ block upload prompt |
+| Block-wise HF → `.entity` import (lower convert RAM) | ✅ `ImportHFCheckpointDir` | ✅ Lucy `[8]` convert |
+| Block-wise HF → `.entity` encode (mobile-safe convert) | ✅ `ImportHFSaveEntityTransformerBlockwise` | ✅ SoulGlitch / mvp-simulation |
 | Merge two LLMs with mismatched hidden size / vocab | ❌ shapes must align | ❌ |
 
 **Principle:** anything Lucy **[7]** could do to a trained `.entity`, you can now *in principle* do to an imported LLM `.entity` — graft a side branch, add an experimental layer, mix dtypes, evolve topology around a frozen decoder core. Wiring those flows into product UI is separate work; the **format bridge** is the prerequisite, and it exists.
@@ -145,12 +149,40 @@ See [parallel_sequential.md](parallel_sequential.md), [evolution.md](evolution.m
 
 Lucy menu **[8] ENTITY Talk** (`lucy/hf_entity.go`) converts supported HF models (SmolLM2, Qwen, Llama-style) to universal-transformer `.entity` files and runs GPU chat without loading safetensors at runtime.
 
-Flow:
+Flow (standard — Lucy `[8]` on desktop):
 
 ```
-HF cache  →  ImportHFToEntity (FP32 master)  →  SerializeEntityTransformer (Q4_0 bake if INT4)
+HF cache  →  ImportHFCheckpointDir (block-wise FP32 import)
+         →  SaveEntityTransformer (Q4_0 bake if INT4)
          →  lucy_entities/*.entity  →  LoadEntityTransformer  →  chat
 ```
+
+Flow (low-RAM encode — SoulGlitch / mobile):
+
+```
+HF cache  →  ImportHFSaveEntityTransformerBlockwiseProgress
+         →  per-block Q4 bake → streaming payload temp file
+         →  writeEntityWireStreaming → *.entity (+ app CHGLUE wrapper)
+         →  LoadEntityTransformer  →  chat
+```
+
+See [memory_history.md — HF → `.entity` convert](memory_history.md#hf--entity-convert-import--encode-memory) for the full step list and peak-RAM comparison.
+
+### Random-access `.entity` reads (`EntityFile`)
+
+For large checkpoints, `poly/entity_file.go` avoids loading the entire file into RAM. **`ReadAt`** pulls only the header and requested weight blobs.
+
+| API | Purpose |
+|-----|---------|
+| `OpenEntityFile` / `OpenEntityFileAt` | Open path; optional byte offset for CHGLUE-wrapped loom sections |
+| `LoadEntityTransformer` | Full transformer checkpoint via blob reads |
+| `LoadEntityTransformerTopology` | Topology + globals only (`SkipLayerWeights`) |
+| `LoadNetworkLayerWeights(net, indices)` | Hydrate specific top-level layer indices into an existing `VolumetricNetwork` |
+| `LoadEntityTransformerFromFile` | Convenience: open, load, close |
+
+**C-ABI:** `LoomOpenEntityFile`, `LoomLoadEntityTransformerFromFile`, `LoomLoadEntityTransformerTopology`, `LoomLoadNetworkLayerWeights`, `LoomPrepareEntityTransformerLayerIndices`.
+
+Use this for **selective layer load** (e.g. block-by-block GPU upload) without holding every decoder block in host RAM at once. See also the capability row *Selective layer load* in the table above.
 
 ### Q4 on disk vs GPU (v1)
 
@@ -167,6 +199,63 @@ RMSNorm stays FP32 intentionally — quantizing norm gamma corrupts the forward 
 Model-specific metadata persisted in the header includes expanded `query_dim` / `kv_dim` (Qwen-style MHA), MHA `q_norm` / `k_norm` auxiliary blobs, and `lm_head_tied`.
 
 Tokenizer and chat template still come from the HF snapshot; only **weights** move native.
+
+### HF → `.entity` convert (memory)
+
+Two **llama-style** convert lanes — see [memory_history.md](memory_history.md#hf--entity-convert-import--encode-memory) for diagrams and peak-RAM tables.
+
+| Model kind | Standard lane | Low-RAM lane |
+|:-----------|:--------------|:-------------|
+| Llama-style (Qwen, SmolLM2, …) | `ImportHFCheckpointDir` → `SaveEntityTransformer` | `ImportHFSaveEntityTransformerBlockwise(Progress)` |
+| BitNet | `ImportHFBitNetCheckpointDir` → `SaveEntityTransformer` | (same — already packed per block) |
+
+**Standard lane** (Lucy `[8]` `convertEntityEntry`): block-wise safetensor import, then **full FP32 network** in RAM while `SaveEntityTransformer` bakes Q4 and builds the file buffer.
+
+**Low-RAM lane** ([`hf_entity_convert.go`](../poly/hf_entity_convert.go), [`entity_convert_io.go`](../poly/entity_convert_io.go)):
+
+1. Encode **globals** to a **payload temp file**; release FP32 globals from RAM  
+2. For each block: import safetensors → `collectEntityWeightBlobsAcc` (Q4_0 if INT4) → `releaseEntityConvertLayerWeights` → GC  
+3. `writeEntityWireStreaming` — header + blob index + `io.Copy` payload (no full-file `[]byte`)
+
+**Quant policy (both lanes):** Q4 bakes **MHA + SwiGLU** only; **RMSNorm**, **q_norm/k_norm**, **embeddings**, **lm_head**, **final_norm** stay **FP32**. Header `lm_head_tied` uses `entityLMHeadTied()` — same as `SaveEntityTransformer` (separate `lm_head` blob when HF provides distinct slices).
+
+**Lucy terminal signature** (standard lane only): three global `✓ Loaded …` lines, then one `✅ Finished loading weights with prefixes.` **per block** (28× for Qwen3-0.6B). The low-RAM lane uses `HFEntityConvertProgress` instead (`packed block N/M`).
+
+**SoulGlitch:** wraps the loom `.entity` in a CHGLUE standalone file (tokenizer embedded); convert progress appears in the app task UI, not Lucy logs.
+
+### GPU load and memory diagnostics
+
+After `LoadEntityTransformer`, weights live on CPU until GPU setup runs. Lucy **[8]** uses the same path as Poly Talk **[1]**:
+
+1. `setupTransformerForInference` (`lucy/inference_setup.go`) — optional block-by-block decoder upload with `ReleaseInferenceHostWeights()` per block  
+2. `SyncGlobalWeightsToGPUSequential()` — embeddings → LM head → final norm, releasing CPU after each  
+3. GPU warmup + `ReleaseInferenceHostWeights()` + `GC`
+
+When **Measure memory during GPU load** is enabled, Lucy prints a terminal chart and diagnosis via `poly.GlobalMemoryHistory` (see [memory_history.md](memory_history.md)).
+
+Welvet **`LoomCreateLLM`** (safetensors snapshot dir) implements the same GPU policy in `welvet/cabi/llm_ext.go`. Entity-only C ABI exports (`LoomLoadEntityTransformerAs`, `LoomBuildTransformerFromEntity`) **deserialize and build the transformer on CPU only** — the app must run the Lucy GPU sequence separately until a dedicated entity+GPU export exists.
+
+#### GPU load after entity deserialize
+
+Minimum inference GPU setup (Go):
+
+```go
+tr.Network.InitWGPU()
+for li := 0; li < numLayers; li++ {
+    base := li * 4
+    for j := 0; j < 4; j++ {
+        layer := &tr.Network.Layers[base+j]
+        _ = layer.SyncToGPU()
+        layer.ReleaseInferenceHostWeights()
+    }
+}
+_ = tr.SyncGlobalWeightsToGPUSequential()
+_, _ = tr.ForwardTokenIDsWGPU([]uint32{0}, nil, true, true)
+tr.Reset()
+tr.ReleaseInferenceHostWeights()
+```
+
+Do **not** use bulk `tr.SyncToGPU()` alone after a full entity load on memory-constrained devices — that was the ~2.6 GB overlap bug fixed by sequential globals.
 
 ---
 
@@ -266,7 +355,9 @@ No Base64. No FP32-only export constraint (unlike `SaveSafetensors`).
 | `SaveEntity(path, net)` / `LoadEntity(path)` | File I/O |
 | `SerializeEntityTransformer(et)` / `DeserializeEntityTransformer(data)` | Universal transformer: decoder + embeddings/LM head/final norm |
 | `SaveEntityTransformer` / `LoadEntityTransformer` / `LoadEntityTransformerAs[T]` | File I/O + `NewTransformer` wiring |
-| `ImportHFToEntity(modelDir, path, opts)` | HF snapshot → universal `.entity` ([`hf_import.go`](../poly/hf_import.go)) |
+| `ImportHFToEntity(modelDir, path, opts)` | HF snapshot → universal `.entity` (standard lane) ([`hf_import.go`](../poly/hf_import.go)) |
+| `ImportHFSaveEntityTransformerBlockwise(modelDir, path, weightDType)` | Low-RAM convert: block-wise import **and** encode ([`hf_entity_convert.go`](../poly/hf_entity_convert.go)) |
+| `ImportHFSaveEntityTransformerBlockwiseProgress(..., progress)` | Same + `HFEntityConvertProgress` callback (`packed block N/M`) |
 | `ParseEntityHeader(data)` | Header only (no weight decode; mmap-friendly planning) |
 | `LayerPersistenceFromEntity(data, layerIndex)` | Raw blob + scale + native for one layer (parity checks) |
 | `EntityBlobBytes(data, blobIndex)` | Raw bytes for blob `i` without dtype decode |
@@ -448,4 +539,5 @@ Weights stay on `EncodeNativeWeightsRaw`; the big disk wins are in **topology + 
 - [numerical_types.md](numerical_types.md) — 21 DTypes
 - [quantization.md](quantization.md) — Scale, Morph, native packing, Q4_0
 - [testing_and_validation.md](testing_and_validation.md) — Lucy [7] logs and tables
+- [memory_history.md](memory_history.md) — GPU load timeline, block upload, sequential globals (Lucy [8])
 - [bedrock_validation.md](bedrock_validation.md) — seven-layer CPU suite overview

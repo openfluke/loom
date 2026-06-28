@@ -386,6 +386,29 @@ if &t.LMHead[0] == &t.Embeddings[0] {
 }
 ```
 
+### GPU weight upload policies
+
+Two global-upload policies coexist in [`transformer.go`](../poly/transformer.go):
+
+| Method | CPU release during upload | Typical use |
+|:-------|:--------------------------|:------------|
+| `SyncGlobalWeightsToGPUSequential()` | Yes — after each of embeddings, LM head, final norm | Lucy inference, SoulGlitch `LoomCreateLLM` |
+| `SyncToGPU()` | No — uploads all globals, CPU slices remain until explicit `ReleaseInferenceHostWeights()` | Training, legacy demos, `LoomSyncToGPU` bulk path |
+
+Granular helpers (used by the sequential path):
+
+```go
+tr.SyncEmbeddingsToGPU();  tr.ReleaseEmbeddingsHost()
+tr.SyncLMHeadToGPU();      tr.ReleaseLMHeadHost()
+tr.SyncFinalNormToGPU();   tr.ReleaseFinalNormHost()
+```
+
+Full inference load sequence (block-wise decoder + sequential globals) is documented in [memory_history.md](memory_history.md).
+
+`ReleaseInferenceHostWeights()` on the transformer clears any remaining host slices (all layers + globals) once GPU buffers are ready; after this call CPU fallback in `Generate` is disabled for that transformer.
+
+---
+
 ### Tiling
 
 ```go
@@ -456,7 +479,7 @@ type GenOptions struct {
 
 ## GPU Transformer Inference
 
-When `network.UseGPU = true` and `SyncToGPU()` has been called, `Generate` uses `ForwardTokenIDsWGPU` for both prefill and incremental decode:
+When `network.UseGPU = true` and weights have been synced to VRAM (via block-wise layer upload + `SyncGlobalWeightsToGPUSequential()` for inference, or bulk `SyncToGPU()` for legacy paths), `Generate` uses `ForwardTokenIDsWGPU` for both prefill and incremental decode:
 
 ```go
 logitTensor, err := t.ForwardTokenIDsWGPU(tokens, nil, true, true)

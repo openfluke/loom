@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"unsafe"
 
+	"github.com/openfluke/loom/poly/accel"
 	"github.com/openfluke/webgpu/wgpu"
 )
 
@@ -541,6 +542,9 @@ type VolumetricNetwork struct {
 	// GPU Acceleration context
 	GPUContext *WGPUContext
 
+	// Vendor accelerators (Intel NPU, etc.) — inference-first; see poly/accel_intel.go
+	Accel *accel.Registry
+
 	// Persistent GPU buffers to avoid allocations
 	GPUHiddenState []any // map[DType]wgpu.Buffer or similar, use any for now
 	GPULogits      any   // wgpu.Buffer
@@ -635,6 +639,10 @@ type VolumetricLayer struct {
 	GPUSCTileSizes        map[DType]int // GPU single-core tile size per numerical type
 	GPUMCTileSizes        map[DType]int // GPU multi-core tile size per numerical type
 	UseGPU                bool
+
+	// Intel / vendor accelerator offload (inference forward via DispatchLayer)
+	ExecTarget   accel.ExecTarget
+	AccelBinding *accel.LayerBinding
 
 	IsGPUResident        bool
 	IsKVCacheGPUResident bool
@@ -1859,6 +1867,7 @@ func (l *VolumetricLayer) SyncToCPU() {
 	}
 
 	if l.WeightStore != nil {
+		l.MaterializeQ4_0ForCPU()
 		for dtype, buf := range l.WeightStore.GPUWeights {
 			_ = dtype
 			_ = buf

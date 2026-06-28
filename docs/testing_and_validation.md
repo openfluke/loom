@@ -12,6 +12,7 @@ The **Lucy** tree (`lucy/`) drives broad layer suites: forward/backward parity, 
 |-----|------|----------|
 | `lucy/lucy_testing_output/log.txt` | Dense L1 / GPU parity / layer matrices | Forward/backward parity, ASM timers, GPU tables |
 | `lucy/lucy_testing_output/seven_layer.txt` | **[7] Seven-layer CPU suite** | 10 layer types × 21 dtypes × 1³/2³/3³ grids, SC/MC, train, **JSON + `.entity` save/reload** |
+| `lucy/lucy_testing_output/nine_layer.txt` | **[9] Intel NPU bridge** | 15 layers × FP32/FP16/INT8 × small/medium/large — Loom vs Intel CPU/NPU timing + drift manifest |
 
 Per-dtype checkpoints are written under the same folder: `tag_DType.json` (debug lane) and `tag_DType.entity` (native lane). The memory table compares both file sizes side by side.
 
@@ -20,6 +21,10 @@ Per-dtype checkpoints are written under the same folder: `tag_DType.json` (debug
 Both files are meant for human review and regression diffing (adapter name, per-dtype rows, summary tallies).
 
 **Seven-layer suite (v0.79+):** See [`bedrock_validation.md`](bedrock_validation.md) for what the harness gates (MHA layout, KV decode, native ternary save, C-ABI `SyncInferenceWeights`). Run `cd lucy && go run .` → **[7]** or **[0]**.
+
+**GPU load memory timeline (Lucy [1] / [8]):** Enable *Measure memory during GPU load* at the prompt, or set `LOOM_MEMORY_HISTORY=1`. After load, Lucy prints a braille chart, sample table, and diagnosis (block release, sequential globals, peak host+gpu overlap). See [memory_history.md](memory_history.md).
+
+**HF → `.entity` convert:** Block-wise import is visible in the terminal (one `Finished loading weights with prefixes` per decoder block). Convert is not charted yet; see [entity.md — convert memory](entity.md#hf--entity-convert-memory).
 
 ---
 
@@ -123,6 +128,51 @@ High-signal files and areas (not exhaustive):
 | Telemetry | `tanhi.go`, hardware probes in `hardware.go` |
 
 When you add a layer or dtype, extend **both** the Lucy (or Glitch) harness **and** this doc if the log format or tolerance bands change.
+
+---
+
+## Nine-layer Intel bridge (`nine_layer.txt`)
+
+**Menu:** Lucy **[9]** → **[4]** (medium only) or **[5]** (full 90-cell matrix).  
+**Guide:** [`accelerators.md`](accelerators.md) — architecture, dtype upload, offload policy.
+
+### What the log exercises
+
+Each cell = one layer type × one dtype (FP32 / FP16 / INT8) × one size tier (`small` / `medium` / `large`):
+
+1. Build Loom network with that `dtype` on the layer.
+2. **`SyncToAccel`** once — compile OpenVINO graph + bake `WeightStore` weights (MatMul/Conv/MHA only).
+3. **`DispatchLayer`** forward — Loom CPU baseline vs Intel CPU vs Intel NPU.
+4. Drift: Loom↔Intel output diff + Intel repeat-forward determinism.
+
+### Timing columns
+
+| Column | Meaning |
+|--------|---------|
+| **Loom CPU / Intel CPU / Intel NPU** | Median **infer** ms after compile (steady state) |
+| **Spd CPU / Spd NPU** | Loom ÷ Intel — **&gt; 1** Intel faster, **&lt; 1** Intel slower |
+| **Compile C / Compile N** | One-time `SyncToAccel` ms — **not** in infer column |
+
+Intel can be slower than Loom when tensor work is tiny (NPU ~0.5 ms floor) or when Loom’s CPU path is sub-millisecond (norms, small softmax). That is expected — not a broken weight upload.
+
+### Manifest block (bottom of log)
+
+| Line | Healthy signal (Jun 2026 Fedora run) |
+|------|--------------------------------------|
+| Intel faster than Loom (CPU) | ~56/90 — wins on medium/large MAC |
+| Intel faster than Loom (NPU) | ~36/90 — wins mainly large MAC |
+| Intel infer repeat (CPU/NPU) | **90/90 💎 EXACT** — determinism OK |
+| Loom↔Intel parity ≤ INDUS | CPU ~23/90, NPU ~61/90 (looser NPU tolerance) |
+
+**Parity buckets:** 💎 EXACT · ✅ INDUS · 🟨 LOWBIT · 🟤 H-DRIFT · ❌ BROKE · 💀 FATAL — same legend as seven-layer tables.
+
+**Known ❌ BROKE rows:** LayerNorm / RMSNorm FP32/FP16 (~1.8 drift) — Intel uses fixed CABI graphs, not Loom `WeightStore`. **INT8 MAC** large-tier drift 3–36 — Loom dequant matmul vs OV f32 + NPU dynamic quant.
+
+### Dtype / integration status (read with the log)
+
+- **Weight upload:** FP32, FP16, INT8 on MatMul / Conv / MHA — ✅ at init (`LayerWeightBytesForAccel`).
+- **Forward infer:** activation bytes only per hop — ✅.
+- **“Integration done”?** Forward **bridge** yes (experimental); product NPU toggle, all dtypes, norms, backward — **no**. See accelerators.md “Is the integration done?”.
 
 ---
 

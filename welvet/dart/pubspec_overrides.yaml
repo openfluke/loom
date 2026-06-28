@@ -1,0 +1,10 @@
+# Local monorepo overrides (not published). See tool/publish.sh.
+dependency_overrides:
+  welvet_linux:
+    path: packages/welvet_linux
+  welvet_windows:
+    path: packages/welvet_windows
+  welvet_android:
+    path: packages/welvet_android
+  welvet_apple:
+    path: packages/welvet_apple

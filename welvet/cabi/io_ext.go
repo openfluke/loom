@@ -192,6 +192,20 @@ func LoomGetMethodsJSON() *C.char {
 		"LoomSyncInferenceWeights",
 		"LoomTokenize",
 		"LoomDetokenize",
+		"LoomMemoryHistoryWriteJSON",
+		"LoomDiscoverAccel",
+		"LoomSyncToAccel",
+		"LoomDispatchAccelForward",
+		"LoomLayerWeightBytesForAccel",
+		"LoomLoadEntityTransformerFromFile",
+		"LoomLoadEntityTransformerFromFileAt",
+		"LoomLoadEntityTransformerTopology",
+		"LoomLoadNetworkLayerWeights",
+		"LoomPrepareEntityTransformerLayerIndices",
+		"LoomDequantizeQ4_0GPUPacked",
+		"LoomSyncEmbeddingsToGPU",
+		"LoomSyncLMHeadToGPU",
+		"LoomSyncFinalNormToGPU",
 	}
 	// Satisfy parity scanner for internal polymorphic functions
 	_ = poly.SequentialForwardPolymorphic[float32]
@@ -313,4 +327,12 @@ func LoomCreateTransformer(networkHandle C.longlong, embeddingsJSON *C.char, lmH
 
 
 	return C.longlong(id)
+}
+
+//export LoomMemoryHistoryWriteJSON
+func LoomMemoryHistoryWriteJSON(path *C.char) *C.char {
+	if err := poly.GlobalMemoryHistory.WriteJSON(C.GoString(path)); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status":"ok"}`)
 }

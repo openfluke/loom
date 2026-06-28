@@ -118,9 +118,11 @@ func (h *EntityHeader) HasTransformer() bool {
 }
 
 // EntityLoadOptions controls selective weight loading from an .entity file.
-// When LayerIndices is non-nil, only blobs under layers.<index> are decoded.
+// When LayerIndices is non-empty, only blobs under layers.<index> are decoded.
+// SkipLayerWeights loads topology only (no layers.* blobs) for staged GPU mount.
 type EntityLoadOptions struct {
-	LayerIndices []int
+	LayerIndices     []int
+	SkipLayerWeights bool
 }
 
 // SerializeEntity writes a VolumetricNetwork to the native .entity wire format.
@@ -183,11 +185,11 @@ func DeserializeEntityTransformer(data []byte) (*EntityTransformer, error) {
 	if !hdr.HasTransformer() {
 		return nil, fmt.Errorf("entity file has no transformer section (network-only checkpoint)")
 	}
-	net, err := deserializeEntityNetwork(hdr, data, nil)
+	net, err := deserializeEntityNetwork(hdr, entityBlobReaderFromBytes(data, hdr), nil)
 	if err != nil {
 		return nil, err
 	}
-	embeddings, lmHead, finalNorm, err := loadEntityTransformerGlobals(hdr, data, hdr.Transformer)
+	embeddings, lmHead, finalNorm, err := loadEntityTransformerGlobals(hdr, entityBlobReaderFromBytes(data, hdr), hdr.Transformer)
 	if err != nil {
 		return nil, err
 	}
@@ -234,6 +236,9 @@ func entityTransformerWeightDType(hdr *EntityHeader) DType {
 		if entityBlobIsQ4_0(blob) {
 			return DTypeInt4
 		}
+		if entityBlobIsBitNetTernary(blob) {
+			return DTypeTernary
+		}
 	}
 	for _, blob := range hdr.Blobs {
 		if !strings.HasPrefix(blob.Path, "layers.") || !blob.Native {
@@ -261,7 +266,12 @@ func BuildTransformerFromEntity[T Numeric](et *EntityTransformer, template Templ
 	if !et.HasFinalNorm {
 		finalNorm = nil
 	}
-	return NewTransformer[T](et.Network, et.Embeddings, et.LMHead, finalNorm, template)
+	tr := NewTransformer[T](et.Network, et.Embeddings, et.LMHead, finalNorm, template)
+	tr.lmHeadTied = et.LMHeadTied
+	if !tr.lmHeadTied {
+		tr.lmHeadTied = entityLMHeadTied(et.Embeddings, et.LMHead)
+	}
+	return tr
 }
 
 // EntityGPUWeightDType picks GPU upload quant for a loaded .entity checkpoint.
@@ -287,6 +297,10 @@ func restoreEntityTransformerLayerFields(et *EntityTransformer) {
 	for i := range et.Network.Layers {
 		l := &et.Network.Layers[i]
 		switch l.Type {
+		case LayerSwiGLU:
+			if et.Dims.Activation != 0 {
+				l.Activation = et.Dims.Activation
+			}
 		case LayerMultiHeadAttention:
 			if queryDim > 0 {
 				l.QueryDim = queryDim
@@ -303,10 +317,14 @@ func restoreEntityTransformerLayerFields(et *EntityTransformer) {
 }
 
 // PrepareEntityTransformerInference restores layer fields and unpacks legacy native INT4 blobs.
-// Q4_0 baked checkpoints skip Unpack — GPU upload uses cached blocks via uploadQ4_0Cached.
+// Q4_0 baked checkpoints skip Unpack on load — GPU uses uploadQ4_0Cached; CPU materializes
+// FP32 Master in VolumetricLayer.SyncToCPU via MaterializeQ4_0ForCPU.
 func PrepareEntityTransformerInference(et *EntityTransformer) {
 	if et == nil || et.Network == nil {
 		return
+	}
+	if et.WeightDType == DTypeTernary {
+		et.Network.UseExactDType = true
 	}
 	restoreEntityTransformerLayerFields(et)
 	dt := et.WeightDType
@@ -329,6 +347,53 @@ func PrepareEntityTransformerInference(et *EntityTransformer) {
 			l.DType = DTypeInt4
 			continue
 		}
+		if l.WeightStore.HasAnyBitNetTernary() {
+			l.DType = DTypeTernary
+			continue
+		}
+		if dt == DTypeFloat32 {
+			l.DType = DTypeFloat32
+			continue
+		}
+		l.DType = dt
+		if _, ok := l.WeightStore.Versions[dt]; ok {
+			l.WeightStore.Unpack(dt)
+		}
+	}
+}
+
+// PrepareEntityTransformerLayerIndices restores inference fields for specific top-level layer indices.
+func PrepareEntityTransformerLayerIndices(et *EntityTransformer, indices []int) {
+	if et == nil || et.Network == nil || len(indices) == 0 {
+		return
+	}
+	dt := et.WeightDType
+	if dt == 0 {
+		dt = DTypeFloat32
+	}
+	for _, idx := range indices {
+		if idx < 0 || idx >= len(et.Network.Layers) {
+			continue
+		}
+		l := &et.Network.Layers[idx]
+		if l.WeightStore == nil {
+			continue
+		}
+		if l.Type == LayerRMSNorm {
+			l.DType = DTypeFloat32
+			if _, ok := l.WeightStore.Versions[DTypeFloat32]; ok {
+				l.WeightStore.Unpack(DTypeFloat32)
+			}
+			continue
+		}
+		if l.WeightStore.HasAnyQ4_0() {
+			l.DType = DTypeInt4
+			continue
+		}
+		if l.WeightStore.HasAnyBitNetTernary() {
+			l.DType = DTypeTernary
+			continue
+		}
 		if dt == DTypeFloat32 {
 			l.DType = DTypeFloat32
 			continue
@@ -341,12 +406,14 @@ func PrepareEntityTransformerInference(et *EntityTransformer) {
 }
 
 // LoadEntityTransformer reads a universal-transformer .entity checkpoint from disk.
+// Uses random-access blob reads (EntityFile) so the full file is not slurped into RAM.
 func LoadEntityTransformer(path string) (*EntityTransformer, error) {
-	data, err := os.ReadFile(path)
+	et, err := LoadEntityTransformerFromFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return DeserializeEntityTransformer(data)
+	ReleaseInferenceTransientMemory()
+	return et, nil
 }
 
 // LoadEntityTransformerAs reads a checkpoint and returns a runnable Transformer.
@@ -457,7 +524,60 @@ func ParseEntityHeader(data []byte) (*EntityHeader, error) {
 	}, nil
 }
 
-func deserializeEntityNetwork(hdr *EntityHeader, data []byte, opts *EntityLoadOptions) (*VolumetricNetwork, error) {
+type entityBlobReader func(blob EntityWeightBlob) ([]byte, error)
+
+func entityBlobReaderFromBytes(data []byte, hdr *EntityHeader) entityBlobReader {
+	return func(blob EntityWeightBlob) ([]byte, error) {
+		return readEntityBlobBytes(hdr, data, blob)
+	}
+}
+
+func readEntityBlobBytes(hdr *EntityHeader, data []byte, blob EntityWeightBlob) ([]byte, error) {
+	end := int(blob.Offset) + int(blob.Length)
+	if end > len(data)-hdr.DataOffset {
+		return nil, fmt.Errorf("entity blob %q out of range", blob.Path)
+	}
+	raw := data[hdr.DataOffset+int(blob.Offset) : hdr.DataOffset+end]
+	return raw, nil
+}
+
+func applyEntityBlobToNetwork(net *VolumetricNetwork, blob EntityWeightBlob, raw []byte) error {
+	layerPath := entityBlobLayerPath(blob.Path)
+	l, err := layerAtEntityPath(net, layerPath)
+	if err != nil {
+		return err
+	}
+	ensureLayerWeightStore(l)
+	switch {
+	case entityBlobIsQ4_0(blob):
+		if err := applyEntityQ4_0Blob(l, blob.Path, raw, blob); err != nil {
+			return err
+		}
+	case entityBlobIsBitNetTernary(blob):
+		if err := applyEntityBitNetTernaryBlob(l, blob.Path, raw); err != nil {
+			return err
+		}
+	case strings.HasSuffix(blob.Path, ".biases"):
+		if err := applyEntityBiasBlob(l, raw); err != nil {
+			return err
+		}
+	case strings.HasSuffix(blob.Path, ".q_norm"), strings.HasSuffix(blob.Path, ".k_norm"):
+		if err := applyEntityMHANormBlob(l, blob.Path, raw); err != nil {
+			return err
+		}
+	case strings.HasSuffix(blob.Path, ".inner_norm"):
+		if err := applyEntityBitNetAuxBlob(l, blob.Path, raw); err != nil {
+			return err
+		}
+	default:
+		if err := applyEntityWeightBlob(l, raw, blob); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func deserializeEntityNetwork(hdr *EntityHeader, readBlob entityBlobReader, opts *EntityLoadOptions) (*VolumetricNetwork, error) {
 	net := NewVolumetricNetwork(hdr.Network.Depth, hdr.Network.Rows, hdr.Network.Cols, hdr.Network.LayersPerCell)
 	for _, ls := range hdr.Network.Layers {
 		l := net.GetLayer(ls.Z, ls.Y, ls.X, ls.L)
@@ -465,43 +585,38 @@ func deserializeEntityNetwork(hdr *EntityHeader, data []byte, opts *EntityLoadOp
 			return nil, err
 		}
 	}
+	if err := applyEntityNetworkLayerBlobs(net, hdr, readBlob, opts); err != nil {
+		return nil, err
+	}
+	return net, nil
+}
+
+// applyEntityNetworkLayerBlobs decodes layers.* weight blobs into net.
+// Drops each raw blob after apply and GCs after each transformer sub-block (layer index % 4 == 3).
+func applyEntityNetworkLayerBlobs(net *VolumetricNetwork, hdr *EntityHeader, readBlob entityBlobReader, opts *EntityLoadOptions) error {
 	for _, blob := range hdr.Blobs {
 		if !strings.HasPrefix(blob.Path, "layers.") {
+			continue
+		}
+		if opts != nil && opts.SkipLayerWeights {
 			continue
 		}
 		if opts != nil && len(opts.LayerIndices) > 0 && !entityBlobLayerAllowed(blob.Path, opts.LayerIndices) {
 			continue
 		}
-		end := int(blob.Offset) + int(blob.Length)
-		if end > len(data)-hdr.DataOffset {
-			return nil, fmt.Errorf("entity blob %q out of range", blob.Path)
-		}
-		raw := data[hdr.DataOffset+int(blob.Offset) : hdr.DataOffset+end]
-		layerPath := entityBlobLayerPath(blob.Path)
-		l, err := layerAtEntityPath(net, layerPath)
+		raw, err := readBlob(blob)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		switch {
-		case entityBlobIsQ4_0(blob):
-			if err := applyEntityQ4_0Blob(l, blob.Path, raw, blob); err != nil {
-				return nil, err
-			}
-		case strings.HasSuffix(blob.Path, ".biases"):
-			if err := applyEntityBiasBlob(l, raw); err != nil {
-				return nil, err
-			}
-		case strings.HasSuffix(blob.Path, ".q_norm"), strings.HasSuffix(blob.Path, ".k_norm"):
-			if err := applyEntityMHANormBlob(l, blob.Path, raw); err != nil {
-				return nil, err
-			}
-		default:
-			if err := applyEntityWeightBlob(l, raw, blob); err != nil {
-				return nil, err
-			}
+		if err := applyEntityBlobToNetwork(net, blob, raw); err != nil {
+			return err
+		}
+		raw = nil
+		if idx := entityBlobTopLayerIndex(blob.Path); idx >= 0 && idx%4 == 3 {
+			ReleaseInferenceTransientMemory()
 		}
 	}
-	return net, nil
+	return nil
 }
 
 // DeserializeEntity reconstructs a VolumetricNetwork from an .entity byte slice.
@@ -516,7 +631,7 @@ func DeserializeEntityWithOptions(data []byte, opts *EntityLoadOptions) (*Volume
 	if err != nil {
 		return nil, err
 	}
-	return deserializeEntityNetwork(hdr, data, opts)
+	return deserializeEntityNetwork(hdr, entityBlobReaderFromBytes(data, hdr), opts)
 }
 
 // DeserializeEntityLayer loads topology plus weights for one top-level layer index.
@@ -638,13 +753,17 @@ func canonicalEntityLayerSpec(ls *PersistenceLayerSpec) {
 }
 
 func collectEntityWeightBlobs(l *VolumetricLayer, path string, payload *bytes.Buffer, blobs *[]EntityWeightBlob, entityQuant DType) {
-	if entityQuant == DTypeInt4 && (l.Type == LayerMultiHeadAttention || l.Type == LayerSwiGLU) {
+	if entityQuant == DTypeTernary && (l.Type == LayerMultiHeadAttention || l.Type == LayerSwiGLU) {
+		if l.WeightStore != nil && l.WeightStore.hasBitNetCPUPacked() {
+			collectEntityBitNetLayer(l, path, payload, blobs)
+		}
+	} else if entityQuant == DTypeInt4 && (l.Type == LayerMultiHeadAttention || l.Type == LayerSwiGLU) {
 		if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
 			collectEntityQ4_0Layer(l, path, payload, blobs)
 		}
 	} else if l.WeightStore != nil {
 		dt := l.DType
-		if l.Type == LayerRMSNorm || entityQuant == DTypeInt4 {
+		if l.Type == LayerRMSNorm || entityQuant == DTypeInt4 || entityQuant == DTypeTernary {
 			dt = DTypeFloat32
 		}
 		scale := l.WeightStore.Scale
@@ -697,9 +816,7 @@ func collectEntityWeightBlobs(l *VolumetricLayer, path string, payload *bytes.Bu
 }
 
 func applyEntityWeightBlob(l *VolumetricLayer, raw []byte, blob EntityWeightBlob) error {
-	if l.WeightStore == nil {
-		return fmt.Errorf("no WeightStore for entity blob %q", blob.Path)
-	}
+	ensureLayerWeightStore(l)
 	l.WeightStore.Scale = blob.Scale
 	dt := ParseDType(blob.DType)
 	l.DType = dt
@@ -709,8 +826,10 @@ func applyEntityWeightBlob(l *VolumetricLayer, raw []byte, blob EntityWeightBlob
 			return err
 		}
 		l.WeightStore.SetLoadedWeights(dt, decoded)
-		if dt != DTypeFloat32 {
-			l.WeightStore.Unpack(dt)
+		if len(l.WeightStore.Master) == 0 && dt == DTypeFloat32 {
+			if w, ok := decoded.([]float32); ok {
+				l.WeightStore.Master = w
+			}
 		}
 		return nil
 	}
@@ -767,13 +886,21 @@ func layerAtEntityPath(net *VolumetricNetwork, path string) (*VolumetricLayer, e
 	return l, nil
 }
 
-func entityBlobLayerAllowed(path string, indices []int) bool {
+func entityBlobTopLayerIndex(path string) int {
 	parts := strings.Split(path, ".")
 	if len(parts) < 2 || parts[0] != "layers" {
-		return false
+		return -1
 	}
 	idx, err := strconv.Atoi(parts[1])
 	if err != nil {
+		return -1
+	}
+	return idx
+}
+
+func entityBlobLayerAllowed(path string, indices []int) bool {
+	idx := entityBlobTopLayerIndex(path)
+	if idx < 0 {
 		return false
 	}
 	for _, want := range indices {
@@ -806,7 +933,7 @@ func buildEntityTransformerSpec(et *EntityTransformer) *EntityTransformerSpec {
 			IntermediateSize: et.Dims.IntermediateSize,
 			RMSNormEps:       et.Dims.RMSNormEps,
 			RoPEFreqBase:     et.Dims.RoPEFreqBase,
-			Activation:       fmt.Sprintf("%v", et.Dims.Activation),
+			Activation:       et.Dims.Activation.String(),
 		},
 	}
 	return spec
@@ -868,29 +995,31 @@ func collectEntityGlobalBlob(name string, weights []float32, payload *bytes.Buff
 	})
 }
 
-func loadEntityTransformerGlobals(hdr *EntityHeader, data []byte, spec *EntityTransformerSpec) (embeddings, lmHead, finalNorm []float32, err error) {
+func loadEntityTransformerGlobals(hdr *EntityHeader, readBlob entityBlobReader, spec *EntityTransformerSpec) (embeddings, lmHead, finalNorm []float32, err error) {
 	for _, blob := range hdr.Blobs {
 		if !strings.HasPrefix(blob.Path, "transformer.") {
 			continue
 		}
-		end := int(blob.Offset) + int(blob.Length)
-		if end > len(data)-hdr.DataOffset {
-			return nil, nil, nil, fmt.Errorf("entity blob %q out of range", blob.Path)
+		raw, readErr := readBlob(blob)
+		if readErr != nil {
+			return nil, nil, nil, readErr
 		}
-		raw := data[hdr.DataOffset+int(blob.Offset) : hdr.DataOffset+end]
-		decoded, decErr := DecodeWeightsRaw(raw)
+		decoded, decErr := DecodeWeightsRawOwned(raw)
+		raw = nil
 		if decErr != nil {
 			return nil, nil, nil, fmt.Errorf("entity blob %q: %w", blob.Path, decErr)
 		}
 		switch blob.Path {
 		case "transformer.embeddings":
 			embeddings = decoded
+			ReleaseInferenceTransientMemory()
 		case "transformer.lm_head":
 			lmHead = decoded
 		case "transformer.final_norm":
 			finalNorm = decoded
 		}
 	}
+	ReleaseInferenceTransientMemory()
 	if len(embeddings) == 0 {
 		return nil, nil, nil, fmt.Errorf("entity transformer: missing embeddings blob")
 	}
@@ -903,4 +1032,10 @@ func loadEntityTransformerGlobals(hdr *EntityHeader, data []byte, spec *EntityTr
 		return nil, nil, nil, fmt.Errorf("entity transformer: missing final_norm blob")
 	}
 	return embeddings, lmHead, finalNorm, nil
+}
+
+func ensureLayerWeightStore(l *VolumetricLayer) {
+	if l != nil && l.WeightStore == nil {
+		l.WeightStore = NewWeightStore(0)
+	}
 }

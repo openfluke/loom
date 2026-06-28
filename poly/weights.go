@@ -542,6 +542,21 @@ func (ws *WeightStore) HeRandomize(seed int64, inputSize int) {
 	ws.GPUWeights = make(map[DType]any)
 }
 
+func nativeU8WeightsView(v any) ([]uint8, bool) {
+	switch w := v.(type) {
+	case []uint8:
+		return w, len(w) > 0
+	case []int8:
+		out := make([]uint8, len(w))
+		for i, b := range w {
+			out[i] = uint8(b)
+		}
+		return out, len(out) > 0
+	default:
+		return nil, false
+	}
+}
+
 func (ws *WeightStore) GetActive(dtype DType) any {
 	if dtype == DTypeFloat32 {
 		if len(ws.Master) > 0 {
@@ -597,8 +612,8 @@ func (ws *WeightStore) GetActive(dtype DType) any {
 			return f
 		}
 	case DTypeInt8, DTypeUint8, DTypeInt4, DTypeUint4, DTypeInt2, DTypeUint2, DTypeTernary, DTypeBinary, DTypeFP4:
-		raw, ok := v.([]uint8)
-		if !ok || len(raw) == 0 {
+		raw, ok := nativeU8WeightsView(v)
+		if !ok {
 			return nil
 		}
 		out := make([]float32, len(raw))
@@ -1358,6 +1373,7 @@ func (ws *WeightStore) ApplyGradientsNative(dtype DType, gradWeights *Tensor[flo
 
 // ReleaseInferenceHostWeights drops CPU-side Master/Versions/CPUPacked after GPUWeights are
 // populated. Intended for inference-only paths so VRAM holds the active weights.
+// Baked Q4_0 entity caches are also dropped after uploadQ4_0Cached copies to GPU.
 func (ws *WeightStore) ReleaseInferenceHostWeights() {
 	if ws == nil || len(ws.GPUWeights) == 0 {
 		return
@@ -1365,6 +1381,8 @@ func (ws *WeightStore) ReleaseInferenceHostWeights() {
 	ws.Master = nil
 	ws.Versions = nil
 	ws.CPUPacked = nil
+	ws.Q4_0Scales = nil
+	ws.Q4_0Packed = nil
 }
 
 // Release explicitly destroys all WGPU weight and scale buffers.

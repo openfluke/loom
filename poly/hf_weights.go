@@ -58,3 +58,35 @@ func MaxHFWeightLayerIndexInSafetensorsFiles(paths []string) int {
 	}
 	return max
 }
+
+// BuildLayerShardIndex maps each transformer block index to the safetensors files that contain its tensors.
+func BuildLayerShardIndex(safetensorFiles []string, numLayers int) [][]string {
+	layerFiles := make([][]string, numLayers)
+	if numLayers <= 0 {
+		return layerFiles
+	}
+	for _, sf := range safetensorFiles {
+		names, err := SafetensorsTensorNames(sf)
+		if err != nil {
+			for li := 0; li < numLayers; li++ {
+				layerFiles[li] = append(layerFiles[li], sf)
+			}
+			continue
+		}
+		seen := make(map[int]struct{})
+		for _, n := range names {
+			if li, ok := HFWeightLayerIndex(n); ok && li >= 0 && li < numLayers {
+				seen[li] = struct{}{}
+			}
+		}
+		for li := range seen {
+			layerFiles[li] = append(layerFiles[li], sf)
+		}
+	}
+	for li := 0; li < numLayers; li++ {
+		if len(layerFiles[li]) == 0 {
+			layerFiles[li] = append(layerFiles[li], safetensorFiles...)
+		}
+	}
+	return layerFiles
+}

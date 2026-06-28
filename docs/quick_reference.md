@@ -4,13 +4,47 @@ Concise, copy-paste-ready patterns for the most common `poly/` tasks. Each snipp
 
 ---
 
-## 📦 TypeScript / Node.js Installation
+## 📦 TypeScript / Node.js / Flutter Installation
 
 ```bash
 npm install @openfluke/welvet
 ```
 
-See [deployment.md](deployment.md) for full isomorphic details.
+```yaml
+# Flutter — pubspec.yaml
+dependencies:
+  welvet: ^0.80.4
+```
+
+See [deployment.md](deployment.md) for npm/WASM · [flutter.md](flutter.md) for Flutter FFI and examples.
+
+---
+
+## Flutter / Dart (`welvet`)
+
+```dart
+import 'dart:convert';
+import 'package:welvet/loom_ffi.dart';
+
+final handle = loomLib.createNetwork(jsonEncode({
+  'id': 'demo', 'depth': 1, 'rows': 1, 'cols': 1, 'layers_per_cell': 1,
+  'layers': [{
+    'z': 0, 'y': 0, 'x': 0, 'l': 0,
+    'type': 'dense', 'dtype': 'float32',
+    'input_height': 16, 'output_height': 8, 'activation': 'relu',
+  }],
+}));
+
+loomLib.configureTrainingMode(handle, 2);
+final out = loomParseFloatArray(
+  loomLib.forwardPolymorphic(handle, input, [1, 16]),
+);
+loomLib.freeNetwork(handle);
+```
+
+See [flutter.md](flutter.md) for training, mesh step, DNA, checkpoints, and the loom-flutter-quickstart showcase app.
+
+---
 
 ## Creating a Network
 
@@ -306,18 +340,44 @@ ctx, err := poly.InitWGPU()
 if err != nil { log.Fatal("GPU init failed:", err) }
 network.GPUContext = ctx
 
-// Sync all layer weights to VRAM
+// Training / bulk sync (keeps CPU weights until explicit release):
 for i := range network.Layers {
     network.Layers[i].SyncToGPU()
 }
+```
 
+### LLM inference load (lower peak RAM)
+
+For transformers, prefer block-wise upload + sequential globals — see [memory_history.md](memory_history.md):
+
+```go
+for li := 0; li < numLayers; li++ {
+    base := li * 4
+    for j := 0; j < 4; j++ {
+        layer := &tr.Network.Layers[base+j]
+        _ = layer.SyncToGPU()
+        layer.ReleaseInferenceHostWeights()
+    }
+}
+_ = tr.SyncGlobalWeightsToGPUSequential()
+tr.ReleaseInferenceHostWeights()
+```
+
+Optional diagnostics:
+
+```go
+os.Setenv("LOOM_MEMORY_HISTORY", "1")
+poly.GlobalMemoryHistory.BeginSession("gpu_load")
+poly.RecordFromTransformer(poly.GlobalMemoryHistory, tr, "after_block_1")
+_ = poly.GlobalMemoryHistory.FinishSession() // terminal chart
+```
+
+```go
 // Fill per-dtype maps: CPUTileSizes (CPU) + GPUSCTileSizes / GPUMCTileSizes (GPU).
 // GPU inference: EnableMultiCoreTiling false → SC, true → MC (wgpu_forward reads Network.*).
-// CPU polymorphic code uses GetCPUTileSize only — no separate SC/MC layer maps.
 network.EnableMultiCoreTiling = true
 network.RefreshRuntimeTileSizes()
 
-// GPU batch training
 config := poly.TrainingConfig{UseGPU: true, LearningRate: 0.001, Epochs: 100}
 result := poly.Train[float32](network, data, config)
 ```

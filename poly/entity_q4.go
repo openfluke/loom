@@ -223,9 +223,7 @@ func applyEntityMHANormBlob(l *VolumetricLayer, path string, raw []byte) error {
 }
 
 func applyEntityQ4_0Blob(l *VolumetricLayer, path string, raw []byte, blob EntityWeightBlob) error {
-	if l.WeightStore == nil {
-		return fmt.Errorf("no WeightStore for %q", path)
-	}
+	ensureLayerWeightStore(l)
 	parts := strings.Split(blob.Path, ".")
 	if len(parts) < 4 || parts[len(parts)-2] != "q4_0" {
 		return fmt.Errorf("invalid q4_0 path %q", blob.Path)
@@ -245,6 +243,7 @@ func applyEntityQ4_0Blob(l *VolumetricLayer, path string, raw []byte, blob Entit
 }
 
 func applyEntityBiasBlob(l *VolumetricLayer, raw []byte) error {
+	ensureLayerWeightStore(l)
 	bias, err := DecodeWeightsRaw(raw)
 	if err != nil {
 		return err
@@ -252,9 +251,6 @@ func applyEntityBiasBlob(l *VolumetricLayer, raw []byte) error {
 	h, inter := l.InputHeight, l.OutputHeight
 	wSize := h * inter
 	need := 3*wSize + len(bias)
-	if l.WeightStore == nil {
-		return fmt.Errorf("no WeightStore for bias blob")
-	}
 	if len(l.WeightStore.Master) < need {
 		l.WeightStore.Master = make([]float32, need)
 	}
@@ -270,8 +266,14 @@ func entityBlobLayerPath(blobPath string) string {
 	if i := strings.Index(blobPath, ".q4_0."); i >= 0 {
 		return blobPath[:i]
 	}
+	if i := strings.Index(blobPath, ".bitnet_ternary."); i >= 0 {
+		return blobPath[:i]
+	}
 	if strings.HasSuffix(blobPath, ".biases") {
 		return strings.TrimSuffix(blobPath, ".biases")
+	}
+	if strings.HasSuffix(blobPath, ".inner_norm") {
+		return strings.TrimSuffix(blobPath, ".inner_norm")
 	}
 	if strings.HasSuffix(blobPath, ".q_norm") {
 		return strings.TrimSuffix(blobPath, ".q_norm")
@@ -280,6 +282,104 @@ func entityBlobLayerPath(blobPath string) string {
 		return strings.TrimSuffix(blobPath, ".k_norm")
 	}
 	return blobPath
+}
+
+// DequantizeQ4_0GPUPacked expands baked .entity / GPU-upload Q4_0 blocks to FP32 weights.
+func DequantizeQ4_0GPUPacked(scales []float32, packed []uint32) []float32 {
+	if len(scales) == 0 || len(packed) == 0 {
+		return nil
+	}
+	numBlocks := len(scales)
+	blocks := make([]Q4_0Block, numBlocks)
+	for i := 0; i < numBlocks; i++ {
+		b := &blocks[i]
+		b.Scale = scales[i]
+		base := i * 4
+		if base+3 >= len(packed) {
+			break
+		}
+		for j := 0; j < 4; j++ {
+			w := packed[base+j]
+			b.Weights[j*4] = byte(w)
+			b.Weights[j*4+1] = byte(w >> 8)
+			b.Weights[j*4+2] = byte(w >> 16)
+			b.Weights[j*4+3] = byte(w >> 24)
+		}
+	}
+	return DequantizeQ4_0(blocks, numBlocks*32)
+}
+
+func (ws *WeightStore) dequantizeQ4_0Component(key DType) []float32 {
+	if ws == nil || !ws.HasQ4_0Component(key) {
+		return nil
+	}
+	return DequantizeQ4_0GPUPacked(ws.Q4_0Scales[key], ws.Q4_0Packed[key])
+}
+
+// MaterializeQ4_0ForCPU expands baked Q4_0 components into Master for CPU forward.
+// GPU inference uses uploadQ4_0Cached; CPU tiled forward reads FP32 via GetActive/Master.
+func (l *VolumetricLayer) MaterializeQ4_0ForCPU() {
+	ws := l.WeightStore
+	if ws == nil || !ws.HasAnyQ4_0() {
+		return
+	}
+	switch l.Type {
+	case LayerMultiHeadAttention:
+		d := l.DModel
+		q := l.QueryDim
+		if q == 0 {
+			q = d
+		}
+		kv := l.NumKVHeads * l.HeadDim
+		qwSize := q * d
+		kwSize := d * kv
+		vwSize := d * kv
+		owSize := d * q
+		biasSize := q + kv + kv + d
+		total := qwSize + kwSize + vwSize + owSize + biasSize
+		master := make([]float32, total)
+		if qW := ws.dequantizeQ4_0Component(WeightMHAQuery); len(qW) >= qwSize {
+			copy(master[0:qwSize], qW[:qwSize])
+		}
+		off := qwSize
+		if kW := ws.dequantizeQ4_0Component(WeightMHAKey); len(kW) >= kwSize {
+			copy(master[off:off+kwSize], kW[:kwSize])
+		}
+		off += kwSize
+		if vW := ws.dequantizeQ4_0Component(WeightMHAValue); len(vW) >= vwSize {
+			copy(master[off:off+vwSize], vW[:vwSize])
+		}
+		off += vwSize
+		if oW := ws.dequantizeQ4_0Component(WeightMHAProjection); len(oW) >= owSize {
+			copy(master[off:off+owSize], oW[:owSize])
+		}
+		ws.Master = master
+	case LayerSwiGLU:
+		h, inter := l.InputHeight, l.OutputHeight
+		wSize := h * inter
+		biasTail := 2*inter + h
+		total := 3*wSize + biasTail
+		master := make([]float32, total)
+		if gate := ws.dequantizeQ4_0Component(DType(100)); len(gate) >= wSize {
+			copy(master[0:wSize], gate[:wSize])
+		}
+		if up := ws.dequantizeQ4_0Component(DType(101)); len(up) >= wSize {
+			copy(master[wSize:2*wSize], up[:wSize])
+		}
+		if down := ws.dequantizeQ4_0Component(DType(102)); len(down) >= wSize {
+			copy(master[2*wSize:3*wSize], down[:wSize])
+		}
+		if len(ws.Master) >= total {
+			copy(master[3*wSize:], ws.Master[3*wSize:total])
+		}
+		ws.Master = master
+	default:
+		return
+	}
+	l.DType = DTypeFloat32
+	if ws.Versions != nil {
+		delete(ws.Versions, DTypeInt4)
+	}
 }
 
 func (ws *WeightStore) uploadQ4_0Cached(ctx *WGPUContext, weightDType DType, label string) bool {

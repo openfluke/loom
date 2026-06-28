@@ -39,6 +39,8 @@ func entityDTypeLabel(dt poly.DType) string {
 		return "Q4 (INT4)"
 	case poly.DTypeInt8:
 		return "INT8"
+	case poly.DTypeTernary:
+		return "BitNet (TERNARY)"
 	case poly.DTypeFloat32:
 		return "FP32"
 	default:
@@ -49,12 +51,19 @@ func entityDTypeLabel(dt poly.DType) string {
 	}
 }
 
+func isBitNetEntityModel(modelID string) bool {
+	name := strings.ToLower(modelID)
+	return strings.Contains(name, "bitnet") || strings.Contains(name, "1bit")
+}
+
 func parseConvertDTypeInput(s string) poly.DType {
-	switch strings.TrimSpace(s) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "32", "fp32", "f32":
 		return poly.DTypeFloat32
 	case "8", "int8":
 		return poly.DTypeInt8
+	case "bitnet", "ternary", "t", "b1.58", "158":
+		return poly.DTypeTernary
 	default:
 		return poly.DTypeInt4
 	}
@@ -122,9 +131,12 @@ func classifyModelForEntity(modelID, snapshotDir string) (supported bool, reason
 	if err := json.Unmarshal(configData, &config); err != nil {
 		return false, "bad config.json"
 	}
-	nameLower := strings.ToLower(modelID)
-	if strings.Contains(nameLower, "bitnet") || strings.Contains(nameLower, "1bit") {
-		return false, "BitNet — use [1]"
+	return classifyModelForEntityConfig(modelID, config, snapshotDir)
+}
+
+func classifyModelForEntityConfig(modelID string, config map[string]interface{}, snapshotDir string) (supported bool, reason string) {
+	if poly.IsHFBitNetCheckpoint(modelID, config) {
+		return true, "bitnet-style"
 	}
 	if poly.DetectHFArchitecture(config) == poly.HFArchUnknown {
 		return false, "unsupported arch"
@@ -234,7 +246,16 @@ func convertEntityEntry(e *entityCatalogEntry, dtype poly.DType, force bool) err
 		e.EntityExists = false
 	}
 	fmt.Printf("⏳ Converting %s → %s [%s] …\n", e.ModelID, e.EntityPath, entityDTypeLabel(dtype))
-	res, err := poly.ImportHFCheckpointDir(e.SnapshotDir, poly.HFImportOptions{WeightDType: poly.DTypeFloat32})
+	var (
+		res *poly.HFImportResult
+		err error
+	)
+	if isBitNetEntityModel(e.ModelID) {
+		res, err = poly.ImportHFBitNetCheckpointDir(e.SnapshotDir, e.ModelID)
+		dtype = poly.DTypeTernary
+	} else {
+		res, err = poly.ImportHFCheckpointDir(e.SnapshotDir, poly.HFImportOptions{WeightDType: poly.DTypeFloat32})
+	}
 	if err != nil {
 		return err
 	}
@@ -299,7 +320,7 @@ func promptEntityConversion(reader *bufio.Reader, entries []entityCatalogEntry) 
 		return
 	}
 
-	quantInput := readInput(reader, "💎 Save quant in .entity? (4=Q4 recommended / 32=FP32 / 8=INT8 native) [4]: ", "4")
+	quantInput := readInput(reader, "💎 Save quant in .entity? (4=Q4 recommended / 32=FP32 / 8=INT8 native / bitnet=BitNet ternary) [4]: ", "4")
 	convertDType := parseConvertDTypeInput(quantInput)
 	force := readInput(reader, "♻️  Force reconvert (delete existing .entity for selected)? (1=yes / 0=no) [0]: ", "0") == "1"
 
@@ -341,6 +362,7 @@ func promptEntityConversion(reader *bufio.Reader, entries []entityCatalogEntry) 
 }
 
 func readEntityTalkLaunchOptions(reader *bufio.Reader, modelID string, storedDType poly.DType) polyTalkLaunch {
+	poly.ResetMemoryHistoryRecording()
 	cfg := polyTalkLaunch{
 		weightDType: storedDType,
 		useTiling:   true,
@@ -351,7 +373,7 @@ func readEntityTalkLaunchOptions(reader *bufio.Reader, modelID string, storedDTy
 	cfg.deterministic = detInput == "1"
 	deterministic = cfg.deterministic
 
-	fmt.Printf("💎 Checkpoint quant: %s (read from .entity — GPU uses cached Q4_0 when baked)\n", entityDTypeLabel(storedDType))
+	fmt.Printf("💎 Checkpoint quant: %s (read from .entity — GPU uses baked weights when available)\n", entityDTypeLabel(storedDType))
 
 	fmt.Print("🎮 Enable GPU Acceleration? (1=yes / 0=no) [0]: ")
 	input, _ := reader.ReadString('\n')
@@ -364,10 +386,11 @@ func readEntityTalkLaunchOptions(reader *bufio.Reader, modelID string, storedDTy
 	cfg.tilingMode, cfg.tileSize = parseLLMExecutionMode(execModeInput)
 
 	if cfg.useGPU {
-		cfg.sequentialGPULoad = readInput(reader, "📥 Block-by-block GPU upload? (1=yes / 0=no) [0]: ", "0") == "1"
+		cfg.sequentialGPULoad = readInput(reader, "📥 Block-by-block GPU upload? (1=yes / 0=no) [1]: ", "1") == "1"
 	}
+	cfg.measureMemoryLoad = promptMeasureMemoryDuringLoad(reader)
 
-	applyModelSpecificLaunchOptions(reader, modelID, &cfg)
+	applyModelSpecificLaunchOptions(reader, modelID, &cfg, storedDType)
 	deterministic = cfg.deterministic
 	weightDType = storedDType
 	return cfg
@@ -440,18 +463,46 @@ func runEntityTalkMode(reader *bufio.Reader) {
 		log.Fatalf("❌ %v", err)
 	}
 
-	et, err := poly.LoadEntityTransformer(pick.EntityPath)
+	if launch.measureMemoryLoad {
+		session := "entity_cpu_load"
+		if launch.useGPU {
+			session = "entity_gpu_load"
+		}
+		beginMemoryHistorySession(session)
+		fmt.Println("📈 Memory timeline recording — terminal chart prints when load finishes.")
+		recordMemoryHistoryRuntime("before_entity_load")
+	}
+
+	ef, err := poly.OpenEntityFile(pick.EntityPath)
 	if err != nil {
-		log.Fatalf("❌ LoadEntityTransformer: %v", err)
+		log.Fatalf("❌ OpenEntityFile: %v", err)
+	}
+	defer ef.Close()
+
+	et, err := ef.LoadEntityTransformerTopology()
+	if err != nil {
+		log.Fatalf("❌ LoadEntityTransformerTopology: %v", err)
+	}
+	if launch.measureMemoryLoad {
+		recordMemoryHistoryRuntime("entity_topology_loaded")
 	}
 	if et.WeightDType != 0 {
 		storedDType = et.WeightDType
 	}
 	poly.PrepareEntityTransformerInference(et)
 	template := templateForModel(pick.ModelID)
-	tr = poly.BuildTransformerFromEntity[float32](et, template)
-
 	numLayers := et.Dims.NumLayers
+	if numLayers <= 0 && et.Network != nil {
+		numLayers = len(et.Network.Layers) / 4
+	}
+	hiddenSize := et.HiddenSize
+	rmsNormEps := et.Dims.RMSNormEps
+	vocabSize := et.VocabSize
+	tr = poly.BuildTransformerFromEntity[float32](et, template)
+	if launch.measureMemoryLoad {
+		recordMemoryHistory("entity_cpu_weights_loaded")
+	}
+
 	if numLayers <= 0 {
 		numLayers = len(tr.Network.Layers) / 4
 	}
@@ -471,16 +522,20 @@ func runEntityTalkMode(reader *bufio.Reader) {
 		weightDType:       gpuWeightDType,
 		sequentialGPULoad: launch.sequentialGPULoad,
 		numLayers:         numLayers,
-		hiddenSize:        et.HiddenSize,
+		hiddenSize:        hiddenSize,
 		isQwen:            isQwen,
-		rmsNormEps:        et.Dims.RMSNormEps,
+		rmsNormEps:        rmsNormEps,
 		fromEntity:        true,
+		entityFile:        ef,
+		entityBundle:      et,
 	}
 	useGPU := setupTransformerForInference(tr, infCfg)
+	et = nil
+	poly.ReleaseInferenceTransientMemory()
 
 	applyGlitchTanhiIfRequested(reader, tr.Network)
 
-	fmt.Printf("\n✅ ENTITY loaded! (%d layers, vocab=%d, quant=%s)\n", numLayers, et.VocabSize, entityDTypeLabel(storedDType))
+	fmt.Printf("\n✅ ENTITY loaded! (%d layers, vocab=%d, quant=%s)\n", numLayers, vocabSize, entityDTypeLabel(storedDType))
 	fmt.Printf("   %s\n", formatHFToEntitySize(pick.HFSafetensorsBytes, pick.EntityBytes))
 	printPostLoadMemorySnapshot(tr)
 	if len(poly.TokenizerBannedSpecialExceptEOS(tk, eosTokens)) > 0 {

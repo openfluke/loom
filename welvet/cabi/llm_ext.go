@@ -428,7 +428,9 @@ func LoomCreateLLM(snapshotDirC *C.char, execMode C.int, precisionInt C.int, use
 						(&tr.Network.Layers[i]).SyncToGPU()
 					}
 				}
-				tr.SyncToGPU()
+				if err := tr.SyncGlobalWeightsToGPUSequential(); err != nil {
+					fmt.Printf("❌ Global weight GPU sync: %v\n", err)
+				}
 
 				// Warmup pass to compile WGPU Shaders before first chat!
 				poly.Alog("SOULGLITCH: Performing GPU Warmup Pass...")

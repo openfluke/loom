@@ -7,7 +7,7 @@ cabi/welvet.h
 cabi/welvet.a
 cabi/welvet.lib
 
-# Compiled binaries
+# Compiled binaries — stay out of git; publish.sh copies them into a temp staging dir for pub.dev
 *.exe
 *.dll
 *.so

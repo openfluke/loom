@@ -1,4 +1,4 @@
-# Loom / poly Documentation Index (v0.80.0)
+# Loom / poly Documentation Index (v0.81.0)
 
 This directory contains comprehensive documentation for the `poly/` package — the **M-POLY-VTD** (Multi-numerical POLYmorphic Volumetric Tiled-tensor Dispatcher) engine that powers the Loom neural framework. For the live checklist and completion ratio, see [`poly/README.md`](../poly/README.md#-true-version-calculation).
 
@@ -10,6 +10,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 |:-----|:------------|
 | [overview.md](overview.md) | Big-picture architecture: the 3D grid, six design pillars, key types |
 | [deployment.md](deployment.md) | **Polyglot Ecosystem**: NPM deployment, TypeScript SDK, WASM bridge, and Browser/Node usage |
+| [flutter.md](flutter.md) | **Flutter / Dart**: `welvet` on pub.dev, FFI quick start, runnable examples, loom-flutter-quickstart showcase |
 | [donate_compute.md](donate_compute.md) | **Donate compute**: LAN TCP protocol (`donate_compute_*.go`), framed JSON, model push vs local LM, client/server API |
 | [tanhi.md](tanhi.md) | **TANHI**: UDP JSON-line layer telemetry (`poly/tanhi.go`), SoulGlitch HUD, env/C-ABI, wire format |
 | [numerical_types.md](numerical_types.md) | All 21 DTypes, the `Numeric` generic constraint, `WeightStore` lifecycle, `MorphToFloat32ForGPU` PTQ simulation, Q4_0, and compression ratios |
@@ -17,7 +18,10 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [dispatch.md](dispatch.md) | `DispatchLayer` routing, the 3D grid traversal, tiled parallel execution, `IsRemoteLink` spatial hopping, and the GPU dispatch path |
 | [training.md](training.md) | CPU and GPU training pipelines, loss functions, gradient flow, tween / neural target propagation (chain-rule and gap-based modes), link budgets |
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
+| [memory_history.md](memory_history.md) | **Memory history**: GPU load chart/diagnosis; block-wise HF→`.entity` import **and** block-wise encode (`ImportHFSaveEntityTransformerBlockwise`); GPU upload + sequential global release |
+| [accelerators.md](accelerators.md) | **Vendor NPU/TPU** — `poly/accel`, Intel OpenVINO CPU+NPU (experimental v0.81), Qualcomm + Google TPU planned, `SyncToAccel`, Lucy [9] |
 | [windows_arm64.md](windows_arm64.md) | **Windows on ARM**: index → [`README_WINDOWS_ARM64.md`](../welvet/cabi/internal/build/README_WINDOWS_ARM64.md) (recovery script + `build_unix.sh windows arm64`) |
+| [`../welvet/cabi/internal/build/build_linux.sh`](../welvet/cabi/internal/build/build_linux.sh) | **Linux C-ABI build** — `dist/linux_amd64/` or `linux_arm64/` (`welvet.so` + `welvet.h`); wrapper over `build_unix.sh` |
 | [step.md](step.md) | The step mesh engine: `StepState`, one-clock-cycle forward, spatial feedback via remote links, BPTT, online learning |
 | [dna.md](dna.md) | Topological network fingerprinting: `ExtractDNA`, `CosineSimilarity`, `CompareNetworks`, `LogicShift` detection, recursive extraction for all 19 layer types |
 | [evolution.md](evolution.md) | DNA Splice / Genetic Crossover and NEAT-style Topology Evolution: `SpliceDNA`, `NEATMutate`, `NEATPopulation`, all 3 crossover modes, all 6 mutation types |
@@ -29,9 +33,11 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, Qwen-style expanded-query + Q/K norm support, `Transformer[T]` generation type; CPU vs GPU tiling behavior |
 | [quick_reference.md](quick_reference.md) | Concise copy-paste snippets for all common operations |
 | [testing_and_validation.md](testing_and_validation.md) | **Lucy logs**, parity table legend, how to read `lucy_testing_output/log.txt`, Dense **Go÷ASM** benchmarks, and a compact map of `poly/` files the suites hit |
-| [bedrock_validation.md](bedrock_validation.md) | **v0.79.0** — seven-layer CPU suite, MHA/KV/persistence fixes, C-ABI 100%, what shipped vs roadmap |
+| [bedrock_validation.md](bedrock_validation.md) | **v0.79.0** — seven-layer CPU suite, MHA/KV/persistence fixes; C-ABI **489/489** (v0.81 accel + entity exports) |
 | [v080_release.md](v080_release.md) | **v0.80.0** — ENTITY native checkpoints, WebGPU v1.0.4, cross-platform GPU, Planet Bridging POC |
+| [v081_release.md](v081_release.md) | **v0.81.0** — Intel NPU bridge (`poly/accel`), Lucy [9], vendor plugin model, Qualcomm/Google TPU roadmap |
 | [`../poly/asm/README.md`](../poly/asm/README.md) | **Plan 9 CPU kernels**: `UseAsmForward`, dense forward routing, dot/matmul layout, Lucy speedup interpretation |
+| [asm-and-volumetric-exploration.md](asm-and-volumetric-exploration.md) | **Archive (Jun 2026)**: BitNet W8A8 ASM, I2_S scaffolding, volumetric executor v1, Lucy `[7]` findings — exploratory work removed from tree |
 
 ---
 
@@ -40,6 +46,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **New to the codebase?** Read [overview.md](overview.md) first for the architecture picture, then [layers.md](layers.md) to see what layer types are available.
 **Deploying to Web or JS?** Read [deployment.md](deployment.md).
 
+**Building a Flutter or Dart app?** Read [flutter.md](flutter.md) and clone [loom-flutter-quickstart](https://github.com/openfluke/loom-flutter-quickstart).
+
 **Sharing inference over LAN (donor node / TCP)?** Read [donate_compute.md](donate_compute.md).
 
 **Visualizing layer-by-layer execution (UDP → SoulGlitch TANHI)?** Read [tanhi.md](tanhi.md).
@@ -47,6 +55,14 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Want to train a model?** Read [training.md](training.md) and [dispatch.md](dispatch.md).
 
 **Using the GPU?** Read [gpu.md](gpu.md).
+
+**Offloading to Intel NPU (experimental)?** Read [accelerators.md](accelerators.md) — build `accel/intel`, `SyncToAccel`, Lucy **[9]** or `accel/intel/example`. C/FFI: build Welvet with [`build_linux.sh`](../welvet/cabi/internal/build/build_linux.sh).
+
+**Debugging GPU load RAM spikes (Lucy ENTITY/Poly Talk)?** Read [memory_history.md](memory_history.md).
+
+**Converting HF safetensors to `.entity` on mobile (SoulGlitch)?** See [entity.md — convert memory](entity.md#hf--entity-convert-memory) and [memory_history.md — low-RAM lane](memory_history.md#hf--entity-convert-import--encode-memory) (`ImportHFSaveEntityTransformerBlockwise`).
+
+**Converting HF safetensors to `.entity` on Mac (Lucy [8])?** Same docs — Lucy uses the **standard** lane (`ImportHFCheckpointDir` + `SaveEntityTransformer`).
 
 **Loading a HuggingFace model?** Read [transformer.md](transformer.md) and [serialization.md](serialization.md).
 
@@ -70,7 +86,9 @@ This directory contains comprehensive documentation for the `poly/` package — 
 poly/
 ├── poly.go              Core types: LayerType, DType, Tensor[T], VolumetricNetwork
 ├── weights.go           WeightStore, Morph, Unpack, ApplyGradients
-├── forward.go           DispatchLayer, ForwardPolymorphic
+├── forward.go           DispatchLayer, ForwardPolymorphic (+ vendor accel hook)
+├── accel/               Vendor plugin loader (Intel NPU/CPU; dlopen C ABI)
+├── accel_intel.go       SyncToAccel, DispatchAccelForward
 ├── backward.go          DispatchLayerBackward, BackwardPolymorphic
 ├── training.go          Train, TrainingConfig, CalculateLoss, ComputeLossGradient
 ├── dense.go             DenseForwardPolymorphic, tiled fast-paths
@@ -87,7 +105,13 @@ poly/
 ├── serialization.go     BuildNetworkFromJSON, ParseLayerType/DType/Activation
 ├── persistence.go       SerializeNetwork, DeserializeNetwork, bit-packing, EncodeNativeWeightsRaw
 ├── entity.go            SerializeEntity, LoadEntity, DeserializeEntity — native `.entity` checkpoints
-├── transformer.go       Transformer[T], NewTransformer, Generate
+├── entity_convert_io.go Block-wise ENTITY encode: streaming payload, Q4 bake helpers, writeEntityWireStreaming
+├── hf_entity_convert.go ImportHFSaveEntityTransformerBlockwise(Progress) — mobile-safe HF→`.entity`
+├── hf_import.go         ImportHFCheckpointDir, ImportHFToEntity, ImportHFBitNetCheckpointDir
+├── transformer.go       Transformer[T], NewTransformer, Generate, SyncGlobalWeightsToGPUSequential
+├── memory_history.go    Load-path MemoryHistory, terminal chart, diagnosis
+├── memory_history_chart.go  Braille/sparkline renderers for memory timeline
+├── process_memory_unix.go   Process RSS sampling (getrusage)
 ├── wgpu_context.go      WGPUContext, InitWGPU, BeginFrame, FlushFrame
 ├── wgpu_forward.go      GPU forward dispatch, ForwardTokenIDsWGPU
 ├── wgpu_backward_shaders.go  WGSL shader strings for dense backward

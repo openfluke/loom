@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"runtime"
-	"runtime/debug"
 
 	"github.com/openfluke/loom/poly"
 )
@@ -23,6 +21,36 @@ type inferenceConfig struct {
 	useTernaryPTQCPU  bool
 	rmsNormEps        float64
 	fromEntity        bool
+	entityFile        *poly.EntityFile
+	entityBundle      *poly.EntityTransformer
+}
+
+func loadEntityDecoderBlock(tr *poly.Transformer[float32], cfg inferenceConfig, blockIndex int) error {
+	if cfg.entityFile == nil {
+		return nil
+	}
+	base := blockIndex * 4
+	indices := []int{base, base + 1, base + 2, base + 3}
+	if err := cfg.entityFile.LoadNetworkLayerWeights(tr.Network, indices); err != nil {
+		return fmt.Errorf("load block %d weights: %w", blockIndex, err)
+	}
+	if cfg.entityBundle != nil {
+		poly.PrepareEntityTransformerLayerIndices(cfg.entityBundle, indices)
+	}
+	poly.ReleaseInferenceTransientMemory()
+	return nil
+}
+
+func loadEntityDecoderBlocks(tr *poly.Transformer[float32], cfg inferenceConfig) error {
+	if cfg.entityFile == nil {
+		return nil
+	}
+	for li := 0; li < cfg.numLayers; li++ {
+		if err := loadEntityDecoderBlock(tr, cfg, li); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func normalizeInferenceConfig(cfg *inferenceConfig) {
@@ -62,6 +90,29 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 	}
 
 	useGPU := cfg.useGPU
+	trackMemory := poly.MemoryHistoryEnabled()
+	if trackMemory {
+		if len(poly.GlobalMemoryHistory.Samples()) == 0 {
+			session := "cpu_load"
+			if cfg.fromEntity {
+				session = "entity_cpu_load"
+			}
+			if useGPU {
+				session = "gpu_load"
+				if cfg.fromEntity {
+					session = "entity_gpu_load"
+				}
+			}
+			beginMemoryHistorySession(session)
+		}
+		recordMemoryHistory("inference_setup_start")
+	}
+	defer func() {
+		if trackMemory {
+			finishMemoryHistorySession()
+		}
+	}()
+
 	if useGPU {
 		if cfg.sequentialGPULoad && !cfg.fromEntity {
 			fmt.Printf("⏳ GPU init + block-wise weight upload (%d transformer blocks)...\n", cfg.numLayers)
@@ -77,10 +128,21 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 			fmt.Printf("❌ Failed: %v\n", err)
 			useGPU = false
 		} else {
+			recordMemoryHistory("wgpu_ready")
 			applyGlitchTilingFlags(tr.Network, true, cfg.useTiling, cfg.tilingMode)
+			if cfg.fromEntity && cfg.weightDType == poly.DTypeTernary {
+				tr.Network.UseExactDType = true
+			}
 			if cfg.sequentialGPULoad {
 				for li := 0; li < cfg.numLayers; li++ {
+					if err := loadEntityDecoderBlock(tr, cfg, li); err != nil {
+						log.Fatalf("❌ %v", err)
+					}
+					if cfg.entityFile != nil {
+						recordMemoryHistory(fmt.Sprintf("block_%02d_weights_loaded", li+1))
+					}
 					base := li * 4
+					recordMemoryHistory(fmt.Sprintf("block_%02d_before_sync", li+1))
 					for j := 0; j < 4; j++ {
 						idx := base + j
 						layer := &tr.Network.Layers[idx]
@@ -98,12 +160,19 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 							log.Fatalf("❌ GPU sync block %d layer %d: %v", li, j, err)
 						}
 					}
+					recordMemoryHistory(fmt.Sprintf("block_%02d_after_sync", li+1))
 					for j := 0; j < 4; j++ {
 						(&tr.Network.Layers[base+j]).ReleaseInferenceHostWeights()
 					}
+					recordMemoryHistory(fmt.Sprintf("block_%02d_after_release", li+1))
+					poly.ReleaseInferenceTransientMemory()
 					fmt.Printf("   ✓ Block %d/%d on GPU\n", li+1, cfg.numLayers)
 				}
 			} else {
+				if err := loadEntityDecoderBlocks(tr, cfg); err != nil {
+					log.Fatalf("❌ %v", err)
+				}
+				recordMemoryHistory("bulk_sync_start")
 				for i := range tr.Network.Layers {
 					if tr.Network.Layers[i].Type == poly.LayerRMSNorm {
 						tr.Network.Layers[i].DType = poly.DTypeFloat32
@@ -119,25 +188,45 @@ func setupTransformerForInference(tr *poly.Transformer[float32], cfg inferenceCo
 						log.Fatalf("❌ GPU sync layer %d: %v", i, err)
 					}
 				}
+				recordMemoryHistory("bulk_sync_done")
+				for i := range tr.Network.Layers {
+					tr.Network.Layers[i].ReleaseInferenceHostWeights()
+				}
+				poly.ReleaseInferenceTransientMemory()
+				recordMemoryHistory("decoder_host_released")
 			}
-			if err := tr.SyncToGPU(); err != nil {
-				log.Fatalf("❌ Embedding / LM head GPU sync: %v", err)
+			if err := syncTransformerGlobalWeightsSequential(tr); err != nil {
+				log.Fatalf("❌ Global weight GPU sync: %v", err)
 			}
 
 			_, _ = tr.ForwardTokenIDsWGPU([]uint32{0}, nil, true, true)
 			tr.Reset()
 			tr.ReleaseInferenceHostWeights()
-			runtime.GC()
-			debug.FreeOSMemory()
+			recordMemoryHistory("host_weights_released")
+			poly.AggressiveReleaseMemoryToOS()
+			recordMemoryHistory("after_gc")
 			fmt.Println("✅ Success!")
 		}
 	}
 	if !useGPU {
 		applyGlitchTilingFlags(tr.Network, false, cfg.useTiling, cfg.tilingMode)
-		if cfg.useBitNetCPU || cfg.useTernaryPTQCPU {
+		if cfg.useBitNetCPU || cfg.useTernaryPTQCPU || (cfg.fromEntity && cfg.weightDType == poly.DTypeTernary) {
 			tr.Network.UseExactDType = true
 		}
+		if trackMemory {
+			recordMemoryHistory("cpu_sync_before")
+		}
+		if err := loadEntityDecoderBlocks(tr, cfg); err != nil {
+			log.Fatalf("❌ %v", err)
+		}
 		tr.SyncInferenceCPU()
+		if trackMemory {
+			recordMemoryHistory("cpu_sync_after")
+			poly.AggressiveReleaseMemoryToOS()
+			recordMemoryHistory("after_gc")
+		} else {
+			poly.AggressiveReleaseMemoryToOS()
+		}
 	}
 	return useGPU
 }

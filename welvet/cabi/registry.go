@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/openfluke/loom/poly"
+	"github.com/openfluke/loom/poly/accel"
 )
 
 // Handle-based management maps
@@ -106,11 +107,31 @@ func getTensor(handle int64) (interface{}, bool) {
 var neatPopulations = make(map[int64]*poly.NEATPopulation)
 var neatPopNextID int64 = 1
 
+var accelRegistries = make(map[int64]*accel.Registry)
+var accelRegistryNextID int64 = 1
+
+var entityFiles = make(map[int64]*poly.EntityFile)
+var entityFileNextID int64 = 1
+
 func getNEATPopulation(handle int64) (*poly.NEATPopulation, bool) {
 	networkMu.RLock()
 	defer networkMu.RUnlock()
 	p, ok := neatPopulations[handle]
 	return p, ok
+}
+
+func getAccelRegistry(handle int64) (*accel.Registry, bool) {
+	networkMu.RLock()
+	defer networkMu.RUnlock()
+	r, ok := accelRegistries[handle]
+	return r, ok
+}
+
+func getEntityFile(handle int64) (*poly.EntityFile, bool) {
+	networkMu.RLock()
+	defer networkMu.RUnlock()
+	ef, ok := entityFiles[handle]
+	return ef, ok
 }
 
 // Helper: Convert Handle to TweenState Container

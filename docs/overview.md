@@ -5,7 +5,7 @@
 M-POLY-VTD is a neural inference and training engine built from first principles in Go. It treats a neural network not as a sequential stack of layers, but as a **spatial 3D grid** where each cell can hold any layer type, and every layer can morph its numerical precision on demand.
 
 > [!NOTE]
-> Current version: **0.80.0 (Native Ship)**. Previous: **0.79.0 (Bedrock Validation)**. The Loom stack is **Go + `poly/asm` + WebGPU** (`github.com/openfluke/webgpu@v1.0.4`, wgpu-native v29). **Numerical Tiling (SC/MC)** is live across all 21 DTypes; **Dense forward** can use Plan 9 assembly via `UseAsmForward`. **v0.80** ships **ENTITY** (`.entity`) native checkpoints, Lucy **[8] ENTITY Talk**, and multi-platform GPU validation. **Planet Bridging** POC (planets→Loom) is complete in [`planetbridging/`](../planetbridging/) and releases after Loom. See [`v080_release.md`](v080_release.md) and [`entity.md`](entity.md).
+> Current version: **0.81.0 (Accelerator Bridge)**. Previous: **0.80.0 (Native Ship)** · **0.79.0 (Bedrock Validation)**. The Loom stack is **Go + `poly/asm` + WebGPU** (`github.com/openfluke/webgpu@v1.0.4`, wgpu-native v29) plus **`poly/accel`** vendor plugins (experimental). **Numerical Tiling (SC/MC)** is live across all 21 DTypes; **Dense forward** can use Plan 9 assembly via `UseAsmForward`. **v0.81** adds per-layer **Intel OpenVINO CPU + NPU** offload on Linux (Lucy **[9]**). **v0.80** ships **ENTITY** (`.entity`) native checkpoints. See [`v081_release.md`](v081_release.md), [`accelerators.md`](accelerators.md), [`v080_release.md`](v080_release.md), and [`entity.md`](entity.md).
 
 ---
 
@@ -18,7 +18,7 @@ M-POLY-VTD is a neural inference and training engine built from first principles
 │                                                                             │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │               POLYGLOT BINDINGS (C-ABI FFI Layer)                    │   │
-│  │  Python │ TS (@openfluke/welvet) │ C# │ Java │ Dart │ WASM Browser    │   │
+│  │  Python │ TS (@openfluke/welvet) │ Flutter (pub.dev welvet) │ C# │ Java │ WASM Browser │
 │  └─────────────────────────────┬────────────────────────────────────────┘   │
 │                                │                                            │
 │                                ▼                                            │
@@ -48,6 +48,15 @@ M-POLY-VTD is a neural inference and training engine built from first principles
 │  │               │  │ Tween (NTP) │  │ DispatchBackwardLayer     │    │
 │  │ All 21 DTypes │  │                  │  │ WGSL compute shaders      │    │
 │  └───────────────┘  └──────────────────┘  └───────────────────────────┘    │
+│              │                 │                      │                     │
+│              └─────────────────┼──────────────────────┘                     │
+│                                ▼                                            │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Vendor Accel Bridge (`poly/accel`) — experimental v0.81              │   │
+│  │  Per-layer ExecTarget → C-ABI plugins (Intel OpenVINO CPU+NPU now;    │   │
+│  │  Qualcomm NPU + Google TPU planned) · complements WebGPU, not a     │   │
+│  │  replacement · forward-only on vendor path today                      │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │              WeightStore (Morphic Precision Engine)                   │   │
@@ -205,7 +214,9 @@ End-to-end GPU training (20 epochs):
 
 ## Next Steps
 
-- [v080_release.md](./v080_release.md) — **v0.80.0** ENTITY, WebGPU v1.0.4, GPU validation, Planet Bridging POC
+- [v081_release.md](./v081_release.md) — **v0.81.0** Accelerator Bridge, Intel NPU, Lucy [9]
+- [accelerators.md](./accelerators.md) — vendor NPU/TPU plugins, `SyncToAccel`, OpenVINO
+- [v080_release.md](./v080_release.md) — **v0.80.0** ENTITY, WebGPU v1.0.4, GPU validation
 - [entity.md](./entity.md) — `.entity` native checkpoint format
 - [numerical_types.md](./numerical_types.md) — DType system, WeightStore, Metamorphosis
 - [layers.md](./layers.md) — Every layer type in detail

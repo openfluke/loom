@@ -65,7 +65,7 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		}
 		modelName = models[selectedIdx-1]
 	}
-	applyModelSpecificLaunchOptions(reader, modelName, &launch)
+	applyModelSpecificLaunchOptions(reader, modelName, &launch, 0)
 	useBitNetCPU := launch.useBitNetCPU
 	useBitNetGPU := launch.useBitNetGPU
 	useTernaryPTQCPU := launch.useTernaryPTQCPU
@@ -288,6 +288,17 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 		tr.EnableTiling(tileSize)
 	}
 	if useGPU {
+		trackMemory := poly.MemoryHistoryEnabled()
+		if trackMemory {
+			fmt.Println("📈 Memory timeline recording — terminal chart prints when GPU load finishes.")
+			beginMemoryHistorySession("hf_gpu_load")
+			recordMemoryHistory("hf_cpu_weights_ready")
+		}
+		defer func() {
+			if trackMemory {
+				finishMemoryHistorySession()
+			}
+		}()
 		if sequentialGPULoad {
 			fmt.Printf("⏳ GPU init + block-wise weight upload (%d transformer blocks)...\n", numLayers)
 		} else {
@@ -300,6 +311,7 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 			fmt.Printf("❌ Failed: %v\n", err)
 			useGPU = false
 		} else {
+			recordMemoryHistory("wgpu_ready")
 			applyGlitchTilingFlags(tr.Network, true, useTiling, tilingMode)
 			if sequentialGPULoad {
 				layerFiles := buildLayerShardIndex(safetensorFiles, numLayers)
@@ -322,6 +334,7 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 					debug.FreeOSMemory()
 
 					base := li * 4
+					recordMemoryHistory(fmt.Sprintf("block_%02d_before_sync", li+1))
 					for j := 0; j < 4; j++ {
 						idx := base + j
 						layer := &tr.Network.Layers[idx]
@@ -334,12 +347,15 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 							log.Fatalf("❌ GPU sync block %d layer %d: %v", li, j, err)
 						}
 					}
+					recordMemoryHistory(fmt.Sprintf("block_%02d_after_sync", li+1))
 					for j := 0; j < 4; j++ {
 						(&tr.Network.Layers[base+j]).ReleaseInferenceHostWeights()
 					}
+					recordMemoryHistory(fmt.Sprintf("block_%02d_after_release", li+1))
 					fmt.Printf("   ✓ Block %d/%d on GPU\n", li+1, numLayers)
 				}
 			} else {
+				recordMemoryHistory("bulk_sync_start")
 				for i := range tr.Network.Layers {
 					if tr.Network.Layers[i].Type == poly.LayerRMSNorm {
 						tr.Network.Layers[i].DType = poly.DTypeFloat32
@@ -348,9 +364,10 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 					}
 					(&tr.Network.Layers[i]).SyncToGPU()
 				}
+				recordMemoryHistory("bulk_sync_done")
 			}
-			if err := tr.SyncToGPU(); err != nil {
-				log.Fatalf("❌ Embedding / LM head GPU sync: %v", err)
+			if err := syncTransformerGlobalWeightsSequential(tr); err != nil {
+				log.Fatalf("❌ Global weight GPU sync: %v", err)
 			}
 
 			// Warmup pass to compile WGPU Shaders before first chat!
@@ -358,8 +375,10 @@ func runHuggingFaceMode(reader *bufio.Reader) {
 			tr.Reset()
 
 			tr.ReleaseInferenceHostWeights()
+			recordMemoryHistory("host_weights_released")
 			runtime.GC()
 			debug.FreeOSMemory()
+			recordMemoryHistory("after_gc")
 
 			fmt.Println("✅ Success!")
 		}

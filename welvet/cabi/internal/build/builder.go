@@ -293,9 +293,9 @@ func buildPlatform(p Platform, outBase string) error {
 	return nil
 }
 
-// bundleWindowsRuntime copies MinGW/UCRT DLLs required at load time (e.g. libunwind.dll
-// from llvm-mingw). Without these, lucy.exe / welvet.dll exit immediately on Windows
-// with no console output when the loader cannot resolve imports.
+// bundleWindowsRuntime copies DLLs required at load time. Without these, lucy.exe /
+// welvet.dll exit immediately on Windows with no console output when the loader
+// cannot resolve imports (exit code 0xC0000135).
 func bundleWindowsRuntime(p Platform, outPath, cc string) {
 	if p.GOOS != "windows" {
 		return
@@ -313,6 +313,55 @@ func bundleWindowsRuntime(p Platform, outPath, cc string) {
 		}
 		fmt.Printf("  ✓  %s (Windows runtime)\n", name)
 	}
+	// windows/arm64 links webgpu dynamically (-lwgpu_native.dll); amd64 is static.
+	if p.GOARCH == "arm64" {
+		bundleWebgpuNativeDLL(outPath)
+	}
+}
+
+func webgpuRootDir() string {
+	try := func(path string) string {
+		path = filepath.Clean(path)
+		if st, err := os.Stat(filepath.Join(path, "wgpu", "lib")); err == nil && st.IsDir() {
+			return path
+		}
+		return ""
+	}
+	if v := strings.TrimSpace(os.Getenv("WEBGPU_ROOT")); v != "" {
+		if p := try(v); p != "" {
+			return p
+		}
+	}
+	loomRoot, err := filepath.Abs(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		return ""
+	}
+	for _, rel := range []string{filepath.Join("..", "webgpu"), "webgpu"} {
+		if p := try(filepath.Join(loomRoot, rel)); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+func bundleWebgpuNativeDLL(outPath string) {
+	const name = "wgpu_native.dll"
+	root := webgpuRootDir()
+	if root == "" {
+		fmt.Printf("  ⚠  %s not found — set WEBGPU_ROOT or clone webgpu beside loom\n", name)
+		return
+	}
+	src := filepath.Join(root, "wgpu", "lib", "windows", "arm64", name)
+	if st, err := os.Stat(src); err != nil || st.IsDir() {
+		fmt.Printf("  ⚠  %s not found at %s\n", name, src)
+		return
+	}
+	dst := filepath.Join(outPath, name)
+	if err := copyFileErr(src, dst); err != nil {
+		fmt.Printf("  ⚠  copy %s: %v\n", name, err)
+		return
+	}
+	fmt.Printf("  ✓  %s (webgpu runtime)\n", name)
 }
 
 func findWindowsRuntimeDLL(p Platform, cc, name string) string {
@@ -976,7 +1025,7 @@ func printSummary(successes, failures []string) {
 			fmt.Println("   Windows arm64 (mingw-w64 formula has no aarch64 GCC — use llvm-mingw):")
 			fmt.Println("     https://github.com/mstorsjo/llvm-mingw/releases")
 			fmt.Println("     Download *-macos-* (or *-macos-universal-*), unpack, set LLVM_MINGW_HOME=/path/to/llvm-mingw")
-			fmt.Println("     (builder copies libunwind.dll into dist/windows_* for lucy.exe / welvet.dll)")
+			fmt.Println("     (builder copies libunwind.dll + wgpu_native.dll into dist/windows_arm64)")
 		default:
 			fmt.Println("   Debian/Ubuntu cross packages:")
 			fmt.Println("     sudo apt install gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu \\")

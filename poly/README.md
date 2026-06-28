@@ -3,21 +3,24 @@
 
 M-POLY-VTD is a next-generation neural inference engine designed for high-performance, mixed-precision workloads. It treats the neural network not as a sequential stack, but as a **spatial 3D grid** where layers can morph their numerical precision on-the-fly.
 
-### The Loom stack (only three)
+### The Loom stack
 
-**Loom runs on Go, WebGPU, and Plan 9 assembly — nothing else.** One volumetric dispatcher; pick the backend per device and layer.
+**Loom’s portable core runs on Go and WebGPU**, with **vendor silicon** (Intel NPU today; Qualcomm NPU, Google TPU next) plugged in through **`poly/accel`** + external C ABI plugins in [chaosglue `npu/`](https://github.com/openfluke/chaosglue/tree/main/npu). **Networked execution** (`donate_compute_*.go`) is the distributed complement. One volumetric dispatcher; pick the backend per device and workload.
 
 | Backend | Role | Status |
 | :--- | :--- | :--- |
-| **Go** | Portable CPU: SC/MC tiled loops, all layers, 21 dtypes | ✅ baseline |
-| **`poly/asm`** | Hot CPU inner loops (`.s`, not CGO) | 🚧 **Dense forward** (all 21 dtypes); more layers → more speed |
-| **WebGPU** | GPU forward / backward / training (WGSL from Go) | ✅ production — **openfluke/webgpu v1.0.4** (wgpu-native v29) |
+| **Go** | Portable CPU: SC/MC tiled loops, all layers, 21 dtypes — reference + training fallback | ✅ baseline |
+| **WebGPU** | GPU forward / backward / training (WGSL from Go) | ✅ production — **[openfluke/webgpu](https://github.com/openfluke/webgpu) v1.0.4** (wgpu-native v29) |
+| **`poly/accel`** | Vendor NPU/TPU via `libloom_accel_*.so` (`dlopen`, CGO) | 🧪 **v0.81 experimental** — **Intel CPU+NPU** on Linux; **Qualcomm NPU**, **Google TPU** planned |
+| **Network** | Remote inference & compute offload (`donate_compute_*.go`) | 🚧 protocol shipped · live inference wiring next |
 
-**CPU gets faster as asm lands.** Dense forward on Lucy (arm64 Metal, 8×1024→512) is ~**1.7–2.5×** Go SC for Int4/Ternary/low-bit and up to ~**3.2×** Go MC for Uint4/Ternary/FP4 (best MC **Uint4 ~3.55×**; best SC **Uint8 ~2.46×**). Float64 can still be slower than Go on SC/MC — tile tuning, not a dead asm path. Backward, SwiGLU, MHA, and CNN asm are the next wins. Internals: [`asm/README.md`](asm/README.md).
+**Performance work is GPU-first** for decoder stacks, with **NPU offload** for medium/large MAC-heavy layers where compile tax amortizes. CPU Go paths remain the bedrock parity surface (Lucy **[7]**).
 
-### Where we are now — **v0.80.0 “Native Ship”** (was **v0.79.0 “Bedrock Validation”**)
+**Vendor accel** = init-once compile + steady infer through `DispatchLayer`. See **[`docs/accelerators.md`](../docs/accelerators.md)** and Lucy menu **[9]** (`nine_layer`).
 
-**Device-aware** = **Go** vs **`poly/asm`** on CPU (`UseAsmForward`), or **WebGPU** when `UseGPU` is on. Production GPU uses **[openfluke/webgpu](https://github.com/openfluke/webgpu) v1.0.4** (wgpu-native **v29**).
+### Where we are now — **v0.81.0 “Accelerator Bridge”** (was **v0.80.0 “Native Ship”**)
+
+**Device-aware** = **Go** on CPU, **WebGPU** when `UseGPU` is on, with **NPU** and **distributed mesh** backends on the roadmap. Production GPU uses **openfluke/webgpu v1.0.4** (wgpu-native **v29**).
 
 ## Core Pillars
 
@@ -65,17 +68,17 @@ The framework provides an **Idempotent Serialization Tunnel** designed for extre
 *   **Per-dtype JSON checkpoints**: `SerializeNetwork` writes each layer’s **active `dtype`** plus **native-packed** Base64 (`Native: true`, `Scale` preserved) — not an FP32-only blob. Lucy Dense training reports **Save/Reload PASS** for all 21 types (see `File` KB column: Binary ~17 KB vs Float64 ~5.4 MB on the standard bench).
 *   **Idempotency Verified**: Serializing a reloaded model produces a byte-for-byte identical JSON to the original (when round-tripping the same dtype path).
 
-### VI. ASM CPU (device-aware compute)
-Hand-written **Plan 9 assembly** (`.s` files, **not** CGO) for hot matmul/dot inner loops. One subpackage per layer: `poly/asm/dense/`, `poly/asm/mha/`, … — called from Go via `//go:noescape` stubs.
+### VI. GPU Backward & Accelerator Roadmap
+**WebGPU** is the primary compute path for inference and training. The immediate engineering focus is **finishing GPU backward** for every layer type used in decoder stacks, then extending the same compile model to **NPUs** and **networked execution**.
 
-*   **Toggle**: `VolumetricNetwork.UseAsmForward` or `VolumetricLayer.UseAsmForward` (copied on `SyncToCPU()`).
-*   **Tiling**: Same **SC** (single goroutine / serial tiles) and **MC** (`EnableMultiCoreTiling`, parallel output tiles) as Go.
-*   **Platforms**: **arm64** + **amd64** ship `.s` kernels; other `GOARCH` → Go fallback, no crash.
-*   **Lucy**: Dense → L1 / GPU Forward tables show **Go SC · Go MC · ASM SC · ASM MC · GPU SC · GPU MC** and **Go÷ASM** / **GPU÷ASM** speedup columns (`loom/lucy/lucy_testing_output/log.txt`).
+*   **GPU backward (now):** Dense, RMSNorm, and CNN 1D/2D/3D train end-to-end on GPU. **SwiGLU**, **MHA**, and **Embedding** backward kernels exist but are not fully wired through `DispatchBackwardLayer` — see [GPU layer matrix](#gpu-layer-matrix-status).
+*   **Command graphs:** Record full decoder forward/backward into fewer submits (partial precedent: `wgpu_forward.go` single encoder per token).
+*   **Intel NPU:** Lower ENTITY / morphed weights to Intel NPU runtime (OpenVINO / driver path) for laptop-class inference.
+*   **Qualcomm NPU:** QNN / Hexagon delegate for Snapdragon — same weight layouts as ENTITY native packing where possible.
+*   **Networking:** Expand **Donate Compute** (`docs/donate_compute.md`) from framed TCP stub to live Transformer/ENTITY offload; remote volumetric segments later.
+*   **HA step mesh (later):** Checkpoint/restore per step pulse, failover coordinator, and replicated step state for long-running “living network” deployments — builds on `StepForward` / `StepBackward`.
 
-**Shipped in v0.78+:** `poly/asm/dense/` forward for **all 21 dtypes** — float tiled matmul (`f32`/`f64` acc) plus **native integer** dots (`IMUL` + int64 acc, no FP inside the kernel). Low-bit CPU dense uses morphed `[]uint8` weights (one quant byte per element), not packed bitstreams on the hot path. Training and backward still use Go/GPU paths.
-
-See **[ASM layer matrix](#asm-layer-matrix-status)** below and **[`asm/README.md`](asm/README.md)** for path matrix, codegen, and TODOs.
+See **[Performance roadmap](#-performance-roadmap)** and **[Accelerators & distributed](#3-accelerators-networking--distributed)** below.
 
 ### VII. Tween (neural target propagation)
 A bidirectional learning alternative to traditional backpropagation that bridges the gap between actual activations and idealized targets. **Tween** is our code name; papers often say *target propagation* or *difference target propagation*.
@@ -89,7 +92,7 @@ A comprehensive suite is provided to measure the speed, memory, and bit-level fi
 
 ### Running checks in this repo
 
-Layer matrices, GPU parity tables, and training transcripts are exercised from **`lucy/`** (`lucy_testing_output/log.txt`). The **seven-layer CPU bedrock suite** writes `lucy_testing_output/seven_layer.txt` (menu **[7]**). See [`docs/testing_and_validation.md`](../docs/testing_and_validation.md) and [`docs/bedrock_validation.md`](../docs/bedrock_validation.md).
+Layer matrices, GPU parity tables, and training transcripts are exercised from **`lucy/`** (`lucy_testing_output/log.txt`). The **seven-layer CPU bedrock suite** writes `lucy_testing_output/seven_layer.txt` (menu **[7]**). The **Intel NPU bridge suite** writes `lucy_testing_output/nine_layer.txt` (menu **[9]**). See [`docs/testing_and_validation.md`](../docs/testing_and_validation.md), [`docs/bedrock_validation.md`](../docs/bedrock_validation.md), and [`docs/accelerators.md`](../docs/accelerators.md).
 
 ```bash
 go test ./poly/...
@@ -101,62 +104,42 @@ C-ABI vs public `poly/` surface (export names):
 cd welvet/cabi/internal/check && go run check.go
 ```
 
-### Lucy ASM forward benchmarks (Dense)
+### Lucy GPU & bedrock benchmarks
 
-From repo root, run **`lucy/`** → **Dense** → **L1 Caching** or **GPU Forward Parity** (both include ASM timers). Logs land in `loom/lucy/lucy_testing_output/log.txt`.
+From repo root, run **`lucy/`** → **[7] seven-layer suite** (CPU parity) or **[8] ENTITY Talk** (GPU inference). Logs: `lucy_testing_output/seven_layer.txt`, `lucy_testing_output/log.txt`.
 
 ```bash
 cd loom/lucy && go run .
 ```
 
-Read **Go/Asm↑** columns: values **> 1.0** mean assembly beat Go CPU for that mode. Latest full log (May 2026, Metal / arm64): **Uint8 ~2.46×** SC, **Uint4 ~3.55×** MC, **Ternary ~3.21×** MC, **FP4 ~3.25×** MC, **Int8 ~2.72×** MC; Float32 ~parity; Float64 asm **&lt; 1×** on this bench. Suite totals: **0 ❌ / 0 💀** across ~2992 classified rows. Forward parity vs float reference may show 🟤 **H-DRIFT** on native-int/low-bit — expected path difference, not a broken kernel. Training does not use asm yet; **Save/Reload** after training is native per dtype.
+**GPU forward** on real layer shapes shows **13×–7600×** vs CPU tiled (see tables below). **Next validation target:** GPU backward parity for **SwiGLU** and **MHA** once wired into `DispatchBackwardLayer`.
 
 ---
 
-## ASM layer matrix (status)
+## GPU layer matrix (status)
 
-What exists in the repo **today** vs what Lucy exercises for **Go** and **WebGPU**.
+What exists **today** for **Go CPU** vs **WebGPU**. Legend: **✅** done · **~** partial · **—** not started · **n/a** no grad
 
-Legend: **✅** done · **—** not started · **~** Go/GPU only, no `.s` yet · **n/a** no matmul core
+| Layer | Fwd Go CPU | Fwd GPU | Bwd Go CPU | Bwd GPU | Notes |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Dense** | ✅ SC+MC | ✅ SC+MC | ✅ MC tiled | ✅ | Training E2E ✅ |
+| RMSNorm / LayerNorm | ✅ | ✅ | ✅ | ✅ | Training E2E ✅ |
+| CNN1 / CNN2 / CNN3 | ✅ SC+MC | ✅ SC+MC | ~ | ✅ | Training E2E ✅ |
+| **MHA** | ✅ SC+MC | ✅ SC+MC | ✅ MC | **~** | dQ partial; full bwd **pending** |
+| **SwiGLU** | ✅ SC+MC | ✅ SC+MC | ✅ MC | **—** | Not in `DispatchBackwardLayer` yet |
+| Embedding | ✅ SC+MC | ✅ SC+MC | ✅ MC | **—** | DX intentionally zero |
+| RNN / LSTM | ✅ SC+MC | ✅ SC+MC | ✅ MC | — | CPU-first |
+| Residual | ✅ SC+MC | ✅ SC+MC | ✅ MC | n/a | Elementwise |
+| ConvTransposed 1/2/3 | ✅ | ✅ | ~ | ~ | |
+| Softmax / KMeans / Parallel / Sequential | ✅ | varies | ~ | — | |
 
-| Layer | Fwd Go CPU | Fwd ASM CPU | Fwd GPU | Bwd Go CPU | Bwd ASM CPU | Bwd GPU |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Dense** | ✅ SC+MC | **✅ SC+MC** | ✅ SC+MC | ✅ MC tiled | — | ✅ |
-| CNN1 | ✅ SC+MC | — | ✅ SC+MC | ~ | — | ~ |
-| CNN2 | ✅ SC+MC | — | ✅ SC+MC | ~ | — | ~ |
-| CNN3 | ✅ SC+MC | — | ✅ SC+MC | ~ | — | ~ |
-| MHA | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | ~ |
-| SwiGLU | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | ~ |
-| RNN | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | — |
-| LSTM | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | — |
-| Embedding | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | — |
-| Residual | ✅ SC+MC | — | ✅ SC+MC | ✅ MC | — | n/a |
-| RMSNorm / LayerNorm | ✅ | — | ✅ | ✅ | — | ✅ |
-| ConvTransposed 1/2/3 | ✅ | — | ✅ | ~ | — | ~ |
-| Softmax / KMeans / Parallel / Sequential | ✅ | — | varies | ~ | — | — |
+### GPU backward completion queue (priority)
 
-### ASM packages on disk
-
-| Package | Forward | Backward | Notes |
-| :--- | :---: | :---: | :--- |
-| [`asm/dot/`](asm/dot/) | shared | shared | `f32`/`f64`, `native_int_*`, legacy `native_packed_*` |
-| [`asm/matmul/`](asm/matmul/) | shared | — | tiled forward (float + native int), `OverOutputTiles` MC |
-| [`asm/dense/`](asm/dense/) | ✅ SC+MC | — | layer entry; poly routes float vs native in `dense_asm*.go` |
-| `asm/mha/` | — | — | planned |
-| `asm/swiglu/` | — | — | planned |
-| `asm/cnn/` | — | — | planned |
-
-Full layout, codegen, and checklist: **[`asm/README.md`](asm/README.md)**.
-
-**Training** does not call asm yet (forward-only).
-
-### ASM rollout queue (priority)
-
-1. **Dense** — forward ✅ (21 dtypes) · backward asm · buffer pooling · NEON/SIMD · Float64 SC tuning
-2. **SwiGLU** — three matmuls per block
-3. **MHA** — Q/K/V/O projections
-4. **CNN1/2/3** — conv inner loops
-5. Embedding / RNN / LSTM (lower priority)
+1. **SwiGLU** — wire GPU backward into `DispatchBackwardLayer`; parity vs CPU MC
+2. **MHA** — complete dK/dV/dW; unify with decoder block training
+3. **Embedding** — GPU weight grad path for untied `lm_head`
+4. **Command graph** — single compiled encoder per training step / decode token
+5. **INT8 / FP4 WGSL** — on-device dequant + quant matmul (see checklist §1.4)
 
 ---
 
@@ -175,12 +158,12 @@ npm test
 - **[PASS]** NEAT Population Methods (8/8)
 - **[PASS]** Functional Smoke Tests (Sequential, DNA, SwiGLU, Transformers) (5/5)
 
-### Numerical Tiling Profiles (SC vs MC + ASM)
-**SC (single-core)** and **MC (multi-core)** tiled dispatch are the CPU baseline on all layers. **ASM** is an optional faster CPU path where a `poly/asm/*` kernel exists.
+### Numerical Tiling Profiles (SC vs MC)
+**SC (single-core)** and **MC (multi-core)** tiled dispatch are the CPU baseline on all layers.
 
 *   **SC**: One worker, smaller tiles (e.g. 8×8) — WASM-friendly, deterministic, low overhead.
 *   **MC**: Parallel tiles across `runtime.NumCPU()` — Apple Silicon / Ryzen / desktop class.
-*   **ASM**: Same SC/MC orchestration; inner matmul/dot loops run from `.s` when `UseAsmForward` is set (Dense forward: float tiled + native integer paths).
+*   **GPU**: Same layer math recorded into WebGPU command encoders; preferred for inference and training at scale.
 
 ### VII. Step Mesh Stability
 The **step mesh engine** has been fundamentally stabilized in v0.75.0:
@@ -261,10 +244,12 @@ All runs share a single pre-initialised `WGPUContext`. Weights are copied CPU→
 ---
 
 ## The Bedrock Philosophy
-M-POLY-VTD is a **"Bedrock Edition"** neural engine: bit-level dtypes, volumetric dispatch, and **only** the Loom trio — **Go**, **`poly/asm`**, **WebGPU**.
+M-POLY-VTD is a **"Bedrock Edition"** neural engine: bit-level dtypes, volumetric dispatch, and a clear split between **reference CPU (Go)** and **throughput backends (WebGPU → NPU → network)**.
 
-*   **Go** owns correctness and portability; **`poly/asm`** peels off the hottest CPU matmuls; **WebGPU** owns the GPU.
-*   **Speed on CPU scales with asm rollout** — same SC/MC tiling, faster dots. GPU speed scales with WGSL fusion and graph work.
+*   **Go** owns correctness, portability, and Lucy **[7]** regression — SC/MC tiled loops across all 21 dtypes.
+*   **WebGPU** owns GPU inference and training; **backward completion** for decoder layers is the current perf milestone.
+*   **NPU** (Intel, Qualcomm) extends the same ENTITY / morph pipeline to fixed-function AI silicon on laptops and phones.
+*   **Network + step mesh (later)** distribute inference and enable HA for long-running volumetric meshes.
 *   **21-type morphing**: Same volumetric mesh can run FP32, INT8, FP4, Binary, etc., by swapping active weights in `WeightStore`.
 
 ## Architectural Design Choices
@@ -383,27 +368,41 @@ Because the Dispatcher is decoupled from the 3D Coordinate loop, the GPU driver 
 
 ## ⚡ Performance roadmap
 
-### CPU — **`poly/asm`** (rolling out)
+### v0.81 — GPU backward & decoder training
 
-1. **v0.78 (now):** `poly/asm/dense` forward SC+MC — **~1.5–2×** vs Go on Lucy MC (POC; more headroom with NEON/AVX blocks).
-2. **v0.79+:** Dense backward asm; block GEMM; optional fused ReLU.
-3. **v0.80+:** SwiGLU + MHA projection asm (largest matmul surface in decoders).
-4. **v0.81+:** CNN asm inner loops.
+1. **SwiGLU GPU backward** — wire into `DispatchBackwardLayer`; Lucy gradient parity.
+2. **MHA GPU backward** — dQ/dK/dV + projection weight grads; full decoder block GPU train.
+3. **Embedding GPU backward** — untied head weight updates on device.
+4. **Command graph / fusion** — fewer submits per token; prefill/decode scheduling on GPU.
 
-Always fall back to **Go** when asm is off or the arch has no `.s` yet.
+### v0.82 — NPU backends
 
-### GPU — **WebGPU**
+1. **Intel NPU** — ENTITY → OpenVINO / Intel NPU driver path; SmolLM-class smoke on Core Ultra.
+2. **Qualcomm NPU** — ENTITY → QNN / Hexagon; Windows ARM64 + Android-class targets.
+3. **Shared compile plan** — one load-time graph from `WeightStore` / `.entity`, target-select WebGPU vs NPU.
 
-Prefill-heavy wins, register tiling, **kernel fusion / FlashAttention / command graphs** for decode tok/s — see historical benchmarks below. Shaders stay in **Go + WGSL**; no second GPU stack.
+### v0.83+ — Networking & distributed mesh
+
+1. **Donate Compute live path** — TCP offload runs real `Transformer` / ENTITY inference (not stub).
+2. **Remote volumetric segments** — execute grid partitions on peers; merge activations at hop boundaries.
+3. **TANHI bus** — optional fan-out of layer telemetry across nodes (`docs/tanhi.md`).
+
+### Later — high-availability step mesh
+
+1. **Step pulse checkpointing** — save/restore `StepState` per clock for failover.
+2. **HA coordinator** — leader election, partition recovery for `StepForward` meshes.
+3. **Replicated step-wise execution** — active/passive living networks for 24/7 mesh workloads.
+
+Shaders and kernels stay in **Go + WGSL** on GPU; NPU uses vendor SDKs behind a thin `poly` backend interface. CPU **Go** remains the parity reference — see historical benchmarks below.
 
 ---
 
-## Historical GPU benchmarks (WebGPU track)
+## GPU benchmarks (WebGPU track)
 
-CNN 3D and training showdown tables below remain valid for **GPU vs Go CPU** — they predate the asm POC and do not include **ASM SC/MC** columns (see Lucy Dense L1 for asm numbers).
+CNN 3D and training showdown tables below are the primary performance evidence for **GPU vs Go CPU**.
 
 
-*M-POLY-VTD: Go + asm + WebGPU. Universal precision. Volumetric freedom.*
+*M-POLY-VTD: Go + WebGPU + NPU (roadmap). Universal precision. Volumetric freedom.*
 
 ---
 
@@ -457,13 +456,12 @@ Our semantic version number directly reflects our progress against this absolute
 - [ ] SwiGLU GPU Backward Wiring (resolve BROKEN status in benchmark table)
 - [ ] MHA GPU Backward Wiring (resolve PENDING status in benchmark table)
 
-### 1.7 Parallel Tiled Dispatch & ASM CPU
+### 1.7 Parallel Tiled Dispatch
 - [x] Multi-core CPU tiling (18 layers × 21 dtypes, Go paths)
 - [x] GPU register tiling (WebGPU, layer-dependent)
-- [x] Plan 9 asm — **Dense forward** SC+MC (arm64/amd64)
-- [ ] Plan 9 asm — remaining layers (see [ASM matrix](#asm-layer-matrix-status))
+- [ ] GPU execution plan — compile volumetric visit order to batched device dispatches
 
-**Numerical Progress: 23 / 32**
+**Numerical Progress: 22 / 31**
 
 ---
 
@@ -524,35 +522,37 @@ Our semantic version number directly reflects our progress against this absolute
 
 ---
 
-## 3. ASM CPU (Loom CPU fast path)
+## 3. Accelerators, Networking & Distributed
 
-Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`poly/asm`** on CPU, or **WebGPU** on GPU.
+Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on CPU, **WebGPU** on GPU, **NPU** on Intel/Qualcomm silicon, **TCP mesh** for remote segments.
 
-### 3.1 ASM infrastructure
-- [x] `poly/asm/<layer>/` layout (Plan 9 `.s`, not CGO)
-- [x] `UseAsmForward` on `VolumetricNetwork` / `VolumetricLayer`
-- [x] arm64 + amd64 build tags; stub fallback on other arches
-- [x] Lucy Dense benches: Go / ASM / GPU timers + speedup summary
+### 3.1 GPU backward (priority)
+- [x] Dense GPU backward — training E2E
+- [x] RMSNorm GPU backward — training E2E
+- [x] CNN 1D/2D/3D GPU backward — training E2E
+- [ ] SwiGLU GPU backward wiring (`DispatchBackwardLayer`)
+- [ ] MHA GPU backward wiring (dK/dV/dW + decoder block parity)
+- [ ] Embedding GPU backward wiring (untied `lm_head`)
 
-### 3.2 ASM kernels (by layer)
-- [x] **Dense forward** SC + MC (`asm/dense/`)
-- [ ] Dense forward — NEON/AVX block GEMM, fused ReLU
-- [ ] Dense backward SC + MC
-- [ ] SwiGLU forward (+ backward)
-- [ ] MHA forward projections (+ backward)
-- [ ] CNN1/2/3 forward (+ backward)
-- [ ] Embedding / RNN / LSTM
+### 3.2 NPU backends
+- [ ] Intel NPU path (OpenVINO / Intel NPU driver) from ENTITY
+- [ ] Qualcomm NPU path (QNN / Hexagon) from ENTITY
+- [ ] Shared compile plan: `.entity` → backend-specific graph
+- [ ] NPU parity suite vs WebGPU reference (SmolLM-class smoke)
 
-### 3.3 Host memory & I/O
-- [ ] mmap model weights
-- [ ] Circular / evicting KV-cache
-- [ ] Async IO/compute overlap
-- [x] Reduced peak host RAM on large HF loads (~27 GB → ~15 GB class, representative Qwen)
+### 3.3 Networking & offload
+- [x] Donate Compute TCP framing (`donate_compute_*.go`, `docs/donate_compute.md`)
+- [ ] Donate Compute → live `Transformer` / ENTITY inference
+- [ ] Remote volumetric segment execution across peers
+- [ ] Multi-client request routing / load spread
 
-### 3.4 Future (optional)
-- [ ] Asm-style kernels inside WebGPU shaders (separate from `poly/asm` CPU)
+### 3.4 High availability — step mesh (later)
+- [ ] Step pulse checkpoint / restore (`StepState` per clock)
+- [ ] Failover coordinator for step mesh deployments
+- [ ] Replicated step-wise execution (active/passive)
+- [ ] Partition-tolerant mesh merge after node recovery
 
-**ASM / Device-Aware Progress: 5 / 17**
+**Accelerators & Distributed Progress: 4 / 18**
 
 ---
 
@@ -588,10 +588,12 @@ Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`po
 
 ## 5. Deployment, Compilation & Ecosystem
 
-### 5.1 Backends (Loom only)
-- [x] **Go** — tiled CPU loops (all layers)
-- [x] **`poly/asm`** — Plan 9 `.s` (`UseAsmForward`) — **Dense forward** live; more layers in flight
+### 5.1 Backends (Loom)
+- [x] **Go** — tiled CPU loops (all layers) — reference & Lucy [7]
 - [x] **WebGPU** — GPU via WGPU (Metal / Vulkan / DX12)
+- [ ] **Intel NPU** — laptop AI accelerator path
+- [ ] **Qualcomm NPU** — Snapdragon / Hexagon path
+- [x] **Network** — Donate Compute TCP protocol (inference wiring pending)
 
 ### 5.2 Compiler Integration
 - [ ] Kernel Fusion (Translating sequential operations into single SRAM-bound kernels to eliminate memory bottleneck)
@@ -626,7 +628,7 @@ Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`po
 - [x] **C-ABI functional parity** — `welvet/cabi/internal/check` at **461/461** (100%); includes `LoomSyncInferenceWeights`
 - [x] **MHA volumetric layout + KV** — `[B,S,D]` parsing, training vs decode cache policy, backward Q/K norm parity (`mha_layout.go`, `mha.go`)
 
-**Ecosystem Progress: 25 / 25**
+**Ecosystem Progress: 25 / 27**
 
 ---
 
@@ -657,7 +659,16 @@ Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`po
 
 ---
 
-## v0.80.0 — *Native Ship* (current)
+## v0.81.0 — *Accelerator Bridge* (current)
+
+- **`poly/accel/`** — runtime `dlopen` of vendor plugins; stable C ABI (`loom_accel.h` in chaosglue).
+- **Intel OpenVINO** — `libloom_accel_intel.so`: CPU + NPU forward via `DispatchLayer`; `SyncToAccel` (compile once, infer many); weight upload for MatMul / Conv / MHA-MatMul.
+- **Lucy [9]** — `nine_layer` suite: timing + seven-style drift spectrum; menu **[4]/[5]** DispatchLayer matrix (90 cells on full run).
+- **Experimental** — Linux + `CGO_ENABLED=1` + OpenVINO/NPU driver on `LD_LIBRARY_PATH`. Forward only; training/backward still Loom CPU.
+- **Planned vendors** — Qualcomm NPU (`libloom_accel_qcom.so`), Google TPU (`libloom_accel_google.so`) — same ABI, separate chaosglue trees.
+- **Docs** — [`docs/v081_release.md`](../docs/v081_release.md), [`docs/accelerators.md`](../docs/accelerators.md). Evidence: [chaosglue integration assessment](https://github.com/openfluke/chaosglue/blob/main/npu/docs/2025-06-26-loom-dispatch-integration-assessment.md).
+
+## v0.80.0 — *Native Ship* (previous)
 
 - **ENTITY** — native `.entity` checkpoints (`poly/entity.go`); topology + native-packed weights; ~25% smaller than JSON; idempotent round-trip tests.
 - **Lucy [8] ENTITY Talk** — HF → `ImportHFToEntity` → optional Q4 bake → GPU chat without runtime safetensors.
@@ -674,13 +685,9 @@ Part of the **Go + asm + WebGPU** stack only. **Device-aware** = **Go** vs **`po
 - **C-ABI** — **461/461** export parity; **`LoomSyncInferenceWeights`** for `ReleaseFP32MasterWhenIdle` inference RAM.
 - **Docs** — [`docs/bedrock_validation.md`](../docs/bedrock_validation.md).
 
-## v0.78.0 — *ASM CPU* (previous)
+## v0.78.0 — *ASM CPU experiment* (previous, archived)
 
-- **`poly/asm/dense/`** + **`asm/dot/`** + **`asm/matmul/`** — Plan 9 forward SC/MC on arm64/amd64 (float tiled + native integer / morphed-u8 quant paths).
-- **`UseAsmForward`** — network/layer toggle; training/backward unchanged (Go/GPU).
-- **Lucy Dense** — Generic suite prints **Go · ASM · GPU** timers and **Go/Asm↑** summary (best SC **Uint8 ~2.46×**, best MC **Uint4 ~3.55×** on latest `log.txt`).
-- **Native JSON save** — `SerializeNetwork` persists **packed weights for the layer’s active dtype** + `Scale`; Lucy Dense **Save/Reload PASS** all 21 dtypes after training.
-- **Validation** — latest full Lucy run: **0 broken / 0 fatal**; training matrix `File`/`RAM` columns fixed.
+- Early Plan 9 dense-forward POC — **not** the long-term CPU strategy. Lessons archived in [`docs/asm-and-volumetric-exploration.md`](../docs/asm-and-volumetric-exploration.md). Performance investment moved to **WebGPU backward**, **NPU**, and **networked mesh**.
 
 ## v0.76.0 — *Operation Mesh* (previous)
 
@@ -694,26 +701,26 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 
 | Category | Completed | Total |
 | :--- | :---: | :---: |
-| 1. Numerical Core | 23 | 32 |
+| 1. Numerical Core | 22 | 31 |
 | 2. Architectural Layers | 32 | 37 |
-| 3. ASM CPU | 5 | 17 |
+| 3. Accelerators & Distributed | 4 | 18 |
 | 4. Training Automation | 14 | 18 |
-| 5. Deployment Ecosystem | 25 | 25 |
+| 5. Deployment Ecosystem | 25 | 27 |
 | 6. LLM & Tokenization | 15 | 15 |
-| **GRAND TOTAL** | **114** | **142** |
+| **GRAND TOTAL** | **112** | **146** |
 
-### **Completion Ratio: 80.3%**
+### **Completion Ratio: 76.7%**
 
-## **Version 0.80.0 — CURRENT**
-*(**v0.80.0 "Native Ship"** — from **0.79.0**. **ENTITY** native checkpoints, **openfluke/webgpu v1.0.4**, multi-platform GPU proof, **Planet Bridging POC** complete in-tree. **Next:** publish Loom tag → **Planet Bridging v0.5.0**; **v0.81** ASM rollout + GPU fusion.)*
+## **Version 0.81.0 — CURRENT**
+*(**v0.81.0 "Accelerator Bridge"** — from **0.80.0**. Experimental **Intel CPU+NPU** via `poly/accel`; Lucy **[9]**; Qualcomm NPU + Google TPU on roadmap. Checklist **112 / 146** (76.7%). **Next:** AccelPlanner, JSON `exec`, GPU backward (SwiGLU/MHA), parity hardening.)*
+
+## **Version 0.80.0** (previous)
+*(**v0.80.0 "Native Ship"** — ENTITY, openfluke/webgpu v1.0.4, multi-platform GPU.)*
 
 ## **v0.79.0 — Bedrock Validation** (previous)
 *(Seven-layer CPU regression, MHA/KV, C-ABI 100%.)*
 
-## **v0.78.0 — ASM CPU** (previous)
-*(Plan 9 **Dense forward** ~**2–3.5×** Go MC on quant dtypes; native JSON per dtype on save.)*
-
-## **v0.80–0.81 Roadmap — ASM rollout**
-*(Expand `poly/asm/*` layer-by-layer; block GEMM + fused ops on CPU. WebGPU track continues in parallel — fusion, graphs, attention kernels.)*
+## **v0.81–v0.82 Roadmap**
+*(**AccelPlanner** + JSON `exec`; Intel parity for MatMul/norms; **Qualcomm** + **Google TPU** CABI stubs; complete **GPU backward** for SwiGLU/MHA/Embedding; **Donate Compute** live inference; HA step mesh — later.)*
 
 

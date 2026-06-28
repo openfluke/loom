@@ -1,0 +1,6 @@
+.dart_tool/
+build/
+.DS_Store
+*.tmp
+android/local.properties
+android/*.iml

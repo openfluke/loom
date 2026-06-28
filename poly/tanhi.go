@@ -29,22 +29,35 @@ type tanhiCoord struct {
 	L int `json:"l"`
 }
 
+type tanhiBranchWire struct {
+	Type   string `json:"type"`
+	Slot   int    `json:"slot"`
+	Remote bool   `json:"remote,omitempty"`
+	TZ     int    `json:"tz,omitempty"`
+	TY     int    `json:"ty,omitempty"`
+	TX     int    `json:"tx,omitempty"`
+	TL     int    `json:"tl,omitempty"`
+}
+
 type tanhiWire struct {
-	V           string      `json:"v"`
-	Seq         uint64      `json:"seq"`
-	Phase       string      `json:"phase"`
-	Idx         int         `json:"idx"`
-	Z           int         `json:"z"`
-	Y           int         `json:"y"`
-	X           int         `json:"x"`
-	L           int         `json:"l"`
-	Layer       string      `json:"layer"`
-	DType       int         `json:"dtype"`
-	Connections int         `json:"connections"`
-	T0Ns        int64       `json:"t0_ns"`
-	T1Ns        int64       `json:"t1_ns"`
-	Shape       []int       `json:"shape,omitempty"`
-	Links       []tanhiCoord `json:"links,omitempty"` // parallel / sequential routing targets (SoulGlitch arcs)
+	V           string           `json:"v"`
+	Seq         uint64           `json:"seq"`
+	Phase       string           `json:"phase"`
+	Idx         int              `json:"idx"`
+	Z           int              `json:"z"`
+	Y           int              `json:"y"`
+	X           int              `json:"x"`
+	L           int              `json:"l"`
+	Layer       string           `json:"layer"`
+	DType       int              `json:"dtype"`
+	Connections int              `json:"connections"`
+	T0Ns        int64            `json:"t0_ns"`
+	T1Ns        int64            `json:"t1_ns"`
+	Shape       []int            `json:"shape,omitempty"`
+	Links       []tanhiCoord     `json:"links,omitempty"`
+	Label       string           `json:"label,omitempty"`
+	Combine     string           `json:"combine,omitempty"`
+	Branches    []tanhiBranchWire `json:"branches,omitempty"`
 }
 
 var (
@@ -158,6 +171,39 @@ func tanhiRoutingLinks(layer *VolumetricLayer) []tanhiCoord {
 	return out
 }
 
+func tanhiBranchList(layer *VolumetricLayer) []tanhiBranchWire {
+	if layer == nil {
+		return nil
+	}
+	var out []tanhiBranchWire
+	appendBranch := func(slot int, b *VolumetricLayer) {
+		if b == nil {
+			return
+		}
+		bw := tanhiBranchWire{Type: b.Type.String(), Slot: slot}
+		if b.IsRemoteLink {
+			bw.Remote = true
+			bw.TZ, bw.TY, bw.TX, bw.TL = b.TargetZ, b.TargetY, b.TargetX, b.TargetL
+		}
+		out = append(out, bw)
+	}
+	switch layer.Type {
+	case LayerParallel:
+		for i := range layer.ParallelBranches {
+			appendBranch(i, &layer.ParallelBranches[i])
+		}
+	case LayerSequential:
+		for i := range layer.SequentialLayers {
+			appendBranch(i, &layer.SequentialLayers[i])
+		}
+	}
+	const maxBranches = 32
+	if len(out) > maxBranches {
+		out = out[:maxBranches]
+	}
+	return out
+}
+
 // TanhiGPULayerShapeHint returns an approximate tensor shape for telemetry (no GPU readback).
 func TanhiGPULayerShapeHint(layer *VolumetricLayer, numTokens int) []int {
 	if layer == nil || numTokens <= 0 {
@@ -193,6 +239,37 @@ func tanhiEmit(n *VolumetricNetwork, phase string, idx int, layer *VolumetricLay
 	tanhiEmitWithConn(n, phase, idx, layer, t0, t1, shape, -1)
 }
 
+// TanhiEmitSweep sends a run-boundary marker so HUDs reset between benchmark configs.
+func TanhiEmitSweep(cfg *TanhiUDPConfig, label string) {
+	if cfg == nil || !cfg.Enabled || label == "" {
+		return
+	}
+	addr := tanhiResolveUDPAddr(cfg)
+	if addr == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	w := tanhiWire{
+		V:     "tanhi1",
+		Seq:   tanhiSeq.Add(1),
+		Phase: "sweep",
+		Layer: "sweep",
+		Label: label,
+		T0Ns:  now,
+		T1Ns:  now,
+	}
+	line, err := json.Marshal(w)
+	if err != nil {
+		return
+	}
+	line = append(line, '\n')
+	tanhiEnsureWriter()
+	select {
+	case tanhiQueue <- tanhiPacket{addr: addr, data: line}:
+	default:
+	}
+}
+
 // connOverride >= 0 replaces WeightStore-based connection count (e.g. GPU LM head / tied weights).
 func tanhiEmitWithConn(n *VolumetricNetwork, phase string, idx int, layer *VolumetricLayer, t0, t1 time.Time, shape []int, connOverride int) {
 	if n == nil || n.Tanhi == nil || !n.Tanhi.Enabled || layer == nil {
@@ -226,6 +303,12 @@ func tanhiEmitWithConn(n *VolumetricNetwork, phase string, idx int, layer *Volum
 	}
 	if links := tanhiRoutingLinks(layer); len(links) > 0 {
 		w.Links = links
+	}
+	if branches := tanhiBranchList(layer); len(branches) > 0 {
+		w.Branches = branches
+	}
+	if layer.Type == LayerParallel && layer.CombineMode != "" {
+		w.Combine = layer.CombineMode
 	}
 	line, err := json.Marshal(w)
 	if err != nil {

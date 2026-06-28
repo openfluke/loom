@@ -214,17 +214,50 @@ func ImportHFCheckpointDir(modelDir string, opts HFImportOptions) (*HFImportResu
 		return nil, fmt.Errorf("parse decoder dims: %w", err)
 	}
 
-	allTensors := make(map[string][]float32)
-	skipped := 0
+	// Load globals first, then one decoder block at a time. Loading the full
+	// safetensors map and copyWeights into WeightStore.Master doubled peak RAM
+	// (map + network copies) until GC — same class of bug as bulk GPU upload.
+	globalTensors := make(map[string][]float32)
 	for _, f := range safetensorFiles {
-		part, err := LoadSafetensors(f)
+		part, err := LoadSafetensorsSelective(f, HFWeightIsGlobal)
 		if err != nil {
-			return nil, fmt.Errorf("load %s: %w", filepath.Base(f), err)
+			return nil, fmt.Errorf("load globals from %s: %w", filepath.Base(f), err)
 		}
 		for k, v := range part {
-			allTensors[k] = v
+			globalTensors[k] = v
 		}
 	}
+
+	mapper := NewPrefixWeightMapper()
+	embeddings, lmHead, finalNorm, hasFinalNorm := mapper.MapWeights(globalTensors)
+
+	net := NewVolumetricNetwork(1, 1, 1, dims.NumLayers*4)
+	InitHFDecoderBlocks(net, dims)
+
+	layerFiles := BuildLayerShardIndex(safetensorFiles, dims.NumLayers)
+	tensorsLoaded := len(globalTensors)
+	for li := 0; li < dims.NumLayers; li++ {
+		layerMap := make(map[string][]float32)
+		for _, sf := range layerFiles[li] {
+			part, err := LoadSafetensorsSelective(sf, func(k string) bool {
+				return HFWeightMatchesLayer(k, li)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("load block %d from %s: %w", li, filepath.Base(sf), err)
+			}
+			for k, v := range part {
+				layerMap[k] = v
+				tensorsLoaded++
+			}
+		}
+		if err := LoadWithPrefixes(net, layerMap); err != nil {
+			return nil, err
+		}
+		ReleaseTransientSafetensorMap(layerMap)
+	}
+	ReleaseTransientSafetensorMap(globalTensors, embeddings, lmHead, finalNorm)
+
+	skipped := 0
 	headerCount := 0
 	for _, f := range safetensorFiles {
 		names, err := SafetensorsTensorNames(f)
@@ -232,17 +265,8 @@ func ImportHFCheckpointDir(modelDir string, opts HFImportOptions) (*HFImportResu
 			headerCount += len(names)
 		}
 	}
-	if headerCount > len(allTensors) {
-		skipped = headerCount - len(allTensors)
-	}
-
-	mapper := NewPrefixWeightMapper()
-	embeddings, lmHead, finalNorm, hasFinalNorm := mapper.MapWeights(allTensors)
-
-	net := NewVolumetricNetwork(1, 1, 1, dims.NumLayers*4)
-	InitHFDecoderBlocks(net, dims)
-	if err := LoadWithPrefixes(net, allTensors); err != nil {
-		return nil, err
+	if headerCount > tensorsLoaded {
+		skipped = headerCount - tensorsLoaded
 	}
 
 	MorphHFDecoderWeights(net, opts.WeightDType)
@@ -256,7 +280,7 @@ func ImportHFCheckpointDir(modelDir string, opts HFImportOptions) (*HFImportResu
 		LMHead:          lmHead,
 		FinalNorm:       finalNorm,
 		HasFinalNorm:    hasFinalNorm,
-		TensorsLoaded:   len(allTensors),
+		TensorsLoaded:   tensorsLoaded,
 		TensorsSkipped:  skipped,
 		SafetensorFiles: safetensorFiles,
 	}, nil
@@ -277,5 +301,97 @@ func ImportHFToEntity(modelDir, entityPath string, opts HFImportOptions) error {
 		res.FinalNorm,
 		res.HasFinalNorm,
 	)
+	et.WeightDType = opts.WeightDType
 	return SaveEntityTransformer(entityPath, et)
+}
+
+// IsHFBitNetCheckpoint reports whether a HF folder should use the BitNet packed import path.
+func IsHFBitNetCheckpoint(modelID string, config map[string]interface{}) bool {
+	name := strings.ToLower(modelID)
+	if strings.Contains(name, "bitnet") || strings.Contains(name, "1bit") {
+		return true
+	}
+	mt := strings.ToLower(HFConfigStringDefault(config, "model_type", ""))
+	return strings.Contains(mt, "bitnet")
+}
+
+// ImportHFBitNetCheckpointDir loads a BitNet HF snapshot with block-wise raw safetensors → packed ternary.
+func ImportHFBitNetCheckpointDir(modelDir string, modelID string) (*HFImportResult, error) {
+	configPath := filepath.Join(modelDir, "config.json")
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config.json: %w", err)
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal(configData, &config); err != nil {
+		return nil, fmt.Errorf("parse config.json: %w", err)
+	}
+	if !IsHFBitNetCheckpoint(modelID, config) {
+		return nil, fmt.Errorf("not a BitNet checkpoint: %s", modelID)
+	}
+
+	safetensorFiles, err := filepath.Glob(filepath.Join(modelDir, "*.safetensors"))
+	if err != nil {
+		return nil, err
+	}
+	if len(safetensorFiles) == 0 {
+		return nil, fmt.Errorf("no .safetensors in %s", modelDir)
+	}
+
+	dims, err := ParseHFDecoderDims(config, safetensorFiles)
+	if err != nil {
+		return nil, fmt.Errorf("parse decoder dims: %w", err)
+	}
+
+	globalStored := make(map[string]HFStoredTensor)
+	for _, f := range safetensorFiles {
+		part, err := LoadSafetensorsSelectiveRaw(f, HFWeightIsGlobal)
+		if err != nil {
+			return nil, fmt.Errorf("load globals from %s: %w", filepath.Base(f), err)
+		}
+		for k, v := range part {
+			globalStored[k] = v
+		}
+	}
+	mapper := NewPrefixWeightMapper()
+	embeddings, lmHead, finalNorm, hasFinalNorm := mapper.MapWeightsFromStored(globalStored)
+	ReleaseTransientHFStoredMap(globalStored)
+
+	net := NewVolumetricNetwork(1, 1, 1, dims.NumLayers*4)
+	InitHFDecoderBlocks(net, dims)
+	layerFiles := BuildLayerShardIndex(safetensorFiles, dims.NumLayers)
+	for li := 0; li < dims.NumLayers; li++ {
+		layerMap := make(map[string]HFStoredTensor)
+		for _, sf := range layerFiles[li] {
+			part, err := LoadSafetensorsSelectiveRaw(sf, func(k string) bool {
+				return HFWeightMatchesLayer(k, li)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("load block %d from %s: %w", li, filepath.Base(sf), err)
+			}
+			for k, v := range part {
+				layerMap[k] = v
+			}
+		}
+		if err := LoadWithPrefixesFromHFStored(net, layerMap); err != nil {
+			return nil, err
+		}
+		if err := PrepareDecoderBlockBitNetTernaryCPU(net, li); err != nil {
+			return nil, fmt.Errorf("pack BitNet block %d: %w", li, err)
+		}
+		ReleaseTransientHFStoredMap(layerMap)
+	}
+	net.UseExactDType = true
+
+	return &HFImportResult{
+		Architecture:    HFArchLlamaStyleDecoder,
+		Config:          config,
+		Dims:            dims,
+		Network:         net,
+		Embeddings:      embeddings,
+		LMHead:          lmHead,
+		FinalNorm:       finalNorm,
+		HasFinalNorm:    hasFinalNorm,
+		SafetensorFiles: safetensorFiles,
+	}, nil
 }

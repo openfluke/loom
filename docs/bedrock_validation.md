@@ -17,7 +17,7 @@ This wave does not add a new compute backend. It hardens the **Go CPU** path, **
 | **MHA backward** | Q recomputed with RoPE but skipped Q/K RMS norm vs forward | Backward matches forward norm order before RoPE |
 | **Dense Ternary save** | Checkpoint re-quantized from FP32 Master, not native path | `GetBitNetTernaryMatrix` → `packNativeTernaryToBitNetMatrix` (same matmul as forward) |
 | **Signed low-bit I/O** | Int2/Int4/Ternary round-trip gaps on `[]uint8` | `persistence.go` encode/decode aligned with CPU kernels |
-| **FP32 Master lifecycle** | Bindings could not mirror post-train native-only RAM | `LoomSyncInferenceWeights` in `welvet/cabi` (461/461 C-ABI parity) |
+| **FP32 Master lifecycle** | Bindings could not mirror post-train native-only RAM | `LoomSyncInferenceWeights` in `welvet/cabi` (C-ABI parity **461/461** at v0.79) |
 | **Regression harness** | False PASS (zeros/NaN); suite gaps | Lucy **[7] seven-layer** CPU suite: 10 layer types × 21 dtypes × SC/MC × train × save/reload |
 
 ---
@@ -49,11 +49,22 @@ This suite is the long-term **bedrock gate** for CPU training and native checkpo
 cd welvet/cabi/internal/check && go run .
 ```
 
-Expect **461/461 (100.0%)** functional overlap. The last gap closed in this release:
+**v0.79:** **461/461 (100.0%)** — last gap in that release:
 
 - **`LoomSyncInferenceWeights`** — calls `VolumetricNetwork.SyncInferenceWeights()` when `ReleaseFP32MasterWhenIdle` is set (morph Master → native `Versions`, drop FP32 duplicate for inference RAM).
 
-Python / TypeScript / WASM consumers that train outside `LoomTrain` should call this after morph or custom training if they mirror Go’s inference-only memory model.
+**v0.81 (current):** **489/489 (100.0%)** — additional export families:
+
+| Area | Key exports |
+|------|-------------|
+| **Vendor accel** | `LoomDiscoverAccel`, `LoomNetworkAttachAccel`, `LoomSyncToAccel`, `LoomLayerWeightBytesForAccel`, `LoomDispatchAccelForward`, `LoomSetLayerExecTarget` |
+| **ENTITY file I/O** | `LoomOpenEntityFile`, `LoomLoadEntityTransformerFromFile`, `LoomLoadEntityTransformerTopology`, `LoomLoadNetworkLayerWeights`, `LoomPrepareEntityTransformerLayerIndices`, `LoomDequantizeQ4_0GPUPacked` |
+| **Transformer GPU** | `LoomSyncEmbeddingsToGPU`, `LoomSyncLMHeadToGPU`, `LoomSyncFinalNormToGPU` |
+| **Memory history** | `LoomMemoryHistoryWriteJSON` |
+
+See [`v081_release.md`](v081_release.md) and [`accelerators.md`](accelerators.md#welvet-c-abi-non-go-bindings).
+
+Python / TypeScript / WASM consumers that train outside `LoomTrain` should call `LoomSyncInferenceWeights` after morph or custom training if they mirror Go’s inference-only memory model.
 
 ---
 
@@ -85,7 +96,7 @@ Python / TypeScript / WASM consumers that train outside `LoomTrain` should call 
 | Persistence | `poly/persistence.go`, `poly/serialization.go` |
 | Master / inference RAM | `poly/weight_master.go` |
 | Seven-layer harness | `lucy/examples/seven_layer/*.go` |
-| C-ABI export | `welvet/cabi/acceleration_ext.go` (`LoomSyncInferenceWeights`) |
+| C-ABI export | `welvet/cabi/acceleration_ext.go` (`LoomSyncInferenceWeights`); v0.81: `accel_ext.go`, `entity_ext.go`, `transformer_ext.go`, `io_ext.go` |
 
 ---
 
