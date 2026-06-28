@@ -1,4 +1,8 @@
-/* Vendor-neutral C ABI — keep in sync with accel/intel/include/loom_accel.h */
+/* loom_accel.h — vendor-neutral C ABI for Loom accelerator plugins.
+ *
+ * Each vendor ships libloom_accel_<vendor>.so implementing these symbols.
+ * Loom loads the .so at runtime (dlopen); OpenVINO and other SDKs stay private.
+ */
 #ifndef LOOM_ACCEL_H
 #define LOOM_ACCEL_H
 
@@ -14,20 +18,26 @@ typedef struct loom_accel_plugin loom_accel_plugin;
 typedef struct loom_accel_compiled_layer loom_accel_compiled_layer;
 
 typedef struct loom_accel_layer_desc {
-    const char* layer_name;
-    const char* dtype;
-    const char* size_label;
+    const char* layer_name; /* MatMul, Conv1D, … — see bench_manifest.json */
+    const char* dtype;      /* FP32, FP16, INT8 */
+    const char* size_label; /* small, medium, large */
 } loom_accel_layer_desc;
 
+/* Plugin lifecycle — one plugin instance per device (CPU or NPU). */
 int loom_accel_api_version(void);
+
 const char* loom_accel_vendor_id(void);
+
+/* Returns 1 if the NPU device is visible to the plugin, else 0. */
 int loom_accel_npu_available(void);
 
 loom_accel_plugin* loom_accel_plugin_open(const char* device);
 void loom_accel_plugin_close(loom_accel_plugin* plugin);
 
+/* Expected weight blob size in bytes (FP32 elements). 0 if layer uses baked defaults. */
 size_t loom_accel_weight_bytes(const loom_accel_layer_desc* desc);
 
+/* Compile once at network init. weights may be NULL (vendor defaults). */
 int loom_accel_compile_layer(
     loom_accel_plugin* plugin,
     const loom_accel_layer_desc* desc,
@@ -47,12 +57,14 @@ int loom_accel_layer_io_bytes(
     char* err,
     size_t err_len);
 
+/* First infer after compile (graph warm-up). Optional; infer() also works. */
 int loom_accel_first_infer(
     loom_accel_compiled_layer* layer,
     double* first_infer_ms,
     char* err,
     size_t err_len);
 
+/* Steady-state infer — reuses compiled graph + infer request (no compile). */
 int loom_accel_infer(
     loom_accel_compiled_layer* layer,
     const void* in,
@@ -69,4 +81,4 @@ const char* loom_accel_last_error(loom_accel_plugin* plugin);
 }
 #endif
 
-#endif
+#endif /* LOOM_ACCEL_H */

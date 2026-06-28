@@ -55,7 +55,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **Using the GPU?** Read [gpu.md](gpu.md).
 
-**Offloading to Intel NPU (experimental)?** Read [accelerators.md](accelerators.md) — build chaosglue CABI, `LOOM_ACCEL_INTEL_SO`, `SyncToAccel`, Lucy **[9]**.
+**Offloading to Intel NPU (experimental)?** Read [accelerators.md](accelerators.md) — build `accel/intel`, `SyncToAccel`, Lucy **[9]** or `accel/intel/example`.
 
 **Debugging GPU load RAM spikes (Lucy ENTITY/Poly Talk)?** Read [memory_history.md](memory_history.md).
 

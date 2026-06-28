@@ -2,7 +2,7 @@ package accel
 
 import "fmt"
 
-// AccelConfig locates vendor plugins (paths from app / chaosglue layout).
+// AccelConfig locates vendor plugins (LOOM_ACCEL_INTEL_SO or accel/intel/build/).
 type AccelConfig struct {
 	IntelSO string
 }

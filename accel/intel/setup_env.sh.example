@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Source after installing the OpenVINO C++ toolkit (not the Python wheel).
+# Copy to setup_env.sh and adjust the version/path if needed.
+
+export INTEL_OPENVINO_DIR="/opt/intel/openvino_2025.4.0"
+if [[ -f "${INTEL_OPENVINO_DIR}/setupvars.sh" ]]; then
+  # Official script sets INTEL_OPENVINO_DIR, PATH, LD_LIBRARY_PATH, OpenVINO env vars.
+  # shellcheck disable=SC1091
+  source "${INTEL_OPENVINO_DIR}/setupvars.sh"
+else
+  echo "OpenVINO C++ toolkit not found at ${INTEL_OPENVINO_DIR}" >&2
+  echo "Download from https://storage.openvinotoolkit.org/repositories/openvino/packages/" >&2
+  return 1 2>/dev/null || exit 1
+fi

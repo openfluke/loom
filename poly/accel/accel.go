@@ -1,5 +1,6 @@
 // Package accel loads vendor accelerator plugins (libloom_accel_*.so) at runtime.
-// OpenVINO and other SDKs stay in chaosglue; Loom only knows the C ABI in include/loom_accel.h.
+// OpenVINO and other SDKs stay outside Loom; Loom only knows the C ABI in include/loom_accel.h.
+// Plugin sources and build: loom/accel/intel/
 package accel
 
 import "errors"
@@ -58,7 +59,7 @@ func NPUAvailable(path string) bool {
 	return intelNPUAvailable(path)
 }
 
-// DefaultIntelPath resolves LOOM_ACCEL_INTEL_SO or common chaosglue build locations.
+// DefaultIntelPath resolves LOOM_ACCEL_INTEL_SO or searches accel/intel/build/ from cwd.
 func DefaultIntelPath() string {
 	return defaultIntelPath()
 }

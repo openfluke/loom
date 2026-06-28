@@ -1,0 +1,46 @@
+{
+  "dtypes": ["FP32", "FP16", "INT8"],
+  "size_order": ["small", "medium", "large"],
+  "warmup_by_size": {"small": 3, "medium": 2, "large": 1},
+  "iters_by_size": {"small": 20, "medium": 10, "large": 5},
+  "sizes": {
+    "small": {
+      "note": "Smoke / latency floor (batch=4, dim=32)",
+      "dense": {"batch": 4, "dim": 32},
+      "conv1d": {"batch": 4, "in_c": 2, "length": 16, "filters": 16, "kernel": 3, "pad": 1},
+      "conv2d": {"batch": 4, "in_c": 2, "h": 4, "w": 4, "filters": 2, "kernel": 3, "pad": 1},
+      "spatial": {"batch": 4, "channels": 16, "h": 8, "w": 8, "kernel": 3, "pad": 1, "pool_ks": 2, "pool_stride": 2}
+    },
+    "medium": {
+      "note": "Mid-size (fits easily in 4 MB NPU SRAM)",
+      "dense": {"batch": 16, "dim": 256},
+      "conv1d": {"batch": 8, "in_c": 32, "length": 128, "filters": 32, "kernel": 3, "pad": 1},
+      "conv2d": {"batch": 4, "in_c": 32, "h": 28, "w": 28, "filters": 32, "kernel": 3, "pad": 1},
+      "spatial": {"batch": 4, "channels": 64, "h": 32, "w": 32, "kernel": 3, "pad": 1, "pool_ks": 2, "pool_stride": 2}
+    },
+    "large": {
+      "note": "Near NPU 3720 4 MB SRAM budget (FP16 activations + weights)",
+      "dense": {"batch": 8, "dim": 1024},
+      "conv1d": {"batch": 4, "in_c": 128, "length": 512, "filters": 128, "kernel": 3, "pad": 1},
+      "conv2d": {"batch": 4, "in_c": 64, "h": 48, "w": 48, "filters": 64, "kernel": 3, "pad": 1},
+      "spatial": {"batch": 4, "channels": 128, "h": 48, "w": 48, "kernel": 3, "pad": 1, "pool_ks": 2, "pool_stride": 2}
+    }
+  },
+  "layers": [
+    {"name": "MatMul", "loom_type": "Dense", "loom": "matmul"},
+    {"name": "Conv1D", "loom_type": "CNN1", "loom": "conv1d"},
+    {"name": "Conv2D", "loom_type": "CNN2", "loom": "conv2d"},
+    {"name": "DepthwiseConv", "loom_type": "CNN2-dw", "loom": null},
+    {"name": "AvgPool", "loom_type": "CNN-pool", "loom": null},
+    {"name": "MaxPool", "loom_type": "CNN-pool", "loom": null},
+    {"name": "ReLU", "loom_type": "Dense-act", "loom": "relu"},
+    {"name": "GELU", "loom_type": "SwiGLU-act", "loom": "gelu"},
+    {"name": "Sigmoid", "loom_type": "Dense-act", "loom": "sigmoid"},
+    {"name": "Softmax", "loom_type": "Softmax", "loom": "softmax"},
+    {"name": "Add", "loom_type": "Residual", "loom": null},
+    {"name": "Multiply", "loom_type": "SwiGLU-gate", "loom": null},
+    {"name": "LayerNorm", "loom_type": "LayerNorm", "loom": "layernorm"},
+    {"name": "RMSNorm", "loom_type": "RMSNorm", "loom": "rmsnorm"},
+    {"name": "MHA-MatMul", "loom_type": "MHA", "loom": "mha_matmul"}
+  ]
+}

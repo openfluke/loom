@@ -156,24 +156,7 @@ type intelCompiled struct {
 }
 
 func defaultIntelPath() string {
-	if v := os.Getenv("LOOM_ACCEL_INTEL_SO"); v != "" {
-		return v
-	}
-	if root := os.Getenv("CHAOSGLUE_ROOT"); root != "" {
-		return filepath.Join(root, "npu/intel/cabi/build/libloom_accel_intel.so")
-	}
-	for _, rel := range []string{
-		filepath.Join("..", "..", "npu", "intel", "cabi", "build", "libloom_accel_intel.so"), // lucy/
-		filepath.Join("..", "npu", "intel", "cabi", "build", "libloom_accel_intel.so"),       // loom/
-	} {
-		if abs, err := filepath.Abs(rel); err == nil {
-			if _, err := os.Stat(abs); err == nil {
-				return abs
-			}
-		}
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "git/chaosglue/npu/intel/cabi/build/libloom_accel_intel.so")
+	return defaultIntelPluginPath()
 }
 
 func intelNPUAvailable(path string) bool {

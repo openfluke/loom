@@ -11,11 +11,11 @@ import (
 )
 
 // PrepareRuntime preloads OpenVINO / NPU driver .so dependencies so dlopen(loom_accel_intel)
-// works without manually sourcing npu/intel/example/setup_env.sh.
+// works without manually sourcing accel/intel/setup_env.sh.
 func PrepareRuntime() error {
 	required, optional := discoverPreloadLibs()
 	if len(required) == 0 && openvinoDir() == "" {
-		return fmt.Errorf("OpenVINO not found — source npu/intel/example/setup_env.sh or set INTEL_OPENVINO_DIR")
+		return fmt.Errorf("OpenVINO not found — run accel/intel/install_openvino.sh and source setup_env.sh, or set INTEL_OPENVINO_DIR")
 	}
 	for _, lib := range required {
 		if err := preloadSharedLib(lib); err != nil {
@@ -133,21 +133,7 @@ func npuDriverLibDir() string {
 }
 
 func npuExampleDepsBases() []string {
-	var bases []string
-	if root := os.Getenv("CHAOSGLUE_ROOT"); root != "" {
-		bases = append(bases, filepath.Join(root, "npu", "intel", "example", "deps"))
-	}
-	for _, rel := range []string{
-		filepath.Join("..", "..", "npu", "intel", "example", "deps"),
-		filepath.Join("..", "npu", "intel", "example", "deps"),
-	} {
-		if abs, err := filepath.Abs(rel); err == nil {
-			bases = append(bases, abs)
-		}
-	}
-	home, _ := os.UserHomeDir()
-	bases = append(bases, filepath.Join(home, "git", "chaosglue", "npu", "intel", "example", "deps"))
-	return bases
+	return intelDepsSearchDirs()
 }
 
 func globOne(pattern string) []string {
@@ -166,7 +152,7 @@ func runtimeHint(err error) string {
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "cannot open shared object") || strings.Contains(msg, "No such file") {
-		return "\nHint: source ~/git/chaosglue/npu/intel/example/setup_env.sh\n" +
+		return "\nHint: cd accel/intel && source ./setup_env.sh\n" +
 			"      or set INTEL_OPENVINO_DIR + INTEL_NPU_LIBDIR"
 	}
 	return ""

@@ -37,7 +37,7 @@ func RunBridgeSuite(sizes []string, onlyLayer ...string) {
 	path := DefaultPluginPath()
 	if err := accel.PrepareRuntime(); err != nil {
 		fmt.Println("OpenVINO runtime:", err)
-		fmt.Println("Try: source ~/git/chaosglue/npu/intel/example/setup_env.sh")
+		fmt.Println("Try: source accel/intel/setup_env.sh  (from Loom repo root)")
 		return
 	}
 	cpuPlug, err := openPlugin("CPU")

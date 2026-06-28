@@ -68,20 +68,21 @@ First public **vendor accelerator** path: Loom forwards individual layers throug
 ## Quick start (developers)
 
 ```bash
-# 1. Build Intel CABI (chaosglue)
-cd ~/git/chaosglue/npu/intel/cabi && ./build.sh
+# 1. Build Intel CABI
+cd accel/intel && ./install_openvino.sh && source ./setup_env.sh && ./build.sh
 
-# 2. OpenVINO + NPU environment
-source ~/git/chaosglue/npu/intel/example/setup_env.sh
-export LOOM_ACCEL_INTEL_SO=~/git/chaosglue/npu/intel/cabi/build/libloom_accel_intel.so
+# 2. Optional explicit plugin path
+export LOOM_ACCEL_INTEL_SO="$PWD/accel/intel/build/libloom_accel_intel.so"
 
 # 3. Run Lucy validation
-cd ~/git/chaosglue/loom/lucy
+cd lucy
 CGO_ENABLED=1 go run .
 # → 9 → 4
 ```
 
 Or: `./run_npu_bridge.sh` from `lucy/`.
+
+Monolithic MLP demo: `cd accel/intel/example && CGO_ENABLED=1 go run .`
 
 ---
 
@@ -115,7 +116,7 @@ Loom code path is identical: `DiscoverAccel` → `ExecTarget` → `SyncToAccel` 
 | Intel dispatch | `poly/accel_intel.go`, `poly/forward.go` |
 | Types | `poly/poly.go` (`ExecTarget`, `AccelBinding`, `net.Accel`) |
 | Lucy suite | `lucy/examples/nine_layer/` |
-| CABI | chaosglue `npu/include/loom_accel.h`, `npu/intel/cabi/` |
+| CABI | `accel/intel/include/loom_accel.h`, `accel/intel/src/` |
 
 ---
 

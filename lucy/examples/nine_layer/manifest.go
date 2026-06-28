@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 )
 
-// BenchManifest mirrors chaosglue/npu/intel/example/bench_manifest.json.
+// BenchManifest mirrors accel/intel/bench_manifest.json.
 type BenchManifest struct {
 	DTypes       []string               `json:"dtypes"`
 	SizeOrder    []string               `json:"size_order"`
@@ -17,10 +17,10 @@ type BenchManifest struct {
 }
 
 type SizeProfile struct {
-	Note    string      `json:"note"`
-	Dense   DenseShape  `json:"dense"`
-	Conv1D  Conv1DShape `json:"conv1d"`
-	Conv2D  Conv2DShape `json:"conv2d"`
+	Note    string       `json:"note"`
+	Dense   DenseShape   `json:"dense"`
+	Conv1D  Conv1DShape  `json:"conv1d"`
+	Conv2D  Conv2DShape  `json:"conv2d"`
 	Spatial SpatialShape `json:"spatial"`
 }
 
@@ -69,21 +69,40 @@ func manifestPath() string {
 	if v := os.Getenv("LOOM_BENCH_MANIFEST"); v != "" {
 		return v
 	}
-	if root := os.Getenv("CHAOSGLUE_ROOT"); root != "" {
-		return filepath.Join(root, "npu/intel/example/bench_manifest.json")
-	}
-	for _, rel := range []string{
-		filepath.Join("..", "..", "npu", "intel", "example", "bench_manifest.json"),
-		filepath.Join("..", "npu", "intel", "example", "bench_manifest.json"),
-	} {
-		if abs, err := filepath.Abs(rel); err == nil {
-			if _, err := os.Stat(abs); err == nil {
-				return abs
-			}
+	if root := os.Getenv("LOOM_ROOT"); root != "" {
+		p := filepath.Join(root, "accel", "intel", "bench_manifest.json")
+		if fileExists(p) {
+			return p
 		}
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "git/chaosglue/npu/intel/example/bench_manifest.json")
+	if p := findManifestUpward(); p != "" {
+		return p
+	}
+	return filepath.Join("accel", "intel", "bench_manifest.json")
+}
+
+func findManifestUpward() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	name := filepath.Join("accel", "intel", "bench_manifest.json")
+	for dir := cwd; ; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, name)
+		if fileExists(candidate) {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	return ""
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func LoadManifest() (BenchManifest, error) {

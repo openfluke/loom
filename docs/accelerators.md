@@ -11,7 +11,7 @@ This document covers the **`poly/accel`** package: how Loom offloads individual 
 
 WebGPU covers **portable GPU** (Vulkan / Metal / DX12 / browser). Vendor NPUs and TPUs need **vendor SDKs** that do not belong in the core Go module:
 
-| Approach | Loom owns | chaosglue / vendor tree owns |
+| Approach | Loom owns | External / vendor tree |
 |---|---|---|
 | **WebGPU** | WGSL, `WGPUContext`, buffers | wgpu-native prebuilts |
 | **Vendor accel** | `DispatchLayer` hook, tensor bytes, `ExecTarget` | `libloom_accel_intel.so`, OpenVINO, drivers |
@@ -37,7 +37,7 @@ ForwardPolymorphic
         → else DenseForward / CNN / …
 ```
 
-**C ABI header (vendor-neutral):** [`chaosglue/npu/include/loom_accel.h`](https://github.com/openfluke/chaosglue/blob/main/npu/include/loom_accel.h)
+**C ABI header (vendor-neutral):** `accel/intel/include/loom_accel.h` (copy in `poly/accel/include/`)
 
 | Symbol | Purpose |
 |---|---|
@@ -51,7 +51,7 @@ ForwardPolymorphic
 ## Intel (shipped — experimental)
 
 **Plugin:** `libloom_accel_intel.so` (OpenVINO inside)  
-**Build:** [`chaosglue/npu/intel/cabi/`](https://github.com/openfluke/chaosglue/tree/main/npu/intel/cabi)
+**Build:** `accel/intel/`
 
 ### Requirements
 
@@ -63,11 +63,11 @@ ForwardPolymorphic
 ### Environment
 
 ```bash
-export LOOM_ACCEL_INTEL_SO=~/git/chaosglue/npu/intel/cabi/build/libloom_accel_intel.so
-source ~/git/chaosglue/npu/intel/example/setup_env.sh   # OpenVINO + NPU libs
+export LOOM_ACCEL_INTEL_SO=/path/to/libloom_accel_intel.so   # optional
+source accel/intel/setup_env.sh
 ```
 
-`accel.DefaultIntelPath()` also searches common chaosglue build locations if the env var is unset.
+`accel.DefaultIntelPath()` walks up from cwd for `accel/intel/build/libloom_accel_intel.so`, or set `LOOM_ROOT`.
 
 ### Application code
 
