@@ -200,3 +200,39 @@ func LoomTransformerLayerTraceRecords(transformerHandle C.longlong) *C.char {
 	}
 	return C.CString(string(b))
 }
+
+//export LoomSyncEmbeddingsToGPU
+func LoomSyncEmbeddingsToGPU(transformerHandle C.longlong) *C.char {
+	tr, ok := getTransformerF32(int64(transformerHandle))
+	if !ok {
+		return errJSON("invalid transformer handle")
+	}
+	if err := tr.SyncEmbeddingsToGPU(); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status":"ok"}`)
+}
+
+//export LoomSyncLMHeadToGPU
+func LoomSyncLMHeadToGPU(transformerHandle C.longlong) *C.char {
+	tr, ok := getTransformerF32(int64(transformerHandle))
+	if !ok {
+		return errJSON("invalid transformer handle")
+	}
+	if err := tr.SyncLMHeadToGPU(); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status":"ok"}`)
+}
+
+//export LoomSyncFinalNormToGPU
+func LoomSyncFinalNormToGPU(transformerHandle C.longlong) *C.char {
+	tr, ok := getTransformerF32(int64(transformerHandle))
+	if !ok {
+		return errJSON("invalid transformer handle")
+	}
+	if err := tr.SyncFinalNormToGPU(); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status":"ok"}`)
+}

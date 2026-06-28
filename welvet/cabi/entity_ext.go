@@ -204,3 +204,128 @@ func LoomLoadEntityTransformerAs(path *C.char, dtype C.int) C.longlong {
 	tr, dt := buildTransformerFromEntity(et, poly.DType(dtype), poly.Template{})
 	return C.longlong(registerTransformer(tr, dt))
 }
+
+func registerEntityFile(ef *poly.EntityFile) C.longlong {
+	networkMu.Lock()
+	id := entityFileNextID
+	entityFileNextID++
+	entityFiles[id] = ef
+	networkMu.Unlock()
+	return C.longlong(id)
+}
+
+func registerEntityTransformerHandle(et *poly.EntityTransformer) C.longlong {
+	networkMu.Lock()
+	id := entityTransformerNextID
+	entityTransformerNextID++
+	entityTransformers[id] = et
+	networkMu.Unlock()
+	return C.longlong(id)
+}
+
+//export LoomOpenEntityFile
+func LoomOpenEntityFile(path *C.char) C.longlong {
+	ef, err := poly.OpenEntityFile(C.GoString(path))
+	if err != nil {
+		return -1
+	}
+	return registerEntityFile(ef)
+}
+
+//export LoomOpenEntityFileAt
+func LoomOpenEntityFileAt(path *C.char, baseOffset C.longlong, maxLoomEnd C.longlong) C.longlong {
+	ef, err := poly.OpenEntityFileAt(C.GoString(path), int64(baseOffset), int64(maxLoomEnd))
+	if err != nil {
+		return -1
+	}
+	return registerEntityFile(ef)
+}
+
+//export LoomCloseEntityFile
+func LoomCloseEntityFile(entityFileHandle C.longlong) {
+	networkMu.Lock()
+	if ef, ok := entityFiles[int64(entityFileHandle)]; ok {
+		_ = ef.Close()
+		delete(entityFiles, int64(entityFileHandle))
+	}
+	networkMu.Unlock()
+}
+
+//export LoomLoadEntityTransformerFromFile
+func LoomLoadEntityTransformerFromFile(path *C.char) C.longlong {
+	et, err := poly.LoadEntityTransformerFromFile(C.GoString(path))
+	if err != nil {
+		return -1
+	}
+	return registerEntityTransformerHandle(et)
+}
+
+//export LoomLoadEntityTransformerFromFileAt
+func LoomLoadEntityTransformerFromFileAt(path *C.char, baseOffset C.longlong, maxLoomEnd C.longlong) C.longlong {
+	et, err := poly.LoadEntityTransformerFromFileAt(C.GoString(path), int64(baseOffset), int64(maxLoomEnd))
+	if err != nil {
+		return -1
+	}
+	return registerEntityTransformerHandle(et)
+}
+
+//export LoomLoadEntityTransformerTopology
+func LoomLoadEntityTransformerTopology(entityFileHandle C.longlong) C.longlong {
+	ef, ok := getEntityFile(int64(entityFileHandle))
+	if !ok {
+		return -1
+	}
+	et, err := ef.LoadEntityTransformerTopology()
+	if err != nil {
+		return -1
+	}
+	return registerEntityTransformerHandle(et)
+}
+
+//export LoomLoadNetworkLayerWeights
+func LoomLoadNetworkLayerWeights(entityFileHandle C.longlong, networkHandle C.longlong, layerIndicesJSON *C.char) *C.char {
+	ef, ok := getEntityFile(int64(entityFileHandle))
+	if !ok {
+		return errJSON("invalid entity file handle")
+	}
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok {
+		return errJSON("invalid network handle")
+	}
+	var indices []int
+	if err := json.Unmarshal([]byte(C.GoString(layerIndicesJSON)), &indices); err != nil {
+		return errJSON("invalid layer indices JSON")
+	}
+	if err := ef.LoadNetworkLayerWeights(n, indices); err != nil {
+		return errJSON(err.Error())
+	}
+	return C.CString(`{"status":"ok"}`)
+}
+
+//export LoomPrepareEntityTransformerLayerIndices
+func LoomPrepareEntityTransformerLayerIndices(entityHandle C.longlong, layerIndicesJSON *C.char) *C.char {
+	et, ok := getEntityTransformer(int64(entityHandle))
+	if !ok {
+		return errJSON("invalid entity transformer handle")
+	}
+	var indices []int
+	if err := json.Unmarshal([]byte(C.GoString(layerIndicesJSON)), &indices); err != nil {
+		return errJSON("invalid layer indices JSON")
+	}
+	poly.PrepareEntityTransformerLayerIndices(et, indices)
+	return C.CString(`{"status":"ok"}`)
+}
+
+//export LoomDequantizeQ4_0GPUPacked
+func LoomDequantizeQ4_0GPUPacked(scalesPackedJSON *C.char) *C.char {
+	var in struct {
+		Scales []float32 `json:"scales"`
+		Packed []uint32  `json:"packed"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(scalesPackedJSON)), &in); err != nil {
+		return errJSON("invalid scales/packed JSON")
+	}
+	weights := poly.DequantizeQ4_0GPUPacked(in.Scales, in.Packed)
+	out, _ := json.Marshal(weights)
+	return C.CString(string(out))
+}
