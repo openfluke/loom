@@ -54,3 +54,6 @@ glitch/
 .gocache
 third_party
 planetbridging
+
+entities/
+popcorn/
