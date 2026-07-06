@@ -37,6 +37,11 @@ func main() {
 		examples.RunNineLayerMenu(reader)
 		return
 	}
+	if os.Getenv("LOOM_CONTEXT_SUITE") == "1" {
+		_ = os.Unsetenv("LOOM_CONTEXT_SUITE")
+		examples.RunContextSuiteAuto()
+		return
+	}
 	mode := readInput(reader, "\n[1] Poly Talk (HuggingFace cache)\n"+
 		"[2] Tests — dense mid-stream adaptation benchmark\n"+
 		"[3] Layer testing — CPU/GPU suites (optional save to "+lucytesting.DefaultOutputDir+")\n"+
@@ -46,6 +51,7 @@ func main() {
 		"[7] Seven-layer CPU suite — JSON · SC/MC/ASM · train · save/reload (→ "+lucytesting.DefaultOutputDir+"/seven_layer.txt)\n"+
 		"[8] ENTITY Talk — HF cache → .entity convert → chat (Qwen/SmolLM2/Llama-style)\n"+
 		"[9] Intel NPU bridge — Loom ↔ libloom_accel_intel.so · all layers/dtypes (→ "+lucytesting.DefaultOutputDir+"/nine_layer.txt)\n"+
+		"[10] Context suite — long context / multi-prompt .entity tests (→ lucy_testing_output/context_suite/)\n"+
 		"Choice [1]: ", "1")
 	switch strings.TrimSpace(mode) {
 	case "2":
@@ -65,6 +71,8 @@ func main() {
 		runEntityTalkMode(reader)
 	case "9":
 		examples.RunNineLayerMenu(reader)
+	case "10":
+		examples.RunContextSuiteMenu(reader)
 	default:
 		runHuggingFaceMode(reader)
 	}
