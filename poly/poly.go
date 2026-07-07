@@ -534,6 +534,9 @@ type VolumetricNetwork struct {
 	UseGPU                bool
 	UseExactDType         bool
 
+	// UseSimdForward routes Dense forward through Plan 9 AVX2 tile dots (Float32 activations).
+	UseSimdForward bool
+
 	// ReleaseFP32MasterWhenIdle drops FP32 Master after SyncInferenceWeights so
 	// forward-only paths hold native Versions only. Training calls EnsureTrainingWeights.
 	ReleaseFP32MasterWhenIdle bool
@@ -632,8 +635,10 @@ type VolumetricLayer struct {
 	// Tiling & GPU Config
 	UseTiling             bool
 	EnableMultiCoreTiling bool
+	UseSimdForward        bool
 	TileSize              int           // legacy fallback; prefer per-dtype maps below
-	CPUTileSizes          map[DType]int // CPU tile size per numerical type
+	CPUTileSizes          map[DType]int // CPU tile size per numerical type (scalar tiled)
+	CPUSimdTileSizes      map[DType]int // CPU SIMD tile size per numerical type (Dense AVX/NEON)
 	GPUSCTileSizes        map[DType]int // GPU single-core tile size per numerical type
 	GPUMCTileSizes        map[DType]int // GPU multi-core tile size per numerical type
 	UseGPU                bool
@@ -735,6 +740,14 @@ func NewVolumetricNetwork(depth, rows, cols, layersPerCell int) *VolumetricNetwo
 // GetIndex calculates the flattened index for a 3D coordinate.
 func (n *VolumetricNetwork) GetIndex(z, y, x, l int) int {
 	return (z * n.Rows * n.Cols * n.LayersPerCell) + (y * n.Cols * n.LayersPerCell) + (x * n.LayersPerCell) + l
+}
+
+// StackLayerCount returns the total number of layers in the volumetric grid.
+func (n *VolumetricNetwork) StackLayerCount() int {
+	if n == nil {
+		return 0
+	}
+	return n.Depth * n.Rows * n.Cols * n.LayersPerCell
 }
 
 // SyncToGPU mirrors all layers to the GPU.
@@ -1859,9 +1872,7 @@ func (l *VolumetricLayer) syncQuantizedMHA(ctx *WGPUContext) {
 func (l *VolumetricLayer) SyncToCPU() {
 	l.EnableMultiCoreTiling = l.Network.EnableMultiCoreTiling
 
-	if l.UseTiling {
-		l.refreshRuntimeCPUTileSizes()
-	}
+	l.refreshRuntimeCPUTileSizes()
 
 	if l.WeightStore != nil {
 		l.MaterializeQ4_0ForCPU()

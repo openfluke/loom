@@ -18,6 +18,36 @@ func LoomAsmEnabled() C.int {
 	return 0
 }
 
+//export LoomSimdEnabled
+func LoomSimdEnabled() C.int {
+	if poly.Plan9SimdEnabled() {
+		return 1
+	}
+	return 0
+}
+
+//export LoomSetNetworkUseSimdForward
+func LoomSetNetworkUseSimdForward(networkHandle C.longlong, enabled C.int) *C.char {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok {
+		return errJSON("invalid network handle")
+	}
+	n.SetSimdForwardRecursive(enabled != 0)
+	return C.CString(`{"status":"ok"}`)
+}
+
+//export LoomGetNetworkUseSimdForward
+func LoomGetNetworkUseSimdForward(networkHandle C.longlong) C.int {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok {
+		return 0
+	}
+	if n.UseSimdForward {
+		return 1
+	}
+	return 0
+}
+
 //export LoomSetNetworkUseAsmForward
 func LoomSetNetworkUseAsmForward(networkHandle C.longlong, enabled C.int) *C.char {
 	_, ok := getNetwork(int64(networkHandle))

@@ -174,6 +174,17 @@ func applyDTypeLayer(l *poly.VolumetricLayer, tc dtypeCase) {
 	l.DType = tc.dtype
 	if l.WeightStore != nil {
 		l.WeightStore.InvalidateVersions()
+		if l.Network != nil && l.Type == poly.LayerDense {
+			dim := l.InputHeight
+			if l.OutputHeight > dim {
+				dim = l.OutputHeight
+			}
+			if wScale := poly.MasterWeightScaleForStackDepth(tc.dtype, l.Network.StackLayerCount(), dim); wScale != 1.0 {
+				for j := range l.WeightStore.Master {
+					l.WeightStore.Master[j] *= wScale
+				}
+			}
+		}
 		if tc.scale != 1.0 {
 			l.WeightStore.Scale = tc.scale
 		}
@@ -283,6 +294,11 @@ func setCPUMode(net *poly.VolumetricNetwork, multiCore bool) {
 		l.UseTiling = true
 		l.EnableMultiCoreTiling = multiCore
 	}
+	net.RefreshRuntimeTileSizes()
+}
+
+func setSimdForward(net *poly.VolumetricNetwork, enabled bool) {
+	net.SetSimdForwardRecursive(enabled)
 }
 
 func resetNetwork(net *poly.VolumetricNetwork) {
@@ -298,6 +314,11 @@ type forwardCapture struct {
 
 func captureForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore bool) forwardCapture {
 	out, avg := benchmarkForward(net, input, multiCore)
+	return forwardCapture{out: out, dur: avg}
+}
+
+func captureForwardSimd(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore bool) forwardCapture {
+	out, avg := benchmarkForwardSimd(net, input, multiCore)
 	return forwardCapture{out: out, dur: avg}
 }
 
@@ -506,6 +527,7 @@ var activeBenchIters = 25
 
 func benchmarkForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore bool) (out []float32, avg time.Duration) {
 	setCPUMode(net, multiCore)
+	setSimdForward(net, false)
 	for i := 0; i < 3; i++ {
 		resetNetwork(net)
 		_, _, _ = poly.ForwardPolymorphic(net, input)
@@ -523,6 +545,44 @@ func benchmarkForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], 
 		return nil, 0
 	}
 	return append([]float32(nil), last.Data...), total / time.Duration(activeBenchIters)
+}
+
+func benchmarkForwardSimd(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore bool) (out []float32, avg time.Duration) {
+	setCPUMode(net, multiCore)
+	setSimdForward(net, true)
+	defer setSimdForward(net, false)
+	for i := 0; i < 3; i++ {
+		resetNetwork(net)
+		_, _, _ = poly.ForwardPolymorphic(net, input)
+	}
+	var total time.Duration
+	var last *poly.Tensor[float32]
+	for i := 0; i < activeBenchIters; i++ {
+		resetNetwork(net)
+		t0 := time.Now()
+		post, _, _ := poly.ForwardPolymorphic(net, input)
+		total += time.Since(t0)
+		last = post
+	}
+	if last == nil {
+		return nil, 0
+	}
+	return append([]float32(nil), last.Data...), total / time.Duration(activeBenchIters)
+}
+
+func formatSimdSpeedup(tiledMC, simd time.Duration) string {
+	if tiledMC <= 0 || simd <= 0 {
+		return "n/a"
+	}
+	pct := float64(tiledMC-simd) / float64(tiledMC) * 100
+	ratio := float64(tiledMC) / float64(simd)
+	if pct >= 0.5 {
+		return fmt.Sprintf("%.0f%% faster (%.1f×)", pct, ratio)
+	}
+	if pct <= -0.5 {
+		return fmt.Sprintf("%.0f%% slower (%.1f×)", -pct, float64(simd)/float64(tiledMC))
+	}
+	return "≈0%"
 }
 
 func benchmarkBackward(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], multiCore bool) (dx, dw []float32, avg time.Duration) {

@@ -50,9 +50,11 @@ func denseEndpoints(g GridSpec) []int {
 	case 1:
 		return sevenEndpoints([]int{16, 24, 32, 48, 64, 48, 32, 8})
 	case 8:
-		return flatEndpoints(8)
+		// dim≥16 needed for SIMD crossover (see poly.DenseSimdMinDim).
+		return flatEndpoints(16)
 	default:
-		return flatEndpoints(4)
+		// dim=32 for AVX2 crossover; MorphScaleForStackDepth keeps Uint wide types stable.
+		return flatEndpoints(32)
 	}
 }
 

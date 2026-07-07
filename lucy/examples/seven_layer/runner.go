@@ -294,6 +294,15 @@ func RunLayerSuite(s LayerSuite) bool {
 		row.FwdMCDur = formatDur(fwdMC.dur)
 		row.FwdSCMC = maxAbsDiff(fwdSC.out, fwdMC.out)
 
+		if s.PrimaryType == poly.LayerDense && poly.Plan9SimdEnabled() {
+			fwdSimd := captureForwardSimd(net, input, true)
+			row.FwdSimdDur = formatDur(fwdSimd.dur)
+			// Compare vs SC tiled: SIMD uses wide serial tiles; MC tiled uses smaller
+			// tiles + goroutines and can differ in float reduction order.
+			row.FwdTiledSimd = maxAbsDiff(fwdSC.out, fwdSimd.out)
+			row.FwdSimdPct = formatSimdSpeedup(fwdMC.dur, fwdSimd.dur)
+		}
+
 		// Backward determinism: SC vs MC
 		bwdSC := captureBackward(net, input, target, false)
 		bwdMC := captureBackward(net, input, target, true)
@@ -310,6 +319,10 @@ func RunLayerSuite(s LayerSuite) bool {
 			detTol = 1e-10
 		}
 		row.DetOK = row.FwdSCMC <= detTol && row.BwdSCMC <= detTol*10
+		if s.PrimaryType == poly.LayerDense && poly.Plan9SimdEnabled() {
+			row.SimdOK = row.FwdTiledSimd <= detTol
+			row.DetOK = row.DetOK && row.SimdOK
+		}
 
 		lossBefore := forwardLoss(net, input, target)
 		requiresLearn := layerRequiresLearn(s.PrimaryType)
@@ -431,6 +444,9 @@ func RunLayerSuite(s LayerSuite) bool {
 
 	PrintDeterminismTable(suiteLabel, rows)
 	PrintForwardBackwardTimingTable(suiteLabel, rows)
+	if s.PrimaryType == poly.LayerDense && poly.Plan9SimdEnabled() {
+		PrintSimdTimingTable(suiteLabel, rows)
+	}
 	PrintMemoryTable(suiteLabel, rows)
 	PrintTimingTable(suiteLabel, rows)
 	PrintTrainedReloadTable(suiteLabel, rows)

@@ -37,6 +37,11 @@ type DTypeRow struct {
 	BwdSCDur string
 	BwdMCDur string
 
+	FwdSimdDur   string
+	FwdSimdPct   string
+	FwdTiledSimd float64
+	SimdOK       bool
+
 	MemHeap      string
 	MemSys       string
 	MemHeapTrain string
@@ -137,6 +142,29 @@ func PrintForwardBackwardTimingTable(layerName string, rows []DTypeRow) {
 		}
 		fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-10s |\n",
 			r.DType, r.FwdSCDur, r.FwdMCDur, r.BwdSCDur, r.BwdMCDur)
+	}
+}
+
+func PrintSimdTimingTable(layerName string, rows []DTypeRow) {
+	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  %s — go-tiled vs go-plan9-simd (MC forward, avg of %d passes)         ║\n", layerName, activeBenchIters)
+	fmt.Printf("╚══════════════════════════════════════════════════════════════════════╝\n\n")
+
+	fmt.Printf("| %-10s | %-10s | %-10s | %-12s | %-8s |\n",
+		"DType", "Tiled MC", "SIMD MC", "SIMD vs tiled", "Simd OK")
+	fmt.Println("|------------|------------|------------|--------------|----------|")
+
+	for _, r := range rows {
+		if r.Err != "" {
+			continue
+		}
+		if r.FwdSimdDur == "" {
+			fmt.Printf("| %-10s | %-10s | %-10s | %-12s | %-8s |\n",
+				r.DType, r.FwdMCDur, "n/a", "n/a", "n/a")
+			continue
+		}
+		fmt.Printf("| %-10s | %-10s | %-10s | %-12s | %-8s |\n",
+			r.DType, r.FwdMCDur, r.FwdSimdDur, r.FwdSimdPct, markOK(r.SimdOK))
 	}
 }
 
