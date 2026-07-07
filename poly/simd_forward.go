@@ -52,6 +52,7 @@ func (n *VolumetricNetwork) SetSimdForward(enabled bool) {
 	for i := range n.Layers {
 		n.Layers[i].UseSimdForward = enabled
 	}
+	simd.SetBitNetTernarySimdForward(enabled)
 }
 
 func setSimdForwardTree(layer *VolumetricLayer, enabled bool) {
@@ -80,4 +81,5 @@ func (n *VolumetricNetwork) SetSimdForwardRecursive(enabled bool) {
 		n.Layers[i].UseSimdForward = enabled
 		setSimdForwardTree(&n.Layers[i], enabled)
 	}
+	simd.SetBitNetTernarySimdForward(enabled)
 }

@@ -52,6 +52,7 @@ func main() {
 		"[8] ENTITY Talk — HF cache → .entity convert → chat (Qwen/SmolLM2/Llama-style)\n"+
 		"[9] Intel NPU bridge — Loom ↔ libloom_accel_intel.so · all layers/dtypes (→ "+lucytesting.DefaultOutputDir+"/nine_layer.txt)\n"+
 		"[10] Context suite — long context / multi-prompt .entity tests (→ lucy_testing_output/context_suite/)\n"+
+		"[11] Transformer SIMD bench — .entity CPU SC/MC/SIMD decode tok/s (→ lucy_testing_output/transformer_simd_bench/)\n"+
 		"Choice [1]: ", "1")
 	switch strings.TrimSpace(mode) {
 	case "2":
@@ -73,6 +74,8 @@ func main() {
 		examples.RunNineLayerMenu(reader)
 	case "10":
 		examples.RunContextSuiteMenu(reader)
+	case "11":
+		examples.RunTransformerSimdBenchMenu(reader)
 	default:
 		runHuggingFaceMode(reader)
 	}

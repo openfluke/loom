@@ -4,6 +4,8 @@ import (
 	"math"
 	"runtime"
 	"sync"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 const bitNetTernaryPackedKeyBase DType = 10000
@@ -18,6 +20,12 @@ type BitNetTernaryMatrix struct {
 	Offset   int
 	Scale    float32
 	Words    []uint32
+
+	// Codes holds one unsigned 2-bit code {0,1,2} per weight (ternary = code-1),
+	// row-major with each row zero-padded to RowStride bytes. Built once for the
+	// AVX2 MAD path so inference never unpacks 2-bit weights on the fly.
+	Codes     []uint8
+	RowStride int
 }
 
 func bitNetActivationMaxAbs[T Numeric](input []T) float32 {
@@ -524,6 +532,69 @@ func bitNetTernaryMatVecQuantized(matrix *BitNetTernaryMatrix, xq []int8, activa
 }
 
 func bitNetTernaryMatVecInt8(matrix *BitNetTernaryMatrix, xq []int8, outputScale float64, out []float64) {
+	if BitNetTernarySimdActive() && ensureBitNetCodes(matrix) {
+		bitNetTernaryMatVecInt8Simd(matrix, xq, outputScale, out)
+		return
+	}
+	bitNetTernaryMatVecInt8Scalar(matrix, xq, outputScale, out)
+}
+
+// ensureBitNetCodes lazily unpacks the 2-bit packed weights into one unsigned
+// byte per weight (row-padded to a multiple of 32) so the AVX2 MAD kernel never
+// unpacks on the fly. Built once per matrix, then cached and reused every token.
+func ensureBitNetCodes(matrix *BitNetTernaryMatrix) bool {
+	if matrix == nil || matrix.Rows <= 0 || matrix.Cols <= 0 {
+		return false
+	}
+	if len(matrix.Codes) > 0 && matrix.RowStride >= matrix.Cols {
+		return true
+	}
+	rowWords := matrix.RowWords
+	if rowWords <= 0 {
+		rowWords = (matrix.Cols + 15) / 16
+	}
+	if len(matrix.Words) < matrix.Rows*rowWords {
+		return false
+	}
+	stride := ((matrix.Cols + 31) / 32) * 32
+	codes := make([]uint8, matrix.Rows*stride)
+	for r := 0; r < matrix.Rows; r++ {
+		wordBase := r * rowWords
+		dstBase := r * stride
+		for c := 0; c < matrix.Cols; c++ {
+			word := matrix.Words[wordBase+c/16]
+			codes[dstBase+c] = uint8((word >> uint((c%16)*2)) & 0x03)
+		}
+		// padded [Cols:stride] stay 0; paired with zero-padded activations they
+		// contribute nothing to code*act or the sum(act) correction.
+	}
+	matrix.Codes = codes
+	matrix.RowStride = stride
+	return true
+}
+
+// bitNetTernaryMatVecInt8Simd runs the BitNet MAD kernel: dot = sum(code*act) -
+// sum(act), since each ternary weight equals code-1.
+func bitNetTernaryMatVecInt8Simd(matrix *BitNetTernaryMatrix, xq []int8, outputScale float64, out []float64) {
+	stride := matrix.RowStride
+	acts := make([]int8, stride)
+	copy(acts, xq[:matrix.Cols])
+	var actSum int32
+	for i := 0; i < matrix.Cols; i++ {
+		actSum += int32(xq[i])
+	}
+	codes := matrix.Codes
+
+	worker := func(start, end int) {
+		for r := start; r < end; r++ {
+			raw := simd.BitNetTernaryCodeRowDot(codes[r*stride:(r+1)*stride], acts, stride)
+			out[r] = float64(raw-actSum) * outputScale
+		}
+	}
+	bitNetRunRows(matrix.Rows, matrix.Cols, worker)
+}
+
+func bitNetTernaryMatVecInt8Scalar(matrix *BitNetTernaryMatrix, xq []int8, outputScale float64, out []float64) {
 	rowWords := matrix.RowWords
 	if rowWords <= 0 {
 		rowWords = (matrix.Cols + 15) / 16
@@ -533,9 +604,9 @@ func bitNetTernaryMatVecInt8(matrix *BitNetTernaryMatrix, xq []int8, outputScale
 
 	worker := func(start, end int) {
 		for r := start; r < end; r++ {
-			var sum int32
 			wordBase := r * rowWords
 			xOff := 0
+			var sum int32
 			for w := 0; w < fullWords; w++ {
 				sum += bitNetTernaryWordDot16(matrix.Words[wordBase+w], xq[xOff:xOff+16])
 				xOff += 16
@@ -546,26 +617,31 @@ func bitNetTernaryMatVecInt8(matrix *BitNetTernaryMatrix, xq []int8, outputScale
 			out[r] = float64(sum) * outputScale
 		}
 	}
+	bitNetRunRows(matrix.Rows, matrix.Cols, worker)
+}
 
-	work := matrix.Rows * matrix.Cols
-	if work < 262144 || matrix.Rows < 4 {
-		worker(0, matrix.Rows)
+// bitNetRunRows runs a row worker single-threaded for small matrices, otherwise
+// fans out across GOMAXPROCS goroutines (shared by scalar + SIMD matvec paths).
+func bitNetRunRows(rows, cols int, worker func(start, end int)) {
+	work := rows * cols
+	if work < 262144 || rows < 4 {
+		worker(0, rows)
 		return
 	}
 	workers := runtime.GOMAXPROCS(0)
-	if workers > matrix.Rows {
-		workers = matrix.Rows
+	if workers > rows {
+		workers = rows
 	}
 	if workers <= 1 {
-		worker(0, matrix.Rows)
+		worker(0, rows)
 		return
 	}
-	chunk := (matrix.Rows + workers - 1) / workers
+	chunk := (rows + workers - 1) / workers
 	var wg sync.WaitGroup
-	for start := 0; start < matrix.Rows; start += chunk {
+	for start := 0; start < rows; start += chunk {
 		end := start + chunk
-		if end > matrix.Rows {
-			end = matrix.Rows
+		if end > rows {
+			end = rows
 		}
 		wg.Add(1)
 		go func(start, end int) {

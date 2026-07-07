@@ -424,7 +424,11 @@ func RunLSTM() bool {
 }
 
 func RunEmbedding() bool {
-	return runAllGrids(func(g GridSpec) LayerSuite {
+	return runAllGrids(embeddingSuite)
+}
+
+func embeddingSuite(g GridSpec) LayerSuite {
+	{
 		vocab := embeddingVocab(g)
 		acts := []string{"RELU", "RELU", "RELU", "RELU", "RELU", "SIGMOID"}
 		// Multi-cell: embedding only at stack origin; later cells are float→float DENSE.
@@ -443,7 +447,10 @@ func RunEmbedding() bool {
 			Banner:        banner,
 			BuildJSON: func(jsonDType string) []byte {
 				dims := embeddingDims(g)
-				denseOnly := denseEndpoints(g) // flat width across full stack after first cell
+				// Non-origin cells must stay at the embedding output width so the
+				// cross-cell forward (origin → next cell) never hands a mismatched
+				// activation to the next Dense layer.
+				denseOnly := flatEndpoints(dims[len(dims)-1])
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-embedding", g)
 				first := true
@@ -481,7 +488,7 @@ func RunEmbedding() bool {
 			},
 			MakeTarget: sinTarget,
 		}
-	})
+	}
 }
 
 func RunResidual() bool {
