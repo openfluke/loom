@@ -88,8 +88,12 @@ func intelDTypeLabel(dt DType) (string, bool) {
 		return "FP32", true
 	case DTypeFloat16:
 		return "FP16", true
+	case DTypeInt16:
+		return "INT16", true
 	case DTypeInt8:
 		return "INT8", true
+	case DTypeInt4:
+		return "INT4", true
 	default:
 		return "", false
 	}
@@ -167,8 +171,10 @@ func LayerWeightBytesForAccel(l *VolumetricLayer) []byte {
 			binary.LittleEndian.PutUint16(out[i*2:], float32ToFloat16Bits(v))
 		}
 		return out
-	case DTypeInt8:
-		w := l.WeightStore.GetActive(DTypeInt8)
+	case DTypeInt8, DTypeInt16, DTypeInt4:
+		// Quantized modes upload FP32 weight values; the accelerator requantizes to
+		// the target fixed-point precision (INT8/INT16=8-bit weights, INT4=4-bit).
+		w := l.WeightStore.GetActive(dt)
 		f32 := CastWeights[float32](w)
 		if len(f32) == 0 {
 			return nil
@@ -213,6 +219,8 @@ func tensorToAccelBytes[T Numeric](t *Tensor[T], dtypeLabel string) ([]byte, err
 	case "FP16":
 		return floatTensorToFP16Bytes(t)
 	default:
+		// FP32 + quantized activations (INT16/INT4) all hand over FP32 values;
+		// the accelerator quantizes activations to its target precision.
 		return floatTensorToFP32Bytes(t)
 	}
 }

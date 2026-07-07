@@ -6,7 +6,7 @@ package accel
 import "errors"
 
 // ErrUnavailable is returned when CGO/dlopen is disabled or the plugin is missing.
-var ErrUnavailable = errors.New("accel: plugin unavailable (build with CGO_ENABLED=1 on Linux)")
+var ErrUnavailable = errors.New("accel: plugin unavailable (build with CGO_ENABLED=1)")
 
 // LayerDesc identifies a single compiled layer (matches bench_manifest.json).
 type LayerDesc struct {
@@ -62,6 +62,25 @@ func NPUAvailable(path string) bool {
 // DefaultIntelPath resolves LOOM_ACCEL_INTEL_SO or searches accel/intel/build/ from cwd.
 func DefaultIntelPath() string {
 	return defaultIntelPath()
+}
+
+// OpenQualcomm loads loom_accel_qualcomm.dll from path (see DefaultQualcommPath).
+// device is "CPU" (QnnCpu reference backend) or "NPU" (Hexagon HTP).
+func OpenQualcomm(path, device string) (Plugin, error) {
+	if err := PrepareQualcommRuntime(); err != nil {
+		return nil, err
+	}
+	return openQualcommPlugin(path, device)
+}
+
+// QualcommNPUAvailable reports whether the Qualcomm plugin sees a Hexagon NPU.
+func QualcommNPUAvailable(path string) bool {
+	return qualcommNPUAvailable(path)
+}
+
+// DefaultQualcommPath resolves LOOM_ACCEL_QUALCOMM_DLL or searches accel/qualcomm/build/.
+func DefaultQualcommPath() string {
+	return defaultQualcommPath()
 }
 
 // RuntimeLDLibraryPath is OpenVINO + NPU dirs for LD_LIBRARY_PATH (Linux/cgo).

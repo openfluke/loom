@@ -1,0 +1,65 @@
+{
+  "dtypes": ["FP32", "FP16", "INT16", "INT8", "INT4"],
+  "size_order": ["small", "medium", "large"],
+  "warmup_by_size": {"small": 3, "medium": 2, "large": 1},
+  "iters_by_size": {"small": 20, "medium": 10, "large": 5},
+  "accelerators": {
+    "HTP": {"backend": "QnnHtp", "dtypes": ["INT4", "INT8", "INT16", "FP16"], "quantization": "needed", "note": "Hexagon Tensor Processor — dedicated AI accelerator, hardware convolution engine. Low power, high throughput."},
+    "GPU": {"backend": "QnnGpu", "dtypes": ["INT8", "INT16", "FP16", "FP32"], "quantization": "not needed", "note": "Adreno GPU — runs unquantized FP32/FP16 at higher throughput than CPU; OpenCL UDOs."},
+    "CPU": {"backend": "QnnCpu", "dtypes": ["INT8", "INT16", "FP16", "FP32"], "quantization": "not needed", "note": "Kryo CPU — accuracy reference / quantization host; runs ops not supported on HTP."}
+  },
+  "datatype_details": {
+    "INT4": "4-bit weights + 8-bit activations",
+    "INT8": "8-bit weights + 8-bit activations",
+    "INT16": "8-bit weights + 16-bit activations",
+    "FP16": "16-bit floating point",
+    "FP32": "32-bit floating point"
+  },
+  "htp_notes": {
+    "FP32": "Not supported on Hexagon HTP — runs on QnnCpu reference backend (parity anchor); Adreno GPU also handles FP32.",
+    "FP16": "Native HTP activation/weight precision on Hexagon v73 (Snapdragon X). No quantization needed.",
+    "INT16": "Native HTP fixed-point: 8-bit weights + 16-bit activations (higher accuracy quant).",
+    "INT8": "Native HTP fixed-point: 8-bit weights + 8-bit activations (per-tensor scale/offset).",
+    "INT4": "Native HTP fixed-point: 4-bit weights + 8-bit activations (max compression / throughput)."
+  },
+  "sizes": {
+    "small": {
+      "note": "Smoke / latency floor (batch=4, dim=32)",
+      "dense": {"batch": 4, "dim": 32},
+      "conv1d": {"batch": 4, "in_c": 2, "length": 16, "filters": 16, "kernel": 3, "pad": 1},
+      "conv2d": {"batch": 4, "in_c": 2, "h": 4, "w": 4, "filters": 2, "kernel": 3, "pad": 1},
+      "spatial": {"batch": 4, "channels": 16, "h": 8, "w": 8, "kernel": 3, "pad": 1, "pool_ks": 2, "pool_stride": 2}
+    },
+    "medium": {
+      "note": "Mid-size (comfortably inside Hexagon v73 HTP tile budget)",
+      "dense": {"batch": 16, "dim": 256},
+      "conv1d": {"batch": 8, "in_c": 32, "length": 128, "filters": 32, "kernel": 3, "pad": 1},
+      "conv2d": {"batch": 4, "in_c": 32, "h": 28, "w": 28, "filters": 32, "kernel": 3, "pad": 1},
+      "spatial": {"batch": 4, "channels": 64, "h": 32, "w": 32, "kernel": 3, "pad": 1, "pool_ks": 2, "pool_stride": 2}
+    },
+    "large": {
+      "note": "Near Hexagon v73 HTP working-set budget (FP16 activations + weights)",
+      "dense": {"batch": 8, "dim": 1024},
+      "conv1d": {"batch": 4, "in_c": 128, "length": 512, "filters": 128, "kernel": 3, "pad": 1},
+      "conv2d": {"batch": 4, "in_c": 64, "h": 48, "w": 48, "filters": 64, "kernel": 3, "pad": 1},
+      "spatial": {"batch": 4, "channels": 128, "h": 48, "w": 48, "kernel": 3, "pad": 1, "pool_ks": 2, "pool_stride": 2}
+    }
+  },
+  "layers": [
+    {"name": "MatMul", "loom_type": "Dense", "loom": "matmul"},
+    {"name": "Conv1D", "loom_type": "CNN1", "loom": "conv1d"},
+    {"name": "Conv2D", "loom_type": "CNN2", "loom": "conv2d"},
+    {"name": "DepthwiseConv", "loom_type": "CNN2-dw", "loom": null},
+    {"name": "AvgPool", "loom_type": "CNN-pool", "loom": null},
+    {"name": "MaxPool", "loom_type": "CNN-pool", "loom": null},
+    {"name": "ReLU", "loom_type": "Dense-act", "loom": "relu"},
+    {"name": "GELU", "loom_type": "SwiGLU-act", "loom": "gelu"},
+    {"name": "Sigmoid", "loom_type": "Dense-act", "loom": "sigmoid"},
+    {"name": "Softmax", "loom_type": "Softmax", "loom": "softmax"},
+    {"name": "Add", "loom_type": "Residual", "loom": null},
+    {"name": "Multiply", "loom_type": "SwiGLU-gate", "loom": null},
+    {"name": "LayerNorm", "loom_type": "LayerNorm", "loom": "layernorm"},
+    {"name": "RMSNorm", "loom_type": "RMSNorm", "loom": "rmsnorm"},
+    {"name": "MHA-MatMul", "loom_type": "MHA", "loom": "mha_matmul"}
+  ]
+}
