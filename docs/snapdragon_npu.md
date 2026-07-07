@@ -1,6 +1,6 @@
 # Snapdragon (Hexagon NPU) bridge
 
-**Version:** Loom **v0.81.x** — **experimental** (same maturity bar as the Intel NPU bridge)
+**Version:** Loom **v0.82.0 "Snapdragon Bridge"** — **experimental** (same maturity bar as the Intel NPU bridge)
 **Status:** Windows on Snapdragon X · Hexagon v73 HTP + Kryo CPU reference · forward-only
 **Plugin:** `loom_accel_qualcomm.dll` (Qualcomm **QNN AI Engine Direct** inside)
 **Lucy menu:** **[12]** — log: `lucy/lucy_testing_output/snapdragon.txt`

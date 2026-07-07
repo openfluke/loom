@@ -1,7 +1,7 @@
 # Vendor accelerators (NPU / TPU)
 
-**Version:** Loom **v0.81.0** — experimental  
-**Status:** Intel CPU + NPU on Linux; Qualcomm NPU and Google TPU planned
+**Version:** Loom **v0.82.0** — experimental  
+**Status:** Intel CPU + NPU on Linux (Lucy [9]); Qualcomm/Hexagon NPU on Windows ARM64 (Lucy [12]); Google TPU planned
 
 This document covers the **`poly/accel`** package: how Loom offloads individual layers to vendor silicon through external C ABI plugins, without embedding OpenVINO, QNN, or TPU SDKs inside the Loom module.
 
@@ -343,8 +343,8 @@ Use **both**: WebGPU for general GPU; Intel NPU for Conv/MatMul on Core Ultra wh
 | Milestone | Description |
 |---|---|
 | **v0.81** ✅ | Intel forward dispatch, dtype-aware weight upload (FP32/FP16/INT8), Lucy [9], benchmark tables in docs |
-| **v0.82** | AccelPlanner, JSON `exec` field, MatMul FP32 parity, norm weight bake |
-| **v0.83+** | Native INT8 OV graphs, Qualcomm + Google plugins; backward CPU fallback policy |
+| **v0.82** ✅ | Qualcomm/Hexagon NPU plugin (QNN, Windows ARM64), `ExecQualcomm*` targets, Lucy [12] `snapdragon` bench (FP32/FP16/INT16/INT8/INT4); SIMD CPU fast-path (AVX2/NEON); see [`snapdragon_npu.md`](snapdragon_npu.md) |
+| **v0.83+** | Whole-model `.entity` → NPU lowering, NPU parity suite vs WebGPU, AccelPlanner + JSON `exec`, Google plugin; backward CPU fallback policy |
 | **v1.0** | Vendor accel rows enter formal 1.0 checklist |
 
 ---
