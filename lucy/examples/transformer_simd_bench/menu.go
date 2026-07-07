@@ -3,6 +3,7 @@ package tfsimdbench
 import (
 	"bufio"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -12,7 +13,14 @@ func RunMenu(reader *bufio.Reader) {
 	printBanner()
 
 	fmt.Println("  [0] Run full matrix — all models × cpu_sc/cpu_mc/cpu_simd_sc/cpu_simd_mc [default]")
-	fmt.Println("  [1] List target models and .entity status")
+	for i, m := range TargetModels {
+		status := "missing"
+		if entityExists(m.RepoID) {
+			status = "ready"
+		}
+		fmt.Printf("  [%d] Run %-14s (%s)\n", i+1, m.ShortName, status)
+	}
+	fmt.Println("  [l] List target models and .entity status")
 	fmt.Print("Choice [0]: ")
 
 	line, _ := reader.ReadString('\n')
@@ -26,10 +34,17 @@ func RunMenu(reader *bufio.Reader) {
 		cleanup := BeginSession()
 		defer cleanup()
 		RunFullMatrix()
-	case "1":
+	case "l", "L":
 		listModelStatus()
 	default:
-		fmt.Println("Invalid selection.")
+		idx, err := strconv.Atoi(line)
+		if err != nil || idx < 1 || idx > len(TargetModels) {
+			fmt.Println("Invalid selection.")
+			return
+		}
+		cleanup := BeginSession()
+		defer cleanup()
+		RunSingleModel(TargetModels[idx-1])
 	}
 }
 

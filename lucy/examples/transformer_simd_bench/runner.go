@@ -174,15 +174,24 @@ func formatBody(spec ModelSpec, prof BenchProfile, res BenchResult) string {
 func RunFullMatrix() {
 	models := availableModels()
 	if len(models) == 0 {
-		fmt.Println("❌ No .entity checkpoints found for target models.")
-		fmt.Println("   Expected under lucy_entities/:")
-		for _, m := range TargetModels {
-			fmt.Printf("     • %s\n", entityPath(m.RepoID))
-		}
+		printNoModels()
+		return
+	}
+	runSpecs(models)
+}
+
+// RunSingleModel benchmarks one target model across the full CPU profile matrix.
+func RunSingleModel(spec ModelSpec) {
+	if !entityExists(spec.RepoID) {
+		fmt.Printf("❌ No .entity checkpoint for %s.\n", spec.ShortName)
+		fmt.Printf("   Expected: %s\n", entityPath(spec.RepoID))
 		fmt.Println("   Convert via Lucy [8] ENTITY Talk first.")
 		return
 	}
+	runSpecs([]ModelSpec{spec})
+}
 
+func runSpecs(models []ModelSpec) {
 	host := currentHostInfo()
 	fmt.Printf("Host: %s · %d CPUs · SIMD=%s\n", host.Arch, host.NumCPU, host.SimdKind)
 	fmt.Printf("Models on disk: %d/%d · decode length: %d tokens\n",
@@ -195,6 +204,15 @@ func RunFullMatrix() {
 	}
 	printGlobalTable(all)
 	fmt.Printf("\n⏱  Total wall time: %v\n", time.Since(start).Round(time.Millisecond))
+}
+
+func printNoModels() {
+	fmt.Println("❌ No .entity checkpoints found for target models.")
+	fmt.Println("   Expected under lucy_entities/:")
+	for _, m := range TargetModels {
+		fmt.Printf("     • %s\n", entityPath(m.RepoID))
+	}
+	fmt.Println("   Convert via Lucy [8] ENTITY Talk first.")
 }
 
 func truncate(s string, n int) string {
