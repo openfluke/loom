@@ -424,6 +424,81 @@ func CalculateOptimalDenseSimdTileSizeForLayer(l *VolumetricLayer, dtype DType) 
 	return base
 }
 
+func capSwigluTileToLayer(ts, inputSize, intermediateSize int) int {
+	if ts > inputSize {
+		ts = inputSize
+	}
+	if ts > intermediateSize {
+		ts = intermediateSize
+	}
+	if ts <= 0 {
+		ts = 1
+	}
+	return ts
+}
+
+// CalculateOptimalSwiGLUSimdTileSizeForLayer picks tile sizes for SwiGLU SIMD forward
+// (gate/up/down projections). Gate+up share L1 with two weight rows per output neuron.
+func CalculateOptimalSwiGLUSimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	in := maxInt(1, l.InputHeight)
+	inter := maxInt(1, l.OutputHeight)
+	dim := maxInt(in, inter)
+
+	if !simd.SimdEnabled() || (in < DenseSimdMinDim() && inter < DenseSimdMinDim()) {
+		return capSwigluTileToLayer(CalculateOptimalSwiGLUTileSize(in, dtype), in, inter)
+	}
+
+	inner := dim
+	base := calculateOptimalDenseTileSize(inner, dtype, true)
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+	limit := float64(l1) * 0.375 / (bytesPerWeight * float64(inner))
+	capped := 8
+	for _, candidate := range []int{8, 16, 32, 64, 128, 256} {
+		if float64(candidate) <= limit {
+			capped = candidate
+		}
+	}
+	if base > capped {
+		base = capped
+	}
+
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 16 {
+		minTile = 16
+	}
+	if base < minTile && dim >= minTile {
+		base = minTile
+	}
+	if dim >= 32 && base < 32 {
+		if float64(32) <= float64(l1)*0.375/(bytesPerWeight*float64(inner)) {
+			base = 32
+		}
+	}
+	base = capSwigluTileToLayer(base, in, inter)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, dim)
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
 // MasterWeightScaleForStackDepth shrinks master weights for deep wide stacks where
 // unsigned integer dtypes (positive-only morphed weights) overflow activations.
 func MasterWeightScaleForStackDepth(dtype DType, stackLayers, layerDim int) float32 {
@@ -847,7 +922,7 @@ func (l *VolumetricLayer) GetCPUTileSize(dtype DType) int {
 	return 8
 }
 
-// GetCPUSimdTileSize returns the SIMD tile size for Dense forward on this layer.
+// GetCPUSimdTileSize returns the SIMD tile size for Dense/SwiGLU forward on this layer.
 func (l *VolumetricLayer) GetCPUSimdTileSize(dtype DType) int {
 	if l.CPUSimdTileSizes != nil {
 		if ts, ok := l.CPUSimdTileSizes[dtype]; ok && ts > 0 {
@@ -856,6 +931,9 @@ func (l *VolumetricLayer) GetCPUSimdTileSize(dtype DType) int {
 	}
 	if l.Type == LayerDense {
 		return CalculateOptimalDenseSimdTileSizeForLayer(l, dtype)
+	}
+	if l.Type == LayerSwiGLU {
+		return CalculateOptimalSwiGLUSimdTileSizeForLayer(l, dtype)
 	}
 	return l.GetCPUTileSize(dtype)
 }
@@ -866,7 +944,7 @@ func (l *VolumetricLayer) EnsureRuntimeTileSizes() {
 		return
 	}
 	needRefresh := l.CPUTileSizes == nil
-	if l.Type == LayerDense && l.CPUSimdTileSizes == nil {
+	if (l.Type == LayerDense || l.Type == LayerSwiGLU) && l.CPUSimdTileSizes == nil {
 		needRefresh = true
 	}
 	if needRefresh {
@@ -904,7 +982,7 @@ func (l *VolumetricLayer) GetGPUMCTileSize(dtype DType) int {
 
 func (l *VolumetricLayer) refreshRuntimeCPUTileSizes() {
 	l.CPUTileSizes = make(map[DType]int, len(allDTypes))
-	if l.Type == LayerDense {
+	if l.Type == LayerDense || l.Type == LayerSwiGLU {
 		l.CPUSimdTileSizes = make(map[DType]int, len(allDTypes))
 	}
 	for _, dtype := range allDTypes {
@@ -920,6 +998,8 @@ func (l *VolumetricLayer) refreshRuntimeCPUTileSizes() {
 			ts = CalculateOptimalTileSize(l.HeadDim, dtype)
 		case LayerSwiGLU:
 			ts = CalculateOptimalSwiGLUTileSize(l.InputHeight, dtype)
+			ts = capSwigluTileToLayer(ts, l.InputHeight, l.OutputHeight)
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalSwiGLUSimdTileSizeForLayer(l, dtype)
 		case LayerDense:
 			ts = CalculateOptimalDenseTileSize(l.InputHeight, dtype)
 			ts = capDenseTileToLayer(ts, l.InputHeight, l.OutputHeight)

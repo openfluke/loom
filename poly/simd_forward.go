@@ -20,7 +20,30 @@ func layerUseSimdForward(layer *VolumetricLayer) bool {
 	return false
 }
 
-// SetSimdForward enables Plan 9 SIMD dense forward on the network and every layer.
+// Plan9SimdForwardForLayer reports whether this layer type has a Plan 9 SIMD CPU forward.
+func Plan9SimdForwardForLayer(t LayerType) bool {
+	if !simd.SimdEnabled() {
+		return false
+	}
+	switch t {
+	case LayerDense, LayerSwiGLU:
+		return true
+	default:
+		return false
+	}
+}
+
+// LayerSupportsSimdForward lists layer types with Plan 9 SIMD forward (when linked).
+func LayerSupportsSimdForward(t LayerType) bool {
+	switch t {
+	case LayerDense, LayerSwiGLU:
+		return true
+	default:
+		return false
+	}
+}
+
+// SetSimdForward enables Plan 9 SIMD forward (Dense, SwiGLU) on the network and every layer.
 func (n *VolumetricNetwork) SetSimdForward(enabled bool) {
 	if n == nil {
 		return

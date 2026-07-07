@@ -63,9 +63,11 @@ func swigluEndpoints(g GridSpec) []int {
 	case 1:
 		return sevenEndpoints([]int{32, 32, 32, 32, 32, 32, 32, 16})
 	case 8:
+		// dim≥16 for SIMD crossover (see poly.DenseSimdMinDim).
 		return flatEndpoints(16)
 	default:
-		return flatEndpoints(8)
+		// 3³: dim=32 for AVX2/NEON wins (same as Dense flat stacks).
+		return flatEndpoints(32)
 	}
 }
 
@@ -209,7 +211,8 @@ func RunSwiGLU() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerSwiGLU,
 			CheckpointTag: "seven_swiglu" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 SwiGLU/cell (%d stack) — ASM not implemented", g, g.StackLayers()),
+			Banner: fmt.Sprintf("  Grid %s · 7 SwiGLU/cell (%d stack) — Plan 9 SIMD when GOARCH supports it",
+				g, g.StackLayers()),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-swiglu", g)

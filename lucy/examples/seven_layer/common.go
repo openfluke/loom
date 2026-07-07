@@ -174,7 +174,7 @@ func applyDTypeLayer(l *poly.VolumetricLayer, tc dtypeCase) {
 	l.DType = tc.dtype
 	if l.WeightStore != nil {
 		l.WeightStore.InvalidateVersions()
-		if l.Network != nil && l.Type == poly.LayerDense {
+		if l.Network != nil && (l.Type == poly.LayerDense || l.Type == poly.LayerSwiGLU) {
 			dim := l.InputHeight
 			if l.OutputHeight > dim {
 				dim = l.OutputHeight
