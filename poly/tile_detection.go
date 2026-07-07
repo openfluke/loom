@@ -343,7 +343,118 @@ func CalculateOptimalCNN2TileSize(inChannels int, dtype DType) int {
 	return tileSize
 }
 
-// CalculateOptimalCNN3TileSize picks a TileSize that fits the 3D local neighborhood in L1.
+// CalculateOptimalCNN2TileSizeForLayer derives a runtime CPU tile size from layer shape and L1.
+func CalculateOptimalCNN2TileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return CalculateOptimalCNN2TileSize(1, dtype)
+	}
+
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	target := int(float64(l1) * 0.75)
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+
+	inC := maxInt(1, l.InputChannels)
+	kSize := maxInt(1, l.KernelSize)
+	stride := maxInt(1, l.Stride)
+	padding := maxInt(0, l.Padding)
+	outH := maxInt(1, l.OutputHeight)
+	outW := maxInt(1, l.OutputWidth)
+	filters := maxInt(1, l.Filters)
+	outSpatial := maxInt(outH, outW)
+
+	best := 4
+	for _, candidate := range []int{4, 8, 16, 32, 64} {
+		outTile := minInt(candidate, outSpatial)
+		filterTile := minInt(candidate, filters)
+
+		inputSpan := (outTile-1)*stride + kSize + 2*padding
+		inputBytes := inputSpan * inputSpan * inC * 4
+		kernelVol := inC * kSize * kSize
+		weightBytes := int(float64(filterTile*kernelVol) * bytesPerWeight)
+		accumBytes := outTile * outTile * filterTile * 8
+		totalBytes := inputBytes + weightBytes + accumBytes
+
+		if totalBytes <= target {
+			best = candidate
+		}
+	}
+
+	if best < 4 {
+		best = 4
+	}
+	if best > outSpatial {
+		best = outSpatial
+	}
+	return best
+}
+
+func capCNN2TileToLayer(ts, outH, outW, filters int) int {
+	outSpatial := maxInt(outH, outW)
+	if outSpatial <= 0 {
+		outSpatial = 1
+	}
+	if filters <= 0 {
+		filters = 1
+	}
+	if ts > outSpatial {
+		ts = outSpatial
+	}
+	if ts > filters {
+		ts = filters
+	}
+	if ts <= 0 {
+		ts = 1
+	}
+	return ts
+}
+
+// CalculateOptimalCNN2SimdTileSizeForLayer picks spatial/filter tile sizes for CNN2 SIMD forward.
+func CalculateOptimalCNN2SimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	inC := maxInt(1, l.InputChannels)
+	kSize := maxInt(1, l.KernelSize)
+	kernelVol := inC * kSize * kSize
+	outH := maxInt(1, l.OutputHeight)
+	outW := maxInt(1, l.OutputWidth)
+	filters := maxInt(1, l.Filters)
+	outSpatial := maxInt(outH, outW)
+
+	if !simd.SimdEnabled() || kernelVol < CNN1SimdMinDim() {
+		ts := CalculateOptimalCNN2TileSizeForLayer(l, dtype)
+		return capCNN2TileToLayer(ts, outH, outW, filters)
+	}
+
+	base := CalculateOptimalCNN2TileSizeForLayer(l, dtype)
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 8 {
+		minTile = 8
+	}
+	if base < minTile && outSpatial >= minTile {
+		base = minTile
+	}
+	base = capCNN2TileToLayer(base, outH, outW, filters)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, minInt(outSpatial, filters))
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
 // Working set approx = (TileSize^3 * InChannels * bytesPerWeight) bytes.
 func CalculateOptimalCNN3TileSize(inChannels int, dtype DType) int {
 	info := GetHardwareInfo()
@@ -1130,6 +1241,9 @@ func (l *VolumetricLayer) GetCPUSimdTileSize(dtype DType) int {
 	if l.Type == LayerCNN1 {
 		return CalculateOptimalCNN1SimdTileSizeForLayer(l, dtype)
 	}
+	if l.Type == LayerCNN2 {
+		return CalculateOptimalCNN2SimdTileSizeForLayer(l, dtype)
+	}
 	return l.GetCPUTileSize(dtype)
 }
 
@@ -1139,7 +1253,7 @@ func (l *VolumetricLayer) EnsureRuntimeTileSizes() {
 		return
 	}
 	needRefresh := l.CPUTileSizes == nil
-	if (l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerCNN1) && l.CPUSimdTileSizes == nil {
+	if (l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerCNN1 || l.Type == LayerCNN2) && l.CPUSimdTileSizes == nil {
 		needRefresh = true
 	}
 	if needRefresh {
@@ -1177,7 +1291,7 @@ func (l *VolumetricLayer) GetGPUMCTileSize(dtype DType) int {
 
 func (l *VolumetricLayer) refreshRuntimeCPUTileSizes() {
 	l.CPUTileSizes = make(map[DType]int, len(allDTypes))
-	if l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerCNN1 {
+	if l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerCNN1 || l.Type == LayerCNN2 {
 		l.CPUSimdTileSizes = make(map[DType]int, len(allDTypes))
 	}
 	for _, dtype := range allDTypes {
@@ -1187,7 +1301,8 @@ func (l *VolumetricLayer) refreshRuntimeCPUTileSizes() {
 			ts = CalculateOptimalCNN1TileSizeForLayer(l, dtype)
 			l.CPUSimdTileSizes[dtype] = CalculateOptimalCNN1SimdTileSizeForLayer(l, dtype)
 		case LayerCNN2:
-			ts = CalculateOptimalCNN2TileSize(l.InputChannels, dtype)
+			ts = CalculateOptimalCNN2TileSizeForLayer(l, dtype)
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalCNN2SimdTileSizeForLayer(l, dtype)
 		case LayerCNN3:
 			ts = CalculateOptimalCNN3TileSize(l.InputChannels, dtype)
 		case LayerMultiHeadAttention:

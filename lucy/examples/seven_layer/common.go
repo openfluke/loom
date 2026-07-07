@@ -189,6 +189,18 @@ func layerMasterDim(l *poly.VolumetricLayer) (dim int, ok bool) {
 			dim = l.InputHeight
 		}
 		return dim, dim > 0
+	case poly.LayerCNN2:
+		dim = l.InputChannels
+		if l.Filters > dim {
+			dim = l.Filters
+		}
+		if l.InputHeight > dim {
+			dim = l.InputHeight
+		}
+		if l.InputWidth > dim {
+			dim = l.InputWidth
+		}
+		return dim, dim > 0
 	default:
 		return 0, false
 	}
@@ -213,6 +225,39 @@ func mhaUintMasterExtra(dtype poly.DType, stack, dim int) float32 {
 	return 1.0
 }
 
+func cnn2UintMasterExtra(dtype poly.DType, stack, kSize int) float32 {
+	if stack < 48 {
+		return 1.0
+	}
+	if kSize <= 0 {
+		kSize = 1
+	}
+	switch dtype {
+	case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
+		depthF := float32(48) / float32(stack)
+		if depthF > 1 {
+			depthF = 1
+		}
+		// 2D k×k backprop needs extra dampening vs CNN1; keep floor so training still learns.
+		extra := depthF / float32(kSize)
+		if extra < 0.2 {
+			extra = 0.2
+		}
+		return extra
+	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
+		depthF := float32(48) / float32(stack)
+		if depthF > 1 {
+			depthF = 1
+		}
+		extra := depthF / float32(kSize*kSize)
+		if extra < 0.15 {
+			extra = 0.15
+		}
+		return extra
+	}
+	return 1.0
+}
+
 func masterWeightScaleForLayer(l *poly.VolumetricLayer, tc dtypeCase) float32 {
 	if l.Network == nil {
 		return 1.0
@@ -225,6 +270,9 @@ func masterWeightScaleForLayer(l *poly.VolumetricLayer, tc dtypeCase) float32 {
 	wScale := poly.MasterWeightScaleForStackDepth(tc.dtype, stack, dim)
 	if l.Type == poly.LayerMultiHeadAttention {
 		wScale *= mhaUintMasterExtra(tc.dtype, stack, dim)
+	}
+	if l.Type == poly.LayerCNN2 {
+		wScale *= cnn2UintMasterExtra(tc.dtype, stack, l.KernelSize)
 	}
 	return wScale
 }
@@ -246,7 +294,7 @@ func simdParityTol(primary poly.LayerType, tc dtypeCase) float64 {
 			}
 		}
 	}
-	if primary == poly.LayerCNN1 {
+	if primary == poly.LayerCNN1 || primary == poly.LayerCNN2 {
 		switch tc.dtype {
 		case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
 			if tol < 0.1 {
@@ -304,7 +352,7 @@ func prepareTrainingNet(net *poly.VolumetricNetwork, dt poly.DType) {
 		// float32/float64/float16/bfloat16: full depth scaling
 	}
 	for i := range net.Layers {
-		prepareTrainingLayer(&net.Layers[i], scale)
+		prepareTrainingLayer(&net.Layers[i], scale, dt)
 	}
 }
 
@@ -326,10 +374,18 @@ func trainingLearningRate(dt poly.DType) float32 {
 	}
 }
 
-func prepareTrainingLayer(l *poly.VolumetricLayer, scale float32) {
+func prepareTrainingLayer(l *poly.VolumetricLayer, scale float32, dt poly.DType) {
 	// MHA float stacks are already wide; depth scaling blows up attention logits.
 	if l.Type == poly.LayerMultiHeadAttention {
 		scale = 1
+	}
+	// CNN2 k×k MACs per output (~k²×C) explode when sqrt(layers/cell) scaling
+	// is applied on deep 3³ stacks; CNN1 (k×C) tolerates the same boost.
+	if l.Type == poly.LayerCNN2 {
+		switch dt {
+		case poly.DTypeFloat64, poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16:
+			scale = 1
+		}
 	}
 	if l.WeightStore != nil && scale != 1 {
 		for j := range l.WeightStore.Master {
@@ -338,13 +394,13 @@ func prepareTrainingLayer(l *poly.VolumetricLayer, scale float32) {
 		l.WeightStore.InvalidateVersions()
 	}
 	for i := range l.ParallelBranches {
-		prepareTrainingLayer(&l.ParallelBranches[i], scale)
+		prepareTrainingLayer(&l.ParallelBranches[i], scale, dt)
 	}
 	for i := range l.SequentialLayers {
-		prepareTrainingLayer(&l.SequentialLayers[i], scale)
+		prepareTrainingLayer(&l.SequentialLayers[i], scale, dt)
 	}
 	if l.MetaObservedLayer != nil {
-		prepareTrainingLayer(l.MetaObservedLayer, scale)
+		prepareTrainingLayer(l.MetaObservedLayer, scale, dt)
 	}
 }
 

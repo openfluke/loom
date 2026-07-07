@@ -302,7 +302,7 @@ func RunCNN1() bool {
 }
 
 func RunCNN2() bool {
-	return runGrids(ConvGrids, func(g GridSpec) LayerSuite {
+	return runGrids(CNN2Grids, func(g GridSpec) LayerSuite {
 		ch := cnnChannelEndpoints(g)
 		sp := cnnSpatial(g)
 		return LayerSuite{
@@ -310,7 +310,7 @@ func RunCNN2() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerCNN2,
 			CheckpointTag: "seven_cnn2" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 CNN2/cell — ASM not implemented", g),
+			Banner:        fmt.Sprintf("  Grid %s · 7 CNN2/cell %d×%d spatial — Plan 9 SIMD (AVX2/NEON)", g, sp, sp),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-cnn2", g)
