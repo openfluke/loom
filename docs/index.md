@@ -37,6 +37,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [bedrock_validation.md](bedrock_validation.md) | **v0.79.0** — seven-layer CPU suite, MHA/KV/persistence fixes; C-ABI **489/489** (v0.81 accel + entity exports) |
 | [v080_release.md](v080_release.md) | **v0.80.0** — ENTITY native checkpoints, WebGPU v1.0.4, cross-platform GPU, Planet Bridging POC |
 | [v081_release.md](v081_release.md) | **v0.81.0** — Intel NPU bridge (`poly/accel`), Lucy [9], vendor plugin model, Qualcomm/Google TPU roadmap |
+| [simd.md](simd.md) | **Plan 9 SIMD forward** (current): hand-written AVX2/FMA `DotTile` + BitNet AVX2 ternary MAD kernel, `SetSimdForward`, 8 layer types × 21 dtypes, Lucy `[7]`/`[11]` benchmarks |
 | [`../poly/asm/README.md`](../poly/asm/README.md) | **Plan 9 CPU kernels**: `UseAsmForward`, dense forward routing, dot/matmul layout, Lucy speedup interpretation |
 | [asm-and-volumetric-exploration.md](asm-and-volumetric-exploration.md) | **Archive (Jun 2026)**: BitNet W8A8 ASM, I2_S scaffolding, volumetric executor v1, Lucy `[7]` findings — exploratory work removed from tree |
 
@@ -80,6 +81,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Just need a code snippet?** Go straight to [quick_reference.md](quick_reference.md).
 
 **Reading Lucy / Glitch test transcripts or parity tables?** See [testing_and_validation.md](testing_and_validation.md).
+
+**Speeding up CPU inference (SIMD)?** Read [simd.md](simd.md) — `SetSimdForward`, AVX2/FMA `DotTile`, BitNet AVX2 ternary MAD, Lucy **[7]** (seven-layer) and **[11]** (transformer decode) benchmarks.
 
 ---
 
