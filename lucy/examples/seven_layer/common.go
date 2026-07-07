@@ -201,6 +201,21 @@ func layerMasterDim(l *poly.VolumetricLayer) (dim int, ok bool) {
 			dim = l.InputWidth
 		}
 		return dim, dim > 0
+	case poly.LayerCNN3:
+		dim = l.InputChannels
+		if l.Filters > dim {
+			dim = l.Filters
+		}
+		if l.InputDepth > dim {
+			dim = l.InputDepth
+		}
+		if l.InputHeight > dim {
+			dim = l.InputHeight
+		}
+		if l.InputWidth > dim {
+			dim = l.InputWidth
+		}
+		return dim, dim > 0
 	default:
 		return 0, false
 	}
@@ -294,7 +309,7 @@ func simdParityTol(primary poly.LayerType, tc dtypeCase) float64 {
 			}
 		}
 	}
-	if primary == poly.LayerCNN1 || primary == poly.LayerCNN2 {
+	if primary == poly.LayerCNN1 || primary == poly.LayerCNN2 || primary == poly.LayerCNN3 {
 		switch tc.dtype {
 		case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
 			if tol < 0.1 {

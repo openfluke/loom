@@ -341,7 +341,7 @@ func RunCNN3() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerCNN3,
 			CheckpointTag: "seven_cnn3" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 CNN3/cell %d×%d×%d — ASM not implemented", g, d, h, w),
+			Banner:        fmt.Sprintf("  Grid %s · 7 CNN3/cell %d×%d×%d — Plan 9 SIMD (AVX2/NEON)", g, d, h, w),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-cnn3", g)
