@@ -2,6 +2,8 @@ package poly
 
 import (
 	"math"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 // mhaRoPETheta matches wgpu_forward.go: default 10000 when the layer leaves RoPE base unset.
@@ -25,6 +27,11 @@ func mhaQKNormEpsilon(layer *VolumetricLayer) float64 {
 func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	if usePackedTernaryCPU(layer) {
 		return MHAForwardPackedTernaryCPU(layer, input)
+	}
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if pre, post, ok := tryMHAForwardSimd(layer, input); ok {
+			return pre, post
+		}
 	}
 	if layer.UseTiling && layer.TileSize > 0 {
 		return mhaForwardTiledGeneric(layer, input)
@@ -649,11 +656,163 @@ func MHAForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 }
 
 func mhaForwardTiledGeneric[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
-	orig := layer.UseTiling
-	layer.UseTiling = false
-	pre, post := MHAForwardPolymorphic(layer, input)
-	layer.UseTiling = orig
-	return pre, post
+	layer.EnsureRuntimeTileSizes()
+	tileSize := layer.GetCPUTileSize(layer.DType)
+
+	dModel, numHeads, numKVHeads, headDim, qDim, kvDim := mhaLayerDims(layer)
+	qkvTile := capMHAProjTileToLayer(tileSize, dModel, maxInt(qDim, kvDim))
+	oTile := capMHAProjTileToLayer(tileSize, qDim, dModel)
+
+	lay := mhaParseLayout(layer, input)
+	seqLen := lay.seqLen
+	msl := layer.MaxSeqLen
+	if msl == 0 {
+		msl = 512
+	}
+
+	outShape := append([]int{}, input.Shape[:len(input.Shape)-1]...)
+	outShape = append(outShape, dModel)
+	preAct = NewTensor[T](outShape...)
+	postAct = NewTensor[T](outShape...)
+
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[T](weights)
+
+	qwStart := 0
+	kwStart := qwStart + qDim*dModel
+	vwStart := kwStart + kvDim*dModel
+	owStart := vwStart + kvDim*dModel
+	qbStart := owStart + dModel*qDim
+	kbStart := qbStart + qDim
+	vbStart := kbStart + kvDim
+	obStart := vbStart + kvDim
+
+	wsScale := float32(1)
+	if layer.WeightStore != nil && layer.WeightStore.Scale != 0 {
+		wsScale = layer.WeightStore.Scale
+	}
+
+	mhaPrepareKVForForward[T](layer, lay, msl, kvDim)
+	cacheK := layer.KVCacheK.(*Tensor[T])
+	cacheV := layer.KVCacheV.(*Tensor[T])
+
+	kvStart := layer.KVOffset
+	for b := 0; b < lay.batch; b++ {
+		base := lay.base(b)
+		seqBase := kvStart + b*seqLen
+
+		Q := make([]float64, seqLen*qDim)
+		qkEps := mhaQKNormEpsilon(layer)
+		qScratch := make([]float64, qDim)
+		kScratch := make([]T, kvDim)
+		vScratch := make([]T, kvDim)
+
+		for s := 0; s < seqLen; s++ {
+			pos := seqBase + s
+			inRow := input.Data[base+s*dModel : base+(s+1)*dModel]
+			kRow := cacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+			vRow := cacheV.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
+
+			mhaTiledProject(inRow, wData, qwStart, qbStart, qScratch, dModel, qDim, 1, layer.DType, wsScale, qkvTile)
+			for i := 0; i < qDim; i++ {
+				Q[s*qDim+i] = float64(qScratch[i])
+			}
+
+			mhaTiledProject(inRow, wData, kwStart, kbStart, kScratch, dModel, kvDim, 1, layer.DType, wsScale, qkvTile)
+			mhaTiledProject(inRow, wData, vwStart, vbStart, vScratch, dModel, kvDim, 1, layer.DType, wsScale, qkvTile)
+			copy(kRow, kScratch)
+			copy(vRow, vScratch)
+
+			if len(layer.QNormWeight) > 0 {
+				applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
+			}
+			if len(layer.KNormWeight) > 0 {
+				applyPerHeadRMSNormTensor(kRow, layer.KNormWeight, numKVHeads, headDim, qkEps)
+			}
+
+			theta := mhaRoPETheta(layer)
+			half := headDim / 2
+			for h := 0; h < numHeads; h++ {
+				for d := 0; d < half; d++ {
+					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+					c, sVal := math.Cos(angle), math.Sin(angle)
+					qOff := s*qDim + h*headDim + d
+					v0, v1 := Q[qOff], Q[qOff+half]
+					Q[qOff] = v0*c - v1*sVal
+					Q[qOff+half] = v0*sVal + v1*c
+				}
+			}
+			for h := 0; h < numKVHeads; h++ {
+				for d := 0; d < half; d++ {
+					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+					c, sVal := math.Cos(angle), math.Sin(angle)
+					kOff := h*headDim + d
+					v0, v1 := float64(kRow[kOff]), float64(kRow[kOff+half])
+					kRow[kOff] = T(v0*c - v1*sVal)
+					kRow[kOff+half] = T(v0*sVal + v1*c)
+				}
+			}
+		}
+
+		headsPerKV := numHeads / numKVHeads
+		scale := 1.0 / math.Sqrt(float64(headDim))
+		attnOut := make([]float64, seqLen*qDim)
+
+		for s := 0; s < seqLen; s++ {
+			currentTotalPos := seqBase + s
+			for h := 0; h < numHeads; h++ {
+				kvHead := h / headsPerKV
+
+				scores := make([]float64, currentTotalPos+1)
+				maxScore := float64(-1e9)
+
+				for kPos := 0; kPos <= currentTotalPos; kPos++ {
+					kIdx := kPos % msl
+					var dot float64
+					for d := 0; d < headDim; d++ {
+						dot += Q[s*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
+					}
+					score := dot * scale
+					scores[kPos] = score
+					if score > maxScore {
+						maxScore = score
+					}
+				}
+
+				var expSum float64
+				for kPos := 0; kPos <= currentTotalPos; kPos++ {
+					scores[kPos] = math.Exp(scores[kPos] - maxScore)
+					expSum += scores[kPos]
+				}
+
+				for d := 0; d < headDim; d++ {
+					var sum float64
+					for kPos := 0; kPos <= currentTotalPos; kPos++ {
+						sum += scores[kPos] * float64(cacheV.Data[(kPos%msl)*kvDim+kvHead*headDim+d])
+					}
+					attnOut[s*qDim+h*headDim+d] = sum / expSum
+				}
+			}
+		}
+
+		attnScratch := make([]T, qDim)
+		oScratch := make([]T, dModel)
+		for s := 0; s < seqLen; s++ {
+			for i := 0; i < dModel; i++ {
+				preAct.Data[base+s*dModel+i] = T(attnOut[s*qDim+i])
+			}
+			for j := 0; j < qDim; j++ {
+				attnScratch[j] = T(attnOut[s*qDim+j])
+			}
+			mhaTiledProject(attnScratch, wData, owStart, obStart, oScratch, qDim, dModel, 1, layer.DType, wsScale, oTile)
+			copy(postAct.Data[base+s*dModel:base+(s+1)*dModel], oScratch)
+		}
+	}
+	layer.KVOffset = kvStart + lay.batch*seqLen
+	return preAct, postAct
 }
 
 // MHABackwardTiled computes the backward pass for multihead attention using tiled matrix multiplication.

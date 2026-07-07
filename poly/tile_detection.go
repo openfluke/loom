@@ -424,6 +424,118 @@ func CalculateOptimalDenseSimdTileSizeForLayer(l *VolumetricLayer, dtype DType) 
 	return base
 }
 
+func capMHAProjTileToLayer(ts, inDim, outDim int) int {
+	if inDim <= 0 {
+		inDim = 1
+	}
+	if outDim <= 0 {
+		outDim = 1
+	}
+	if ts > inDim {
+		ts = inDim
+	}
+	if ts > outDim {
+		ts = outDim
+	}
+	if ts <= 0 {
+		ts = 1
+	}
+	return ts
+}
+
+// capMHATileToLayer is deprecated; projections use capMHAProjTileToLayer(in, out).
+func capMHATileToLayer(ts, dModel, qDim, headDim int) int {
+	_ = headDim
+	return capMHAProjTileToLayer(ts, dModel, maxInt(qDim, dModel))
+}
+
+func mhaSimdTileForProjection(inner, outer int, dtype DType, l1Share float64) int {
+	if inner <= 0 {
+		inner = 1
+	}
+	if outer <= 0 {
+		outer = 1
+	}
+	dim := maxInt(inner, outer)
+
+	if !simd.SimdEnabled() || dim < DenseSimdMinDim() {
+		ts := CalculateOptimalDenseTileSize(inner, dtype)
+		return capMHAProjTileToLayer(ts, inner, outer)
+	}
+
+	base := calculateOptimalDenseTileSize(inner, dtype, true)
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+	// One Q/K/V/O projection resident at a time.
+	limit := float64(l1) * l1Share / (bytesPerWeight * float64(inner))
+	capped := 8
+	for _, candidate := range []int{8, 16, 32, 64, 128, 256} {
+		if float64(candidate) <= limit {
+			capped = candidate
+		}
+	}
+	if base > capped {
+		base = capped
+	}
+
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 16 {
+		minTile = 16
+	}
+	if base < minTile && dim >= minTile {
+		base = minTile
+	}
+	if dim >= 32 && base < 32 {
+		if float64(32) <= limit {
+			base = 32
+		}
+	}
+	base = capMHAProjTileToLayer(base, inner, outer)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, minInt(inner, outer))
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
+// CalculateOptimalMHASimdTileSizeForLayer picks tile sizes for MHA SIMD Q/K/V/O projections.
+// Each projection is budgeted independently; the smallest fitting tile is returned so
+// every matmul can use the same tile width (do not cap by head_dim — only d_model/q_dim).
+func CalculateOptimalMHASimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	dModel, _, _, _, qDim, kvDim := mhaLayerDims(l)
+	maxKVOut := kvDim
+	if qDim > maxKVOut {
+		maxKVOut = qDim
+	}
+
+	qkvTile := mhaSimdTileForProjection(dModel, maxKVOut, dtype, 0.5)
+	oTile := mhaSimdTileForProjection(qDim, dModel, dtype, 0.5)
+	ts := qkvTile
+	if oTile < ts {
+		ts = oTile
+	}
+	if ts <= 0 {
+		ts = 8
+	}
+	return ts
+}
+
 func capSwigluTileToLayer(ts, inputSize, intermediateSize int) int {
 	if ts > inputSize {
 		ts = inputSize
@@ -935,6 +1047,9 @@ func (l *VolumetricLayer) GetCPUSimdTileSize(dtype DType) int {
 	if l.Type == LayerSwiGLU {
 		return CalculateOptimalSwiGLUSimdTileSizeForLayer(l, dtype)
 	}
+	if l.Type == LayerMultiHeadAttention {
+		return CalculateOptimalMHASimdTileSizeForLayer(l, dtype)
+	}
 	return l.GetCPUTileSize(dtype)
 }
 
@@ -944,7 +1059,7 @@ func (l *VolumetricLayer) EnsureRuntimeTileSizes() {
 		return
 	}
 	needRefresh := l.CPUTileSizes == nil
-	if (l.Type == LayerDense || l.Type == LayerSwiGLU) && l.CPUSimdTileSizes == nil {
+	if (l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention) && l.CPUSimdTileSizes == nil {
 		needRefresh = true
 	}
 	if needRefresh {
@@ -982,7 +1097,7 @@ func (l *VolumetricLayer) GetGPUMCTileSize(dtype DType) int {
 
 func (l *VolumetricLayer) refreshRuntimeCPUTileSizes() {
 	l.CPUTileSizes = make(map[DType]int, len(allDTypes))
-	if l.Type == LayerDense || l.Type == LayerSwiGLU {
+	if l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention {
 		l.CPUSimdTileSizes = make(map[DType]int, len(allDTypes))
 	}
 	for _, dtype := range allDTypes {
@@ -995,7 +1110,11 @@ func (l *VolumetricLayer) refreshRuntimeCPUTileSizes() {
 		case LayerCNN3:
 			ts = CalculateOptimalCNN3TileSize(l.InputChannels, dtype)
 		case LayerMultiHeadAttention:
-			ts = CalculateOptimalTileSize(l.HeadDim, dtype)
+			dModel, _, _, _, qDim, kvDim := mhaLayerDims(l)
+			maxOut := maxInt(qDim, kvDim)
+			ts = CalculateOptimalDenseTileSize(dModel, dtype)
+			ts = capMHAProjTileToLayer(ts, dModel, maxInt(maxOut, dModel))
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalMHASimdTileSizeForLayer(l, dtype)
 		case LayerSwiGLU:
 			ts = CalculateOptimalSwiGLUTileSize(l.InputHeight, dtype)
 			ts = capSwigluTileToLayer(ts, l.InputHeight, l.OutputHeight)

@@ -534,7 +534,7 @@ type VolumetricNetwork struct {
 	UseGPU                bool
 	UseExactDType         bool
 
-	// UseSimdForward routes Dense/SwiGLU CPU forward through Plan 9 AVX2/NEON tile dots.
+	// UseSimdForward routes Dense/SwiGLU/MHA CPU forward through Plan 9 AVX2/NEON tile dots.
 	UseSimdForward bool
 
 	// ReleaseFP32MasterWhenIdle drops FP32 Master after SyncInferenceWeights so

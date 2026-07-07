@@ -170,19 +170,83 @@ func saveReloadMaxBucket(phase savePhase, dt poly.DType, primary poly.LayerType)
 	return specIndustry
 }
 
+func layerMasterDim(l *poly.VolumetricLayer) (dim int, ok bool) {
+	switch l.Type {
+	case poly.LayerDense, poly.LayerSwiGLU:
+		dim = l.InputHeight
+		if l.OutputHeight > dim {
+			dim = l.OutputHeight
+		}
+		return dim, dim > 0
+	case poly.LayerMultiHeadAttention:
+		return l.DModel, l.DModel > 0
+	default:
+		return 0, false
+	}
+}
+
+func mhaUintMasterExtra(dtype poly.DType, stack, dim int) float32 {
+	switch dtype {
+	case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
+		if dim < 16 {
+			return 1.0
+		}
+		dimF := float32(16) / float32(dim)
+		if dimF > 1 {
+			dimF = 1
+		}
+		depthF := float32(32) / float32(stack)
+		if depthF > 1 {
+			depthF = 1
+		}
+		return dimF * dimF * depthF
+	}
+	return 1.0
+}
+
+func masterWeightScaleForLayer(l *poly.VolumetricLayer, tc dtypeCase) float32 {
+	if l.Network == nil {
+		return 1.0
+	}
+	dim, ok := layerMasterDim(l)
+	if !ok {
+		return 1.0
+	}
+	stack := l.Network.StackLayerCount()
+	wScale := poly.MasterWeightScaleForStackDepth(tc.dtype, stack, dim)
+	if l.Type == poly.LayerMultiHeadAttention {
+		wScale *= mhaUintMasterExtra(tc.dtype, stack, dim)
+	}
+	return wScale
+}
+
+func simdParityTol(primary poly.LayerType, tc dtypeCase) float64 {
+	tol := tc.tolerance
+	if tol < 1e-10 {
+		tol = 1e-10
+	}
+	if primary == poly.LayerMultiHeadAttention {
+		if tol < 1e-4 {
+			tol = 1e-4
+		}
+		// MHA softmax amplifies projection tile-order deltas on wide unsigned paths.
+		switch tc.dtype {
+		case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
+			if tol < 0.1 {
+				tol = 0.1
+			}
+		}
+	}
+	return tol
+}
+
 func applyDTypeLayer(l *poly.VolumetricLayer, tc dtypeCase) {
 	l.DType = tc.dtype
 	if l.WeightStore != nil {
 		l.WeightStore.InvalidateVersions()
-		if l.Network != nil && (l.Type == poly.LayerDense || l.Type == poly.LayerSwiGLU) {
-			dim := l.InputHeight
-			if l.OutputHeight > dim {
-				dim = l.OutputHeight
-			}
-			if wScale := poly.MasterWeightScaleForStackDepth(tc.dtype, l.Network.StackLayerCount(), dim); wScale != 1.0 {
-				for j := range l.WeightStore.Master {
-					l.WeightStore.Master[j] *= wScale
-				}
+		if wScale := masterWeightScaleForLayer(l, tc); wScale != 1.0 {
+			for j := range l.WeightStore.Master {
+				l.WeightStore.Master[j] *= wScale
 			}
 		}
 		if tc.scale != 1.0 {

@@ -127,7 +127,8 @@ func mhaShapeFor(g GridSpec) mhaShape {
 	case 8:
 		return mhaShape{16, 2, 4}
 	default:
-		return mhaShape{8, 2, 4}
+		// d_model=32 head_dim=8 — SIMD crossover on projections (see poly.DenseSimdMinDim).
+		return mhaShape{32, 4, 4}
 	}
 }
 
@@ -242,7 +243,8 @@ func RunMHA() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerMultiHeadAttention,
 			CheckpointTag: "seven_mha" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 MHA/cell d=%d h=%d seq=%d — ASM not implemented", g, m.dModel, m.heads, m.seq),
+			Banner: fmt.Sprintf("  Grid %s · 7 MHA/cell d=%d h=%d seq=%d — Plan 9 SIMD when GOARCH supports it",
+				g, m.dModel, m.heads, m.seq),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-mha", g)

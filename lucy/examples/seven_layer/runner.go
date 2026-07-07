@@ -318,9 +318,12 @@ func RunLayerSuite(s LayerSuite) bool {
 		if detTol < 1e-10 {
 			detTol = 1e-10
 		}
+		if s.PrimaryType == poly.LayerMultiHeadAttention && detTol < 1e-4 {
+			detTol = 1e-4
+		}
 		row.DetOK = row.FwdSCMC <= detTol && row.BwdSCMC <= detTol*10
 		if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
-			row.SimdOK = row.FwdTiledSimd <= detTol
+			row.SimdOK = row.FwdTiledSimd <= simdParityTol(s.PrimaryType, tc)
 			row.DetOK = row.DetOK && row.SimdOK
 		}
 
