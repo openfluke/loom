@@ -267,18 +267,32 @@ The Intel plugin (`libloom_accel_intel.so`) is still a **separate** dlopen artif
 
 ---
 
-## Qualcomm NPU (planned)
+## Qualcomm NPU (shipped — experimental) → see [`snapdragon_npu.md`](snapdragon_npu.md)
 
-**Target plugin:** `libloom_accel_qcom.so`  
-**SDK:** Qualcomm AI Engine Direct / QNN (device-specific)
+**Plugin:** `loom_accel_qualcomm.dll` (Qualcomm **QNN AI Engine Direct** inside)
+**SDK:** QAIRT / QNN — vendored under `accel/qualcomm/deps/`
+**Platform:** Windows on Snapdragon X · Hexagon v73 HTP + Kryo CPU · **Lucy [12]**
 
-Same `loom_accel.h` vtable. Loom side unchanged: `DiscoverAccel` will open a second plugin when `AccelConfig` supplies the path. Expected env:
+The Snapdragon path is now real, not planned — same `loom_accel.h` vtable, same
+`SyncToAccel` → `DispatchLayer` flow, opened via `poly.DiscoverQualcommAccel`:
 
-```bash
-export LOOM_ACCEL_QCOM_SO=/path/to/libloom_accel_qcom.so
+```go
+reg, _ := poly.DiscoverQualcommAccel(accel.AccelConfig{
+    QualcommSO: accel.DefaultQualcommPath(),
+})
+net.Accel = reg
+net.Layers[0].ExecTarget = accel.ExecQualcommNPU // or ExecQualcommCPU
 ```
 
-Snapdragon X Elite / Hexagon class devices. No implementation in-tree yet — Intel path proves the dispatch model.
+**What works today** (from `lucy_testing_output/snapdragon.txt`): activation ops
+(ReLU/GELU/Sigmoid/Softmax across FP32/INT16/INT8/INT4) and MatMul/MHA FP32 on the
+Hexagon HTP — **💎 EXACT** repeat-forward determinism (54/54), NPU parity 45/54 ≤ INDUS,
+up to **7× faster than Loom CPU** on large tiers. **What doesn't yet:** Conv1D/Conv2D,
+LayerNorm/RMSNorm, FP16 anywhere, and quantized MatMul all still error at graph build.
+
+Full achievements, benchmark tables, and the honest gap list are in
+[`snapdragon_npu.md`](snapdragon_npu.md); build/env/webgpu notes in
+[`accel/qualcomm/README.md`](../accel/qualcomm/README.md).
 
 ---
 
@@ -296,13 +310,16 @@ Same C ABI surface. Useful for cloud TPU pods and future edge TPU silicon. Loom 
 ```
 poly/
 ├── accel/
-│   ├── accel.go           Public types, DefaultIntelPath
-│   ├── target.go          ExecTarget enum
-│   ├── registry.go        Discover, PluginFor
-│   ├── plugin_linux.go    dlopen + C ABI calls (CGO)
-│   └── runtime_linux.go   OpenVINO LD_LIBRARY_PATH hints
-├── accel_intel.go         SyncToAccel, DispatchAccelForward
-└── forward.go             DispatchLayer → DispatchAccelForward
+│   ├── accel.go                     Public types, DefaultIntelPath, DefaultQualcommPath
+│   ├── target.go                    ExecTarget enum (Loom/Intel/Qualcomm × CPU/NPU)
+│   ├── registry.go                  Discover, DiscoverQualcomm, PluginFor
+│   ├── plugin_linux.go              Intel dlopen + C ABI calls (CGO)
+│   ├── runtime_linux.go             OpenVINO LD_LIBRARY_PATH hints
+│   ├── plugin_qualcomm_windows.go   Qualcomm LoadLibrary + C ABI (CGO, windows)
+│   └── plugin_qualcomm_stub.go      No-op Qualcomm stubs (non-windows / no-cgo)
+├── accel_intel.go                   Intel SyncToAccel, DispatchAccelForward, dtype bytes
+├── accel_qualcomm.go                DiscoverQualcommAccel entry point
+└── forward.go                       DispatchLayer → DispatchAccelForward
 ```
 
 ---

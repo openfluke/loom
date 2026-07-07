@@ -20,6 +20,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
 | [memory_history.md](memory_history.md) | **Memory history**: GPU load chart/diagnosis; block-wise HF→`.entity` import **and** block-wise encode (`ImportHFSaveEntityTransformerBlockwise`); GPU upload + sequential global release |
 | [accelerators.md](accelerators.md) | **Vendor NPU/TPU** — `poly/accel`, Intel OpenVINO CPU+NPU (experimental v0.81), Qualcomm + Google TPU planned, `SyncToAccel`, Lucy [9] |
+| [snapdragon_npu.md](snapdragon_npu.md) | **Snapdragon (Hexagon) NPU** — QNN AI Engine Direct plugin (`loom_accel_qualcomm.dll`), Windows/ARM64, Lucy [12], experimental; achievements + honest gaps from `snapdragon.txt` |
 | [windows_arm64.md](windows_arm64.md) | **Windows on ARM**: index → [`README_WINDOWS_ARM64.md`](../welvet/cabi/internal/build/README_WINDOWS_ARM64.md) (recovery script + `build_unix.sh windows arm64`) |
 | [`../welvet/cabi/internal/build/build_linux.sh`](../welvet/cabi/internal/build/build_linux.sh) | **Linux C-ABI build** — `dist/linux_amd64/` or `linux_arm64/` (`welvet.so` + `welvet.h`); wrapper over `build_unix.sh` |
 | [step.md](step.md) | The step mesh engine: `StepState`, one-clock-cycle forward, spatial feedback via remote links, BPTT, online learning |
@@ -59,6 +60,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Using the GPU?** Read [gpu.md](gpu.md).
 
 **Offloading to Intel NPU (experimental)?** Read [accelerators.md](accelerators.md) — build `accel/intel`, `SyncToAccel`, Lucy **[9]** or `accel/intel/example`. C/FFI: build Welvet with [`build_linux.sh`](../welvet/cabi/internal/build/build_linux.sh).
+
+**Offloading to Snapdragon / Hexagon NPU (experimental, Windows/ARM64)?** Read [snapdragon_npu.md](snapdragon_npu.md) — build `accel/qualcomm`, `DiscoverQualcommAccel`, Lucy **[12]**.
 
 **Debugging GPU load RAM spikes (Lucy ENTITY/Poly Talk)?** Read [memory_history.md](memory_history.md).
 
