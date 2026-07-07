@@ -26,7 +26,7 @@ func Plan9SimdForwardForLayer(t LayerType) bool {
 		return false
 	}
 	switch t {
-	case LayerDense, LayerSwiGLU, LayerMultiHeadAttention, LayerCNN1, LayerCNN2, LayerCNN3, LayerRNN:
+	case LayerDense, LayerSwiGLU, LayerMultiHeadAttention, LayerCNN1, LayerCNN2, LayerCNN3, LayerRNN, LayerLSTM:
 		return true
 	default:
 		return false
@@ -36,14 +36,14 @@ func Plan9SimdForwardForLayer(t LayerType) bool {
 // LayerSupportsSimdForward lists layer types with Plan 9 SIMD forward (when linked).
 func LayerSupportsSimdForward(t LayerType) bool {
 	switch t {
-	case LayerDense, LayerSwiGLU, LayerMultiHeadAttention, LayerCNN1, LayerCNN2, LayerCNN3, LayerRNN:
+	case LayerDense, LayerSwiGLU, LayerMultiHeadAttention, LayerCNN1, LayerCNN2, LayerCNN3, LayerRNN, LayerLSTM:
 		return true
 	default:
 		return false
 	}
 }
 
-// SetSimdForward enables Plan 9 SIMD forward (Dense, SwiGLU, MHA, CNN1, CNN2, CNN3, RNN) on the network and every layer.
+// SetSimdForward enables Plan 9 SIMD forward (Dense, SwiGLU, MHA, CNN1, CNN2, CNN3, RNN, LSTM) on the network and every layer.
 func (n *VolumetricNetwork) SetSimdForward(enabled bool) {
 	if n == nil {
 		return

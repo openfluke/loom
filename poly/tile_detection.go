@@ -1034,6 +1034,43 @@ func CalculateOptimalRNNSimdTileSizeForLayer(l *VolumetricLayer, dtype DType) in
 	return base
 }
 
+// CalculateOptimalLSTMSimdTileSizeForLayer picks hidden-unit tile sizes for LSTM SIMD forward.
+func CalculateOptimalLSTMSimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	inputSize := maxInt(1, l.InputHeight)
+	hiddenSize := maxInt(1, l.OutputHeight)
+	combined := inputSize + hiddenSize
+	dim := maxInt(inputSize, hiddenSize)
+
+	if !simd.SimdEnabled() || dim < DenseSimdMinDim() {
+		ts := CalculateOptimalLSTMTileSize(inputSize, hiddenSize, dtype)
+		return capRNNTileToLayer(ts, inputSize, hiddenSize)
+	}
+
+	base := calculateOptimalDenseTileSize(combined, dtype, true)
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 8 {
+		minTile = 8
+	}
+	if base < minTile && hiddenSize >= minTile {
+		base = minTile
+	}
+	base = capRNNTileToLayer(base, inputSize, hiddenSize)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, hiddenSize)
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
 // CalculateOptimalLSTMTileSize picks a TileSize for LSTM hidden-state tiling.
 // Working set per tile ≈ TileSize × (inputSize + hiddenSize) × 4 gates × bytesPerWeight.
 func CalculateOptimalLSTMTileSize(inputSize, hiddenSize int, dtype DType) int {
@@ -1418,6 +1455,9 @@ func (l *VolumetricLayer) GetCPUSimdTileSize(dtype DType) int {
 	if l.Type == LayerRNN {
 		return CalculateOptimalRNNSimdTileSizeForLayer(l, dtype)
 	}
+	if l.Type == LayerLSTM {
+		return CalculateOptimalLSTMSimdTileSizeForLayer(l, dtype)
+	}
 	return l.GetCPUTileSize(dtype)
 }
 
@@ -1427,7 +1467,7 @@ func (l *VolumetricLayer) EnsureRuntimeTileSizes() {
 		return
 	}
 	needRefresh := l.CPUTileSizes == nil
-	if (l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerCNN1 || l.Type == LayerCNN2 || l.Type == LayerCNN3 || l.Type == LayerRNN) && l.CPUSimdTileSizes == nil {
+	if (l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerCNN1 || l.Type == LayerCNN2 || l.Type == LayerCNN3 || l.Type == LayerRNN || l.Type == LayerLSTM) && l.CPUSimdTileSizes == nil {
 		needRefresh = true
 	}
 	if needRefresh {
@@ -1465,7 +1505,7 @@ func (l *VolumetricLayer) GetGPUMCTileSize(dtype DType) int {
 
 func (l *VolumetricLayer) refreshRuntimeCPUTileSizes() {
 	l.CPUTileSizes = make(map[DType]int, len(allDTypes))
-	if l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerCNN1 || l.Type == LayerCNN2 || l.Type == LayerCNN3 || l.Type == LayerRNN {
+	if l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerCNN1 || l.Type == LayerCNN2 || l.Type == LayerCNN3 || l.Type == LayerRNN || l.Type == LayerLSTM {
 		l.CPUSimdTileSizes = make(map[DType]int, len(allDTypes))
 	}
 	for _, dtype := range allDTypes {
@@ -1500,6 +1540,7 @@ func (l *VolumetricLayer) refreshRuntimeCPUTileSizes() {
 			l.CPUSimdTileSizes[dtype] = CalculateOptimalRNNSimdTileSizeForLayer(l, dtype)
 		case LayerLSTM:
 			ts = CalculateOptimalLSTMTileSize(l.InputHeight, l.OutputHeight, dtype)
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalLSTMSimdTileSizeForLayer(l, dtype)
 		case LayerEmbedding:
 			ts = CalculateOptimalEmbeddingTileSize(l.EmbeddingDim, dtype)
 		case LayerResidual:

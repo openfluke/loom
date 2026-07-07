@@ -401,7 +401,7 @@ func RunLSTM() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerLSTM,
 			CheckpointTag: "seven_lstm" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 LSTM/cell — ASM not implemented", g),
+			Banner:        fmt.Sprintf("  Grid %s · 7 LSTM/cell — Plan 9 SIMD (AVX2/NEON)", g),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-lstm", g)
