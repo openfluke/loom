@@ -180,6 +180,15 @@ func layerMasterDim(l *poly.VolumetricLayer) (dim int, ok bool) {
 		return dim, dim > 0
 	case poly.LayerMultiHeadAttention:
 		return l.DModel, l.DModel > 0
+	case poly.LayerCNN1:
+		dim = l.InputChannels
+		if l.Filters > dim {
+			dim = l.Filters
+		}
+		if l.InputHeight > dim {
+			dim = l.InputHeight
+		}
+		return dim, dim > 0
 	default:
 		return 0, false
 	}
@@ -230,6 +239,14 @@ func simdParityTol(primary poly.LayerType, tc dtypeCase) float64 {
 			tol = 1e-4
 		}
 		// MHA softmax amplifies projection tile-order deltas on wide unsigned paths.
+		switch tc.dtype {
+		case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
+			if tol < 0.1 {
+				tol = 0.1
+			}
+		}
+	}
+	if primary == poly.LayerCNN1 {
 		switch tc.dtype {
 		case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
 			if tol < 0.1 {

@@ -26,6 +26,9 @@ var StandardGrids = []GridSpec{
 	{Depth: 3, Rows: 3, Cols: 3},
 }
 
+// CNN1Grids runs 1³, 2³, and 3³ (channel widths sized for k=3 SIMD crossover).
+var CNN1Grids = StandardGrids
+
 // ConvGrids skips 3³ (189 conv layers/cell-type is too slow for smoke tests).
 var ConvGrids = []GridSpec{
 	{Depth: 1, Rows: 1, Cols: 1},

@@ -86,8 +86,12 @@ func cnnChannelEndpoints(g GridSpec) []int {
 	switch g.Cells() {
 	case 1:
 		return sevenEndpoints([]int{3, 6, 8, 8, 8, 16, 16, 16})
+	case 8:
+		// inC=8 → kernelVol=24 at k=3 (AVX2 crossover).
+		return flatEndpoints(8)
 	default:
-		return flatEndpoints(2)
+		// 3³: inC=16 → kernelVol=48; MorphScaleForStackDepth keeps Uint stacks stable.
+		return flatEndpoints(16)
 	}
 }
 
@@ -267,7 +271,7 @@ func RunMHA() bool {
 }
 
 func RunCNN1() bool {
-	return runGrids(ConvGrids, func(g GridSpec) LayerSuite {
+	return runGrids(CNN1Grids, func(g GridSpec) LayerSuite {
 		ch := cnnChannelEndpoints(g)
 		sp := cnnSpatial(g)
 		return LayerSuite{
@@ -275,7 +279,7 @@ func RunCNN1() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerCNN1,
 			CheckpointTag: "seven_cnn1" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 CNN1/cell %d×%d spatial — ASM not implemented", g, sp, sp),
+			Banner:        fmt.Sprintf("  Grid %s · 7 CNN1/cell %d×%d spatial — Plan 9 SIMD (AVX2/NEON)", g, sp, sp),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-cnn1", g)
