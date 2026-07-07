@@ -30,29 +30,12 @@ func simdTensorsAs[T Numeric](pre, post *Tensor[float32]) (*Tensor[T], *Tensor[T
 	return preAct, postAct, true
 }
 
-// denseLayerSimdViable reports whether this layer is wide enough for SIMD dots.
-func denseLayerSimdViable(layer *VolumetricLayer) bool {
-	if layer == nil {
-		return false
-	}
-	minDim := DenseSimdMinDim()
-	in := layer.InputHeight
-	out := layer.OutputHeight
-	if in < minDim && out < minDim {
-		return false
-	}
-	return true
-}
-
 func denseForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
+	// Only correctness-based formats fall back; explicit SIMD is honored at any width.
 	if usePackedTernaryCPU(layer) {
 		pre, post := DenseForwardPackedTernaryCPU(layer, input)
-		return pre, post
-	}
-	if !denseLayerSimdViable(layer) {
-		pre, post := DenseForwardTiled(layer, input)
 		return pre, post
 	}
 

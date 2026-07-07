@@ -65,7 +65,9 @@ func TestDenseSimdMatchesTiledFloat32(t *testing.T) {
 	}
 }
 
-func TestDenseSimdFallsBackOnTinyLayers(t *testing.T) {
+// Explicit SIMD is honored even on narrow layers (no silent fallback to tiled);
+// the SIMD dot must still match the tiled result.
+func TestDenseSimdMatchesTiledOnTinyLayers(t *testing.T) {
 	if !poly.Plan9SimdEnabled() {
 		t.Skip("no Plan 9 SIMD on this GOARCH")
 	}
@@ -76,7 +78,13 @@ func TestDenseSimdFallsBackOnTinyLayers(t *testing.T) {
 	l.OutputHeight = 4
 	l.DType = poly.DTypeFloat32
 	l.WeightStore = poly.NewWeightStore(16)
+	for j := range l.WeightStore.Master {
+		l.WeightStore.Master[j] = 0.01 * float32((j%7)+1)
+	}
 	input := poly.NewTensor[float32](4, 4)
+	for i := range input.Data {
+		input.Data[i] = 0.02 * float32((i%5)+1)
+	}
 
 	net.SetSimdForward(true)
 	outSimd, _, _ := poly.ForwardPolymorphic(net, input)
@@ -84,8 +92,12 @@ func TestDenseSimdFallsBackOnTinyLayers(t *testing.T) {
 	outTiled, _, _ := poly.ForwardPolymorphic(net, input)
 
 	for i := range outTiled.Data {
-		if outTiled.Data[i] != outSimd.Data[i] {
-			t.Fatalf("tiny layer fallback mismatch at %d", i)
+		d := outTiled.Data[i] - outSimd.Data[i]
+		if d < 0 {
+			d = -d
+		}
+		if d > 1e-5 {
+			t.Fatalf("tiny layer simd vs tiled mismatch at %d: %g vs %g", i, outTiled.Data[i], outSimd.Data[i])
 		}
 	}
 }

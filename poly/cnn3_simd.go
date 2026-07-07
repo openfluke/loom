@@ -16,24 +16,8 @@ func tryCNN3ForwardSimd[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (pr
 	return simdTensorsAs[T](preF, postF)
 }
 
-func cnn3LayerSimdViable(layer *VolumetricLayer) bool {
-	if layer == nil {
-		return false
-	}
-	kSize := layer.KernelSize
-	if kSize <= 0 {
-		kSize = 1
-	}
-	kernelVol := layer.InputChannels * kSize * kSize * kSize
-	return kernelVol >= CNN1SimdMinDim()
-}
-
 func cnn3ForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
-
-	if !cnn3LayerSimdViable(layer) {
-		return CNN3ForwardTiled(layer, input)
-	}
 
 	batchSize := input.Shape[0]
 	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels

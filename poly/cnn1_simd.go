@@ -16,25 +16,14 @@ func tryCNN1ForwardSimd[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (pr
 	return simdTensorsAs[T](preF, postF)
 }
 
-func cnn1LayerSimdViable(layer *VolumetricLayer) bool {
-	if layer == nil {
-		return false
-	}
-	kSize := layer.KernelSize
-	if kSize <= 0 {
-		kSize = 1
-	}
-	kernelVol := layer.InputChannels * kSize
-	return kernelVol >= CNN1SimdMinDim()
-}
-
 func cnn1ForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
+	// Only correctness-based formats fall back; explicit SIMD is honored at any width.
 	if useBitpackedCPUCNN1(layer) {
 		return CNN1ForwardPackedCPU(layer, input)
 	}
-	if useNativeQuantCNN1(layer) || !cnn1LayerSimdViable(layer) {
+	if useNativeQuantCNN1(layer) {
 		return CNN1ForwardTiled(layer, input)
 	}
 

@@ -72,22 +72,33 @@ func TestCNN2SimdMatchesTiledFloat32(t *testing.T) {
 	}
 }
 
-func TestCNN2SimdFallsBackOnTinyLayers(t *testing.T) {
+// Explicit SIMD is honored even on tiny kernels; result must match tiled.
+func TestCNN2SimdMatchesTiledOnTinyLayers(t *testing.T) {
 	if !poly.Plan9SimdForwardForLayer(poly.LayerCNN2) {
 		t.Skip("no Plan 9 SIMD on this GOARCH")
 	}
 	net := newCNN2TestNet(1, 1, 4, 1)
 	l := net.GetLayer(0, 0, 0, 0)
 	input := poly.NewTensor[float32](2, 1, 4, 4)
+	for i := range input.Data {
+		input.Data[i] = 0.02 * float32((i%5)+1)
+	}
 	net.SetSimdForward(false)
 	preT, postT := poly.CNN2ForwardPolymorphic(l, input)
 	net.SetSimdForward(true)
 	preS, postS := poly.CNN2ForwardPolymorphic(l, input)
 	for i := range preT.Data {
-		if preT.Data[i] != preS.Data[i] || postT.Data[i] != postS.Data[i] {
-			t.Fatalf("tiny CNN2 fallback mismatch at %d", i)
+		if absF32(preT.Data[i]-preS.Data[i]) > 1e-5 || absF32(postT.Data[i]-postS.Data[i]) > 1e-5 {
+			t.Fatalf("tiny CNN2 simd vs tiled mismatch at %d", i)
 		}
 	}
+}
+
+func absF32(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func TestCNN2BuildPopulatesSimdTileSizes(t *testing.T) {

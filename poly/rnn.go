@@ -4,10 +4,17 @@ import (
 	"math"
 	"runtime"
 	"sync"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 // RNNForwardPolymorphic performs a forward pass through an RNN layer.
 func RNNForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if pre, post, ok := tryRNNForwardSimd(layer, input); ok {
+			return pre, post
+		}
+	}
 	return RNNForwardTiled(layer, input)
 }
 

@@ -371,7 +371,7 @@ func RunRNN() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerRNN,
 			CheckpointTag: "seven_rnn" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 RNN/cell — ASM not implemented", g),
+			Banner:        fmt.Sprintf("  Grid %s · 7 RNN/cell — Plan 9 SIMD (AVX2/NEON)", g),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-rnn", g)
