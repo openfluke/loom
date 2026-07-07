@@ -25,12 +25,7 @@ type DTypeRow struct {
 
 	FwdSCMC  float64
 	BwdSCMC  float64
-	FwdGoAsm float64
 	DetOK    bool
-
-	AsmCapable bool
-	AsmUsed    bool
-	AsmOK      bool
 
 	TrainSCDur string
 	TrainMCDur string
@@ -81,27 +76,21 @@ func PrintDTypeResultsTable(layerName string, rows []DTypeRow) {
 	fmt.Printf("║  %s — correctness (all %d numerical types)                          ║\n", layerName, len(rows))
 	fmt.Printf("╚══════════════════════════════════════════════════════════════════════╝\n\n")
 
-	fmt.Printf("| %-10s | %-10s | %-10s | %-12s | %-12s | %-6s | %-6s | %-6s | %-7s | %-7s | %-6s | %-6s |\n",
-		"DType", "Loss[0]", "Loss[N]", "Before", "After", "B-OK", "A-OK", "Learn", "Native", "OK", "Det", "ASM")
-	fmt.Println("|------------|------------|------------|--------------|--------------|--------|--------|--------|---------|---------|--------|--------|")
+	fmt.Printf("| %-10s | %-10s | %-10s | %-12s | %-12s | %-6s | %-6s | %-6s | %-7s | %-7s | %-6s |\n",
+		"DType", "Loss[0]", "Loss[N]", "Before", "After", "B-OK", "A-OK", "Learn", "Native", "OK", "Det")
+	fmt.Println("|------------|------------|------------|--------------|--------------|--------|--------|--------|---------|---------|--------|")
 
 	for _, r := range rows {
 		if r.Err != "" {
-			fmt.Printf("| %-10s | %-10s | %-10s | %-12s | %-12s | %-6s | %-6s | %-6s | %-7s | %-7s | %-6s | %-6s |\n",
-				r.DType, "ERR", "ERR", r.Err, "", "", "", "", "", markOK(false), "", "")
+			fmt.Printf("| %-10s | %-10s | %-10s | %-12s | %-12s | %-6s | %-6s | %-6s | %-7s | %-7s | %-6s |\n",
+				r.DType, "ERR", "ERR", r.Err, "", "", "", "", "", markOK(false), "")
 			continue
 		}
-		asmCol := "N/A"
-		if r.AsmCapable {
-			asmCol = markOK(r.AsmOK)
-		} else if r.AsmUsed {
-			asmCol = "skip"
-		}
-		fmt.Printf("| %-10s | %-10.4e | %-10.4e | %-12s | %-12s | %-6s | %-6s | %-6s | %-7s | %-7s | %-6s | %-6s |\n",
+		fmt.Printf("| %-10s | %-10.4e | %-10.4e | %-12s | %-12s | %-6s | %-6s | %-6s | %-7s | %-7s | %-6s |\n",
 			r.DType, r.LossInit, r.LossFinal,
 			r.BeforeBucket, r.AfterBucket,
 			markOK(r.BeforeOK), markOK(r.AfterOK), markOK(r.Learned),
-			markOK(r.NativeOK), markOK(r.OverallOK), markOK(r.DetOK), asmCol)
+			markOK(r.NativeOK), markOK(r.OverallOK), markOK(r.DetOK))
 	}
 
 	passed, failed := 0, 0
@@ -191,19 +180,19 @@ func PrintTrainedReloadTable(layerName string, rows []DTypeRow) {
 
 func PrintDeterminismTable(layerName string, rows []DTypeRow) {
 	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  %s — CPU determinism (SC↔MC, Go↔ASM on Dense)                       ║\n", layerName)
+	fmt.Printf("║  %s — CPU determinism (SC↔MC)                                        ║\n", layerName)
 	fmt.Printf("╚══════════════════════════════════════════════════════════════════════╝\n\n")
 
-	fmt.Printf("| %-10s | %-10s | %-10s | %-10s | %-8s |\n",
-		"DType", "Fwd SC↔MC", "Bwd SC↔MC", "Go↔ASM", "Det OK")
-	fmt.Println("|------------|------------|------------|------------|----------|")
+	fmt.Printf("| %-10s | %-10s | %-10s | %-8s |\n",
+		"DType", "Fwd SC↔MC", "Bwd SC↔MC", "Det OK")
+	fmt.Println("|------------|------------|------------|----------|")
 
 	for _, r := range rows {
 		if r.Err != "" {
 			continue
 		}
-		fmt.Printf("| %-10s | %-10.2e | %-10.2e | %-10.2e | %-8s |\n",
-			r.DType, r.FwdSCMC, r.BwdSCMC, r.FwdGoAsm, markOK(r.DetOK))
+		fmt.Printf("| %-10s | %-10.2e | %-10.2e | %-8s |\n",
+			r.DType, r.FwdSCMC, r.BwdSCMC, markOK(r.DetOK))
 	}
 }
 

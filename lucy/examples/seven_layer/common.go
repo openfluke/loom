@@ -1,5 +1,5 @@
 // Package sevenlayer runs Lucy menu [7]: 7-deep JSON networks, CPU SC/MC parity,
-// programmatic ASM (Dense forward only), train, save/reload, and timing.
+// train, save/reload, and timing.
 package sevenlayer
 
 import (
@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/openfluke/loom/poly"
-	"github.com/openfluke/loom/poly/asm"
 )
 
 const (
@@ -79,48 +78,6 @@ func (s spectrum) String() string {
 	}
 }
 
-// AsmStatus describes assembly support for a layer type on this build.
-type AsmStatus struct {
-	ForwardCapable  bool
-	BackwardCapable bool
-	RuntimeEnabled  bool
-	Note            string
-}
-
-func platformAsmEnabled() bool { return asm.Enabled() }
-
-func layerAsmStatus(layerType poly.LayerType) AsmStatus {
-	switch layerType {
-	case poly.LayerDense:
-		if !platformAsmEnabled() {
-			return AsmStatus{
-				ForwardCapable: false, BackwardCapable: false,
-				Note: "ASM unavailable on this GOARCH (need amd64/arm64)",
-			}
-		}
-		return AsmStatus{
-			ForwardCapable: true, BackwardCapable: false,
-			Note: "Dense forward ASM only; backward not implemented",
-		}
-	default:
-		return AsmStatus{
-			ForwardCapable: false, BackwardCapable: false,
-			Note: "ASM not implemented for this layer type",
-		}
-	}
-}
-
-// SetNetworkAsm toggles UseAsmForward on the network and each Dense layer (API, not JSON).
-func SetNetworkAsm(net *poly.VolumetricNetwork, on bool) {
-	net.UseAsmForward = on
-	for i := range net.Layers {
-		l := &net.Layers[i]
-		if l.Type == poly.LayerDense {
-			l.UseAsmForward = on
-		}
-	}
-}
-
 func applyDType(net *poly.VolumetricNetwork, tc dtypeCase) {
 	for i := range net.Layers {
 		applyDTypeLayer(&net.Layers[i], tc)
@@ -162,15 +119,6 @@ func finalizeTrainingLayer(l *poly.VolumetricLayer, dt poly.DType) {
 	}
 	if l.MetaObservedLayer != nil {
 		finalizeTrainingLayer(l.MetaObservedLayer, dt)
-	}
-}
-
-func requiresAsmDeterminism(dt poly.DType) bool {
-	switch dt {
-	case poly.DTypeFloat64, poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -327,10 +275,9 @@ func wireLayer(l *poly.VolumetricLayer, net *poly.VolumetricNetwork) {
 	}
 }
 
-func setCPUMode(net *poly.VolumetricNetwork, multiCore, useAsm bool) {
+func setCPUMode(net *poly.VolumetricNetwork, multiCore bool) {
 	net.UseGPU = false
 	net.EnableMultiCoreTiling = multiCore
-	SetNetworkAsm(net, useAsm)
 	for i := range net.Layers {
 		l := &net.Layers[i]
 		l.UseTiling = true
@@ -349,8 +296,8 @@ type forwardCapture struct {
 	dur time.Duration
 }
 
-func captureForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore, useAsm bool) forwardCapture {
-	out, avg := benchmarkForward(net, input, multiCore, useAsm)
+func captureForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore bool) forwardCapture {
+	out, avg := benchmarkForward(net, input, multiCore)
 	return forwardCapture{out: out, dur: avg}
 }
 
@@ -557,8 +504,8 @@ func formatDur(d time.Duration) string {
 // activeBenchIters is set per grid in RunLayerSuite (fewer passes on 2³/3³).
 var activeBenchIters = 25
 
-func benchmarkForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore, useAsm bool) (out []float32, avg time.Duration) {
-	setCPUMode(net, multiCore, useAsm)
+func benchmarkForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore bool) (out []float32, avg time.Duration) {
+	setCPUMode(net, multiCore)
 	for i := 0; i < 3; i++ {
 		resetNetwork(net)
 		_, _, _ = poly.ForwardPolymorphic(net, input)
@@ -579,7 +526,7 @@ func benchmarkForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], 
 }
 
 func benchmarkBackward(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], multiCore bool) (dx, dw []float32, avg time.Duration) {
-	setCPUMode(net, multiCore, false)
+	setCPUMode(net, multiCore)
 	for i := 0; i < 3; i++ {
 		_, _, dur := runBackwardOnce(net, input, target)
 		_ = dur
@@ -595,7 +542,7 @@ func benchmarkBackward(net *poly.VolumetricNetwork, input, target *poly.Tensor[f
 }
 
 func runBackwardOnce(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32]) (dx, dw []float32, dur time.Duration) {
-	setCPUMode(net, false, false)
+	setCPUMode(net, false)
 	resetNetwork(net)
 
 	histIn := make([]*poly.Tensor[float32], len(net.Layers))

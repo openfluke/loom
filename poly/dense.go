@@ -3,15 +3,10 @@ package poly
 import (
 	"runtime"
 	"sync"
-
-	"github.com/openfluke/loom/poly/asm"
 )
 
 // DenseForwardPolymorphic performs a forward pass through a dense layer.
 func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
-	if layerUseAsmForward(layer) && asm.Enabled() {
-		return denseForwardAsm(layer, input)
-	}
 	return DenseForwardTiled(layer, input)
 }
 

@@ -11,35 +11,28 @@ import (
 	"unsafe"
 
 	"github.com/openfluke/loom/poly"
-	"github.com/openfluke/loom/poly/asm"
 )
 
 //export LoomAsmEnabled
 func LoomAsmEnabled() C.int {
-	if asm.Enabled() {
-		return 1
-	}
 	return 0
 }
 
 //export LoomSetNetworkUseAsmForward
 func LoomSetNetworkUseAsmForward(networkHandle C.longlong, enabled C.int) *C.char {
-	n, ok := getNetwork(int64(networkHandle))
+	_, ok := getNetwork(int64(networkHandle))
 	if !ok {
 		return errJSON("invalid network handle")
 	}
-	n.UseAsmForward = enabled != 0
+	_ = enabled
 	return C.CString(`{"status":"ok"}`)
 }
 
 //export LoomGetNetworkUseAsmForward
 func LoomGetNetworkUseAsmForward(networkHandle C.longlong) C.int {
-	n, ok := getNetwork(int64(networkHandle))
+	_, ok := getNetwork(int64(networkHandle))
 	if !ok {
 		return 0
-	}
-	if n.UseAsmForward {
-		return 1
 	}
 	return 0
 }
@@ -53,7 +46,7 @@ func LoomSetLayerUseAsmForward(networkHandle C.longlong, layerIndex C.int, enabl
 	if int(layerIndex) < 0 || int(layerIndex) >= len(n.Layers) {
 		return errJSON("layer index out of range")
 	}
-	n.Layers[int(layerIndex)].UseAsmForward = enabled != 0
+	_ = enabled
 	return C.CString(`{"status":"ok"}`)
 }
 
