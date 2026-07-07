@@ -88,6 +88,8 @@ func intelDTypeLabel(dt DType) (string, bool) {
 		return "FP32", true
 	case DTypeFloat16:
 		return "FP16", true
+	case DTypeBFloat16:
+		return "BF16", true
 	case DTypeInt16:
 		return "INT16", true
 	case DTypeInt8:
@@ -171,6 +173,17 @@ func LayerWeightBytesForAccel(l *VolumetricLayer) []byte {
 			binary.LittleEndian.PutUint16(out[i*2:], float32ToFloat16Bits(v))
 		}
 		return out
+	case DTypeBFloat16:
+		w := l.WeightStore.GetActive(DTypeBFloat16)
+		f32 := CastWeights[float32](w)
+		if len(f32) == 0 {
+			return nil
+		}
+		out := make([]byte, len(f32)*2)
+		for i, v := range f32 {
+			binary.LittleEndian.PutUint16(out[i*2:], float32ToBFloat16Bits(v))
+		}
+		return out
 	case DTypeInt8, DTypeInt16, DTypeInt4:
 		// Quantized modes upload FP32 weight values; the accelerator requantizes to
 		// the target fixed-point precision (INT8/INT16=8-bit weights, INT4=4-bit).
@@ -218,6 +231,8 @@ func tensorToAccelBytes[T Numeric](t *Tensor[T], dtypeLabel string) ([]byte, err
 		return int8TensorToAccelFP32Bytes(t)
 	case "FP16":
 		return floatTensorToFP16Bytes(t)
+	case "BF16":
+		return floatTensorToBF16Bytes(t)
 	default:
 		// FP32 + quantized activations (INT16/INT4) all hand over FP32 values;
 		// the accelerator quantizes activations to its target precision.
@@ -252,6 +267,15 @@ func floatTensorToFP16Bytes[T Numeric](t *Tensor[T]) ([]byte, error) {
 	return out, nil
 }
 
+func floatTensorToBF16Bytes[T Numeric](t *Tensor[T]) ([]byte, error) {
+	data := ConvertSlice[T, float32](t.Data)
+	out := make([]byte, len(data)*2)
+	for i, v := range data {
+		binary.LittleEndian.PutUint16(out[i*2:], float32ToBFloat16Bits(v))
+	}
+	return out, nil
+}
+
 func accelBytesToTensor[T Numeric](b []byte, dtypeLabel string, shape []int) (*Tensor[T], error) {
 	switch dtypeLabel {
 	case "INT8":
@@ -270,6 +294,13 @@ func accelBytesToTensor[T Numeric](b []byte, dtypeLabel string, shape []int) (*T
 		f32 := make([]float32, n)
 		for i := 0; i < n; i++ {
 			f32[i] = float16BitsToFloat32(binary.LittleEndian.Uint16(b[i*2:]))
+		}
+		return NewTensorFromSlice(ConvertSlice[float32, T](f32), fitShape(shape, n)...), nil
+	case "BF16":
+		n := len(b) / 2
+		f32 := make([]float32, n)
+		for i := 0; i < n; i++ {
+			f32[i] = bfloat16BitsToFloat32(binary.LittleEndian.Uint16(b[i*2:]))
 		}
 		return NewTensorFromSlice(ConvertSlice[float32, T](f32), fitShape(shape, n)...), nil
 	default:
@@ -302,6 +333,24 @@ func float32ToFloat16Bits(f float32) uint16 {
 		}
 		return sign | uint16(newExp<<10) | uint16(frac>>13)
 	}
+}
+
+// float32ToBFloat16Bits truncates fp32 to bfloat16 (top 16 bits) with
+// round-to-nearest-even. BF16 keeps the fp32 exponent range — the native
+// low-precision type on Apple silicon, Google TPU, and modern OpenVINO.
+func float32ToBFloat16Bits(f float32) uint16 {
+	bits := math.Float32bits(f)
+	if bits&0x7fffffff > 0x7f800000 { // NaN → keep it quiet-NaN
+		return uint16(bits>>16) | 0x0040
+	}
+	// round to nearest even
+	lsb := (bits >> 16) & 1
+	bits += 0x7fff + lsb
+	return uint16(bits >> 16)
+}
+
+func bfloat16BitsToFloat32(b uint16) float32 {
+	return math.Float32frombits(uint32(b) << 16)
 }
 
 func float16BitsToFloat32(h uint16) float32 {

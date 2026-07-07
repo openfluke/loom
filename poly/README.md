@@ -5,22 +5,22 @@ M-POLY-VTD is a next-generation neural inference engine designed for high-perfor
 
 ### The Loom stack
 
-**Loom’s portable core runs on Go and WebGPU**, with **vendor silicon** (Intel NPU today; Qualcomm NPU, Google TPU next) plugged in through **`poly/accel`** + external C ABI plugins in [chaosglue `npu/`](https://github.com/openfluke/chaosglue/tree/main/npu). **Networked execution** (`donate_compute_*.go`) is the distributed complement. One volumetric dispatcher; pick the backend per device and workload.
+**Loom’s portable core runs on Go and WebGPU**, with **vendor silicon** (Intel NPU + Qualcomm NPU + Apple Metal GPU today; Google TPU next) plugged in through **`poly/accel`** + external C ABI plugins in [chaosglue `npu/`](https://github.com/openfluke/chaosglue/tree/main/npu). **Networked execution** (`donate_compute_*.go`) is the distributed complement. One volumetric dispatcher; pick the backend per device and workload.
 
 | Backend | Role | Status |
 | :--- | :--- | :--- |
 | **Go** | Portable CPU: SC/MC tiled loops, all layers, 21 dtypes — reference + training fallback | ✅ baseline |
 | **WebGPU** | GPU forward / backward / training (WGSL from Go) | ✅ production — **[openfluke/webgpu](https://github.com/openfluke/webgpu) v1.0.4** (wgpu-native v29) |
-| **`poly/accel`** | Vendor NPU/TPU via `libloom_accel_*` (`dlopen`/`LoadLibrary`, CGO) | 🧪 **experimental** — **Intel CPU+NPU** (Linux, OpenVINO) · **Qualcomm/Hexagon NPU** (Windows ARM64, QNN) · **Google TPU** planned |
+| **`poly/accel`** | Vendor NPU/TPU/GPU via `libloom_accel_*` (`dlopen`/`LoadLibrary`, CGO) | 🧪 **experimental** — **Intel CPU+NPU** (Linux, OpenVINO) · **Qualcomm/Hexagon NPU** (Windows ARM64, QNN) · **Apple GPU** (macOS, Metal/MPSGraph) · **Google TPU** planned |
 | **Network** | Remote inference & compute offload (`donate_compute_*.go`) | 🚧 protocol shipped · live inference wiring next |
 
 **Performance work is GPU-first** for decoder stacks, with **NPU offload** for medium/large MAC-heavy layers where compile tax amortizes. CPU Go paths remain the bedrock parity surface (Lucy **[7]**).
 
 **Vendor accel** = init-once compile + steady infer through `DispatchLayer`. See **[`docs/accelerators.md`](../docs/accelerators.md)** and Lucy menu **[9]** (`nine_layer`).
 
-### Where we are now — **v0.82.0 “Snapdragon Bridge”** (was **v0.81.0 “Accelerator Bridge”**)
+### Where we are now — **v0.83.0 “Apple Bridge”** (was **v0.82.0 “Snapdragon Bridge”**)
 
-**Device-aware** = **Go** on CPU (now with **SIMD** fast-paths: AVX2/FMA on x86-64, NEON on ARM64), **WebGPU** when `UseGPU` is on, and a second vendor NPU online: **Qualcomm/Hexagon** on Windows ARM64 via QNN, joining **Intel CPU+NPU** on Linux — both experimental through `poly/accel`. Production GPU uses **openfluke/webgpu v1.0.4** (wgpu-native **v29**).
+**Device-aware** = **Go** on CPU (with **SIMD** fast-paths: AVX2/FMA on x86-64, NEON on ARM64), **WebGPU** when `UseGPU` is on, and three experimental accelerator vendors online through `poly/accel`: **Intel CPU+NPU** on Linux (OpenVINO), **Qualcomm/Hexagon** on Windows ARM64 (QNN), and **Apple GPU** on macOS Apple silicon (Metal / MPSGraph). Production GPU uses **openfluke/webgpu v1.0.4** (wgpu-native **v29**).
 
 ## Core Pillars
 
@@ -75,6 +75,7 @@ The framework provides an **Idempotent Serialization Tunnel** designed for extre
 *   **Command graphs:** Record full decoder forward/backward into fewer submits (partial precedent: `wgpu_forward.go` single encoder per token).
 *   **Intel NPU:** Lower ENTITY / morphed weights to Intel NPU runtime (OpenVINO / driver path) for laptop-class inference.
 *   **Qualcomm NPU (shipped — experimental):** QNN / Hexagon delegate for Snapdragon on **Windows ARM64** via a C ABI plugin (`loom_accel_qualcomm.dll`); per-layer `DispatchLayer` offload + drift spectrum through Lucy **[12]** (`snapdragon`). Same weight layouts as ENTITY native packing where possible. See [`docs/snapdragon_npu.md`](../docs/snapdragon_npu.md).
+*   **Apple GPU (shipped — experimental):** Metal / MPSGraph plugin (`libloom_accel_apple.dylib`) for **macOS Apple silicon**; a CPU reference (parity anchor) + Metal GPU backend, per-layer `DispatchLayer` offload + drift spectrum through Lucy **[13]** (`apple`), plus a **BF16** wire dtype. See [`docs/apple_metal.md`](../docs/apple_metal.md).
 *   **Networking:** Expand **Donate Compute** (`docs/donate_compute.md`) from framed TCP stub to live Transformer/ENTITY offload; remote volumetric segments later.
 *   **HA step mesh (later):** Checkpoint/restore per step pulse, failover coordinator, and replicated step state for long-running “living network” deployments — builds on `StepForward` / `StepBackward`.
 
@@ -535,9 +536,10 @@ Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on 
 - [ ] MHA GPU backward wiring (dK/dV/dW + decoder block parity)
 - [ ] Embedding GPU backward wiring (untied `lm_head`)
 
-### 3.2 NPU backends
+### 3.2 NPU / accelerator backends
 - [x] Intel NPU path (OpenVINO / Intel NPU driver) — per-layer `poly/accel` dispatch, Lucy **[9]** (experimental, Linux)
 - [x] Qualcomm NPU path (QNN / Hexagon) — per-layer `poly/accel` dispatch, Lucy **[12]** (experimental, Windows ARM64)
+- [x] Apple GPU path (Metal / MPSGraph) — per-layer `poly/accel` dispatch, Lucy **[13]** (experimental, macOS Apple silicon)
 - [ ] Shared compile plan: `.entity` → backend-specific graph (whole-model, not just per-layer)
 - [ ] NPU parity suite vs WebGPU reference (SmolLM-class smoke)
 
@@ -553,7 +555,7 @@ Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on 
 - [ ] Replicated step-wise execution (active/passive)
 - [ ] Partition-tolerant mesh merge after node recovery
 
-**Accelerators & Distributed Progress: 6 / 18**
+**Accelerators & Distributed Progress: 7 / 19**
 
 ---
 
@@ -594,6 +596,7 @@ Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on 
 - [x] **WebGPU** — GPU via WGPU (Metal / Vulkan / DX12)
 - [x] **Intel NPU** — laptop AI accelerator path (experimental, OpenVINO, Lucy [9])
 - [x] **Qualcomm NPU** — Snapdragon / Hexagon path (experimental, QNN, Windows ARM64, Lucy [12])
+- [x] **Apple GPU** — Metal / MPSGraph path (experimental, macOS Apple silicon, Lucy [13])
 - [x] **Network** — Donate Compute TCP protocol (inference wiring pending)
 
 ### 5.2 Compiler Integration
@@ -629,7 +632,7 @@ Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on 
 - [x] **C-ABI functional parity** — `welvet/cabi/internal/check` at **461/461** (100%); includes `LoomSyncInferenceWeights`
 - [x] **MHA volumetric layout + KV** — `[B,S,D]` parsing, training vs decode cache policy, backward Q/K norm parity (`mha_layout.go`, `mha.go`)
 
-**Ecosystem Progress: 27 / 27**
+**Ecosystem Progress: 28 / 28**
 
 ---
 
@@ -660,7 +663,15 @@ Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on 
 
 ---
 
-## v0.82.0 — *Snapdragon Bridge* (current)
+## v0.83.0 — *Apple Bridge* (current)
+
+- **Apple GPU / Metal (experimental)** — third accelerator vendor: `libloom_accel_apple.dylib` built with CMake against Apple's **Metal Performance Shaders Graph** (no SDK to vendor — Metal ships with macOS). Two devices behind the vendor-neutral `loom_accel.h` C ABI: a portable **CPU reference** (deterministic parity anchor) and a **Metal GPU** (MPSGraph for MatMul/MHA/ReLU/Sigmoid/Softmax/Add/Multiply, per-op CPU fallback for the rest). Darwin CGO loader (`plugin_darwin.go`), `ExecAppleCPU`/`ExecAppleGPU` targets, per-layer `DispatchLayer` offload, and Lucy **[13]** `apple` bench, mirroring the Intel **[9]** and Qualcomm **[12]** suites.
+- **BF16 wire dtype** — the shared accel bridge (`poly/accel_intel.go`) now packs/unpacks **bfloat16** (top 16 bits of FP32, round-to-nearest-even), the native low-precision type on Apple silicon. Apple advertises **FP32/FP16/BF16/INT16/INT8/INT4** via its `bench_manifest.json`.
+- **Determinism** — 180/180 💎 EXACT repeat-forward on both Apple CPU and Metal GPU; GPU parity 132/180 ≤ INDUS; up to **5.4×** faster than Loom CPU on large MatMul/MHA (GPU) and up to **94×** on elementwise (CPU reference).
+- **Honest scope** — forward-only per-layer offload; Conv/GELU and the norms are CPU-reference-only (no MPSGraph path yet), norm parity broken (no weight bake), INT8 MatMul drift breaks on large tiers, ANE not wired (Metal only). Good enough for a release, not for prod — see [`docs/apple_metal.md`](../docs/apple_metal.md).
+- **Docs** — [`docs/apple_metal.md`](../docs/apple_metal.md), [`docs/accelerators.md`](../docs/accelerators.md), [`docs/v083_release.md`](../docs/v083_release.md).
+
+## v0.82.0 — *Snapdragon Bridge* (previous)
 
 - **SIMD CPU fast-path** — `poly/simd`: AVX2/FMA dot-tile on **x86-64** and NEON on **ARM64**, toggled via `SetSimdForward`; portable Go loops remain the parity reference. See [`docs/simd.md`](../docs/simd.md).
 - **Qualcomm / Hexagon NPU (experimental)** — second vendor plugin: `loom_accel_qualcomm.dll` built with `llvm-mingw clang++` against the **QNN AI Engine Direct** SDK (QAIRT). Windows-ARM64 CGO loader (`plugin_qualcomm_windows.go`), `ExecQualcommCPU`/`ExecQualcommNPU` targets, per-layer `DispatchLayer` offload, and Lucy **[12]** `snapdragon` bench (timing + drift spectrum across FP32/FP16/INT16/INT8/INT4), mirroring the Intel NPU **[9]** suite.
@@ -713,16 +724,19 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 | :--- | :---: | :---: |
 | 1. Numerical Core | 23 | 32 |
 | 2. Architectural Layers | 32 | 37 |
-| 3. Accelerators & Distributed | 6 | 18 |
+| 3. Accelerators & Distributed | 7 | 19 |
 | 4. Training Automation | 14 | 18 |
-| 5. Deployment Ecosystem | 27 | 27 |
+| 5. Deployment Ecosystem | 28 | 28 |
 | 6. LLM & Tokenization | 15 | 15 |
-| **GRAND TOTAL** | **117** | **147** |
+| **GRAND TOTAL** | **119** | **149** |
 
-### **Completion Ratio: 79.6%**
+### **Completion Ratio: 79.9%**
 
-## **Version 0.82.0 — CURRENT**
-*(**v0.82.0 "Snapdragon Bridge"** — from **0.81.0**. **SIMD** CPU fast-path (AVX2/NEON); second experimental NPU vendor: **Qualcomm/Hexagon** (QNN, Windows ARM64, Lucy **[12]**) alongside **Intel CPU+NPU** (Lucy **[9]**). Checklist **117 / 147** (79.6%). **Next:** whole-model `.entity` → NPU lowering, NPU parity suite, GPU backward (SwiGLU/MHA), AccelPlanner + JSON `exec`.)*
+## **Version 0.83.0 — CURRENT**
+*(**v0.83.0 "Apple Bridge"** — from **0.82.0**. Third experimental accelerator vendor: **Apple GPU** (Metal / MPSGraph, macOS Apple silicon, Lucy **[13]**) alongside **Intel CPU+NPU** (Lucy **[9]**) and **Qualcomm/Hexagon** (Lucy **[12]**). Adds a **BF16** wire dtype to the shared accel bridge. Checklist **119 / 149** (79.9%). **Next:** whole-model `.entity` → NPU lowering, NPU parity suite, GPU backward (SwiGLU/MHA), AccelPlanner + JSON `exec`.)*
+
+## **Version 0.82.0** (previous)
+*(**v0.82.0 "Snapdragon Bridge"** — **SIMD** CPU fast-path (AVX2/NEON); second experimental NPU vendor: **Qualcomm/Hexagon** (QNN, Windows ARM64, Lucy **[12]**) alongside **Intel CPU+NPU** (Lucy **[9]**). Checklist **117 / 147** (79.6%).)*
 
 ## **Version 0.81.0** (previous)
 *(**v0.81.0 "Accelerator Bridge"** — Experimental **Intel CPU+NPU** via `poly/accel`; Lucy **[9]**. Checklist **112 / 146** (76.7%).)*

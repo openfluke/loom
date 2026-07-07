@@ -83,6 +83,25 @@ func DefaultQualcommPath() string {
 	return defaultQualcommPath()
 }
 
+// OpenApple loads libloom_accel_apple.dylib from path (see DefaultApplePath).
+// device is "CPU" (portable reference backend) or "GPU" (Metal / MPSGraph).
+func OpenApple(path, device string) (Plugin, error) {
+	if err := PrepareAppleRuntime(); err != nil {
+		return nil, err
+	}
+	return openApplePlugin(path, device)
+}
+
+// AppleGPUAvailable reports whether the Apple plugin sees a Metal GPU device.
+func AppleGPUAvailable(path string) bool {
+	return appleGPUAvailable(path)
+}
+
+// DefaultApplePath resolves LOOM_ACCEL_APPLE_DYLIB or searches accel/apple/build/.
+func DefaultApplePath() string {
+	return defaultApplePath()
+}
+
 // RuntimeLDLibraryPath is OpenVINO + NPU dirs for LD_LIBRARY_PATH (Linux/cgo).
 func RuntimeLDLibraryPath() string {
 	return runtimeLDLibraryPath()

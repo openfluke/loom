@@ -54,6 +54,7 @@ func main() {
 		"[10] Context suite — long context / multi-prompt .entity tests (→ lucy_testing_output/context_suite/)\n"+
 		"[11] Transformer SIMD bench — .entity CPU SC/MC/SIMD decode tok/s (→ lucy_testing_output/transformer_simd_bench/)\n"+
 		"[12] Snapdragon NPU bridge — Loom ↔ loom_accel_qualcomm.dll (QNN) · all layers/dtypes (→ "+lucytesting.DefaultOutputDir+"/snapdragon.txt)\n"+
+		"[13] Apple GPU bridge — Loom ↔ libloom_accel_apple.dylib (Metal) · all layers/dtypes (→ "+lucytesting.DefaultOutputDir+"/apple.txt)\n"+
 		"Choice [1]: ", "1")
 	switch strings.TrimSpace(mode) {
 	case "2":
@@ -79,6 +80,8 @@ func main() {
 		examples.RunTransformerSimdBenchMenu(reader)
 	case "12":
 		examples.RunSnapdragonMenu(reader)
+	case "13":
+		examples.RunAppleMenu(reader)
 	default:
 		runHuggingFaceMode(reader)
 	}

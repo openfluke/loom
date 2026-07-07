@@ -1,7 +1,7 @@
 # Vendor accelerators (NPU / TPU)
 
-**Version:** Loom **v0.82.0** — experimental  
-**Status:** Intel CPU + NPU on Linux (Lucy [9]); Qualcomm/Hexagon NPU on Windows ARM64 (Lucy [12]); Google TPU planned
+**Version:** Loom **v0.83.0** — experimental  
+**Status:** Intel CPU + NPU on Linux (Lucy [9]); Qualcomm/Hexagon NPU on Windows ARM64 (Lucy [12]); Apple Metal GPU on macOS (Lucy [13]); Google TPU planned
 
 This document covers the **`poly/accel`** package: how Loom offloads individual layers to vendor silicon through external C ABI plugins, without embedding OpenVINO, QNN, or TPU SDKs inside the Loom module.
 
@@ -296,6 +296,39 @@ Full achievements, benchmark tables, and the honest gap list are in
 
 ---
 
+## Apple GPU / Metal (shipped — experimental) → see [`apple_metal.md`](apple_metal.md)
+
+**Plugin:** `libloom_accel_apple.dylib` (Apple **Metal Performance Shaders Graph** inside)
+**SDK:** none to vendor — Metal / MPS / MPSGraph ship with macOS
+**Platform:** macOS on Apple silicon · Metal GPU (MPSGraph) + portable CPU reference · **Lucy [13]**
+
+Same `loom_accel.h` vtable, same `SyncToAccel` → `DispatchLayer` flow, opened via
+`poly.DiscoverAppleAccel`:
+
+```go
+reg, _ := poly.DiscoverAppleAccel(accel.AccelConfig{
+    AppleSO: accel.DefaultApplePath(),
+})
+net.Accel = reg
+net.Layers[0].ExecTarget = accel.ExecAppleGPU // or ExecAppleCPU
+```
+
+Two devices behind one ABI: a **CPU reference** (deterministic parity anchor, all 15 layers) and
+a **Metal GPU** (MPSGraph for MatMul/MHA/ReLU/Sigmoid/Softmax/Add/Multiply; per-op CPU fallback
+for the rest). Bench matrix is **6 dtypes** — FP32/FP16/**BF16**/INT16/INT8/INT4 — with BF16 the
+Apple-native addition (compute is FP32; the dtype sets the wire byte layout).
+
+**What works today** (from `lucy_testing_output/apple.txt`, Lucy [13] → [5], 180 cells):
+byte-perfect repeat-forward determinism — **180/180 💎 EXACT on both CPU and GPU** — GPU parity
+132/180 ≤ INDUS, and up to **5.4× faster than Loom CPU** on large MatMul/MHA (GPU) and up to
+**94× on elementwise** (CPU reference). **What doesn't yet:** Conv1D/Conv2D and GELU are
+CPU-reference-only (no MPSGraph path, slower than Loom CPU), LayerNorm/RMSNorm parity is broken
+(no Loom weight bake), and INT8 MatMul drift breaks on the large tier. ANE is not wired (Metal
+only). Full tables and the honest gap list are in [`apple_metal.md`](apple_metal.md); build/dtype
+notes in [`accel/apple/README.md`](../accel/apple/README.md).
+
+---
+
 ## Google TPU (planned)
 
 **Target plugin:** `libloom_accel_google.so`  
@@ -310,15 +343,18 @@ Same C ABI surface. Useful for cloud TPU pods and future edge TPU silicon. Loom 
 ```
 poly/
 ├── accel/
-│   ├── accel.go                     Public types, DefaultIntelPath, DefaultQualcommPath
-│   ├── target.go                    ExecTarget enum (Loom/Intel/Qualcomm × CPU/NPU)
-│   ├── registry.go                  Discover, DiscoverQualcomm, PluginFor
+│   ├── accel.go                     Public types, DefaultIntelPath, DefaultQualcommPath, DefaultApplePath
+│   ├── target.go                    ExecTarget enum (Loom/Intel/Qualcomm/Apple × CPU/NPU/GPU)
+│   ├── registry.go                  Discover, DiscoverQualcomm, DiscoverApple, PluginFor
 │   ├── plugin_linux.go              Intel dlopen + C ABI calls (CGO)
 │   ├── runtime_linux.go             OpenVINO LD_LIBRARY_PATH hints
 │   ├── plugin_qualcomm_windows.go   Qualcomm LoadLibrary + C ABI (CGO, windows)
-│   └── plugin_qualcomm_stub.go      No-op Qualcomm stubs (non-windows / no-cgo)
-├── accel_intel.go                   Intel SyncToAccel, DispatchAccelForward, dtype bytes
+│   ├── plugin_qualcomm_stub.go      No-op Qualcomm stubs (non-windows / no-cgo)
+│   ├── plugin_darwin.go             Apple dlopen + C ABI calls (CGO, darwin)
+│   └── apple_stub.go                No-op Apple stubs (non-darwin / no-cgo)
+├── accel_intel.go                   Vendor-neutral SyncToAccel, DispatchAccelForward, dtype bytes
 ├── accel_qualcomm.go                DiscoverQualcommAccel entry point
+├── accel_apple.go                   DiscoverAppleAccel entry point
 └── forward.go                       DispatchLayer → DispatchAccelForward
 ```
 
@@ -344,13 +380,16 @@ Use **both**: WebGPU for general GPU; Intel NPU for Conv/MatMul on Core Ultra wh
 |---|---|
 | **v0.81** ✅ | Intel forward dispatch, dtype-aware weight upload (FP32/FP16/INT8), Lucy [9], benchmark tables in docs |
 | **v0.82** ✅ | Qualcomm/Hexagon NPU plugin (QNN, Windows ARM64), `ExecQualcomm*` targets, Lucy [12] `snapdragon` bench (FP32/FP16/INT16/INT8/INT4); SIMD CPU fast-path (AVX2/NEON); see [`snapdragon_npu.md`](snapdragon_npu.md) |
-| **v0.83+** | Whole-model `.entity` → NPU lowering, NPU parity suite vs WebGPU, AccelPlanner + JSON `exec`, Google plugin; backward CPU fallback policy |
+| **v0.83** ✅ | Apple Metal/MPSGraph plugin (macOS Apple silicon), `ExecApple*` targets, Lucy [13] `apple` bench (FP32/FP16/**BF16**/INT16/INT8/INT4); GPU MatMul/MHA + CPU reference; see [`apple_metal.md`](apple_metal.md) |
+| **v0.84+** | Whole-model `.entity` → NPU lowering, NPU parity suite vs WebGPU, AccelPlanner + JSON `exec`, Google plugin; MPSGraph Conv/GELU, norm weight bake, ANE via Core ML; backward CPU fallback policy |
 | **v1.0** | Vendor accel rows enter formal 1.0 checklist |
 
 ---
 
 ## See also
 
+- [`snapdragon_npu.md`](snapdragon_npu.md) — Qualcomm/Hexagon NPU bridge
+- [`apple_metal.md`](apple_metal.md) — Apple Metal GPU / MPSGraph bridge
 - [`dispatch.md`](dispatch.md) — `DispatchLayer` routing
 - [`gpu.md`](gpu.md) — WebGPU backend
 - [`v081_release.md`](v081_release.md) — release notes
