@@ -52,8 +52,14 @@ func TestEntityRoundTripMatchesJSONPersistence(t *testing.T) {
 			}
 			if dtype == DTypeInt8 {
 				reloaded.UseGPU = false
-				in := NewTensor[float32](1, 2)
-				in.Data[0], in.Data[1] = 0.2, -0.1
+				lh := got.InputHeight
+				if lh <= 0 {
+					lh = 4
+				}
+				in := NewTensor[float32](1, lh)
+				for i := range in.Data {
+					in.Data[i] = 0.2*float32(i+1) - 0.1
+				}
 				ForwardPolymorphic(reloaded, in)
 				if got.WeightStore.GetActive(dtype) == nil {
 					t.Fatal("GetActive returned nil after int8 entity reload forward")

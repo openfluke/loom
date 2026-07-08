@@ -1,5 +1,5 @@
 // Package sevenlayer runs Lucy menu [7]: 7-deep JSON networks, CPU SC/MC parity,
-// programmatic ASM (Dense forward only), train, save/reload, and timing.
+// train, save/reload, and timing.
 package sevenlayer
 
 import (
@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/openfluke/loom/poly"
-	"github.com/openfluke/loom/poly/asm"
 )
 
 const (
@@ -79,48 +78,6 @@ func (s spectrum) String() string {
 	}
 }
 
-// AsmStatus describes assembly support for a layer type on this build.
-type AsmStatus struct {
-	ForwardCapable  bool
-	BackwardCapable bool
-	RuntimeEnabled  bool
-	Note            string
-}
-
-func platformAsmEnabled() bool { return asm.Enabled() }
-
-func layerAsmStatus(layerType poly.LayerType) AsmStatus {
-	switch layerType {
-	case poly.LayerDense:
-		if !platformAsmEnabled() {
-			return AsmStatus{
-				ForwardCapable: false, BackwardCapable: false,
-				Note: "ASM unavailable on this GOARCH (need amd64/arm64)",
-			}
-		}
-		return AsmStatus{
-			ForwardCapable: true, BackwardCapable: false,
-			Note: "Dense forward ASM only; backward not implemented",
-		}
-	default:
-		return AsmStatus{
-			ForwardCapable: false, BackwardCapable: false,
-			Note: "ASM not implemented for this layer type",
-		}
-	}
-}
-
-// SetNetworkAsm toggles UseAsmForward on the network and each Dense layer (API, not JSON).
-func SetNetworkAsm(net *poly.VolumetricNetwork, on bool) {
-	net.UseAsmForward = on
-	for i := range net.Layers {
-		l := &net.Layers[i]
-		if l.Type == poly.LayerDense {
-			l.UseAsmForward = on
-		}
-	}
-}
-
 func applyDType(net *poly.VolumetricNetwork, tc dtypeCase) {
 	for i := range net.Layers {
 		applyDTypeLayer(&net.Layers[i], tc)
@@ -162,15 +119,6 @@ func finalizeTrainingLayer(l *poly.VolumetricLayer, dt poly.DType) {
 	}
 	if l.MetaObservedLayer != nil {
 		finalizeTrainingLayer(l.MetaObservedLayer, dt)
-	}
-}
-
-func requiresAsmDeterminism(dt poly.DType) bool {
-	switch dt {
-	case poly.DTypeFloat64, poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -222,10 +170,171 @@ func saveReloadMaxBucket(phase savePhase, dt poly.DType, primary poly.LayerType)
 	return specIndustry
 }
 
+func layerMasterDim(l *poly.VolumetricLayer) (dim int, ok bool) {
+	switch l.Type {
+	case poly.LayerDense, poly.LayerSwiGLU:
+		dim = l.InputHeight
+		if l.OutputHeight > dim {
+			dim = l.OutputHeight
+		}
+		return dim, dim > 0
+	case poly.LayerMultiHeadAttention:
+		return l.DModel, l.DModel > 0
+	case poly.LayerCNN1:
+		dim = l.InputChannels
+		if l.Filters > dim {
+			dim = l.Filters
+		}
+		if l.InputHeight > dim {
+			dim = l.InputHeight
+		}
+		return dim, dim > 0
+	case poly.LayerCNN2:
+		dim = l.InputChannels
+		if l.Filters > dim {
+			dim = l.Filters
+		}
+		if l.InputHeight > dim {
+			dim = l.InputHeight
+		}
+		if l.InputWidth > dim {
+			dim = l.InputWidth
+		}
+		return dim, dim > 0
+	case poly.LayerCNN3:
+		dim = l.InputChannels
+		if l.Filters > dim {
+			dim = l.Filters
+		}
+		if l.InputDepth > dim {
+			dim = l.InputDepth
+		}
+		if l.InputHeight > dim {
+			dim = l.InputHeight
+		}
+		if l.InputWidth > dim {
+			dim = l.InputWidth
+		}
+		return dim, dim > 0
+	case poly.LayerRNN, poly.LayerLSTM:
+		dim = l.InputHeight
+		if l.OutputHeight > dim {
+			dim = l.OutputHeight
+		}
+		return dim, dim > 0
+	default:
+		return 0, false
+	}
+}
+
+func mhaUintMasterExtra(dtype poly.DType, stack, dim int) float32 {
+	switch dtype {
+	case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
+		if dim < 16 {
+			return 1.0
+		}
+		dimF := float32(16) / float32(dim)
+		if dimF > 1 {
+			dimF = 1
+		}
+		depthF := float32(32) / float32(stack)
+		if depthF > 1 {
+			depthF = 1
+		}
+		return dimF * dimF * depthF
+	}
+	return 1.0
+}
+
+func cnn2UintMasterExtra(dtype poly.DType, stack, kSize int) float32 {
+	if stack < 48 {
+		return 1.0
+	}
+	if kSize <= 0 {
+		kSize = 1
+	}
+	switch dtype {
+	case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
+		depthF := float32(48) / float32(stack)
+		if depthF > 1 {
+			depthF = 1
+		}
+		// 2D k×k backprop needs extra dampening vs CNN1; keep floor so training still learns.
+		extra := depthF / float32(kSize)
+		if extra < 0.2 {
+			extra = 0.2
+		}
+		return extra
+	case poly.DTypeUint8, poly.DTypeUint4, poly.DTypeUint2:
+		depthF := float32(48) / float32(stack)
+		if depthF > 1 {
+			depthF = 1
+		}
+		extra := depthF / float32(kSize*kSize)
+		if extra < 0.15 {
+			extra = 0.15
+		}
+		return extra
+	}
+	return 1.0
+}
+
+func masterWeightScaleForLayer(l *poly.VolumetricLayer, tc dtypeCase) float32 {
+	if l.Network == nil {
+		return 1.0
+	}
+	dim, ok := layerMasterDim(l)
+	if !ok {
+		return 1.0
+	}
+	stack := l.Network.StackLayerCount()
+	wScale := poly.MasterWeightScaleForStackDepth(tc.dtype, stack, dim)
+	if l.Type == poly.LayerMultiHeadAttention {
+		wScale *= mhaUintMasterExtra(tc.dtype, stack, dim)
+	}
+	if l.Type == poly.LayerCNN2 {
+		wScale *= cnn2UintMasterExtra(tc.dtype, stack, l.KernelSize)
+	}
+	return wScale
+}
+
+func simdParityTol(primary poly.LayerType, tc dtypeCase) float64 {
+	tol := tc.tolerance
+	if tol < 1e-10 {
+		tol = 1e-10
+	}
+	if primary == poly.LayerMultiHeadAttention {
+		if tol < 1e-4 {
+			tol = 1e-4
+		}
+		// MHA softmax amplifies projection tile-order deltas on wide unsigned paths.
+		switch tc.dtype {
+		case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
+			if tol < 0.1 {
+				tol = 0.1
+			}
+		}
+	}
+	if primary == poly.LayerCNN1 || primary == poly.LayerCNN2 || primary == poly.LayerCNN3 || primary == poly.LayerRNN || primary == poly.LayerLSTM {
+		switch tc.dtype {
+		case poly.DTypeUint64, poly.DTypeUint32, poly.DTypeUint16:
+			if tol < 0.1 {
+				tol = 0.1
+			}
+		}
+	}
+	return tol
+}
+
 func applyDTypeLayer(l *poly.VolumetricLayer, tc dtypeCase) {
 	l.DType = tc.dtype
 	if l.WeightStore != nil {
 		l.WeightStore.InvalidateVersions()
+		if wScale := masterWeightScaleForLayer(l, tc); wScale != 1.0 {
+			for j := range l.WeightStore.Master {
+				l.WeightStore.Master[j] *= wScale
+			}
+		}
 		if tc.scale != 1.0 {
 			l.WeightStore.Scale = tc.scale
 		}
@@ -264,7 +373,7 @@ func prepareTrainingNet(net *poly.VolumetricNetwork, dt poly.DType) {
 		// float32/float64/float16/bfloat16: full depth scaling
 	}
 	for i := range net.Layers {
-		prepareTrainingLayer(&net.Layers[i], scale)
+		prepareTrainingLayer(&net.Layers[i], scale, dt)
 	}
 }
 
@@ -286,10 +395,18 @@ func trainingLearningRate(dt poly.DType) float32 {
 	}
 }
 
-func prepareTrainingLayer(l *poly.VolumetricLayer, scale float32) {
+func prepareTrainingLayer(l *poly.VolumetricLayer, scale float32, dt poly.DType) {
 	// MHA float stacks are already wide; depth scaling blows up attention logits.
 	if l.Type == poly.LayerMultiHeadAttention {
 		scale = 1
+	}
+	// CNN2 k×k MACs per output (~k²×C) explode when sqrt(layers/cell) scaling
+	// is applied on deep 3³ stacks; CNN1 (k×C) tolerates the same boost.
+	if l.Type == poly.LayerCNN2 {
+		switch dt {
+		case poly.DTypeFloat64, poly.DTypeFloat32, poly.DTypeFloat16, poly.DTypeBFloat16:
+			scale = 1
+		}
 	}
 	if l.WeightStore != nil && scale != 1 {
 		for j := range l.WeightStore.Master {
@@ -298,13 +415,13 @@ func prepareTrainingLayer(l *poly.VolumetricLayer, scale float32) {
 		l.WeightStore.InvalidateVersions()
 	}
 	for i := range l.ParallelBranches {
-		prepareTrainingLayer(&l.ParallelBranches[i], scale)
+		prepareTrainingLayer(&l.ParallelBranches[i], scale, dt)
 	}
 	for i := range l.SequentialLayers {
-		prepareTrainingLayer(&l.SequentialLayers[i], scale)
+		prepareTrainingLayer(&l.SequentialLayers[i], scale, dt)
 	}
 	if l.MetaObservedLayer != nil {
-		prepareTrainingLayer(l.MetaObservedLayer, scale)
+		prepareTrainingLayer(l.MetaObservedLayer, scale, dt)
 	}
 }
 
@@ -327,15 +444,19 @@ func wireLayer(l *poly.VolumetricLayer, net *poly.VolumetricNetwork) {
 	}
 }
 
-func setCPUMode(net *poly.VolumetricNetwork, multiCore, useAsm bool) {
+func setCPUMode(net *poly.VolumetricNetwork, multiCore bool) {
 	net.UseGPU = false
 	net.EnableMultiCoreTiling = multiCore
-	SetNetworkAsm(net, useAsm)
 	for i := range net.Layers {
 		l := &net.Layers[i]
 		l.UseTiling = true
 		l.EnableMultiCoreTiling = multiCore
 	}
+	net.RefreshRuntimeTileSizes()
+}
+
+func setSimdForward(net *poly.VolumetricNetwork, enabled bool) {
+	net.SetSimdForwardRecursive(enabled)
 }
 
 func resetNetwork(net *poly.VolumetricNetwork) {
@@ -349,8 +470,13 @@ type forwardCapture struct {
 	dur time.Duration
 }
 
-func captureForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore, useAsm bool) forwardCapture {
-	out, avg := benchmarkForward(net, input, multiCore, useAsm)
+func captureForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore bool) forwardCapture {
+	out, avg := benchmarkForward(net, input, multiCore)
+	return forwardCapture{out: out, dur: avg}
+}
+
+func captureForwardSimd(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore bool) forwardCapture {
+	out, avg := benchmarkForwardSimd(net, input, multiCore)
 	return forwardCapture{out: out, dur: avg}
 }
 
@@ -557,8 +683,9 @@ func formatDur(d time.Duration) string {
 // activeBenchIters is set per grid in RunLayerSuite (fewer passes on 2³/3³).
 var activeBenchIters = 25
 
-func benchmarkForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore, useAsm bool) (out []float32, avg time.Duration) {
-	setCPUMode(net, multiCore, useAsm)
+func benchmarkForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore bool) (out []float32, avg time.Duration) {
+	setCPUMode(net, multiCore)
+	setSimdForward(net, false)
 	for i := 0; i < 3; i++ {
 		resetNetwork(net)
 		_, _, _ = poly.ForwardPolymorphic(net, input)
@@ -578,8 +705,46 @@ func benchmarkForward(net *poly.VolumetricNetwork, input *poly.Tensor[float32], 
 	return append([]float32(nil), last.Data...), total / time.Duration(activeBenchIters)
 }
 
+func benchmarkForwardSimd(net *poly.VolumetricNetwork, input *poly.Tensor[float32], multiCore bool) (out []float32, avg time.Duration) {
+	setCPUMode(net, multiCore)
+	setSimdForward(net, true)
+	defer setSimdForward(net, false)
+	for i := 0; i < 3; i++ {
+		resetNetwork(net)
+		_, _, _ = poly.ForwardPolymorphic(net, input)
+	}
+	var total time.Duration
+	var last *poly.Tensor[float32]
+	for i := 0; i < activeBenchIters; i++ {
+		resetNetwork(net)
+		t0 := time.Now()
+		post, _, _ := poly.ForwardPolymorphic(net, input)
+		total += time.Since(t0)
+		last = post
+	}
+	if last == nil {
+		return nil, 0
+	}
+	return append([]float32(nil), last.Data...), total / time.Duration(activeBenchIters)
+}
+
+func formatSimdSpeedup(tiledMC, simd time.Duration) string {
+	if tiledMC <= 0 || simd <= 0 {
+		return "n/a"
+	}
+	pct := float64(tiledMC-simd) / float64(tiledMC) * 100
+	ratio := float64(tiledMC) / float64(simd)
+	if pct >= 0.5 {
+		return fmt.Sprintf("%.0f%% faster (%.1f×)", pct, ratio)
+	}
+	if pct <= -0.5 {
+		return fmt.Sprintf("%.0f%% slower (%.1f×)", -pct, float64(simd)/float64(tiledMC))
+	}
+	return "≈0%"
+}
+
 func benchmarkBackward(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], multiCore bool) (dx, dw []float32, avg time.Duration) {
-	setCPUMode(net, multiCore, false)
+	setCPUMode(net, multiCore)
 	for i := 0; i < 3; i++ {
 		_, _, dur := runBackwardOnce(net, input, target)
 		_ = dur
@@ -595,7 +760,7 @@ func benchmarkBackward(net *poly.VolumetricNetwork, input, target *poly.Tensor[f
 }
 
 func runBackwardOnce(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32]) (dx, dw []float32, dur time.Duration) {
-	setCPUMode(net, false, false)
+	setCPUMode(net, false)
 	resetNetwork(net)
 
 	histIn := make([]*poly.Tensor[float32], len(net.Layers))

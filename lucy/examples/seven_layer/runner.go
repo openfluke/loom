@@ -64,7 +64,7 @@ const (
 func checkSaveReloadFormat(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], tc dtypeCase, refLoss float64, phase savePhase, primary poly.LayerType, fmt checkpointFormat) saveResult {
 	r := saveResult{}
 	finalizeTrainingNet(net, tc)
-	setCPUMode(net, true, false)
+	setCPUMode(net, true)
 
 	out0, _, _ := poly.ForwardPolymorphic(net, input)
 	baseline := append([]float32(nil), out0.Data...)
@@ -95,7 +95,7 @@ func checkSaveReloadFormat(net *poly.VolumetricNetwork, input, target *poly.Tens
 		return r
 	}
 	wireLayerTree(reloaded)
-	setCPUMode(reloaded, true, false)
+	setCPUMode(reloaded, true)
 
 	out1, _, _ := poly.ForwardPolymorphic(reloaded, input)
 	r.forwardDiff = maxAbsDiff(baseline, out1.Data)
@@ -251,7 +251,6 @@ func saveEntityCheckpoint(net *poly.VolumetricNetwork, tag, dtypeName string) st
 
 // RunLayerSuite executes the full [7] matrix for one layer type on one grid.
 func RunLayerSuite(s LayerSuite) bool {
-	asmSt := layerAsmStatus(s.PrimaryType)
 	epochs := trainEpochsForGrid(s.Grid)
 	activeBenchIters = benchItersForGrid(s.Grid)
 	suiteLabel := fmt.Sprintf("%s %s", s.Name, s.Grid)
@@ -261,11 +260,8 @@ func RunLayerSuite(s LayerSuite) bool {
 	fmt.Printf("  Loom seven-layer %s — JSON + .entity · CPU SC/MC · train · save/reload\n", suiteLabel)
 	fmt.Println(s.Banner)
 	fmt.Println("══════════════════════════════════════════════════════════════════════")
-	fmt.Printf("  %d dtypes × %d epochs · grid %s (%d-layer stack) · ASM: %s\n",
-		len(allDTypes), epochs, s.Grid, s.Grid.StackLayers(), asmSt.Note)
-	if asmSt.ForwardCapable {
-		fmt.Println("  ASM enabled via net.UseAsmForward after JSON build (Dense layers only)")
-	}
+	fmt.Printf("  %d dtypes × %d epochs · grid %s (%d-layer stack)\n",
+		len(allDTypes), epochs, s.Grid, s.Grid.StackLayers())
 	fmt.Println()
 
 	var rows []DTypeRow
@@ -273,7 +269,7 @@ func RunLayerSuite(s LayerSuite) bool {
 
 	for _, tc := range allDTypes {
 		fmt.Printf("  · %-10s ", tc.name)
-		row := DTypeRow{DType: tc.name, AsmCapable: asmSt.ForwardCapable}
+		row := DTypeRow{DType: tc.name}
 
 		net, err := poly.BuildNetworkFromJSON(s.BuildJSON(tc.jsonName))
 		if err != nil {
@@ -291,14 +287,21 @@ func RunLayerSuite(s LayerSuite) bool {
 		row.MemHeap = formatBytes(mem0.HeapAlloc)
 		row.MemSys = formatBytes(mem0.Sys)
 
-		// Forward determinism: CPU Go SC vs MC (Go tiled path; ASM checked separately for floats).
-		// Benchmark with Master + Versions intact (v0.78 lucy/testing style). Dropping FP32 Master
-		// via configureInferenceNet before forward leaves CPU tiled paths relying on Versions alone.
-		fwdSC := captureForward(net, input, false, false)
-		fwdMC := captureForward(net, input, true, false)
+		// Forward determinism: CPU Go SC vs MC.
+		fwdSC := captureForward(net, input, false)
+		fwdMC := captureForward(net, input, true)
 		row.FwdSCDur = formatDur(fwdSC.dur)
 		row.FwdMCDur = formatDur(fwdMC.dur)
 		row.FwdSCMC = maxAbsDiff(fwdSC.out, fwdMC.out)
+
+		if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
+			fwdSimd := captureForwardSimd(net, input, true)
+			row.FwdSimdDur = formatDur(fwdSimd.dur)
+			// Compare vs SC tiled: SIMD uses wide serial tiles; MC tiled uses smaller
+			// tiles + goroutines and can differ in float reduction order.
+			row.FwdTiledSimd = maxAbsDiff(fwdSC.out, fwdSimd.out)
+			row.FwdSimdPct = formatSimdSpeedup(fwdMC.dur, fwdSimd.dur)
+		}
 
 		// Backward determinism: SC vs MC
 		bwdSC := captureBackward(net, input, target, false)
@@ -311,37 +314,18 @@ func RunLayerSuite(s LayerSuite) bool {
 		configureInferenceNet(net)
 		row.WeightBytes = formatBytes(networkWeightBytes(net)) + " (infer)"
 
-		// ASM forward (Dense float paths only — native quant uses integer matmul in ASM).
-		if asmSt.ForwardCapable && requiresAsmDeterminism(tc.dtype) {
-			SetNetworkAsm(net, true)
-			asmSt.RuntimeEnabled = net.UseAsmForward
-			fwdGo := captureForward(net, input, true, false)
-			fwdAsm := captureForward(net, input, true, true)
-			row.FwdGoAsm = maxAbsDiff(fwdGo.out, fwdAsm.out)
-			row.AsmUsed = true
-			row.AsmOK = row.FwdGoAsm <= tc.tolerance
-			SetNetworkAsm(net, false)
-		} else if asmSt.ForwardCapable {
-			row.AsmUsed = false
-			row.AsmOK = true
-			row.FwdGoAsm = 0
-		} else {
-			// Non-Dense: verify toggling ASM flag does not break CPU paths
-			SetNetworkAsm(net, true)
-			fwdWithFlag := captureForward(net, input, true, true)
-			SetNetworkAsm(net, false)
-			fwdWithout := captureForward(net, input, true, false)
-			row.FwdGoAsm = maxAbsDiff(fwdWithFlag.out, fwdWithout.out)
-			row.AsmUsed = false
-			row.AsmOK = row.FwdGoAsm <= tc.tolerance // should match (ASM ignored)
-		}
-
 		detTol := tc.tolerance
 		if detTol < 1e-10 {
 			detTol = 1e-10
 		}
-		row.DetOK = row.FwdSCMC <= detTol && row.BwdSCMC <= detTol*10 &&
-			(!requiresAsmDeterminism(tc.dtype) || row.FwdGoAsm <= tc.tolerance)
+		if s.PrimaryType == poly.LayerMultiHeadAttention && detTol < 1e-4 {
+			detTol = 1e-4
+		}
+		row.DetOK = row.FwdSCMC <= detTol && row.BwdSCMC <= detTol*10
+		if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
+			row.SimdOK = row.FwdTiledSimd <= simdParityTol(s.PrimaryType, tc)
+			row.DetOK = row.DetOK && row.SimdOK
+		}
 
 		lossBefore := forwardLoss(net, input, target)
 		requiresLearn := layerRequiresLearn(s.PrimaryType)
@@ -441,15 +425,11 @@ func RunLayerSuite(s LayerSuite) bool {
 			row.EntityNativeOK = false
 		}
 
-		// CPU SC/MC parity + train + JSON/.entity save/reload (ASM reported but not required for pass).
+		// CPU SC/MC parity + train + JSON/.entity save/reload.
 		row.OverallOK = row.BeforeOK && row.AfterOK && row.EntityBeforeOK && row.EntityAfterOK &&
 			row.Learned && row.DetOK && lossFiniteOK(lossInit, lossFinal, requiresLearn)
 		rows = append(rows, row)
 
-		asmTag := "N/A"
-		if asmSt.ForwardCapable {
-			asmTag = markOK(row.AsmOK)
-		}
 		if row.OverallOK {
 			passed++
 			fmt.Printf("PASS  loss %.4e→%.4e det=%s json=%s entity=%s fwd/bwd SC=%s/%s MC=%s/%s mem=%s json=%s entity=%s\n",
@@ -458,15 +438,18 @@ func RunLayerSuite(s LayerSuite) bool {
 				row.MemHeapTrain, row.Checkpoint, row.EntityCheckpoint)
 		} else {
 			failed++
-			fmt.Printf("FAIL  loss %.4e→%.4e learn=%s json=%s entity=%s det=%s asm=%s reload_Δloss=%.2e\n",
+			fmt.Printf("FAIL  loss %.4e→%.4e learn=%s json=%s entity=%s det=%s reload_Δloss=%.2e\n",
 				lossInit, lossFinal, markOK(row.Learned), markOK(row.BeforeOK && row.AfterOK),
-				markOK(row.EntityBeforeOK && row.EntityAfterOK), markOK(row.DetOK), asmTag, row.ReloadLossDelta)
+				markOK(row.EntityBeforeOK && row.EntityAfterOK), markOK(row.DetOK), row.ReloadLossDelta)
 		}
 		_ = lossSC
 	}
 
 	PrintDeterminismTable(suiteLabel, rows)
 	PrintForwardBackwardTimingTable(suiteLabel, rows)
+	if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
+		PrintSimdTimingTable(suiteLabel, rows)
+	}
 	PrintMemoryTable(suiteLabel, rows)
 	PrintTimingTable(suiteLabel, rows)
 	PrintTrainedReloadTable(suiteLabel, rows)

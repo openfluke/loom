@@ -3,8 +3,11 @@ package denseadaptation
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"math"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +39,13 @@ func RunDenseBench(reader *bufio.Reader) {
 
 // RunDenseAdaptationBenchmark compares how dense poly training paths adapt to a mid-stream task flip.
 func RunDenseAdaptationBenchmark(_ *bufio.Reader) {
+	path, err := denseAdaptationStartOutputCapture()
+	if err != nil {
+		fmt.Printf("⚠️ dense adaptation output capture disabled: %v\n", err)
+		runDenseAdaptationBenchmark()
+		return
+	}
+	defer denseAdaptationStopOutputCapture(path)
 	runDenseAdaptationBenchmark()
 }
 
@@ -48,6 +58,11 @@ func runDenseAdaptationBenchmark() {
 	fmt.Println("Timeline: [Chase 5s] → [AVOID 5s] → [Chase 5s]")
 	fmt.Println("Network:  6-layer Dense (8→32→64→64→64→32→4)")
 	fmt.Println("Engine:   loom/poly VolumetricNetwork")
+	if poly.Plan9SimdEnabled() {
+		fmt.Println("SIMD:     linked (AVX2/NEON) — each training path runs scalar + SIMD forward variants")
+	} else {
+		fmt.Println("SIMD:     not linked for this build/arch — SIMD rows use scalar forward")
+	}
 	fmt.Println()
 
 	master, err := createDenseAdaptationNetwork()
@@ -63,11 +78,17 @@ func runDenseAdaptationBenchmark() {
 
 	modes := []denseAdaptationMode{
 		denseAdaptationModeNormalBP,
+		denseAdaptationModeNormalBPSimd,
 		denseAdaptationModeStepBP,
+		denseAdaptationModeStepBPSimd,
 		denseAdaptationModeTween,
+		denseAdaptationModeTweenSimd,
 		denseAdaptationModeTweenChain,
+		denseAdaptationModeTweenChainSimd,
 		denseAdaptationModeStepTween,
+		denseAdaptationModeStepTweenSimd,
 		denseAdaptationModeStepTweenChain,
+		denseAdaptationModeStepTweenChainSimd,
 	}
 
 	allResults := make(map[denseAdaptationMode]*denseAdaptationResult)
@@ -105,20 +126,32 @@ type denseAdaptationMode int
 
 const (
 	denseAdaptationModeNormalBP denseAdaptationMode = iota
+	denseAdaptationModeNormalBPSimd
 	denseAdaptationModeStepBP
+	denseAdaptationModeStepBPSimd
 	denseAdaptationModeTween
+	denseAdaptationModeTweenSimd
 	denseAdaptationModeTweenChain
+	denseAdaptationModeTweenChainSimd
 	denseAdaptationModeStepTween
+	denseAdaptationModeStepTweenSimd
 	denseAdaptationModeStepTweenChain
+	denseAdaptationModeStepTweenChainSimd
 )
 
 var denseAdaptationModeNames = map[denseAdaptationMode]string{
-	denseAdaptationModeNormalBP:       "NormalBP      ",
-	denseAdaptationModeStepBP:         "Step+BP       ",
-	denseAdaptationModeTween:          "Tween         ",
-	denseAdaptationModeTweenChain:     "TweenChain    ",
-	denseAdaptationModeStepTween:      "StepTween     ",
-	denseAdaptationModeStepTweenChain: "StepTweenChain",
+	denseAdaptationModeNormalBP:           "NormalBP      ",
+	denseAdaptationModeNormalBPSimd:       "NormalBP      ",
+	denseAdaptationModeStepBP:             "Step+BP       ",
+	denseAdaptationModeStepBPSimd:         "Step+BP       ",
+	denseAdaptationModeTween:              "Tween         ",
+	denseAdaptationModeTweenSimd:          "Tween         ",
+	denseAdaptationModeTweenChain:         "TweenChain    ",
+	denseAdaptationModeTweenChainSimd:     "TweenChain    ",
+	denseAdaptationModeStepTween:          "StepTween     ",
+	denseAdaptationModeStepTweenSimd:      "StepTween     ",
+	denseAdaptationModeStepTweenChain:     "StepTweenChain",
+	denseAdaptationModeStepTweenChainSimd: "StepTweenChain",
 }
 
 type denseAdaptationWindow struct {
@@ -201,12 +234,12 @@ func runDenseAdaptationTest(mode denseAdaptationMode, wire []byte, seed uint64) 
 		return result
 	}
 	configureDenseAdaptationRuntime(net)
+	net.SetSimdForwardRecursive(denseAdaptationModeUseSimd(mode))
 
 	var tweenState *poly.TweenState[float32]
-	if mode == denseAdaptationModeTween || mode == denseAdaptationModeTweenChain ||
-		mode == denseAdaptationModeStepTween || mode == denseAdaptationModeStepTweenChain {
+	if denseAdaptationModeUseTween(mode) {
 		cfg := poly.DefaultTweenConfig()
-		cfg.UseChainRule = mode == denseAdaptationModeTweenChain || mode == denseAdaptationModeStepTweenChain
+		cfg.UseChainRule = denseAdaptationModeUseTweenChain(mode)
 		cfg.LearningRate = denseAdaptationLearningRate
 		tweenState = poly.NewTweenState[float32](net, cfg)
 	}
@@ -245,11 +278,14 @@ func runDenseAdaptationTest(mode denseAdaptationMode, wire []byte, seed uint64) 
 		var output *poly.Tensor[float32]
 		var histIn, histPre []*poly.Tensor[float32]
 		switch mode {
-		case denseAdaptationModeNormalBP:
+		case denseAdaptationModeNormalBP, denseAdaptationModeNormalBPSimd:
 			output, _, _ = poly.ForwardPolymorphic(net, obs)
-		case denseAdaptationModeStepBP:
+		case denseAdaptationModeStepBP, denseAdaptationModeStepBPSimd:
 			output, histIn, histPre = denseAdaptationForwardWithHistory(net, obs)
-		case denseAdaptationModeTween, denseAdaptationModeTweenChain, denseAdaptationModeStepTween, denseAdaptationModeStepTweenChain:
+		case denseAdaptationModeTween, denseAdaptationModeTweenSimd,
+			denseAdaptationModeTweenChain, denseAdaptationModeTweenChainSimd,
+			denseAdaptationModeStepTween, denseAdaptationModeStepTweenSimd,
+			denseAdaptationModeStepTweenChain, denseAdaptationModeStepTweenChainSimd:
 			output = poly.TweenForward(net, tweenState, obs)
 		}
 
@@ -264,7 +300,7 @@ func runDenseAdaptationTest(mode denseAdaptationMode, wire []byte, seed uint64) 
 		trainBatch = appendDenseAdaptationSample(trainBatch, obs, target)
 
 		switch mode {
-		case denseAdaptationModeNormalBP:
+		case denseAdaptationModeNormalBP, denseAdaptationModeNormalBPSimd:
 			if time.Since(lastTrainTime) > denseAdaptationTrainInterval && len(trainBatch) > 0 {
 				blockedStart := time.Now()
 				denseAdaptationTrainBatchBP(net, trainBatch)
@@ -272,13 +308,14 @@ func runDenseAdaptationTest(mode denseAdaptationMode, wire []byte, seed uint64) 
 				trainBatch = trainBatch[:0]
 				lastTrainTime = time.Now()
 			}
-		case denseAdaptationModeStepBP:
+		case denseAdaptationModeStepBP, denseAdaptationModeStepBPSimd:
 			if output != nil && denseAdaptationStepHistoryReady(net, histIn, histPre) {
 				grad := poly.ComputeLossGradient(output, target, "mse")
 				_, layerGradients, _ := poly.BackwardPolymorphic(net, grad, histIn, histPre)
 				denseAdaptationApplyGradients(net, layerGradients, denseAdaptationLearningRate)
 			}
-		case denseAdaptationModeTween, denseAdaptationModeTweenChain:
+		case denseAdaptationModeTween, denseAdaptationModeTweenSimd,
+			denseAdaptationModeTweenChain, denseAdaptationModeTweenChainSimd:
 			if time.Since(lastTrainTime) > denseAdaptationTrainInterval && len(trainBatch) > 0 {
 				blockedStart := time.Now()
 				for _, sample := range trainBatch {
@@ -291,7 +328,8 @@ func runDenseAdaptationTest(mode denseAdaptationMode, wire []byte, seed uint64) 
 				trainBatch = trainBatch[:0]
 				lastTrainTime = time.Now()
 			}
-		case denseAdaptationModeStepTween, denseAdaptationModeStepTweenChain:
+		case denseAdaptationModeStepTween, denseAdaptationModeStepTweenSimd,
+			denseAdaptationModeStepTweenChain, denseAdaptationModeStepTweenChainSimd:
 			poly.TweenBackward(net, tweenState, target)
 			tweenState.CalculateLinkBudgets()
 			poly.ApplyTweenGaps(net, tweenState, denseAdaptationLearningRate)
@@ -342,6 +380,49 @@ func configureDenseAdaptationRuntime(net *poly.VolumetricNetwork) {
 		}
 	}
 	net.SyncToCPU()
+}
+
+func denseAdaptationModeUseSimd(mode denseAdaptationMode) bool {
+	switch mode {
+	case denseAdaptationModeNormalBPSimd,
+		denseAdaptationModeStepBPSimd,
+		denseAdaptationModeTweenSimd,
+		denseAdaptationModeTweenChainSimd,
+		denseAdaptationModeStepTweenSimd,
+		denseAdaptationModeStepTweenChainSimd:
+		return true
+	default:
+		return false
+	}
+}
+
+func denseAdaptationModeUseTween(mode denseAdaptationMode) bool {
+	switch mode {
+	case denseAdaptationModeTween, denseAdaptationModeTweenSimd,
+		denseAdaptationModeTweenChain, denseAdaptationModeTweenChainSimd,
+		denseAdaptationModeStepTween, denseAdaptationModeStepTweenSimd,
+		denseAdaptationModeStepTweenChain, denseAdaptationModeStepTweenChainSimd:
+		return true
+	default:
+		return false
+	}
+}
+
+func denseAdaptationModeUseTweenChain(mode denseAdaptationMode) bool {
+	switch mode {
+	case denseAdaptationModeTweenChain, denseAdaptationModeTweenChainSimd,
+		denseAdaptationModeStepTweenChain, denseAdaptationModeStepTweenChainSimd:
+		return true
+	default:
+		return false
+	}
+}
+
+func denseAdaptationSimdLabel(mode denseAdaptationMode) string {
+	if denseAdaptationModeUseSimd(mode) {
+		return "on"
+	}
+	return "off"
 }
 
 func denseAdaptationNetSpecJSON() []byte {
@@ -677,17 +758,17 @@ func printDenseAdaptationTimeline(results map[denseAdaptationMode]*denseAdaptati
 	fmt.Println("║                                    ACCURACY OVER TIME (per 1-second window)                                                   ║")
 	fmt.Println("║                   [0-5s: CHASE]    │    [5-10s: AVOID!]    │    [10-15s: CHASE]                                                 ║")
 	fmt.Println("╠═══════════════════╦════╦════╦════╦════╦════║════╦════╦════╦════╦════║════╦════╦════╦════╦════╗")
-	fmt.Println("║ Mode              ║ 1s ║ 2s ║ 3s ║ 4s ║ 5s ║ 6s ║ 7s ║ 8s ║ 9s ║10s ║11s ║12s ║13s ║14s ║15s ║")
+	fmt.Println("║ Mode              ║SIMD║ 1s ║ 2s ║ 3s ║ 4s ║ 5s ║ 6s ║ 7s ║ 8s ║ 9s ║10s ║11s ║12s ║13s ║14s ║15s ║")
 	fmt.Println("╠═══════════════════╬════╬════╬════╬════╬════╬════╬════╬════╬════╬════╬════╬════╬════╬════╬════╣")
 
 	for _, mode := range modes {
 		r := results[mode]
-		fmt.Printf("║ %-17s ║", denseAdaptationModeNames[mode])
+		fmt.Printf("║ %-17s ║ %-3s", denseAdaptationModeNames[mode], denseAdaptationSimdLabel(mode))
 		if r == nil || r.Err != "" {
 			for i := 0; i < denseAdaptationWindowCount; i++ {
-				fmt.Printf(" ERR║")
+				fmt.Printf("║ ERR")
 			}
-			fmt.Println()
+			fmt.Println("║")
 			continue
 		}
 		for i := 0; i < denseAdaptationWindowCount; i++ {
@@ -695,9 +776,9 @@ func printDenseAdaptationTimeline(results map[denseAdaptationMode]*denseAdaptati
 			if i < len(r.Windows) {
 				acc = r.Windows[i].Accuracy
 			}
-			fmt.Printf(" %2.0f%%║", acc)
+			fmt.Printf("║ %2.0f%%", acc)
 		}
-		fmt.Println()
+		fmt.Println("║")
 	}
 	fmt.Println("╚═══════════════════╩════╩════╩════╩════╩════╩════╩════╩════╩════╩════╩════╩════╩════╩════╩════╝")
 	fmt.Println("                         ↑ TASK CHANGE ↑                    ↑ TASK CHANGE ↑")
@@ -706,10 +787,10 @@ func printDenseAdaptationTimeline(results map[denseAdaptationMode]*denseAdaptati
 func printDenseAdaptationSummary(results map[denseAdaptationMode]*denseAdaptationResult, modes []denseAdaptationMode) {
 	fmt.Println("\n╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                                           ADAPTATION SUMMARY                                                  ║")
-	fmt.Println("╠═══════════════════╦═══════════════╦════════════════════╦════════════╦════════════════════╦════════════╦═══════╣")
-	fmt.Println("║ Mode              ║ Total Outputs ║ 1st Change         ║ 1st Dip    ║ 2nd Change         ║ 2nd Dip    ║ Avg   ║")
-	fmt.Println("║                   ║ (actions/15s) ║ Before→After(delay)║            ║ Before→After(delay)║            ║ Acc   ║")
-	fmt.Println("╠═══════════════════╬═══════════════╬════════════════════╬════════════╬════════════════════╬════════════╬═══════╣")
+	fmt.Println("╠═══════════════════╦════╦═══════════════╦════════════════════╦════════════╦════════════════════╦════════════╦═══════╣")
+	fmt.Println("║ Mode              ║SIMD║ Total Outputs ║ 1st Change         ║ 1st Dip    ║ 2nd Change         ║ 2nd Dip    ║ Avg   ║")
+	fmt.Println("║                   ║    ║ (actions/15s) ║ Before→After(delay)║            ║ Before→After(delay)║            ║ Acc   ║")
+	fmt.Println("╠═══════════════════╬════╬═══════════════╬════════════════════╬════════════╬════════════════════╬════════════╬═══════╣")
 
 	for _, mode := range modes {
 		r := results[mode]
@@ -718,8 +799,9 @@ func printDenseAdaptationSummary(results map[denseAdaptationMode]*denseAdaptatio
 			if r != nil {
 				errMsg = r.Err
 			}
-			fmt.Printf("║ %-17s ║ %-13s ║ %-18s ║ %-10s ║ %-18s ║ %-10s ║ %-5s ║\n",
+			fmt.Printf("║ %-17s ║ %-3s ║ %-13s ║ %-18s ║ %-10s ║ %-18s ║ %-10s ║ %-5s ║\n",
 				denseAdaptationModeNames[mode],
+				denseAdaptationSimdLabel(mode),
 				"ERROR",
 				denseAdaptationTruncate(errMsg, 21),
 				"",
@@ -730,8 +812,9 @@ func printDenseAdaptationSummary(results map[denseAdaptationMode]*denseAdaptatio
 			continue
 		}
 
-		fmt.Printf("║ %-17s ║ %13d ║ %5.0f%%→%5.0f%% (%3s) ║ %8.1f%% ║ %5.0f%%→%5.0f%% (%3s) ║ %8.1f%% ║ %5.1f ║\n",
+		fmt.Printf("║ %-17s ║ %-3s ║ %13d ║ %5.0f%%→%5.0f%% (%3s) ║ %8.1f%% ║ %5.0f%%→%5.0f%% (%3s) ║ %8.1f%% ║ %5.1f ║\n",
 			denseAdaptationModeNames[mode],
+			denseAdaptationSimdLabel(mode),
 			r.TotalOutputs,
 			r.PreChangeAccuracy, r.PostChange1Accuracy, denseAdaptationDelayLabel(r.AdaptTime1),
 			r.DipDepth1,
@@ -740,15 +823,15 @@ func printDenseAdaptationSummary(results map[denseAdaptationMode]*denseAdaptatio
 			r.AvgAccuracy)
 	}
 
-	fmt.Println("╚═══════════════════╩═══════════════╩════════════════════╩════════════╩════════════════════╩════════════╩═══════╝")
+	fmt.Println("╚═══════════════════╩════╩═══════════════╩════════════════════╩════════════╩════════════════════╩════════════╩═══════╝")
 }
 
 func printDenseOperationalMetrics(results map[denseAdaptationMode]*denseAdaptationResult, modes []denseAdaptationMode) {
 	fmt.Println("\n╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                                           OPERATIONAL METRICS                                                              ║")
-	fmt.Println("╠═══════════════════╦═══════════╦═══════════╦═════════════╦════════════╦════════════╦════════════╦═════════════╦═══════════╣")
-	fmt.Println("║ Mode              ║ Smoothness║ Thruput/s ║ Availability║ Blocked ms ║ Peak Lat   ║ Avg Lat    ║ Score       ║ Runtime   ║")
-	fmt.Println("╠═══════════════════╬═══════════╬═══════════╬═════════════╬════════════╬════════════╬════════════╬═════════════╬═══════════╣")
+	fmt.Println("╠═══════════════════╦════╦═══════════╦═══════════╦═════════════╦════════════╦════════════╦════════════╦═════════════╦═══════════╣")
+	fmt.Println("║ Mode              ║SIMD║ Smoothness║ Thruput/s ║ Availability║ Blocked ms ║ Peak Lat   ║ Avg Lat    ║ Score       ║ Runtime   ║")
+	fmt.Println("╠═══════════════════╬════╬═══════════╬═══════════╬═════════════╬════════════╬════════════╬════════════╬═════════════╬═══════════╣")
 	for _, mode := range modes {
 		r := results[mode]
 		if r == nil || r.Err != "" {
@@ -756,8 +839,9 @@ func printDenseOperationalMetrics(results map[denseAdaptationMode]*denseAdaptati
 			if r != nil {
 				errMsg = r.Err
 			}
-			fmt.Printf("║ %-17s ║ %-9s ║ %-9s ║ %-11s ║ %-10s ║ %-10s ║ %-10s ║ %-11s ║ %-9s ║\n",
+			fmt.Printf("║ %-17s ║ %-3s ║ %-9s ║ %-9s ║ %-11s ║ %-10s ║ %-10s ║ %-10s ║ %-11s ║ %-9s ║\n",
 				denseAdaptationModeNames[mode],
+				denseAdaptationSimdLabel(mode),
 				"ERROR",
 				"",
 				denseAdaptationTruncate(errMsg, 11),
@@ -773,8 +857,9 @@ func printDenseOperationalMetrics(results map[denseAdaptationMode]*denseAdaptati
 		if r.LatencySamples > 0 {
 			avgLatency = r.TotalLatency / time.Duration(r.LatencySamples)
 		}
-		fmt.Printf("║ %-17s ║ %8.1f%% ║ %9.0f ║ %10.1f%% ║ %10.0f ║ %-10s ║ %-10s ║ %11.0f ║ %-9s ║\n",
+		fmt.Printf("║ %-17s ║ %-3s ║ %8.1f%% ║ %9.0f ║ %10.1f%% ║ %10.0f ║ %-10s ║ %-10s ║ %11.0f ║ %-9s ║\n",
 			denseAdaptationModeNames[mode],
+			denseAdaptationSimdLabel(mode),
 			r.Stability,
 			r.Throughput,
 			r.Availability,
@@ -785,7 +870,7 @@ func printDenseOperationalMetrics(results map[denseAdaptationMode]*denseAdaptati
 			r.TotalDuration.Round(time.Millisecond).String(),
 		)
 	}
-	fmt.Println("╚═══════════════════╩═══════════╩═══════════╩═════════════╩════════════╩════════════╩════════════╩═════════════╩═══════════╝")
+	fmt.Println("╚═══════════════════╩════╩═══════════╩═══════════╩═════════════╩════════════╩════════════╩════════════╩═════════════╩═══════════╝")
 	fmt.Println("\n┌────────────────────────────────────────────────────────────────────────────────────────────────────┐")
 	fmt.Println("│                                         KEY INSIGHTS                                              │")
 	fmt.Println("├────────────────────────────────────────────────────────────────────────────────────────────────────┤")
@@ -798,6 +883,7 @@ func printDenseOperationalMetrics(results map[denseAdaptationMode]*denseAdaptati
 	fmt.Println("│ • Competence Smooth = avg accuracy minus volatility; Smoothness only measures low window jitter   │")
 	fmt.Println("│ • NormalBP uses poly.Train on small periodic batches; Step+BP updates after each action output     │")
 	fmt.Println("│ • Tween modes use target propagation; StepTween variants apply it after every output               │")
+	fmt.Println("│ • SIMD column = Plan 9 AVX2/NEON dense forward; training/backward paths are unchanged (scalar)       │")
 	fmt.Println("│                                                                                                   │")
 	fmt.Println("│ For embodied AI: fast adaptation to changing goals matters more than offline convergence alone     │")
 	fmt.Println("└────────────────────────────────────────────────────────────────────────────────────────────────────┘")
@@ -806,9 +892,9 @@ func printDenseOperationalMetrics(results map[denseAdaptationMode]*denseAdaptati
 func printDensePhaseRecoveryMetrics(results map[denseAdaptationMode]*denseAdaptationResult, modes []denseAdaptationMode) {
 	fmt.Println("\n╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                                        PHASE / RECOVERY METRICS                                                            ║")
-	fmt.Println("╠═══════════════════╦════════╦════════╦════════╦════════╦════════╦════════╦═════════╦════════╦════════╦════════════════════╣")
-	fmt.Println("║ Mode              ║ Chase1 ║ Avoid  ║ Chase2 ║ Peak1  ║ Peak2  ║ Floor  ║ Return% ║ ZDT    ║ Eff/ms ║ Competence Smooth  ║")
-	fmt.Println("╠═══════════════════╬════════╬════════╬════════╬════════╬════════╬════════╬═════════╬════════╬════════╬════════════════════╣")
+	fmt.Println("╠═══════════════════╦════╦════════╦════════╦════════╦════════╦════════╦════════╦═════════╦════════╦════════╦════════════════════╣")
+	fmt.Println("║ Mode              ║SIMD║ Chase1 ║ Avoid  ║ Chase2 ║ Peak1  ║ Peak2  ║ Floor  ║ Return% ║ ZDT    ║ Eff/ms ║ Competence Smooth  ║")
+	fmt.Println("╠═══════════════════╬════╬════════╬════════╬════════╬════════╬════════╬════════╬═════════╬════════╬════════╬════════════════════╣")
 	for _, mode := range modes {
 		r := results[mode]
 		if r == nil || r.Err != "" {
@@ -816,8 +902,9 @@ func printDensePhaseRecoveryMetrics(results map[denseAdaptationMode]*denseAdapta
 			if r != nil {
 				errMsg = r.Err
 			}
-			fmt.Printf("║ %-17s ║ %-6s ║ %-6s ║ %-6s ║ %-6s ║ %-6s ║ %-6s ║ %-7s ║ %-6s ║ %-6s ║ %-18s ║\n",
+			fmt.Printf("║ %-17s ║ %-3s ║ %-6s ║ %-6s ║ %-6s ║ %-6s ║ %-6s ║ %-6s ║ %-7s ║ %-6s ║ %-6s ║ %-18s ║\n",
 				denseAdaptationModeNames[mode],
+				denseAdaptationSimdLabel(mode),
 				"ERROR",
 				"",
 				"",
@@ -831,8 +918,9 @@ func printDensePhaseRecoveryMetrics(results map[denseAdaptationMode]*denseAdapta
 			)
 			continue
 		}
-		fmt.Printf("║ %-17s ║ %5.1f%% ║ %5.1f%% ║ %5.1f%% ║ %5.1f%% ║ %5.1f%% ║ %5.1f%% ║ %6.1f%% ║ %6.1f ║ %6.1f ║ %7.1f / %7.1f ║\n",
+		fmt.Printf("║ %-17s ║ %-3s ║ %5.1f%% ║ %5.1f%% ║ %5.1f%% ║ %5.1f%% ║ %5.1f%% ║ %5.1f%% ║ %6.1f%% ║ %6.1f ║ %6.1f ║ %7.1f / %7.1f ║\n",
 			denseAdaptationModeNames[mode],
+			denseAdaptationSimdLabel(mode),
 			r.Chase1Avg,
 			r.AvoidAvg,
 			r.Chase2Avg,
@@ -846,15 +934,15 @@ func printDensePhaseRecoveryMetrics(results map[denseAdaptationMode]*denseAdapta
 			r.Stability,
 		)
 	}
-	fmt.Println("╚═══════════════════╩════════╩════════╩════════╩════════╩════════╩════════╩═════════╩════════╩════════╩════════════════════╝")
+	fmt.Println("╚═══════════════════╩════╩════════╩════════╩════════╩════════╩════════╩════════╩═════════╩════════╩════════╩════════════════════╝")
 }
 
 func printDenseDecisionActivityMetrics(results map[denseAdaptationMode]*denseAdaptationResult, modes []denseAdaptationMode) {
 	fmt.Println("\n╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                         DECISION ACTIVITY METRICS (deadline: 10ms)                                      ║")
-	fmt.Println("╠═══════════════════╦══════════╦══════════╦═══════════╦═══════════╦═══════════╦══════════╦═══════════╦════════════╣")
-	fmt.Println("║ Mode              ║ Decisions║ Hit Rate ║ Misses    ║ Await ms  ║ Worst Gap ║ Activity ║ Reactive  ║ No-Pause   ║")
-	fmt.Println("╠═══════════════════╬══════════╬══════════╬═══════════╬═══════════╬═══════════╬══════════╬═══════════╬════════════╣")
+	fmt.Println("╠═══════════════════╦════╦══════════╦══════════╦═══════════╦═══════════╦═══════════╦══════════╦═══════════╦════════════╣")
+	fmt.Println("║ Mode              ║SIMD║ Decisions║ Hit Rate ║ Misses    ║ Await ms  ║ Worst Gap ║ Activity ║ Reactive  ║ No-Pause   ║")
+	fmt.Println("╠═══════════════════╬════╬══════════╬══════════╬═══════════╬═══════════╬═══════════╬══════════╬═══════════╬════════════╣")
 	for _, mode := range modes {
 		r := results[mode]
 		if r == nil || r.Err != "" {
@@ -862,8 +950,9 @@ func printDenseDecisionActivityMetrics(results map[denseAdaptationMode]*denseAda
 			if r != nil {
 				errMsg = r.Err
 			}
-			fmt.Printf("║ %-17s ║ %-8s ║ %-8s ║ %-9s ║ %-9s ║ %-9s ║ %-8s ║ %-9s ║ %-10s ║\n",
+			fmt.Printf("║ %-17s ║ %-3s ║ %-8s ║ %-8s ║ %-9s ║ %-9s ║ %-9s ║ %-8s ║ %-9s ║ %-10s ║\n",
 				denseAdaptationModeNames[mode],
+				denseAdaptationSimdLabel(mode),
 				"ERROR",
 				"",
 				denseAdaptationTruncate(errMsg, 9),
@@ -875,8 +964,9 @@ func printDenseDecisionActivityMetrics(results map[denseAdaptationMode]*denseAda
 			)
 			continue
 		}
-		fmt.Printf("║ %-17s ║ %8d ║ %7.1f%% ║ %9d ║ %9.1f ║ %-9s ║ %7.1f%% ║ %9.1f ║ %9.1f%% ║\n",
+		fmt.Printf("║ %-17s ║ %-3s ║ %8d ║ %7.1f%% ║ %9d ║ %9.1f ║ %-9s ║ %7.1f%% ║ %9.1f ║ %9.1f%% ║\n",
 			denseAdaptationModeNames[mode],
+			denseAdaptationSimdLabel(mode),
 			r.LatencySamples,
 			r.DeadlineHitRate,
 			r.DeadlineMisses,
@@ -887,7 +977,7 @@ func printDenseDecisionActivityMetrics(results map[denseAdaptationMode]*denseAda
 			r.Availability,
 		)
 	}
-	fmt.Println("╚═══════════════════╩══════════╩══════════╩═══════════╩═══════════╩═══════════╩══════════╩═══════════╩════════════╝")
+	fmt.Println("╚═══════════════════╩════╩══════════╩══════════╩═══════════╩═══════════╩═══════════╩══════════╩═══════════╩════════════╝")
 }
 
 func denseAdaptationDelayLabel(seconds int) string {
@@ -963,4 +1053,66 @@ func denseAdaptationTruncate(s string, max int) string {
 		return "…"
 	}
 	return string(r[:max-1]) + "…"
+}
+
+type denseAdaptationCaptureState struct {
+	origStdout *os.File
+	pipeReader *os.File
+	pipeWriter *os.File
+	logFile    *os.File
+	done       chan struct{}
+}
+
+var denseCaptureState *denseAdaptationCaptureState
+
+func denseAdaptationStartOutputCapture() (string, error) {
+	if denseCaptureState != nil {
+		return "", fmt.Errorf("capture already active")
+	}
+	if err := os.MkdirAll("lucy_testing_output", 0o755); err != nil {
+		return "", err
+	}
+	name := fmt.Sprintf("dense_adaptation_%s.txt", time.Now().Format("20060102_150405"))
+	path := filepath.Join("lucy_testing_output", name)
+	logFile, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	orig := os.Stdout
+	pipeReader, pipeWriter, err := os.Pipe()
+	if err != nil {
+		_ = logFile.Close()
+		return "", err
+	}
+
+	state := &denseAdaptationCaptureState{
+		origStdout: orig,
+		pipeReader: pipeReader,
+		pipeWriter: pipeWriter,
+		logFile:    logFile,
+		done:       make(chan struct{}),
+	}
+	denseCaptureState = state
+	os.Stdout = pipeWriter
+
+	go func() {
+		_, _ = io.Copy(io.MultiWriter(orig, logFile), pipeReader)
+		close(state.done)
+	}()
+
+	return path, nil
+}
+
+func denseAdaptationStopOutputCapture(path string) {
+	state := denseCaptureState
+	if state == nil {
+		return
+	}
+	_ = state.pipeWriter.Close()
+	os.Stdout = state.origStdout
+	<-state.done
+	_ = state.pipeReader.Close()
+	_ = state.logFile.Close()
+	denseCaptureState = nil
+	fmt.Printf("💾 Dense adaptation output saved to %s\n", path)
 }

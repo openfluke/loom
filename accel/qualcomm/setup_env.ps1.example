@@ -1,0 +1,11 @@
+# Copy to setup_env.ps1 and adjust, or let install_qairt.ps1 generate it.
+# Dot-source before cmake / go run:   . .\setup_env.ps1
+
+# Full QAIRT SDK (headers + QnnCpu.dll reference backend + tools). Software Center install.
+$env:QNN_SDK_ROOT = 'C:\Qualcomm\AIStack\QAIRT\2.40.0.251030'
+
+# Free HTP runtime backends fetched by install_qairt.ps1 (QnnHtp.dll + Hexagon v73 skel/cat).
+$env:LOOM_QUALCOMM_RUNTIME = "$PSScriptRoot\deps\qairt-runtime\aarch64-windows-msvc"
+
+# LoadLibrary('QnnHtp.dll') / ('QnnCpu.dll') must resolve → put both dirs on PATH.
+$env:PATH = "$env:LOOM_QUALCOMM_RUNTIME;" + (Join-Path $env:QNN_SDK_ROOT 'lib\aarch64-windows-msvc') + ";$env:PATH"

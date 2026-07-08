@@ -92,6 +92,7 @@ func BuildNetworkFromJSON(jsonData []byte) (*VolumetricNetwork, error) {
 		}
 	}
 
+	net.RefreshRuntimeTileSizes()
 	return net, nil
 }
 

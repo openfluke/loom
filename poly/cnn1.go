@@ -3,6 +3,8 @@ package poly
 import (
 	"runtime"
 	"sync"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 func useNativeQuantCNN1(layer *VolumetricLayer) bool {
@@ -37,6 +39,11 @@ func cnn1NativeWeights(layer *VolumetricLayer) ([]float32, float64) {
 func CNN1ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	if useBitpackedCPUCNN1(layer) {
 		return CNN1ForwardPackedCPU(layer, input)
+	}
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if pre, post, ok := tryCNN1ForwardSimd(layer, input); ok {
+			return pre, post
+		}
 	}
 	return CNN1ForwardTiled(layer, input)
 }

@@ -85,7 +85,7 @@ def generate_document():
     asm_count = sum(1 for p in sources if p.suffix == ".s")
     document.add_paragraph(
         f"Aggregates {len(sources)} source files from the poly tree "
-        f"({go_count} Go, {asm_count} assembly .s), including asm/dot, asm/dense, and asm/matmul."
+        f"({go_count} Go, {asm_count} assembly .s)."
     )
 
     prev_section = None

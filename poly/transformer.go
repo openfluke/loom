@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 // Transformer coordinates high-level generation logic using the underlying VolumetricNetwork
@@ -660,10 +662,26 @@ func (t *Transformer[T]) ApplyLMHead(hidden []T) []float32 {
 }
 
 func (t *Transformer[T]) applyFP32LMHeadRows(hidden []T, logits []float32) {
+	// FP32 LM head (used when the head is tied to FP32 embeddings, so the packed
+	// ternary path does not apply — e.g. BitNet weight tying). At 128256×2560 this
+	// dominates decode, so route it through the NEON/AVX2 DotTile kernel when the
+	// network's SIMD forward is enabled. dotTileGo is the same sequential float64
+	// loop as the scalar path below, so SIMD-off is unchanged.
+	var simdHidden []float32
+	if t.Network != nil && t.Network.UseSimdForward && simd.SimdEnabled() {
+		if hf, ok := any(hidden).([]float32); ok {
+			simdHidden = hf
+		}
+	}
+
 	worker := func(start, end int) {
 		for v := start; v < end; v++ {
-			var sum float64
 			offset := v * t.HiddenSize
+			if simdHidden != nil {
+				logits[v] = float32(simd.DotTile(simdHidden, t.LMHead[offset:offset+t.HiddenSize], 0, t.HiddenSize, 0))
+				continue
+			}
+			var sum float64
 			for d := 0; d < t.HiddenSize; d++ {
 				sum += float64(hidden[d]) * float64(t.LMHead[offset+d])
 			}

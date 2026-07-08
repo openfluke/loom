@@ -1080,6 +1080,13 @@ func (ws *WeightStore) Unpack(dtype DType) {
 
 // convertSlice is a private helper for the CastWeights generic engine.
 func ConvertSlice[In Numeric, Out Numeric](in []In) []Out {
+	// Fast path: identical element type (e.g. float32→float32 in the hot forward
+	// path). Return the same backing slice instead of allocating + copying the
+	// whole weight matrix on every forward call. Callers in the forward path
+	// treat the result as read-only.
+	if out, ok := any(in).([]Out); ok {
+		return out
+	}
 	out := make([]Out, len(in))
 	for i, v := range in {
 		out[i] = Out(v)

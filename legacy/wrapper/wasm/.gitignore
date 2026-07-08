@@ -1,4 +1,0 @@
-# WASM build artifacts
-models/
-*.wasm
-!dummy.wasm

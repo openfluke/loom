@@ -3,20 +3,18 @@ package testing
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/openfluke/loom/poly"
-	"github.com/openfluke/loom/poly/asm"
 	"github.com/openfluke/webgpu/wgpu"
 )
 
-// RunDenseL1Caching runs forward parity timing with ASM SC / ASM MC timers vs Go CPU and GPU.
+// RunDenseL1Caching runs forward parity timing with CPU SC/MC vs GPU SC/MC.
 func RunDenseL1Caching() {
-	runDenseForwardBenchmark("L1 Caching (CPU/ASM SC/MC + GPU SC/MC)")
+	runDenseForwardBenchmark("L1 Caching (CPU SC/MC + GPU SC/MC)")
 }
 
-// RunDenseGPUForward uses the same forward table as L1 (includes ASM timers).
+// RunDenseGPUForward uses the same forward table as L1.
 func RunDenseGPUForward() {
 	runDenseForwardBenchmark("GPU Forward Parity")
 }
@@ -33,20 +31,8 @@ func runDenseForwardBenchmark(sectionLabel string) {
 	stats.ReportLayer(denseSpec.Name)
 }
 
-type denseAsmRow struct {
-	dtype                            string
-	tGoSC, tGoMC, tAsmSC, tAsmMC     time.Duration
-	tGpuSC, tGpuMC                   time.Duration
-}
-
 func runDenseForwardSuite(spec TestSpec) bool {
-	fmt.Printf("\n=== %s Forward — CPU Go / CPU ASM / GPU (all numerical types) ===\n", spec.Name)
-	if asm.Enabled() {
-		fmt.Println("    Timers: CPU SC/MC = Go tiled forward; ASM SC/MC = Plan 9 .s kernels (UseAsmForward).")
-		fmt.Println("    Go/Asm↑ = CPU÷ASM (>1 means assembly is faster). GPU/Asm↑ = GPU÷ASM.")
-	} else {
-		fmt.Println("    ASM timers unavailable on this GOARCH — rebuild on amd64/arm64 for assembly columns.")
-	}
+	fmt.Printf("\n=== %s Forward — CPU Go / GPU (all numerical types) ===\n", spec.Name)
 	fmt.Println()
 
 	input := genInput(spec.InputShape)
@@ -73,20 +59,10 @@ func runDenseForwardSuite(spec TestSpec) bool {
 		ctx = l.Network.GPUContext
 	}
 
-	if asm.Enabled() {
-		fmt.Printf("| %-10s | %-4s | %-11s | %-11s | %-11s | %-11s | %-11s | %-11s | %-7s | %-7s | %-7s | %-7s | %-8s | %-8s | %-8s | %-8s | %-7s | %-7s |\n",
-			"DType", "Tile",
-			"Go SC", "Go MC", "ASM SC", "ASM MC", "GPU SC", "GPU MC",
-			"Go/Asm↑SC", "Go/Asm↑MC", "GPU/Asm↑SC", "GPU/Asm↑MC",
-			"Dcpu", "Dgpu", "D(G,SC)", "D(G,MC)", "SCspd", "MCspd")
-		fmt.Println("|------------|------|-------------|-------------|-------------|-------------|-------------|-------------|---------|---------|---------|---------|----------|----------|----------|----------|---------|---------|")
-	} else {
-		fmt.Printf("| %-10s | %-4s | %-12s | %-12s | %-12s | %-12s | %-8s | %-8s | %-8s | %-8s | %-8s | %-8s |\n",
-			"DType", "Tile", "CPU SC", "CPU MC", "GPU SC", "GPU MC", "Dcpu", "Dgpu", "D(G,SC)", "D(G,MC)", "SCspd", "MCspd")
-		fmt.Println("|------------|------|--------------|--------------|--------------|--------------|----------|----------|----------|----------|----------|----------|")
-	}
+	fmt.Printf("| %-10s | %-4s | %-12s | %-12s | %-12s | %-12s | %-8s | %-8s | %-8s | %-8s | %-8s | %-8s |\n",
+		"DType", "Tile", "CPU SC", "CPU MC", "GPU SC", "GPU MC", "Dcpu", "Dgpu", "D(G,SC)", "D(G,MC)", "SCspd", "MCspd")
+	fmt.Println("|------------|------|--------------|--------------|--------------|--------------|----------|----------|----------|----------|----------|----------|")
 
-	var asmRows []denseAsmRow
 	allPass := true
 
 	for _, cfg := range allTypes {
@@ -100,7 +76,6 @@ func runDenseForwardSuite(spec TestSpec) bool {
 
 		l.ResetState()
 		l.UseTiling = true
-		l.UseAsmForward = false
 		l.EnableMultiCoreTiling = false
 		t0 := time.Now()
 		_, postSC := poly.DispatchLayer(l, input, nil)
@@ -108,34 +83,10 @@ func runDenseForwardSuite(spec TestSpec) bool {
 
 		l.ResetState()
 		l.UseTiling = true
-		l.UseAsmForward = false
 		l.EnableMultiCoreTiling = true
 		t0 = time.Now()
 		_, postMC := poly.DispatchLayer(l, input, nil)
 		tCPUMC := time.Since(t0)
-
-		var tASMSC, tASMMC time.Duration
-		var postASMSC, postASMMC []float32
-		if asm.Enabled() {
-			l.ResetState()
-			l.UseTiling = true
-			l.UseAsmForward = true
-			l.EnableMultiCoreTiling = false
-			t0 = time.Now()
-			_, p := poly.DispatchLayer(l, input, nil)
-			tASMSC = time.Since(t0)
-			postASMSC = p.Data
-
-			l.ResetState()
-			l.UseTiling = true
-			l.UseAsmForward = true
-			l.EnableMultiCoreTiling = true
-			t0 = time.Now()
-			_, p = poly.DispatchLayer(l, input, nil)
-			tASMMC = time.Since(t0)
-			postASMMC = p.Data
-			l.UseAsmForward = false
-		}
 
 		l.Network.SyncToGPU()
 		inBuf, _ := ctx.Device.CreateBufferInit(&wgpu.BufferInitDescriptor{
@@ -151,7 +102,6 @@ func runDenseForwardSuite(spec TestSpec) bool {
 		defer outBufMC.Destroy()
 
 		l.ResetState()
-		l.UseAsmForward = false
 		ctx.GPUTileSize = l.GetGPUSCTileSize(cfg.dtype)
 		t0 = time.Now()
 		ctx.DispatchForwardLayer(l, spec.InputShape[0], inBuf, outBufSC)
@@ -175,37 +125,9 @@ func runDenseForwardSuite(spec TestSpec) bool {
 		scSpd := ratio(tCPUSC, tGPUSC)
 		mcSpd := ratio(tCPUMC, tGPUMC)
 
-		goAsmSC := ratio(tCPUSC, tASMSC)
-		goAsmMC := ratio(tCPUMC, tASMMC)
-		gpuAsmSC := ratio(tGPUSC, tASMSC)
-		gpuAsmMC := ratio(tGPUMC, tASMMC)
-
-		if asm.Enabled() {
-			fmt.Printf("| %-10s | %-4d | %-11v | %-11v | %-11v | %-11v | %-11v | %-11v | %-6.2fx | %-6.2fx | %-6.2fx | %-6.2fx | %-8.2e | %-8.2e | %-8.2e | %-8.2e | %-6.2fx | %-6.2fx |\n",
-				cfg.name, l.GetCPUTileSize(cfg.dtype),
-				tCPUSC, tCPUMC, tASMSC, tASMMC, tGPUSC, tGPUMC,
-				goAsmSC, goAsmMC, gpuAsmSC, gpuAsmMC,
-				diffCpuSCMC, diffGpuSCMC, diffGSC, diffGMC, scSpd, mcSpd)
-			asmRows = append(asmRows, denseAsmRow{
-				dtype: cfg.name, tGoSC: tCPUSC, tGoMC: tCPUMC,
-				tAsmSC: tASMSC, tAsmMC: tASMMC, tGpuSC: tGPUSC, tGpuMC: tGPUMC,
-			})
-			if len(postASMSC) > 0 {
-				stats.AddSpectrum(spectrumMark(maxAbsDiff(postSC.Data, postASMSC), cfg.tolerance, postASMSC, postSC.Data))
-			}
-			if len(postASMMC) > 0 {
-				stats.AddSpectrum(spectrumMark(maxAbsDiff(postMC.Data, postASMMC), cfg.tolerance, postASMMC, postMC.Data))
-			}
-			stats.AddPerf(spec.Name, cfg.name, "Forward Go-SC", tCPUSC, tASMSC)
-			stats.AddPerf(spec.Name, cfg.name, "Forward Go-MC", tCPUMC, tASMMC)
-			if tGPUSC > 0 && tASMSC > 0 {
-				stats.AddPerf(spec.Name, cfg.name, "Forward GPU-SC vs ASM", tGPUSC, tASMSC)
-			}
-		} else {
-			fmt.Printf("| %-10s | %-4d | %-12v | %-12v | %-12v | %-12v | %-8.2e | %-8.2e | %-8.2e | %-8.2e | %-8.2fx | %-8.2fx |\n",
-				cfg.name, l.GetCPUTileSize(cfg.dtype), tCPUSC, tCPUMC, tGPUSC, tGPUMC,
-				diffCpuSCMC, diffGpuSCMC, diffGSC, diffGMC, scSpd, mcSpd)
-		}
+		fmt.Printf("| %-10s | %-4d | %-12v | %-12v | %-12v | %-12v | %-8.2e | %-8.2e | %-8.2e | %-8.2e | %-8.2fx | %-8.2fx |\n",
+			cfg.name, l.GetCPUTileSize(cfg.dtype), tCPUSC, tCPUMC, tGPUSC, tGPUMC,
+			diffCpuSCMC, diffGpuSCMC, diffGSC, diffGMC, scSpd, mcSpd)
 
 		if diffCpuSCMC > 1e-10 || diffGpuSCMC > 1e-10 || diffGSC > 1e-10 || diffGMC > 1e-10 ||
 			diffGSC >= cfg.tolerance || diffGMC >= cfg.tolerance {
@@ -218,9 +140,6 @@ func runDenseForwardSuite(spec TestSpec) bool {
 		stats.AddPerf(spec.Name, cfg.name, "Forward", tCPUMC, tGPUMC)
 	}
 
-	if asm.Enabled() && len(asmRows) > 0 {
-		printDenseAsmSummary(asmRows)
-	}
 	return allPass
 }
 
@@ -229,36 +148,6 @@ func ratio(slow, fast time.Duration) float64 {
 		return 0
 	}
 	return float64(slow) / float64(fast)
-}
-
-func printDenseAsmSummary(rows []denseAsmRow) {
-	type ranked struct {
-		name  string
-		sc, mc float64
-	}
-	var bySC, byMC []ranked
-	for _, r := range rows {
-		bySC = append(bySC, ranked{r.dtype, ratio(r.tGoSC, r.tAsmSC), ratio(r.tGoMC, r.tAsmMC)})
-		byMC = append(byMC, ranked{r.dtype, ratio(r.tGoSC, r.tAsmSC), ratio(r.tGoMC, r.tAsmMC)})
-	}
-	sort.Slice(bySC, func(i, j int) bool { return bySC[i].sc > bySC[j].sc })
-	sort.Slice(byMC, func(i, j int) bool { return byMC[i].mc > byMC[j].mc })
-
-	fmt.Printf("\n>> [ASM speedup summary] Go÷ASM and GPU÷ASM (values >1.0 = assembly wins on wall time)\n")
-	fmt.Printf("| %-10s | %-11s | %-11s | %-11s | %-11s | %-11s | %-11s |\n",
-		"DType", "Go SC", "ASM SC", "Go/Asm↑SC", "Go MC", "ASM MC", "Go/Asm↑MC")
-	fmt.Println("|------------|-------------|-------------|-------------|-------------|-------------|-------------|")
-	for _, r := range rows {
-		fmt.Printf("| %-10s | %-11v | %-11v | %-10.2fx | %-11v | %-11v | %-10.2fx |\n",
-			r.dtype, r.tGoSC.Round(time.Microsecond), r.tAsmSC.Round(time.Microsecond), ratio(r.tGoSC, r.tAsmSC),
-			r.tGoMC.Round(time.Microsecond), r.tAsmMC.Round(time.Microsecond), ratio(r.tGoMC, r.tAsmMC))
-	}
-
-	if len(bySC) > 0 {
-		best := bySC[0]
-		fmt.Printf("\n    Best Go/Asm↑ single-core: %s at %.2fx  |  Best multi-core: %s at %.2fx\n",
-			best.name, best.sc, byMC[0].name, byMC[0].mc)
-	}
 }
 
 func jsonMarshalNet(spec poly.PersistenceNetworkSpec) ([]byte, error) {

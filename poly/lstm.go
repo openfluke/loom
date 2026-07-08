@@ -4,11 +4,18 @@ import (
 	"math"
 	"runtime"
 	"sync"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 // LSTMForwardPolymorphic performs a forward pass through a polymorphic LSTM layer.
 // preAct stores [iSum, fSum, gSum, oSum, cCurr] (5 * hiddenSize)
 func LSTMForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if pre, post, ok := tryLSTMForwardSimd(layer, input); ok {
+			return pre, post
+		}
+	}
 	return LSTMForwardTiled(layer, input)
 }
 

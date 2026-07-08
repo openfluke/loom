@@ -379,6 +379,14 @@ func readEntityTalkLaunchOptions(reader *bufio.Reader, modelID string, storedDTy
 	input, _ := reader.ReadString('\n')
 	cfg.useGPU = strings.TrimSpace(input) == "1"
 
+	if !cfg.useGPU {
+		if poly.Plan9SimdEnabled() {
+			cfg.useSIMD = readInput(reader, "⚡ CPU SIMD forward? (Plan 9 AVX2/NEON — Dense/SwiGLU/MHA/CNN/RNN/LSTM) (1=on / 0=off) [0]: ", "0") == "1"
+		} else {
+			fmt.Println("⚡ CPU SIMD forward: not linked for this build/arch — using scalar tiled forward.")
+		}
+	}
+
 	fmt.Println("\n🚀 Tiling mode:")
 	fmt.Println("  [1] Tiled — GPU: single-workgroup; CPU: multi-core tiled")
 	fmt.Println("  [2] Tiled — GPU: multi-workgroup; CPU: multi-core tiled")
@@ -532,6 +540,15 @@ func runEntityTalkMode(reader *bufio.Reader) {
 	useGPU := setupTransformerForInference(tr, infCfg)
 	et = nil
 	poly.ReleaseInferenceTransientMemory()
+
+	if !useGPU && tr.Network != nil {
+		tr.Network.SetSimdForwardRecursive(launch.useSIMD)
+		if launch.useSIMD {
+			fmt.Println("⚡ CPU SIMD forward: ON (Plan 9 AVX2/NEON)")
+		} else {
+			fmt.Println("⚡ CPU SIMD forward: OFF (scalar tiled)")
+		}
+	}
 
 	applyGlitchTanhiIfRequested(reader, tr.Network)
 

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 // =============================================================================
@@ -258,6 +260,64 @@ func CalculateOptimalCNN1TileSizeForLayer(l *VolumetricLayer, dtype DType) int {
 	return best
 }
 
+func capCNN1TileToLayer(ts, outLen, filters int) int {
+	if outLen <= 0 {
+		outLen = 1
+	}
+	if filters <= 0 {
+		filters = 1
+	}
+	if ts > outLen {
+		ts = outLen
+	}
+	if ts > filters {
+		ts = filters
+	}
+	if ts <= 0 {
+		ts = 1
+	}
+	return ts
+}
+
+// CalculateOptimalCNN1SimdTileSizeForLayer picks output/filter tile sizes for CNN1 SIMD forward.
+func CalculateOptimalCNN1SimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	inC := maxInt(1, l.InputChannels)
+	kSize := maxInt(1, l.KernelSize)
+	kernelVol := inC * kSize
+	outLen := maxInt(1, l.OutputHeight)
+	filters := maxInt(1, l.Filters)
+	dim := maxInt(kernelVol, maxInt(outLen, filters))
+
+	if !simd.SimdEnabled() || (kernelVol < CNN1SimdMinDim() && outLen < DenseSimdMinDim()) {
+		ts := CalculateOptimalCNN1TileSizeForLayer(l, dtype)
+		return capCNN1TileToLayer(ts, outLen, filters)
+	}
+
+	base := CalculateOptimalCNN1TileSizeForLayer(l, dtype)
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 8 {
+		minTile = 8
+	}
+	if base < minTile && dim >= minTile {
+		base = minTile
+	}
+	base = capCNN1TileToLayer(base, outLen, filters)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, minInt(outLen, filters))
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
 // CalculateOptimalCNN2TileSize picks a TileSize that fits the 2D local neighborhood in L1.
 // Working set approx = (TileSize^2 * InChannels * bytesPerWeight) bytes.
 func CalculateOptimalCNN2TileSize(inChannels int, dtype DType) int {
@@ -283,7 +343,232 @@ func CalculateOptimalCNN2TileSize(inChannels int, dtype DType) int {
 	return tileSize
 }
 
-// CalculateOptimalCNN3TileSize picks a TileSize that fits the 3D local neighborhood in L1.
+// CalculateOptimalCNN2TileSizeForLayer derives a runtime CPU tile size from layer shape and L1.
+func CalculateOptimalCNN2TileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return CalculateOptimalCNN2TileSize(1, dtype)
+	}
+
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	target := int(float64(l1) * 0.75)
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+
+	inC := maxInt(1, l.InputChannels)
+	kSize := maxInt(1, l.KernelSize)
+	stride := maxInt(1, l.Stride)
+	padding := maxInt(0, l.Padding)
+	outH := maxInt(1, l.OutputHeight)
+	outW := maxInt(1, l.OutputWidth)
+	filters := maxInt(1, l.Filters)
+	outSpatial := maxInt(outH, outW)
+
+	best := 4
+	for _, candidate := range []int{4, 8, 16, 32, 64} {
+		outTile := minInt(candidate, outSpatial)
+		filterTile := minInt(candidate, filters)
+
+		inputSpan := (outTile-1)*stride + kSize + 2*padding
+		inputBytes := inputSpan * inputSpan * inC * 4
+		kernelVol := inC * kSize * kSize
+		weightBytes := int(float64(filterTile*kernelVol) * bytesPerWeight)
+		accumBytes := outTile * outTile * filterTile * 8
+		totalBytes := inputBytes + weightBytes + accumBytes
+
+		if totalBytes <= target {
+			best = candidate
+		}
+	}
+
+	if best < 4 {
+		best = 4
+	}
+	if best > outSpatial {
+		best = outSpatial
+	}
+	return best
+}
+
+func capCNN2TileToLayer(ts, outH, outW, filters int) int {
+	outSpatial := maxInt(outH, outW)
+	if outSpatial <= 0 {
+		outSpatial = 1
+	}
+	if filters <= 0 {
+		filters = 1
+	}
+	if ts > outSpatial {
+		ts = outSpatial
+	}
+	if ts > filters {
+		ts = filters
+	}
+	if ts <= 0 {
+		ts = 1
+	}
+	return ts
+}
+
+// CalculateOptimalCNN2SimdTileSizeForLayer picks spatial/filter tile sizes for CNN2 SIMD forward.
+func CalculateOptimalCNN2SimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	inC := maxInt(1, l.InputChannels)
+	kSize := maxInt(1, l.KernelSize)
+	kernelVol := inC * kSize * kSize
+	outH := maxInt(1, l.OutputHeight)
+	outW := maxInt(1, l.OutputWidth)
+	filters := maxInt(1, l.Filters)
+	outSpatial := maxInt(outH, outW)
+
+	if !simd.SimdEnabled() || kernelVol < CNN1SimdMinDim() {
+		ts := CalculateOptimalCNN2TileSizeForLayer(l, dtype)
+		return capCNN2TileToLayer(ts, outH, outW, filters)
+	}
+
+	base := CalculateOptimalCNN2TileSizeForLayer(l, dtype)
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 8 {
+		minTile = 8
+	}
+	if base < minTile && outSpatial >= minTile {
+		base = minTile
+	}
+	base = capCNN2TileToLayer(base, outH, outW, filters)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, minInt(outSpatial, filters))
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
+// CalculateOptimalCNN3TileSizeForLayer derives a runtime CPU tile size from layer shape and L1.
+func CalculateOptimalCNN3TileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return CalculateOptimalCNN3TileSize(1, dtype)
+	}
+
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 65536
+	}
+	target := int(float64(l1) * 0.75)
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+
+	inC := maxInt(1, l.InputChannels)
+	kSize := maxInt(1, l.KernelSize)
+	stride := maxInt(1, l.Stride)
+	padding := maxInt(0, l.Padding)
+	outD := maxInt(1, l.OutputDepth)
+	outH := maxInt(1, l.OutputHeight)
+	outW := maxInt(1, l.OutputWidth)
+	filters := maxInt(1, l.Filters)
+	outSpatial := maxInt(outD, maxInt(outH, outW))
+
+	best := 4
+	for _, candidate := range []int{4, 8, 16, 32} {
+		outTile := minInt(candidate, outSpatial)
+		filterTile := minInt(candidate, filters)
+
+		inputSpan := (outTile-1)*stride + kSize + 2*padding
+		inputBytes := inputSpan * inputSpan * inputSpan * inC * 4
+		kernelVol := inC * kSize * kSize * kSize
+		weightBytes := int(float64(filterTile*kernelVol) * bytesPerWeight)
+		accumBytes := outTile * outTile * outTile * filterTile * 8
+		totalBytes := inputBytes + weightBytes + accumBytes
+
+		if totalBytes <= target {
+			best = candidate
+		}
+	}
+
+	if best < 4 {
+		best = 4
+	}
+	if best > outSpatial {
+		best = outSpatial
+	}
+	return best
+}
+
+func capCNN3TileToLayer(ts, outD, outH, outW, filters int) int {
+	outSpatial := maxInt(outD, maxInt(outH, outW))
+	if outSpatial <= 0 {
+		outSpatial = 1
+	}
+	if filters <= 0 {
+		filters = 1
+	}
+	if ts > outSpatial {
+		ts = outSpatial
+	}
+	if ts > filters {
+		ts = filters
+	}
+	if ts <= 0 {
+		ts = 1
+	}
+	return ts
+}
+
+// CalculateOptimalCNN3SimdTileSizeForLayer picks spatial/filter tile sizes for CNN3 SIMD forward.
+func CalculateOptimalCNN3SimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	inC := maxInt(1, l.InputChannels)
+	kSize := maxInt(1, l.KernelSize)
+	kernelVol := inC * kSize * kSize * kSize
+	outD := maxInt(1, l.OutputDepth)
+	outH := maxInt(1, l.OutputHeight)
+	outW := maxInt(1, l.OutputWidth)
+	filters := maxInt(1, l.Filters)
+	outSpatial := maxInt(outD, maxInt(outH, outW))
+
+	if !simd.SimdEnabled() || kernelVol < CNN1SimdMinDim() {
+		ts := CalculateOptimalCNN3TileSizeForLayer(l, dtype)
+		return capCNN3TileToLayer(ts, outD, outH, outW, filters)
+	}
+
+	base := CalculateOptimalCNN3TileSizeForLayer(l, dtype)
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 8 {
+		minTile = 8
+	}
+	if base < minTile && outSpatial >= minTile {
+		base = minTile
+	}
+	base = capCNN3TileToLayer(base, outD, outH, outW, filters)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, minInt(outSpatial, filters))
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
 // Working set approx = (TileSize^3 * InChannels * bytesPerWeight) bytes.
 func CalculateOptimalCNN3TileSize(inChannels int, dtype DType) int {
 	info := GetHardwareInfo()
@@ -311,6 +596,10 @@ func CalculateOptimalCNN3TileSize(inChannels int, dtype DType) int {
 // CalculateOptimalDenseTileSize picks a TileSize for Dense forward/backward.
 // Working set per output tile ≈ TileSize × inputSize × bytesPerWeight (weight row slice).
 func CalculateOptimalDenseTileSize(inputSize int, dtype DType) int {
+	return calculateOptimalDenseTileSize(inputSize, dtype, false)
+}
+
+func calculateOptimalDenseTileSize(inputSize int, dtype DType, simdPath bool) int {
 	info := GetHardwareInfo()
 	l1 := info.L1DataCacheSize
 	if l1 <= 0 {
@@ -320,14 +609,346 @@ func CalculateOptimalDenseTileSize(inputSize int, dtype DType) int {
 	if bytesPerWeight < 1 {
 		bytesPerWeight = 1
 	}
-	limit := float64(l1) / (bytesPerWeight * float64(inputSize))
+	// SIMD dots keep input + weight rows hot; use ~75% of L1 like CNN1 layer sizing.
+	cacheBudget := l1
+	if simdPath {
+		cacheBudget = int(float64(l1) * 0.75)
+	}
+	limit := float64(cacheBudget) / (bytesPerWeight * float64(inputSize))
 	tileSize := 8
-	for _, candidate := range []int{8, 16, 32, 64, 128, 256} {
+	candidates := []int{8, 16, 32, 64, 128, 256}
+	for _, candidate := range candidates {
 		if float64(candidate) <= limit {
 			tileSize = candidate
 		}
 	}
 	return tileSize
+}
+
+// CNN1SimdMinDim is the kernel volume (inC×kSize) below which CNN1 SIMD loses to scalar.
+func CNN1SimdMinDim() int {
+	if !simd.SimdEnabled() {
+		return math.MaxInt32
+	}
+	switch runtime.GOARCH {
+	case "amd64", "arm64":
+		return 4
+	default:
+		return math.MaxInt32
+	}
+}
+
+// DenseSimdMinDim is the per-layer width below which SIMD dot overhead loses to scalar tiled.
+func DenseSimdMinDim() int {
+	if !simd.SimdEnabled() {
+		return math.MaxInt32
+	}
+	switch runtime.GOARCH {
+	case "amd64":
+		return 16
+	case "arm64":
+		return 8
+	default:
+		return math.MaxInt32
+	}
+}
+
+func simdVecAlign() int {
+	switch runtime.GOARCH {
+	case "amd64":
+		return 8
+	case "arm64":
+		return 4
+	default:
+		return 4
+	}
+}
+
+// CalculateOptimalDenseSimdTileSizeForLayer picks output/input tile sizes for Dense SIMD
+// (AVX2 on amd64, NEON on arm64) from L1 cache, layer dimensions, and vector width.
+func CalculateOptimalDenseSimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	inputSize := maxInt(1, l.InputHeight)
+	outputSize := maxInt(1, l.OutputHeight)
+	dim := maxInt(inputSize, outputSize)
+
+	if !simd.SimdEnabled() || dim < DenseSimdMinDim() {
+		ts := CalculateOptimalDenseTileSize(inputSize, dtype)
+		if ts > outputSize {
+			ts = outputSize
+		}
+		return ts
+	}
+
+	base := calculateOptimalDenseTileSize(inputSize, dtype, true)
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 16 {
+		minTile = 16
+	}
+	if base < minTile && dim >= minTile {
+		base = minTile
+	}
+	if dim >= 32 && base < 32 {
+		info := GetHardwareInfo()
+		l1 := info.L1DataCacheSize
+		if l1 <= 0 {
+			l1 = 32768
+		}
+		bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+		if bytesPerWeight < 1 {
+			bytesPerWeight = 1
+		}
+		if float64(32) <= float64(l1)*0.75/(bytesPerWeight*float64(inputSize)) {
+			base = 32
+		}
+	}
+	if base > outputSize {
+		base = outputSize
+	}
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, outputSize)
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
+func capMHAProjTileToLayer(ts, inDim, outDim int) int {
+	if inDim <= 0 {
+		inDim = 1
+	}
+	if outDim <= 0 {
+		outDim = 1
+	}
+	if ts > inDim {
+		ts = inDim
+	}
+	if ts > outDim {
+		ts = outDim
+	}
+	if ts <= 0 {
+		ts = 1
+	}
+	return ts
+}
+
+// capMHATileToLayer is deprecated; projections use capMHAProjTileToLayer(in, out).
+func capMHATileToLayer(ts, dModel, qDim, headDim int) int {
+	_ = headDim
+	return capMHAProjTileToLayer(ts, dModel, maxInt(qDim, dModel))
+}
+
+func mhaSimdTileForProjection(inner, outer int, dtype DType, l1Share float64) int {
+	if inner <= 0 {
+		inner = 1
+	}
+	if outer <= 0 {
+		outer = 1
+	}
+	dim := maxInt(inner, outer)
+
+	if !simd.SimdEnabled() || dim < DenseSimdMinDim() {
+		ts := CalculateOptimalDenseTileSize(inner, dtype)
+		return capMHAProjTileToLayer(ts, inner, outer)
+	}
+
+	base := calculateOptimalDenseTileSize(inner, dtype, true)
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+	// One Q/K/V/O projection resident at a time.
+	limit := float64(l1) * l1Share / (bytesPerWeight * float64(inner))
+	capped := 8
+	for _, candidate := range []int{8, 16, 32, 64, 128, 256} {
+		if float64(candidate) <= limit {
+			capped = candidate
+		}
+	}
+	if base > capped {
+		base = capped
+	}
+
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 16 {
+		minTile = 16
+	}
+	if base < minTile && dim >= minTile {
+		base = minTile
+	}
+	if dim >= 32 && base < 32 {
+		if float64(32) <= limit {
+			base = 32
+		}
+	}
+	base = capMHAProjTileToLayer(base, inner, outer)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, minInt(inner, outer))
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
+// CalculateOptimalMHASimdTileSizeForLayer picks tile sizes for MHA SIMD Q/K/V/O projections.
+// Each projection is budgeted independently; the smallest fitting tile is returned so
+// every matmul can use the same tile width (do not cap by head_dim — only d_model/q_dim).
+func CalculateOptimalMHASimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	dModel, _, _, _, qDim, kvDim := mhaLayerDims(l)
+	maxKVOut := kvDim
+	if qDim > maxKVOut {
+		maxKVOut = qDim
+	}
+
+	qkvTile := mhaSimdTileForProjection(dModel, maxKVOut, dtype, 0.5)
+	oTile := mhaSimdTileForProjection(qDim, dModel, dtype, 0.5)
+	ts := qkvTile
+	if oTile < ts {
+		ts = oTile
+	}
+	if ts <= 0 {
+		ts = 8
+	}
+	return ts
+}
+
+func capSwigluTileToLayer(ts, inputSize, intermediateSize int) int {
+	if ts > inputSize {
+		ts = inputSize
+	}
+	if ts > intermediateSize {
+		ts = intermediateSize
+	}
+	if ts <= 0 {
+		ts = 1
+	}
+	return ts
+}
+
+// CalculateOptimalSwiGLUSimdTileSizeForLayer picks tile sizes for SwiGLU SIMD forward
+// (gate/up/down projections). Gate+up share L1 with two weight rows per output neuron.
+func CalculateOptimalSwiGLUSimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	in := maxInt(1, l.InputHeight)
+	inter := maxInt(1, l.OutputHeight)
+	dim := maxInt(in, inter)
+
+	if !simd.SimdEnabled() || (in < DenseSimdMinDim() && inter < DenseSimdMinDim()) {
+		return capSwigluTileToLayer(CalculateOptimalSwiGLUTileSize(in, dtype), in, inter)
+	}
+
+	inner := dim
+	base := calculateOptimalDenseTileSize(inner, dtype, true)
+	info := GetHardwareInfo()
+	l1 := info.L1DataCacheSize
+	if l1 <= 0 {
+		l1 = 32768
+	}
+	bytesPerWeight := cnn3DTypeBytesPerElement(dtype)
+	if bytesPerWeight < 1 {
+		bytesPerWeight = 1
+	}
+	limit := float64(l1) * 0.375 / (bytesPerWeight * float64(inner))
+	capped := 8
+	for _, candidate := range []int{8, 16, 32, 64, 128, 256} {
+		if float64(candidate) <= limit {
+			capped = candidate
+		}
+	}
+	if base > capped {
+		base = capped
+	}
+
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 16 {
+		minTile = 16
+	}
+	if base < minTile && dim >= minTile {
+		base = minTile
+	}
+	if dim >= 32 && base < 32 {
+		if float64(32) <= float64(l1)*0.375/(bytesPerWeight*float64(inner)) {
+			base = 32
+		}
+	}
+	base = capSwigluTileToLayer(base, in, inter)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, dim)
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
+// MasterWeightScaleForStackDepth shrinks master weights for deep wide stacks where
+// unsigned integer dtypes (positive-only morphed weights) overflow activations.
+func MasterWeightScaleForStackDepth(dtype DType, stackLayers, layerDim int) float32 {
+	switch dtype {
+	case DTypeUint64, DTypeUint32, DTypeUint16:
+		if stackLayers < 48 {
+			return 1.0
+		}
+		if layerDim <= 0 {
+			layerDim = 1
+		}
+		dimRatio := float64(16) / float64(layerDim)
+		if dimRatio > 1 {
+			dimRatio = 1
+		}
+		depthRatio := float64(48) / float64(stackLayers)
+		if depthRatio > 1 {
+			depthRatio = 1
+		}
+		return float32(dimRatio * dimRatio * depthRatio)
+	}
+	return 1.0
+}
+
+// MorphScaleForStackDepth is deprecated; use MasterWeightScaleForStackDepth.
+func MorphScaleForStackDepth(dtype DType, stackLayers, layerDim int, baseScale float32) float32 {
+	_ = baseScale
+	return MasterWeightScaleForStackDepth(dtype, stackLayers, layerDim)
+}
+
+func capDenseTileToLayer(ts, inputSize, outputSize int) int {
+	maxDim := maxInt(inputSize, outputSize)
+	if maxDim <= 0 {
+		return ts
+	}
+	if ts > maxDim {
+		ts = maxDim
+	}
+	if ts <= 0 {
+		ts = 1
+	}
+	return ts
 }
 
 // CalculateOptimalSwiGLUTileSize picks a TileSize for SwiGLU sequence-tiled computation.
@@ -357,6 +978,97 @@ func CalculateOptimalRNNTileSize(inputSize, hiddenSize int, dtype DType) int {
 		}
 	}
 	return tileSize
+}
+
+func capRNNTileToLayer(ts, inputSize, hiddenSize int) int {
+	dim := maxInt(inputSize, hiddenSize)
+	if dim <= 0 {
+		dim = 1
+	}
+	if ts > hiddenSize {
+		ts = hiddenSize
+	}
+	if ts > dim {
+		ts = dim
+	}
+	if ts <= 0 {
+		ts = 1
+	}
+	return ts
+}
+
+// CalculateOptimalRNNSimdTileSizeForLayer picks hidden-unit tile sizes for RNN SIMD forward.
+func CalculateOptimalRNNSimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	inputSize := maxInt(1, l.InputHeight)
+	hiddenSize := maxInt(1, l.OutputHeight)
+	combined := inputSize + hiddenSize
+	dim := maxInt(inputSize, hiddenSize)
+
+	if !simd.SimdEnabled() || dim < DenseSimdMinDim() {
+		ts := CalculateOptimalRNNTileSize(inputSize, hiddenSize, dtype)
+		return capRNNTileToLayer(ts, inputSize, hiddenSize)
+	}
+
+	base := calculateOptimalDenseTileSize(combined, dtype, true)
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 8 {
+		minTile = 8
+	}
+	if base < minTile && hiddenSize >= minTile {
+		base = minTile
+	}
+	base = capRNNTileToLayer(base, inputSize, hiddenSize)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, hiddenSize)
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
+}
+
+// CalculateOptimalLSTMSimdTileSizeForLayer picks hidden-unit tile sizes for LSTM SIMD forward.
+func CalculateOptimalLSTMSimdTileSizeForLayer(l *VolumetricLayer, dtype DType) int {
+	if l == nil {
+		return 32
+	}
+	inputSize := maxInt(1, l.InputHeight)
+	hiddenSize := maxInt(1, l.OutputHeight)
+	combined := inputSize + hiddenSize
+	dim := maxInt(inputSize, hiddenSize)
+
+	if !simd.SimdEnabled() || dim < DenseSimdMinDim() {
+		ts := CalculateOptimalLSTMTileSize(inputSize, hiddenSize, dtype)
+		return capRNNTileToLayer(ts, inputSize, hiddenSize)
+	}
+
+	base := calculateOptimalDenseTileSize(combined, dtype, true)
+	align := simdVecAlign()
+	minTile := align * 2
+	if minTile < 8 {
+		minTile = 8
+	}
+	if base < minTile && hiddenSize >= minTile {
+		base = minTile
+	}
+	base = capRNNTileToLayer(base, inputSize, hiddenSize)
+	if base >= align {
+		base = (base / align) * align
+	}
+	if base <= 0 {
+		base = minInt(minTile, hiddenSize)
+	}
+	if base <= 0 {
+		base = 8
+	}
+	return base
 }
 
 // CalculateOptimalLSTMTileSize picks a TileSize for LSTM hidden-state tiling.
@@ -715,6 +1427,54 @@ func (l *VolumetricLayer) GetCPUTileSize(dtype DType) int {
 	return 8
 }
 
+// GetCPUSimdTileSize returns the SIMD tile size for Dense/SwiGLU forward on this layer.
+func (l *VolumetricLayer) GetCPUSimdTileSize(dtype DType) int {
+	if l.CPUSimdTileSizes != nil {
+		if ts, ok := l.CPUSimdTileSizes[dtype]; ok && ts > 0 {
+			return ts
+		}
+	}
+	if l.Type == LayerDense {
+		return CalculateOptimalDenseSimdTileSizeForLayer(l, dtype)
+	}
+	if l.Type == LayerSwiGLU {
+		return CalculateOptimalSwiGLUSimdTileSizeForLayer(l, dtype)
+	}
+	if l.Type == LayerMultiHeadAttention {
+		return CalculateOptimalMHASimdTileSizeForLayer(l, dtype)
+	}
+	if l.Type == LayerCNN1 {
+		return CalculateOptimalCNN1SimdTileSizeForLayer(l, dtype)
+	}
+	if l.Type == LayerCNN2 {
+		return CalculateOptimalCNN2SimdTileSizeForLayer(l, dtype)
+	}
+	if l.Type == LayerCNN3 {
+		return CalculateOptimalCNN3SimdTileSizeForLayer(l, dtype)
+	}
+	if l.Type == LayerRNN {
+		return CalculateOptimalRNNSimdTileSizeForLayer(l, dtype)
+	}
+	if l.Type == LayerLSTM {
+		return CalculateOptimalLSTMSimdTileSizeForLayer(l, dtype)
+	}
+	return l.GetCPUTileSize(dtype)
+}
+
+// EnsureRuntimeTileSizes populates per-dtype CPU/SIMD tile maps when missing.
+func (l *VolumetricLayer) EnsureRuntimeTileSizes() {
+	if l == nil {
+		return
+	}
+	needRefresh := l.CPUTileSizes == nil
+	if (l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerCNN1 || l.Type == LayerCNN2 || l.Type == LayerCNN3 || l.Type == LayerRNN || l.Type == LayerLSTM) && l.CPUSimdTileSizes == nil {
+		needRefresh = true
+	}
+	if needRefresh {
+		l.refreshRuntimeCPUTileSizes()
+	}
+}
+
 // GetGPUSCTileSize returns the GPU single-core tile size for the given dtype.
 func (l *VolumetricLayer) GetGPUSCTileSize(dtype DType) int {
 	if l.GPUSCTileSizes != nil {
@@ -745,25 +1505,42 @@ func (l *VolumetricLayer) GetGPUMCTileSize(dtype DType) int {
 
 func (l *VolumetricLayer) refreshRuntimeCPUTileSizes() {
 	l.CPUTileSizes = make(map[DType]int, len(allDTypes))
+	if l.Type == LayerDense || l.Type == LayerSwiGLU || l.Type == LayerMultiHeadAttention || l.Type == LayerCNN1 || l.Type == LayerCNN2 || l.Type == LayerCNN3 || l.Type == LayerRNN || l.Type == LayerLSTM {
+		l.CPUSimdTileSizes = make(map[DType]int, len(allDTypes))
+	}
 	for _, dtype := range allDTypes {
 		var ts int
 		switch l.Type {
 		case LayerCNN1:
 			ts = CalculateOptimalCNN1TileSizeForLayer(l, dtype)
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalCNN1SimdTileSizeForLayer(l, dtype)
 		case LayerCNN2:
-			ts = CalculateOptimalCNN2TileSize(l.InputChannels, dtype)
+			ts = CalculateOptimalCNN2TileSizeForLayer(l, dtype)
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalCNN2SimdTileSizeForLayer(l, dtype)
 		case LayerCNN3:
-			ts = CalculateOptimalCNN3TileSize(l.InputChannels, dtype)
+			ts = CalculateOptimalCNN3TileSizeForLayer(l, dtype)
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalCNN3SimdTileSizeForLayer(l, dtype)
 		case LayerMultiHeadAttention:
-			ts = CalculateOptimalTileSize(l.HeadDim, dtype)
+			dModel, _, _, _, qDim, kvDim := mhaLayerDims(l)
+			maxOut := maxInt(qDim, kvDim)
+			ts = CalculateOptimalDenseTileSize(dModel, dtype)
+			ts = capMHAProjTileToLayer(ts, dModel, maxInt(maxOut, dModel))
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalMHASimdTileSizeForLayer(l, dtype)
 		case LayerSwiGLU:
 			ts = CalculateOptimalSwiGLUTileSize(l.InputHeight, dtype)
+			ts = capSwigluTileToLayer(ts, l.InputHeight, l.OutputHeight)
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalSwiGLUSimdTileSizeForLayer(l, dtype)
 		case LayerDense:
 			ts = CalculateOptimalDenseTileSize(l.InputHeight, dtype)
+			ts = capDenseTileToLayer(ts, l.InputHeight, l.OutputHeight)
+			simdTS := CalculateOptimalDenseSimdTileSizeForLayer(l, dtype)
+			l.CPUSimdTileSizes[dtype] = capDenseTileToLayer(simdTS, l.InputHeight, l.OutputHeight)
 		case LayerRNN:
 			ts = CalculateOptimalRNNTileSize(l.InputHeight, l.OutputHeight, dtype)
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalRNNSimdTileSizeForLayer(l, dtype)
 		case LayerLSTM:
 			ts = CalculateOptimalLSTMTileSize(l.InputHeight, l.OutputHeight, dtype)
+			l.CPUSimdTileSizes[dtype] = CalculateOptimalLSTMSimdTileSizeForLayer(l, dtype)
 		case LayerEmbedding:
 			ts = CalculateOptimalEmbeddingTileSize(l.EmbeddingDim, dtype)
 		case LayerResidual:

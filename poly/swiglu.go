@@ -4,12 +4,19 @@ import (
 	"math"
 	"runtime"
 	"sync"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 // SwiGLUForwardPolymorphic performs a forward pass through a SwiGLU layer.
 func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	if layer.UseGPU {
 		return SwiGLUForwardWGPU(layer, input)
+	}
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if pre, post, ok := trySwiGLUForwardSimd(layer, input); ok {
+			return pre, post
+		}
 	}
 	return SwiGLUForwardTiled(layer, input)
 }
@@ -219,6 +226,8 @@ func swigluTiledProjectGateUpBackward[T Numeric](gradInter []float64, input []T,
 // ── SwiGLU CPU forward (sequential across sequence positions) ────────────────────
 
 func swigluForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	layer.EnsureRuntimeTileSizes()
+
 	if usePackedTernaryCPU(layer) {
 		return SwiGLUForwardPackedTernaryCPU(layer, input)
 	}
@@ -229,6 +238,7 @@ func swigluForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor
 	if tileSize <= 0 {
 		tileSize = 32
 	}
+	tileSize = capSwigluTileToLayer(tileSize, inputSize, intermediateSize)
 
 	preAct = NewTensor[T](seqLen, intermediateSize)
 	postAct = NewTensor[T](seqLen, inputSize)

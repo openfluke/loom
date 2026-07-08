@@ -3,6 +3,8 @@ package poly
 import (
 	"runtime"
 	"sync"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 // =============================================================================
@@ -11,6 +13,11 @@ import (
 
 // CNN3ForwardPolymorphic performs a forward pass through a 3D convolutional layer.
 func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if pre, post, ok := tryCNN3ForwardSimd(layer, input); ok {
+			return pre, post
+		}
+	}
 	return CNN3ForwardTiled(layer, input)
 }
 

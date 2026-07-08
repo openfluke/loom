@@ -58,14 +58,16 @@ Loom provides bit-exact reproducibility across:
 ## 📊 Versioning & Roadmap
 Loom uses a mathematical versioning system derived from a strictly verified checklist in [`poly/README.md`](./poly/README.md) (row counts and completion ratio are maintained there).
 
-### **Current Version: 0.81.0 — CURRENT** (from **0.80.0**)
-- **Completion Ratio**: 76.7% (**112 / 146** checklist rows on `adjustments`)
-- **Codename**: **0.81.0 "Accelerator Bridge"** — experimental **Intel CPU+NPU** via `poly/accel`; Lucy **[9]**; **Qualcomm NPU** and **Google TPU** on roadmap.
-- **Status**: Vendor plugin model shipped on Linux (`CGO_ENABLED=1`); GPU + ENTITY from 0.80 remain production paths. See [`docs/v081_release.md`](./docs/v081_release.md) and [`docs/accelerators.md`](./docs/accelerators.md).
+### **Current Version: 0.83.0 — CURRENT** (from **0.82.0**)
+- **Completion Ratio**: 79.9% (**119 / 149** checklist rows on `adjustments`)
+- **Codename**: **0.83.0 "Apple Bridge"** — a third experimental accelerator vendor: **Apple GPU** (Metal / MPSGraph, macOS Apple silicon, Lucy **[13]**) joining **Intel CPU+NPU** (Lucy **[9]**) and **Qualcomm/Hexagon** (Lucy **[12]**) via `poly/accel`, plus a **BF16** wire dtype for the shared accel bridge.
+- **Status**: Three vendor accelerator plugins shipped (Intel on Linux, Qualcomm on Windows ARM64, Apple on macOS) — experimental, forward-only per-layer offload; GPU + ENTITY from 0.80 remain production paths. See [`docs/v083_release.md`](./docs/v083_release.md), [`docs/apple_metal.md`](./docs/apple_metal.md) and [`docs/accelerators.md`](./docs/accelerators.md).
 - **Milestones**:
     - **v0.79.0 "Bedrock Validation"** ✅ — See [`docs/bedrock_validation.md`](./docs/bedrock_validation.md).
     - **v0.80.0 "Native Ship"** ✅ — See [`docs/v080_release.md`](./docs/v080_release.md).
-- **Next Target — v0.82**: AccelPlanner + JSON `exec`; GPU backward (SwiGLU/MHA); Qualcomm/Google CABI stubs; Donate Compute live inference.
+    - **v0.81.0 "Accelerator Bridge"** ✅ — See [`docs/v081_release.md`](./docs/v081_release.md).
+    - **v0.82.0 "Snapdragon Bridge"** ✅ — See [`docs/v082_release.md`](./docs/v082_release.md).
+- **Next Target — v0.84**: whole-model `.entity` → NPU lowering; NPU parity suite vs WebGPU; GPU backward (SwiGLU/MHA); AccelPlanner + JSON `exec`; MPSGraph Conv/GELU + norm weight bake; Donate Compute live inference.
 
 For a detailed breakdown of the roadmap and version calculation, see [poly/README.md](./poly/README.md#📊-true-version-calculation).
 

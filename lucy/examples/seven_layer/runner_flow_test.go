@@ -33,7 +33,6 @@ func TestRunnerFlowInt8Dense1x1(t *testing.T) {
 		MakeInput:  func() *poly.Tensor[float32] { return sinInput(4, dims[0]) },
 		MakeTarget: sinTarget,
 	}
-	asmSt := layerAsmStatus(s.PrimaryType)
 	epochs := 2
 	activeBenchIters = benchItersForGrid(g)
 	input := s.MakeInput()
@@ -48,18 +47,14 @@ func TestRunnerFlowInt8Dense1x1(t *testing.T) {
 		}
 		applyDType(net, tc)
 		target := s.MakeTarget(net, input)
-		fwdSC := captureForward(net, input, false, false)
+		fwdSC := captureForward(net, input, false)
 		_ = fwdSC
-		_ = captureForward(net, input, true, false)
+		_ = captureForward(net, input, true)
 		bwdSC := captureBackward(net, input, target, false)
 		bwdMC := captureBackward(net, input, target, true)
 		_ = bwdSC
 		_ = bwdMC
 		configureInferenceNet(net)
-		SetNetworkAsm(net, true)
-		captureForward(net, input, true, true)
-		SetNetworkAsm(net, false)
-		captureForward(net, input, true, false)
 		lossBefore := forwardLoss(net, input, target)
 		_ = checkSaveReload(net, input, target, tc, lossBefore, phaseBefore, s.PrimaryType)
 		_ = checkEntitySaveReload(net, input, target, tc, lossBefore, phaseBefore, s.PrimaryType)
@@ -74,7 +69,6 @@ func TestRunnerFlowInt8Dense1x1(t *testing.T) {
 		netMC.ReleaseFP32MasterWhenIdle = true
 		trainCPU(netMC, input, target, poly.TrainingModeCPUMC, tc, s.PrimaryType, epochs)
 		readMemSnapshot()
-		_ = asmSt
 	}
 
 	tc := allDTypes[12]
@@ -84,13 +78,9 @@ func TestRunnerFlowInt8Dense1x1(t *testing.T) {
 	}
 	applyDType(net, tc)
 	target := s.MakeTarget(net, input)
-	captureForward(net, input, false, false)
-	captureForward(net, input, true, false)
+	captureForward(net, input, false)
+	captureForward(net, input, true)
 	captureBackward(net, input, target, false)
 	captureBackward(net, input, target, true)
 	configureInferenceNet(net)
-	SetNetworkAsm(net, true)
-	captureForward(net, input, true, true)
-	SetNetworkAsm(net, false)
-	captureForward(net, input, true, false)
 }

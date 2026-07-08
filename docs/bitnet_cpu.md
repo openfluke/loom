@@ -65,6 +65,24 @@ The hot CPU kernel is row-aligned and word tiled: each row stores
 at a time with an unrolled, branchless 16-weight ternary decode. Large matrices
 are split across output-row ranges using `GOMAXPROCS`.
 
+### AVX2 SIMD ternary MAD (opt-in)
+
+When Plan 9 SIMD forward is enabled (`net.SetSimdForward(true)` /
+`SetSimdForwardRecursive`), the packed ternary matvec switches from the scalar
+word-decode to an AVX2 **MAD kernel** mirroring Microsoft's `ggml-bitnet-mad.cpp`:
+
+- Weights are unpacked **once** into a cached byte-per-weight code buffer
+  (`{0,1,2}`, row-padded to a multiple of 32) — no on-the-fly unpack per token.
+- The inner loop uses `VPMADDUBSW` (unsigned code × signed int8 activation) →
+  `VPMADDWD` → `VPADDD`, 32 weights per instruction.
+- Using `weight = code − 1`, the row dot is `Σ(code·act) − Σ(act)`; the `Σ(act)`
+  correction is computed once per activation vector.
+
+Output is **bit-identical** to the scalar path (both do exact integer
+accumulation). Measured BitNet b1.58-2B CPU decode: ~2.6× single-core vs scalar.
+The cached code buffer costs ~1 byte/weight of extra RAM. See
+[`simd.md`](simd.md) for the full SIMD system and coverage.
+
 Lucy loads BitNet checkpoints block-by-block for CPU inference: it decodes only
 global tensors first, then decodes one transformer block, packs Dense/MHA/SwiGLU
 BitLinear projections, releases that block's FP32 tensors, and moves to the next
@@ -79,9 +97,10 @@ Microsoft BitNet b1.58 quality results assume BitNet-style trained checkpoints,
 8-bit activations, and specialized CPU kernels. Plain FP32-to-ternary conversion
 is useful for experiments, but it should be treated as lossy.
 
-The current implementation is pure Go. It is intended as the correctness and
-integration layer before adding architecture-specific kernels such as ARM NEON
-or x86 AVX2/AVX512.
+The scalar path is pure Go (the correctness and integration baseline). An x86
+**AVX2** ternary MAD kernel is available as an opt-in SIMD path (see above and
+[`simd.md`](simd.md)); ARM NEON and AVX512 ternary kernels are not yet written
+(arm64 falls back to the scalar Go dot).
 
 ## Benchmark
 

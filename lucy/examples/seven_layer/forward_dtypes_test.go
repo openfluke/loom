@@ -41,11 +41,11 @@ func TestDenseForwardAllDTypes1x1(t *testing.T) {
 			applyDType(net, tc)
 			target := sinTarget(net, input)
 			_ = target
-			if cap := captureForward(net, input, true, false); len(cap.out) == 0 {
+			if cap := captureForward(net, input, true); len(cap.out) == 0 {
 				t.Fatal("empty forward output")
 			}
 			configureInferenceNet(net)
-			if cap := captureForward(net, input, true, false); len(cap.out) == 0 {
+			if cap := captureForward(net, input, true); len(cap.out) == 0 {
 				t.Fatal("empty forward after configureInferenceNet")
 			}
 		})

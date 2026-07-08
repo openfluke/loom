@@ -50,9 +50,11 @@ func denseEndpoints(g GridSpec) []int {
 	case 1:
 		return sevenEndpoints([]int{16, 24, 32, 48, 64, 48, 32, 8})
 	case 8:
-		return flatEndpoints(8)
+		// dim≥16 needed for SIMD crossover (see poly.DenseSimdMinDim).
+		return flatEndpoints(16)
 	default:
-		return flatEndpoints(4)
+		// dim=32 for AVX2 crossover; MorphScaleForStackDepth keeps Uint wide types stable.
+		return flatEndpoints(32)
 	}
 }
 
@@ -61,9 +63,11 @@ func swigluEndpoints(g GridSpec) []int {
 	case 1:
 		return sevenEndpoints([]int{32, 32, 32, 32, 32, 32, 32, 16})
 	case 8:
+		// dim≥16 for SIMD crossover (see poly.DenseSimdMinDim).
 		return flatEndpoints(16)
 	default:
-		return flatEndpoints(8)
+		// 3³: dim=32 for AVX2/NEON wins (same as Dense flat stacks).
+		return flatEndpoints(32)
 	}
 }
 
@@ -82,8 +86,12 @@ func cnnChannelEndpoints(g GridSpec) []int {
 	switch g.Cells() {
 	case 1:
 		return sevenEndpoints([]int{3, 6, 8, 8, 8, 16, 16, 16})
+	case 8:
+		// inC=8 → kernelVol=24 at k=3 (AVX2 crossover).
+		return flatEndpoints(8)
 	default:
-		return flatEndpoints(2)
+		// 3³: inC=16 → kernelVol=48; MorphScaleForStackDepth keeps Uint stacks stable.
+		return flatEndpoints(16)
 	}
 }
 
@@ -123,7 +131,8 @@ func mhaShapeFor(g GridSpec) mhaShape {
 	case 8:
 		return mhaShape{16, 2, 4}
 	default:
-		return mhaShape{8, 2, 4}
+		// d_model=32 head_dim=8 — SIMD crossover on projections (see poly.DenseSimdMinDim).
+		return mhaShape{32, 4, 4}
 	}
 }
 
@@ -207,7 +216,8 @@ func RunSwiGLU() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerSwiGLU,
 			CheckpointTag: "seven_swiglu" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 SwiGLU/cell (%d stack) — ASM not implemented", g, g.StackLayers()),
+			Banner: fmt.Sprintf("  Grid %s · 7 SwiGLU/cell (%d stack) — Plan 9 SIMD when GOARCH supports it",
+				g, g.StackLayers()),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-swiglu", g)
@@ -237,7 +247,8 @@ func RunMHA() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerMultiHeadAttention,
 			CheckpointTag: "seven_mha" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 MHA/cell d=%d h=%d seq=%d — ASM not implemented", g, m.dModel, m.heads, m.seq),
+			Banner: fmt.Sprintf("  Grid %s · 7 MHA/cell d=%d h=%d seq=%d — Plan 9 SIMD when GOARCH supports it",
+				g, m.dModel, m.heads, m.seq),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-mha", g)
@@ -260,7 +271,7 @@ func RunMHA() bool {
 }
 
 func RunCNN1() bool {
-	return runGrids(ConvGrids, func(g GridSpec) LayerSuite {
+	return runGrids(CNN1Grids, func(g GridSpec) LayerSuite {
 		ch := cnnChannelEndpoints(g)
 		sp := cnnSpatial(g)
 		return LayerSuite{
@@ -268,7 +279,7 @@ func RunCNN1() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerCNN1,
 			CheckpointTag: "seven_cnn1" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 CNN1/cell %d×%d spatial — ASM not implemented", g, sp, sp),
+			Banner:        fmt.Sprintf("  Grid %s · 7 CNN1/cell %d×%d spatial — Plan 9 SIMD (AVX2/NEON)", g, sp, sp),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-cnn1", g)
@@ -291,7 +302,7 @@ func RunCNN1() bool {
 }
 
 func RunCNN2() bool {
-	return runGrids(ConvGrids, func(g GridSpec) LayerSuite {
+	return runGrids(CNN2Grids, func(g GridSpec) LayerSuite {
 		ch := cnnChannelEndpoints(g)
 		sp := cnnSpatial(g)
 		return LayerSuite{
@@ -299,7 +310,7 @@ func RunCNN2() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerCNN2,
 			CheckpointTag: "seven_cnn2" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 CNN2/cell — ASM not implemented", g),
+			Banner:        fmt.Sprintf("  Grid %s · 7 CNN2/cell %d×%d spatial — Plan 9 SIMD (AVX2/NEON)", g, sp, sp),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-cnn2", g)
@@ -330,7 +341,7 @@ func RunCNN3() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerCNN3,
 			CheckpointTag: "seven_cnn3" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 CNN3/cell %d×%d×%d — ASM not implemented", g, d, h, w),
+			Banner:        fmt.Sprintf("  Grid %s · 7 CNN3/cell %d×%d×%d — Plan 9 SIMD (AVX2/NEON)", g, d, h, w),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-cnn3", g)
@@ -360,7 +371,7 @@ func RunRNN() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerRNN,
 			CheckpointTag: "seven_rnn" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 RNN/cell — ASM not implemented", g),
+			Banner:        fmt.Sprintf("  Grid %s · 7 RNN/cell — Plan 9 SIMD (AVX2/NEON)", g),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-rnn", g)
@@ -390,7 +401,7 @@ func RunLSTM() bool {
 			Grid:          g,
 			PrimaryType:   poly.LayerLSTM,
 			CheckpointTag: "seven_lstm" + gridCheckpointSuffix(g),
-			Banner:        fmt.Sprintf("  Grid %s · 7 LSTM/cell — ASM not implemented", g),
+			Banner:        fmt.Sprintf("  Grid %s · 7 LSTM/cell — Plan 9 SIMD (AVX2/NEON)", g),
 			BuildJSON: func(jsonDType string) []byte {
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-lstm", g)
@@ -413,7 +424,11 @@ func RunLSTM() bool {
 }
 
 func RunEmbedding() bool {
-	return runAllGrids(func(g GridSpec) LayerSuite {
+	return runAllGrids(embeddingSuite)
+}
+
+func embeddingSuite(g GridSpec) LayerSuite {
+	{
 		vocab := embeddingVocab(g)
 		acts := []string{"RELU", "RELU", "RELU", "RELU", "RELU", "SIGMOID"}
 		// Multi-cell: embedding only at stack origin; later cells are float→float DENSE.
@@ -432,7 +447,10 @@ func RunEmbedding() bool {
 			Banner:        banner,
 			BuildJSON: func(jsonDType string) []byte {
 				dims := embeddingDims(g)
-				denseOnly := denseEndpoints(g) // flat width across full stack after first cell
+				// Non-origin cells must stay at the embedding output width so the
+				// cross-cell forward (origin → next cell) never hands a mismatched
+				// activation to the next Dense layer.
+				denseOnly := flatEndpoints(dims[len(dims)-1])
 				var b strings.Builder
 				writeNetworkHeader(&b, "loom-seven-embedding", g)
 				first := true
@@ -470,7 +488,7 @@ func RunEmbedding() bool {
 			},
 			MakeTarget: sinTarget,
 		}
-	})
+	}
 }
 
 func RunResidual() bool {

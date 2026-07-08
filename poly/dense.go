@@ -4,13 +4,15 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/openfluke/loom/poly/asm"
+	"github.com/openfluke/loom/poly/simd"
 )
 
 // DenseForwardPolymorphic performs a forward pass through a dense layer.
 func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
-	if layerUseAsmForward(layer) && asm.Enabled() {
-		return denseForwardAsm(layer, input)
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if pre, post, ok := tryDenseForwardSimd(layer, input); ok {
+			return pre, post
+		}
 	}
 	return DenseForwardTiled(layer, input)
 }
@@ -22,16 +24,23 @@ func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inp
 
 // DenseForwardTiled performs a tiled forward pass for the dense layer (multi-core).
 func DenseForwardTiled[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	layer.EnsureRuntimeTileSizes()
+
 	if usePackedTernaryCPU(layer) {
 		return DenseForwardPackedTernaryCPU(layer, input)
 	}
 
 	batchSize := input.Shape[0]
+	inputSize := layer.InputHeight
+	if inputSize <= 0 {
+		inputSize = input.Shape[len(input.Shape)-1]
+	}
 	outputSize := layer.OutputHeight
 	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 32
 	}
+	tileSize = capDenseTileToLayer(tileSize, inputSize, outputSize)
 
 	preAct = NewTensor[T](batchSize, outputSize)
 	postAct = NewTensor[T](batchSize, outputSize)
