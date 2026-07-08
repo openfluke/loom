@@ -62,6 +62,67 @@ func LoomCalculateOptimalCNN1TileSizeForLayer(networkHandle C.longlong, layerIdx
 	return C.int(poly.CalculateOptimalCNN1TileSizeForLayer(&n.Layers[int(layerIdx)], poly.DType(dtype)))
 }
 
+func layerTileSizeForNetwork(networkHandle C.longlong, layerIdx C.int, dtype C.int, fn func(*poly.VolumetricLayer, poly.DType) int) C.int {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok {
+		return 0
+	}
+	if int(layerIdx) < 0 || int(layerIdx) >= len(n.Layers) {
+		return 0
+	}
+	return C.int(fn(&n.Layers[int(layerIdx)], poly.DType(dtype)))
+}
+
+//export LoomCalculateOptimalCNN1SimdTileSizeForLayer
+func LoomCalculateOptimalCNN1SimdTileSizeForLayer(networkHandle C.longlong, layerIdx C.int, dtype C.int) C.int {
+	return layerTileSizeForNetwork(networkHandle, layerIdx, dtype, poly.CalculateOptimalCNN1SimdTileSizeForLayer)
+}
+
+//export LoomCalculateOptimalCNN2TileSizeForLayer
+func LoomCalculateOptimalCNN2TileSizeForLayer(networkHandle C.longlong, layerIdx C.int, dtype C.int) C.int {
+	return layerTileSizeForNetwork(networkHandle, layerIdx, dtype, poly.CalculateOptimalCNN2TileSizeForLayer)
+}
+
+//export LoomCalculateOptimalCNN2SimdTileSizeForLayer
+func LoomCalculateOptimalCNN2SimdTileSizeForLayer(networkHandle C.longlong, layerIdx C.int, dtype C.int) C.int {
+	return layerTileSizeForNetwork(networkHandle, layerIdx, dtype, poly.CalculateOptimalCNN2SimdTileSizeForLayer)
+}
+
+//export LoomCalculateOptimalCNN3TileSizeForLayer
+func LoomCalculateOptimalCNN3TileSizeForLayer(networkHandle C.longlong, layerIdx C.int, dtype C.int) C.int {
+	return layerTileSizeForNetwork(networkHandle, layerIdx, dtype, poly.CalculateOptimalCNN3TileSizeForLayer)
+}
+
+//export LoomCalculateOptimalCNN3SimdTileSizeForLayer
+func LoomCalculateOptimalCNN3SimdTileSizeForLayer(networkHandle C.longlong, layerIdx C.int, dtype C.int) C.int {
+	return layerTileSizeForNetwork(networkHandle, layerIdx, dtype, poly.CalculateOptimalCNN3SimdTileSizeForLayer)
+}
+
+//export LoomCalculateOptimalDenseSimdTileSizeForLayer
+func LoomCalculateOptimalDenseSimdTileSizeForLayer(networkHandle C.longlong, layerIdx C.int, dtype C.int) C.int {
+	return layerTileSizeForNetwork(networkHandle, layerIdx, dtype, poly.CalculateOptimalDenseSimdTileSizeForLayer)
+}
+
+//export LoomCalculateOptimalMHASimdTileSizeForLayer
+func LoomCalculateOptimalMHASimdTileSizeForLayer(networkHandle C.longlong, layerIdx C.int, dtype C.int) C.int {
+	return layerTileSizeForNetwork(networkHandle, layerIdx, dtype, poly.CalculateOptimalMHASimdTileSizeForLayer)
+}
+
+//export LoomCalculateOptimalSwiGLUSimdTileSizeForLayer
+func LoomCalculateOptimalSwiGLUSimdTileSizeForLayer(networkHandle C.longlong, layerIdx C.int, dtype C.int) C.int {
+	return layerTileSizeForNetwork(networkHandle, layerIdx, dtype, poly.CalculateOptimalSwiGLUSimdTileSizeForLayer)
+}
+
+//export LoomCalculateOptimalRNNSimdTileSizeForLayer
+func LoomCalculateOptimalRNNSimdTileSizeForLayer(networkHandle C.longlong, layerIdx C.int, dtype C.int) C.int {
+	return layerTileSizeForNetwork(networkHandle, layerIdx, dtype, poly.CalculateOptimalRNNSimdTileSizeForLayer)
+}
+
+//export LoomCalculateOptimalLSTMSimdTileSizeForLayer
+func LoomCalculateOptimalLSTMSimdTileSizeForLayer(networkHandle C.longlong, layerIdx C.int, dtype C.int) C.int {
+	return layerTileSizeForNetwork(networkHandle, layerIdx, dtype, poly.CalculateOptimalLSTMSimdTileSizeForLayer)
+}
+
 //export LoomCNN1ForwardPackedCPUFloat32
 func LoomCNN1ForwardPackedCPUFloat32(networkHandle C.longlong, layerIdx C.int, inputJSON *C.char) *C.char {
 	n, ok := getNetwork(int64(networkHandle))

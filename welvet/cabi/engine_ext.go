@@ -48,6 +48,41 @@ func LoomGetNetworkUseSimdForward(networkHandle C.longlong) C.int {
 	return 0
 }
 
+//export LoomPlan9SimdForwardForLayer
+func LoomPlan9SimdForwardForLayer(layerType C.int) C.int {
+	if poly.Plan9SimdForwardForLayer(poly.LayerType(layerType)) {
+		return 1
+	}
+	return 0
+}
+
+//export LoomLayerSupportsSimdForward
+func LoomLayerSupportsSimdForward(layerType C.int) C.int {
+	if poly.LayerSupportsSimdForward(poly.LayerType(layerType)) {
+		return 1
+	}
+	return 0
+}
+
+//export LoomSetBitNetTernarySimdForward
+func LoomSetBitNetTernarySimdForward(enabled C.int) {
+	poly.SetBitNetTernarySimdForward(enabled != 0)
+}
+
+//export LoomSetBitNetTL1Forward
+func LoomSetBitNetTL1Forward(enabled C.int) {
+	poly.SetBitNetTL1Forward(enabled != 0)
+}
+
+//export LoomStackLayerCount
+func LoomStackLayerCount(networkHandle C.longlong) C.int {
+	n, ok := getNetwork(int64(networkHandle))
+	if !ok {
+		return 0
+	}
+	return C.int(n.StackLayerCount())
+}
+
 //export LoomSetNetworkUseAsmForward
 func LoomSetNetworkUseAsmForward(networkHandle C.longlong, enabled C.int) *C.char {
 	_, ok := getNetwork(int64(networkHandle))
