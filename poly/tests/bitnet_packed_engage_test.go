@@ -27,6 +27,7 @@ func TestBitNetPackedPathEngaged(t *testing.T) {
 	net.UseExactDType = true
 
 	SetBitNetTernarySimdForward(true)
+	SetBitNetTL1Forward(false) // exercise packed-2-bit path specifically
 	defer SetBitNetTernarySimdForward(false)
 
 	input := NewTensorFromSlice(deterministicWeights(cols), 1, cols)
