@@ -10,18 +10,19 @@ import (
 )
 
 type polyTalkLaunch struct {
-	deterministic      bool
-	useGPU             bool
-	useTiling          bool
-	tilingMode         string
-	tileSize           int
-	weightDType        poly.DType
-	sequentialGPULoad  bool
-	measureMemoryLoad  bool
-	useBitNetCPU       bool
-	useBitNetGPU       bool
-	useTernaryPTQCPU   bool
-	useBitNetPacked    bool
+	deterministic     bool
+	useGPU            bool
+	useSIMD           bool // CPU only: Plan 9 AVX2/NEON SIMD forward (SetSimdForwardRecursive)
+	useTiling         bool
+	tilingMode        string
+	tileSize          int
+	weightDType       poly.DType
+	sequentialGPULoad bool
+	measureMemoryLoad bool
+	useBitNetCPU      bool
+	useBitNetGPU      bool
+	useTernaryPTQCPU  bool
+	useBitNetPacked   bool
 }
 
 func readPolyTalkLaunchOptions(reader *bufio.Reader) polyTalkLaunch {

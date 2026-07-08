@@ -223,27 +223,15 @@ func mhaForwardPackedTernaryCPUAsF32(layer *VolumetricLayer, input *Tensor[float
 	return pre, post
 }
 
+// mhaSimdProject is a per-token GEMV (input · Q/K/V/O weights). Like the SwiGLU
+// path, we call the DotTile kernel ONCE over the full inner dimension per output
+// row instead of once per tiny inner tile — the tile-per-call reduction overhead
+// otherwise erases the SIMD win at decode. tileSize is now unused; full-range
+// float64 reduction is bit-identical across arm64/amd64 (see poly/simd/dot.go).
 func mhaSimdProject(input, weights []float32, wData []float32, bStart, inDim, outDim, tileSize int, output []float64) {
-	for oTile := 0; oTile < outDim; oTile += tileSize {
-		oEnd := oTile + tileSize
-		if oEnd > outDim {
-			oEnd = outDim
-		}
-		for iTile := 0; iTile < inDim; iTile += tileSize {
-			iEnd := iTile + tileSize
-			if iEnd > inDim {
-				iEnd = inDim
-			}
-			for o := oTile; o < oEnd; o++ {
-				sum := float64(wData[bStart+o])
-				if iTile > 0 {
-					sum = output[o]
-				}
-				rowOff := o * inDim
-				sum = simd.DotTile(input, weights[rowOff:rowOff+inDim], iTile, iEnd, sum)
-				output[o] = sum
-			}
-		}
+	for o := 0; o < outDim; o++ {
+		rowOff := o * inDim
+		output[o] = simd.DotTile(input, weights[rowOff:rowOff+inDim], 0, inDim, float64(wData[bStart+o]))
 	}
 }
 

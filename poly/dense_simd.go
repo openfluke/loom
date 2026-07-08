@@ -67,38 +67,26 @@ func denseForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct
 	return preAct, postAct
 }
 
+// denseSimdForwardSerial calls the DotTile kernel once over the full input row
+// per output (no inner-dim tiling): the input row fits in L1 and weights stream
+// once, so tiling the inner dim only added per-call reduction overhead that
+// erased the SIMD win. Full-range float64 reduction is bit-identical across
+// arm64/amd64 (see poly/simd/dot.go).
 func denseSimdForwardSerial(input, preAct *Tensor[float32], weights []float32, batch, inputSize, outputSize, tileSize int) {
-	for oTile := 0; oTile < outputSize; oTile += tileSize {
-		oEnd := oTile + tileSize
-		if oEnd > outputSize {
-			oEnd = outputSize
-		}
-		for iTile := 0; iTile < inputSize; iTile += tileSize {
-			iEnd := iTile + tileSize
-			if iEnd > inputSize {
-				iEnd = inputSize
-			}
-			for b := 0; b < batch; b++ {
-				rowBase := b * inputSize
-				outBase := b * outputSize
-				for o := oTile; o < oEnd; o++ {
-					sum := 0.0
-					if iTile > 0 {
-						sum = float64(preAct.Data[outBase+o])
-					}
-					rowOff := o * inputSize
-					sum = simd.DotTile(
-						input.Data[rowBase:rowBase+inputSize],
-						weights[rowOff:rowOff+inputSize],
-						iTile, iEnd, sum,
-					)
-					preAct.Data[outBase+o] = float32(sum)
-				}
-			}
+	for b := 0; b < batch; b++ {
+		rowBase := b * inputSize
+		outBase := b * outputSize
+		row := input.Data[rowBase : rowBase+inputSize]
+		for o := 0; o < outputSize; o++ {
+			rowOff := o * inputSize
+			preAct.Data[outBase+o] = float32(simd.DotTile(row, weights[rowOff:rowOff+inputSize], 0, inputSize, 0))
 		}
 	}
 }
 
+// denseSimdForwardParallel keeps output tiling to distribute work across
+// goroutines, but each output is a single full-row DotTile call (see the serial
+// variant's note on why inner-dim tiling was removed).
 func denseSimdForwardParallel(input, preAct *Tensor[float32], weights []float32, batch, inputSize, outputSize, tileSize int) {
 	numCPUs := runtime.NumCPU()
 	var wg sync.WaitGroup
@@ -113,27 +101,13 @@ func denseSimdForwardParallel(input, preAct *Tensor[float32], weights []float32,
 			if oEnd > outputSize {
 				oEnd = outputSize
 			}
-			for iTile := 0; iTile < inputSize; iTile += tileSize {
-				iEnd := iTile + tileSize
-				if iEnd > inputSize {
-					iEnd = inputSize
-				}
-				for b := 0; b < batch; b++ {
-					rowBase := b * inputSize
-					outBase := b * outputSize
-					for o := oTile; o < oEnd; o++ {
-						sum := 0.0
-						if iTile > 0 {
-							sum = float64(preAct.Data[outBase+o])
-						}
-						rowOff := o * inputSize
-						sum = simd.DotTile(
-							input.Data[rowBase:rowBase+inputSize],
-							weights[rowOff:rowOff+inputSize],
-							iTile, iEnd, sum,
-						)
-						preAct.Data[outBase+o] = float32(sum)
-					}
+			for b := 0; b < batch; b++ {
+				rowBase := b * inputSize
+				outBase := b * outputSize
+				row := input.Data[rowBase : rowBase+inputSize]
+				for o := oTile; o < oEnd; o++ {
+					rowOff := o * inputSize
+					preAct.Data[outBase+o] = float32(simd.DotTile(row, weights[rowOff:rowOff+inputSize], 0, inputSize, 0))
 				}
 			}
 		}(oTile)

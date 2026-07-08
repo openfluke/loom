@@ -14,7 +14,7 @@ func simdKind() string {
 	case "amd64":
 		return "AVX2/FMA"
 	case "arm64":
-		return "NEON (scalar-unrolled)"
+		return "NEON (asm dot kernel)"
 	default:
 		return "generic"
 	}

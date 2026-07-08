@@ -72,66 +72,33 @@ func swigluForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAc
 	return preAct, postAct
 }
 
+// swigluSimdProjectGateUp is a GEMV (per token: input · gateW/upW). The input
+// vector fits in L1 and the weight rows are streamed exactly once, so we call
+// the NEON/AVX2 DotTile kernel ONCE over the full inner dimension per output
+// row — giving the kernel a long contiguous run and a single float64 reduction
+// instead of one reduction per tiny inner tile (which erased the SIMD win).
+// tileSize is unused for the inner dim now; the full-range float64 reduction is
+// bit-identical across arm64/amd64 (see poly/simd/dot.go).
 func swigluSimdProjectGateUp(input, wData []float32, gWStart, uWStart, gBStart, uBStart int, output []float32, inDim, outDim, tileSize int, activation ActivationType) {
 	gW := wData[gWStart:]
 	uW := wData[uWStart:]
 
-	sumG := make([]float64, outDim)
-	sumU := make([]float64, outDim)
-
-	for oTile := 0; oTile < outDim; oTile += tileSize {
-		oEnd := oTile + tileSize
-		if oEnd > outDim {
-			oEnd = outDim
-		}
-		for iTile := 0; iTile < inDim; iTile += tileSize {
-			iEnd := iTile + tileSize
-			if iEnd > inDim {
-				iEnd = inDim
-			}
-			for o := oTile; o < oEnd; o++ {
-				sG := float64(wData[gBStart+o])
-				sU := float64(wData[uBStart+o])
-				if iTile > 0 {
-					sG = sumG[o]
-					sU = sumU[o]
-				}
-				rowOff := o * inDim
-				sG = simd.DotTile(input, gW[rowOff:rowOff+inDim], iTile, iEnd, sG)
-				sU = simd.DotTile(input, uW[rowOff:rowOff+inDim], iTile, iEnd, sU)
-				sumG[o] = sG
-				sumU[o] = sU
-			}
-		}
-	}
-
 	for o := 0; o < outDim; o++ {
-		output[o] = float32(swigluGateProduct(sumG[o], sumU[o], activation))
+		rowOff := o * inDim
+		row := gW[rowOff : rowOff+inDim]
+		sG := simd.DotTile(input, row, 0, inDim, float64(wData[gBStart+o]))
+		row = uW[rowOff : rowOff+inDim]
+		sU := simd.DotTile(input, row, 0, inDim, float64(wData[uBStart+o]))
+		output[o] = float32(swigluGateProduct(sG, sU, activation))
 	}
 }
 
 func swigluSimdProjectDown(input, wData []float32, dWStart, dBStart int, output []float32, inDim, outDim, tileSize int) {
 	dW := wData[dWStart:]
 
-	for oTile := 0; oTile < outDim; oTile += tileSize {
-		oEnd := oTile + tileSize
-		if oEnd > outDim {
-			oEnd = outDim
-		}
-		for iTile := 0; iTile < inDim; iTile += tileSize {
-			iEnd := iTile + tileSize
-			if iEnd > inDim {
-				iEnd = inDim
-			}
-			for o := oTile; o < oEnd; o++ {
-				sum := float64(wData[dBStart+o])
-				if iTile > 0 {
-					sum = float64(output[o])
-				}
-				rowOff := o * inDim
-				sum = simd.DotTile(input, dW[rowOff:rowOff+inDim], iTile, iEnd, sum)
-				output[o] = float32(sum)
-			}
-		}
+	for o := 0; o < outDim; o++ {
+		rowOff := o * inDim
+		row := dW[rowOff : rowOff+inDim]
+		output[o] = float32(simd.DotTile(input, row, 0, inDim, float64(wData[dBStart+o])))
 	}
 }
