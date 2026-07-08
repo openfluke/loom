@@ -238,7 +238,7 @@ or set `LOOM_ACCEL_APPLE_DYLIB`.
 
 ## See also
 
-- [`accelerators.md`](accelerators.md) — the accel model + Intel NPU bridge
+- [`accelerators.md`](accelerators.md) — the accel model + Intel NPU bridge + [vendor support matrix](accelerators.md#vendor-support-matrix--shipped-vs-planned)
 - [`snapdragon_npu.md`](snapdragon_npu.md) — the Qualcomm/Hexagon mirror
 - [`accel/apple/README.md`](../accel/apple/README.md) — build / dtypes / layout
 - [`numerical_types.md`](numerical_types.md) — Loom's 21 DTypes vs vendor bench dtypes

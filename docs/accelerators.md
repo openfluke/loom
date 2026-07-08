@@ -338,6 +338,56 @@ Same C ABI surface. Useful for cloud TPU pods and future edge TPU silicon. Loom 
 
 ---
 
+## Vendor support matrix — shipped vs planned
+
+The `loom_accel.h` contract is deliberately general: any silicon that can **compile one layer** and **`infer(in_bytes → out_bytes)`** can become a `libloom_accel_<vendor>` plugin. In practice the set of *main* vendors is finite (~8–10 silicon "stories", not an endless zoo of one-off NPUs), and many overlap.
+
+### First: "GPU" means two different things in Loom
+
+These are **not** the same path and the matrix keeps them in separate columns:
+
+| | **WebGPU** (portable GPU) | **Native GPU accel plugin** |
+|---|---|---|
+| **What it is** | Loom's own compute path via `github.com/openfluke/webgpu` | A `loom_accel_*` plugin whose "GPU" device calls a **vendor graph runtime** |
+| **Under the hood** | WGSL shaders → **Vulkan / DX12 / Metal** (no CUDA/ROCm) | MPSGraph (Apple) · OpenVINO `GPU` (Intel) · `QnnGpu` (Adreno) · cuBLAS/OpenCL |
+| **Scope** | **Whole network**, forward **+ backward + training** | **Per-layer** offload, **forward-only** |
+| **Portability** | One path, every GPU vendor at once | Vendor + OS specific, one `.so`/`.dylib` each |
+| **Runs any discrete GPU?** | ✅ NVIDIA, AMD, Intel, Apple already | Only where that vendor's plugin exists |
+| **Best for** | LLM decode, large batches, training | Fixed-function MAC ops routed alongside NPU targets |
+
+**Takeaway:** a plain gaming GPU (NVIDIA/AMD) is **already supported today** — through **WebGPU**, not through a vendor accel plugin. A native GPU plugin is only worth building when the vendor's own runtime beats WebGPU for a specific op, or to sit next to that vendor's NPU under one `ExecTarget` story. See [Comparison to WebGPU](#comparison-to-webgpu) below.
+
+### The matrix
+
+**Legend:** ✅ shipped · 🟢 easy extend (reuses an existing path/SDK) · 📋 planned · ❌ not started · ➖ n/a
+
+| Bucket | Vendor / silicon | CPU | GPU · **WebGPU** (whole-net) | GPU · **accel plugin** (per-layer) | NPU · accel plugin | Loom path | Status |
+|---|---|:--:|:--:|:--:|:--:|---|:--:|
+| **Portable CPU** | Any x86-64 / ARM64 | ✅ | ➖ | ➖ | ➖ | Go + SIMD (AVX2/FMA, NEON) | ✅ shipped |
+| **Portable GPU** | NVIDIA · AMD · Intel · Apple | ➖ | ✅ | ➖ | ➖ | WebGPU → Vulkan / DX12 / Metal | ✅ shipped |
+| **Intel** | Core Ultra (Meteor/Lunar Lake) | ✅ | ✅ | 🟢 | ✅ | `accel/intel` (OpenVINO), Lucy **[9]** | ✅ shipped · plugin-GPU = OpenVINO `GPU` device |
+| **Qualcomm** | Snapdragon X · Hexagon · Adreno | ✅ | ✅ | 🟢 | ✅ | `accel/qualcomm` (QNN), Lucy **[12]** | ✅ shipped · Adreno `QnnGpu` hook untested |
+| **Apple** | M-series · Metal · ANE | ✅ | ✅ | ✅ | 🟢 | `accel/apple` (MPSGraph), Lucy **[13]** | ✅ shipped · ANE via Core ML later |
+| **Google** | Cloud TPU · Coral edge TPU | 🟢 | ➖ | ➖ | 📋 | `accel/google` (libtpu / PJRT / XLA) | 📋 planned |
+| **AMD** | Ryzen AI (XDNA NPU) + Radeon | 🟢 | ✅ | ❌ | ❌ | GPU via WebGPU · NPU = new plugin (Vitis / ONNX-RT) | ❌ NPU not started |
+| **NVIDIA** | GeForce / RTX / datacenter | ➖ | ✅ | ❌ | ❌ | GPU via WebGPU · optional cuBLAS-only MatMul plugin | ❌ native plugin optional |
+| **AWS** | Inferentia · Trainium | 🟢 | ➖ | ➖ | ❌ | `accel/aws` (Neuron SDK) — cloud / private-cloud batch | ❌ not started |
+| **Generic GPU** | AMD + NVIDIA + Intel (one plugin) | 🟢 | ✅ | ❌ | ➖ | `accel/opencl` (OpenCL + CLBlast) — vendor-neutral fallback | ❌ candidate quick win |
+| **Mobile NPUs** | MediaTek · Samsung · Android NNAPI | ➖ | 🟢 | ❌ | ❌ | per-vendor plugin — only if Loom targets phones/tablets | ❌ not started |
+| **Embedded** | Hailo · Rockchip RKNN · Ambarella | ➖ | ➖ | ❌ | ❌ | one-off plugins — camera / wearable edge, on demand | ❌ out of scope for now |
+
+### Reading the matrix
+
+- The **"GPU · WebGPU"** column is the ✅ that already makes NVIDIA/AMD/Intel/Apple GPUs work — **whole-network, trainable, portable**. The **"GPU · accel plugin"** column is the *separate* per-layer, forward-only native GPU device inside a vendor `.so` (only Apple's MPSGraph is shipped ✅ today).
+- **Three vendor plugins are shipped** — Intel (Linux NPU), Qualcomm (Windows ARM64 Hexagon), Apple (macOS Metal) — all forward-only, per-layer, experimental, with Lucy benchmark suites and drift tables.
+- **Discrete NVIDIA/AMD GPUs need nothing new** — they run on WebGPU now. A native cuBLAS/OpenCL plugin is optional (a "badge" or an op-specific speedup, not a requirement).
+- **Easiest next steps (🟢 / candidate):** an Intel `GPU` device on the plugin you already ship, a WebGPU-backed `accel` bridge (one Lucy menu, reuses existing WGSL), or an OpenCL plugin (AMD + NVIDIA under one `.so`).
+- **The realistic ceiling** is the ~7 rows that matter for laptops, clinics, sovereign cloud, and edge — not "every NPU on earth." The set is **finishable**, not infinite.
+
+> This is a **direction-of-travel** table, not a promise of dates. Shipped rows are experimental; planned/❌ rows depend on demand (healthcare fleets, sovereign deployments) and vendor-SDK friction.
+
+---
+
 ## Package layout
 
 ```
