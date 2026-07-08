@@ -26,6 +26,13 @@ type BitNetTernaryMatrix struct {
 	// AVX2 MAD path so inference never unpacks 2-bit weights on the fly.
 	Codes     []uint8
 	RowStride int
+
+	// PackedStride holds the 2-bit codes still packed (4/byte), row-major with each
+	// row zero-padded to PackedBlocks*16 bytes (64 codes per 16-byte block). The
+	// arm64 NEON kernel reads this directly, streaming 4x less weight memory than
+	// Codes — the win on bandwidth-bound decode. Built lazily instead of Codes.
+	PackedStride []uint8
+	PackedBlocks int
 }
 
 func bitNetActivationMaxAbs[T Numeric](input []T) float32 {
@@ -532,11 +539,81 @@ func bitNetTernaryMatVecQuantized(matrix *BitNetTernaryMatrix, xq []int8, activa
 }
 
 func bitNetTernaryMatVecInt8(matrix *BitNetTernaryMatrix, xq []int8, outputScale float64, out []float64) {
-	if BitNetTernarySimdActive() && ensureBitNetCodes(matrix) {
-		bitNetTernaryMatVecInt8Simd(matrix, xq, outputScale, out)
-		return
+	if BitNetTernarySimdActive() {
+		// Prefer the packed-2-bit kernel (arm64): 4x less weight memory on the
+		// bandwidth-bound decode path, and no giant unpacked Codes array.
+		if simd.BitNetPackedAvailable() && ensureBitNetPacked(matrix) {
+			bitNetTernaryMatVecInt8PackedSimd(matrix, xq, outputScale, out)
+			return
+		}
+		if ensureBitNetCodes(matrix) {
+			bitNetTernaryMatVecInt8Simd(matrix, xq, outputScale, out)
+			return
+		}
 	}
 	bitNetTernaryMatVecInt8Scalar(matrix, xq, outputScale, out)
+}
+
+// ensureBitNetPacked lazily builds the strided 2-bit packed weights the NEON
+// packed kernel reads. Each row is the row's packed uint32 words re-laid as
+// little-endian bytes and zero-padded to a whole number of 64-column (16-byte)
+// blocks. Built once per matrix, then reused every token.
+func ensureBitNetPacked(matrix *BitNetTernaryMatrix) bool {
+	if matrix == nil || matrix.Rows <= 0 || matrix.Cols <= 0 {
+		return false
+	}
+	if len(matrix.PackedStride) > 0 && matrix.PackedBlocks > 0 {
+		return true
+	}
+	rowWords := matrix.RowWords
+	if rowWords <= 0 {
+		rowWords = (matrix.Cols + 15) / 16
+	}
+	if len(matrix.Words) < matrix.Rows*rowWords {
+		return false
+	}
+	blocks := (rowWords + 3) / 4 // 4 words = 16 bytes = 64 codes per block
+	strideBytes := blocks * 16
+	packed := make([]uint8, matrix.Rows*strideBytes)
+	for r := 0; r < matrix.Rows; r++ {
+		wordBase := r * rowWords
+		dstBase := r * strideBytes
+		for w := 0; w < rowWords; w++ {
+			word := matrix.Words[wordBase+w]
+			b := dstBase + w*4
+			packed[b+0] = uint8(word)
+			packed[b+1] = uint8(word >> 8)
+			packed[b+2] = uint8(word >> 16)
+			packed[b+3] = uint8(word >> 24)
+		}
+		// bytes [rowWords*4 : strideBytes] stay 0; paired with zero-padded
+		// activations they contribute nothing to sum(code*act) or sum(act).
+	}
+	matrix.PackedStride = packed
+	matrix.PackedBlocks = blocks
+	return true
+}
+
+// bitNetTernaryMatVecInt8PackedSimd runs the packed BitNet MAD kernel:
+// dot = sum(code*act) - sum(act), since each ternary weight equals code-1.
+func bitNetTernaryMatVecInt8PackedSimd(matrix *BitNetTernaryMatrix, xq []int8, outputScale float64, out []float64) {
+	blocks := matrix.PackedBlocks
+	strideBytes := blocks * 16
+	acts := make([]int8, blocks*64) // zero-padded past Cols
+	copy(acts, xq[:matrix.Cols])
+	var actSum int32
+	for i := 0; i < matrix.Cols; i++ {
+		actSum += int32(xq[i])
+	}
+	packed := matrix.PackedStride
+
+	worker := func(start, end int) {
+		for r := start; r < end; r++ {
+			raw := simd.BitNetTernaryPackedRowDot(packed[r*strideBytes:(r+1)*strideBytes], acts, blocks)
+			out[r] = float64(raw-actSum) * outputScale
+		}
+	}
+	bitNetRunRows(matrix.Rows, matrix.Cols, worker)
 }
 
 // ensureBitNetCodes lazily unpacks the 2-bit packed weights into one unsigned
