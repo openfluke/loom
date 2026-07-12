@@ -36,16 +36,19 @@ func swigluForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAc
 		return swigluForwardTiledParallel(layer, input)
 	}
 
-	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
-	seqLen := len(input.Data) / inputSize
-	tileSize := layer.GetCPUSimdTileSize(layer.DType)
-	tileSize = capSwigluTileToLayer(tileSize, inputSize, intermediateSize)
-
 	weights := layer.WeightStore.GetActive(layer.DType)
 	if weights == nil {
 		weights = layer.WeightStore.Master
 	}
 	wData := CastWeights[float32](weights)
+	return swigluForwardSimdF32WithWeights(layer, input, wData)
+}
+
+func swigluForwardSimdF32WithWeights(layer *VolumetricLayer, input *Tensor[float32], wData []float32) (preAct, postAct *Tensor[float32]) {
+	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
+	seqLen := len(input.Data) / inputSize
+	tileSize := layer.GetCPUSimdTileSize(layer.DType)
+	tileSize = capSwigluTileToLayer(tileSize, inputSize, intermediateSize)
 
 	wSize := inputSize * intermediateSize
 	gateWStart := 0

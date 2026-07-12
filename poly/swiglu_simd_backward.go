@@ -28,6 +28,15 @@ func trySwiGLUBackwardSimd[T Numeric](layer *VolumetricLayer, gradOutput, input,
 }
 
 func swigluBackwardSimdF32(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32]) {
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return swigluBackwardSimdF32WithWeights(layer, gradOutput, input, preAct, wData)
+}
+
+func swigluBackwardSimdF32WithWeights(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32], wData []float32) (gradInput, gradWeights *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
 	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
@@ -38,12 +47,6 @@ func swigluBackwardSimdF32(layer *VolumetricLayer, gradOutput, input, preAct *Te
 	gradInput = NewTensor[float32](input.Shape...)
 	wCount := layer.WeightStore.WeightCount(layer.DType)
 	gradWeights = NewTensor[float32](wCount)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	gateWStart := 0
 	upWStart := inputSize * intermediateSize

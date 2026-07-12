@@ -19,10 +19,17 @@ func SwiGLUForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tensor[T
 		return SwiGLUForwardTiled(layer, input)
 	}
 	var preF, postF *Tensor[float32]
-	if useSwiGLUTrueNative(layer) {
-		preF, postF = swigluForwardIntegerNative(layer, in)
-	} else {
-		preF, postF = swigluForwardNativeMAC(layer, in)
+	if layerUseSimdForward(layer) {
+		if pre, post, simdOK := trySwiGLUForwardNativeSimd(layer, in); simdOK {
+			preF, postF = pre, post
+		}
+	}
+	if preF == nil {
+		if useSwiGLUTrueNative(layer) {
+			preF, postF = swigluForwardIntegerNative(layer, in)
+		} else {
+			preF, postF = swigluForwardNativeMAC(layer, in)
+		}
 	}
 	pre, post, ok2 := nativeTensorsAs[T](preF, postF)
 	if !ok2 {
@@ -40,10 +47,17 @@ func SwiGLUBackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput, in
 		return SwiGLUBackwardTiled(layer, gradOutput, input, preAct)
 	}
 	var giF, gwF *Tensor[float32]
-	if useSwiGLUTrueNative(layer) {
-		giF, gwF = swigluBackwardIntegerNative(layer, goT, in, preF)
-	} else {
-		giF, gwF = swigluBackwardNativeMAC(layer, goT, in, preF)
+	if layerUseSimdForward(layer) {
+		if gi, gw, simdOK := trySwiGLUBackwardNativeSimd(layer, goT, in, preF); simdOK {
+			giF, gwF = gi, gw
+		}
+	}
+	if giF == nil {
+		if useSwiGLUTrueNative(layer) {
+			giF, gwF = swigluBackwardIntegerNative(layer, goT, in, preF)
+		} else {
+			giF, gwF = swigluBackwardNativeMAC(layer, goT, in, preF)
+		}
 	}
 	gi, okGI := nativeTensorAs[T](giF)
 	gw, okGW := nativeTensorAs[T](gwF)
