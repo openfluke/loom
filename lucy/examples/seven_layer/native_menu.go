@@ -221,7 +221,7 @@ func runNativeLayerSuite(s LayerSuite, primary poly.LayerType, reader *bufio.Rea
 			row.BwdOK = row.BwdOK && len(bwd.dw) > 0 && tensorFinite(bwd.dw)
 		}
 
-		if primary == poly.LayerMultiHeadAttention || primary == poly.LayerDense || primary == poly.LayerSwiGLU || primary == poly.LayerCNN1 {
+		if primary == poly.LayerMultiHeadAttention || primary == poly.LayerDense || primary == poly.LayerSwiGLU || primary == poly.LayerCNN1 || primary == poly.LayerCNN2 || primary == poly.LayerCNN3 {
 			if poly.Plan9SimdForwardForLayer(primary) {
 				resetNetwork(net)
 				fwdSimd := captureForwardSimd(net, input, true)

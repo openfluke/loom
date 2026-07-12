@@ -19,6 +19,15 @@ func tryCNN2ForwardSimd[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (pr
 func cnn2ForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return cnn2ForwardSimdF32WithWeights(layer, input, wData)
+}
+
+func cnn2ForwardSimdF32WithWeights(layer *VolumetricLayer, input *Tensor[float32], wData []float32) (preAct, postAct *Tensor[float32]) {
 	batchSize := input.Shape[0]
 	inH, inW, inC := layer.InputHeight, layer.InputWidth, layer.InputChannels
 	outH, outW, filters := layer.OutputHeight, layer.OutputWidth, layer.Filters
@@ -27,12 +36,6 @@ func cnn2ForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct,
 
 	preAct = NewTensor[float32](batchSize, filters, outH, outW)
 	postAct = NewTensor[float32](batchSize, filters, outH, outW)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	useParallel := layer.EnableMultiCoreTiling && filters > 1
 	if useParallel {
