@@ -53,6 +53,11 @@ func CNN1BackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, inpu
 	if useBitpackedCPUCNN1(layer) {
 		return CNN1BackwardPackedCPU(layer, gradOutput, input, preAct)
 	}
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if gi, gw, ok := tryCNN1BackwardSimd(layer, gradOutput, input, preAct); ok {
+			return gi, gw
+		}
+	}
 	return CNN1BackwardTiled(layer, gradOutput, input, preAct)
 }
 
