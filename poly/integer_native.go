@@ -3,19 +3,21 @@ package poly
 import (
 	"math"
 	"math/rand"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 // integer_native.go — shared int8 matmul / backward / stochastic update for all layers.
 
 func int8DotRow(weights []int8, input []int8, rowOff, inSz int) int8 {
-	var acc int32
-	for i := 0; i < inSz; i++ {
-		acc += int32(weights[rowOff+i]) * int32(input[i])
-	}
+	acc := int8DotRowAcc(weights, input, rowOff, inSz)
 	return clampI8(acc >> 8)
 }
 
 func int8DotRowAcc(weights []int8, input []int8, rowOff, inSz int) int32 {
+	if simd.Int8DotSimdActive() && inSz >= 8 {
+		return simd.DotI8Tile(weights, input, rowOff, 0, inSz, 0)
+	}
 	var acc int32
 	for i := 0; i < inSz; i++ {
 		acc += int32(weights[rowOff+i]) * int32(input[i])
@@ -24,6 +26,10 @@ func int8DotRowAcc(weights []int8, input []int8, rowOff, inSz int) int32 {
 }
 
 func int8AccumWeightGrad(gradW []int32, weights []int8, input []int8, gradOut int32, rowOff, inSz int) {
+	if simd.Int8DotSimdActive() && inSz >= 8 {
+		simd.SaxpyI8ScaleI32Acc(gradW, rowOff, input, gradOut, inSz)
+		return
+	}
 	for i := 0; i < inSz; i++ {
 		gradW[rowOff+i] += int32(input[i]) * gradOut
 	}

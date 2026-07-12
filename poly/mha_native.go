@@ -1,6 +1,10 @@
 package poly
 
-import "math"
+import (
+	"math"
+
+	"github.com/openfluke/loom/poly/simd"
+)
 
 // mha_native.go — MHA native training:
 //   - Integer dtypes: int8 Q/K/V/O projections, int8 Q·K + uint8 softmax attention, stochastic int8 update
@@ -69,6 +73,9 @@ func ensureMHAExactCache(layer *VolumetricLayer, batch, seqLen, dModel, qDim, ms
 }
 
 func int8HeadDot(q, k []int8, qOff, kOff, headDim int) int32 {
+	if simd.Int8DotSimdActive() && headDim >= 8 {
+		return simd.DotI8Tile(q, k, qOff, kOff, headDim, 0) >> 8
+	}
 	var acc int32
 	for d := 0; d < headDim; d++ {
 		acc += int32(q[qOff+d]) * int32(k[kOff+d])
