@@ -7,7 +7,7 @@ import (
 )
 
 // All Plan-9-SIMD layer types: fwd+bwd SC·MC·SIMD parity on Float32 (1×1×1).
-// Dense backward uses saxpy .s; other layers use tiled backward until their SIMD bwd lands.
+// Dense backward uses saxpy .s; SwiGLU backward uses saxpy+DotTile .s; others tiled until SIMD bwd lands.
 func TestSimdParityAllLayers_Float32_1x1(t *testing.T) {
 	if !poly.Plan9SimdEnabled() {
 		t.Skip("no Plan 9 SIMD on this GOARCH")

@@ -26,6 +26,11 @@ func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, in
 	if layer.UseGPU {
 		return SwiGLUBackwardWGPU(layer, gradOutput, input, preAct)
 	}
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if gi, gw, ok := trySwiGLUBackwardSimd(layer, gradOutput, input, preAct); ok {
+			return gi, gw
+		}
+	}
 	return SwiGLUBackwardTiled(layer, gradOutput, input, preAct)
 }
 

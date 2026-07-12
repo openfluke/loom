@@ -37,3 +37,29 @@ func TestSaxpyF32AccF64MatchesReference(t *testing.T) {
 		}
 	}
 }
+
+func TestSaxpyF32AccF64InStrideMatchesReference(t *testing.T) {
+	rng := rand.New(rand.NewSource(17))
+	for _, stride := range []int{1, 2, 4, 8, 16, 32} {
+		for _, n := range []int{1, 7, 8, 16, 31, 64} {
+			want := make([]float64, n)
+			got := make([]float64, n)
+			x := make([]float32, n*stride)
+			for i := 0; i < n; i++ {
+				want[i] = rng.NormFloat64()
+				got[i] = want[i]
+				x[i*stride] = float32(rng.NormFloat64())
+			}
+			alpha := rng.NormFloat64() * 0.5
+			for i := 0; i < n; i++ {
+				want[i] += alpha * float64(x[i*stride])
+			}
+			simd.SaxpyF32AccF64InStride(got, alpha, x, stride, n)
+			for i := 0; i < n; i++ {
+				if d := math.Abs(got[i] - want[i]); d > 1e-12 {
+					t.Fatalf("stride=%d n=%d i=%d diff=%g", stride, n, i, d)
+				}
+			}
+		}
+	}
+}
