@@ -77,17 +77,22 @@ var nativeMenuEntries = []nativeLayerEntry{
 }
 
 type nativeRow struct {
-	DType     string
-	NativeOK  bool
-	FwdOK     bool
-	BwdOK     bool
-	TrainOK   bool
-	LossInit  float64
-	LossFinal float64
-	FwdDur    string
-	BwdDur    string
-	TrainDur  string
-	Err       string
+	DType      string
+	NativeOK   bool
+	FwdOK      bool
+	BwdOK      bool
+	TrainOK    bool
+	LossInit   float64
+	LossFinal  float64
+	FwdDur     string
+	BwdDur     string
+	TrainDur   string
+	FwdSimdDur string
+	BwdSimdDur string
+	FwdSimdPct string
+	BwdSimdPct string
+	SimdOK     bool
+	Err        string
 }
 
 // RunNativeMenu is Lucy [14]: per-layer native forward/backward/train × 21 dtypes.
@@ -205,17 +210,32 @@ func runNativeLayerSuite(s LayerSuite, primary poly.LayerType, reader *bufio.Rea
 		setCPUMode(net, false)
 		setSimdForward(net, false)
 
-		t0 := time.Now()
 		fwd := captureForward(net, input, false)
-		row.FwdDur = formatDur(time.Since(t0))
+		row.FwdDur = formatDur(fwd.dur)
 		row.FwdOK = len(fwd.out) > 0 && tensorFinite(fwd.out)
 
-		t0 = time.Now()
 		bwd := captureBackward(net, input, target, false)
-		row.BwdDur = formatDur(time.Since(t0))
+		row.BwdDur = formatDur(bwd.dur)
 		row.BwdOK = len(bwd.dx) > 0 && tensorFinite(bwd.dx)
 		if primary != poly.LayerResidual {
 			row.BwdOK = row.BwdOK && len(bwd.dw) > 0 && tensorFinite(bwd.dw)
+		}
+
+		if primary == poly.LayerMultiHeadAttention && poly.Plan9SimdForwardForLayer(primary) {
+			resetNetwork(net)
+			fwdSimd := captureForwardSimd(net, input, true)
+			row.FwdSimdDur = formatDur(fwdSimd.dur)
+			row.FwdSimdPct = formatSimdSpeedup(fwd.dur, fwdSimd.dur)
+			row.SimdOK = len(fwdSimd.out) > 0 && tensorFinite(fwdSimd.out)
+
+			resetNetwork(net)
+			bwdSimd := captureBackwardSimd(net, input, target, true)
+			row.BwdSimdDur = formatDur(bwdSimd.dur)
+			row.BwdSimdPct = formatSimdSpeedup(bwd.dur, bwdSimd.dur)
+			row.SimdOK = row.SimdOK && len(bwdSimd.dx) > 0 && tensorFinite(bwdSimd.dx)
+			if primary != poly.LayerResidual {
+				row.SimdOK = row.SimdOK && len(bwdSimd.dw) > 0 && tensorFinite(bwdSimd.dw)
+			}
 		}
 
 		net.ReleaseFP32MasterWhenIdle = true
@@ -225,7 +245,7 @@ func runNativeLayerSuite(s LayerSuite, primary poly.LayerType, reader *bufio.Rea
 		cfg.GradientClip = 1.0
 		cfg.Mode = poly.TrainingModeCPUSC
 		cfg.Verbose = false
-		t0 = time.Now()
+		t0 := time.Now()
 		res, err := poly.Train(net, []poly.TrainingBatch[float32]{{Input: input, Target: target}}, cfg)
 		row.TrainDur = formatDur(time.Since(t0))
 		if err != nil {
@@ -247,8 +267,14 @@ func runNativeLayerSuite(s LayerSuite, primary poly.LayerType, reader *bufio.Rea
 		rows = append(rows, row)
 		if ok {
 			passed++
-			fmt.Printf("PASS  fwd %s bwd %s loss %.4f→%.4f  train %s\n",
-				row.FwdDur, row.BwdDur, row.LossInit, row.LossFinal, row.TrainDur)
+			if row.FwdSimdDur != "" {
+				fmt.Printf("PASS  fwd %s bwd %s simd fwd %s (%s) bwd %s (%s) loss %.4f→%.4f  train %s\n",
+					row.FwdDur, row.BwdDur, row.FwdSimdDur, row.FwdSimdPct, row.BwdSimdDur, row.BwdSimdPct,
+					row.LossInit, row.LossFinal, row.TrainDur)
+			} else {
+				fmt.Printf("PASS  fwd %s bwd %s loss %.4f→%.4f  train %s\n",
+					row.FwdDur, row.BwdDur, row.LossInit, row.LossFinal, row.TrainDur)
+			}
 		} else {
 			failed++
 			fmt.Printf("FAIL  fwd=%v bwd=%v train=%v  loss %.4f→%.4f\n",
@@ -513,14 +539,42 @@ func buildResidualNativeSuite(g GridSpec) LayerSuite {
 func printNativeTable(layerName string, rows []nativeRow) {
 	fmt.Println()
 	fmt.Printf("  ┌─ %s native · 1³ ───────────────────────────────────────────\n", layerName)
-	fmt.Printf("  │ %-10s %5s %5s %5s %5s %8s %8s %8s %s\n",
-		"DType", "Path", "Fwd", "Bwd", "Train", "Loss₀", "Lossₙ", "Time", "Err")
+	hasSimd := false
+	for _, r := range rows {
+		if r.FwdSimdDur != "" {
+			hasSimd = true
+			break
+		}
+	}
+	if hasSimd {
+		fmt.Printf("  │ %-10s %5s %5s %5s %5s %8s %8s %8s %8s %8s %s\n",
+			"DType", "Path", "Fwd", "Bwd", "Train", "Loss₀", "Lossₙ", "Fwd", "Bwd", "Time", "Err")
+		fmt.Println("  │                                                          SIMD fwd / bwd speedup")
+	} else {
+		fmt.Printf("  │ %-10s %5s %5s %5s %5s %8s %8s %8s %s\n",
+			"DType", "Path", "Fwd", "Bwd", "Train", "Loss₀", "Lossₙ", "Time", "Err")
+	}
 	fmt.Println("  ├──────────────────────────────────────────────────────────────────────")
 	for _, r := range rows {
-		fmt.Printf("  │ %-10s %5s %5s %5s %5s %8.4f %8.4f %8s %s\n",
-			r.DType,
-			markOK(r.NativeOK), markOK(r.FwdOK), markOK(r.BwdOK), markOK(r.TrainOK),
-			r.LossInit, r.LossFinal, r.TrainDur, r.Err)
+		if hasSimd {
+			simdFwd := r.FwdSimdDur
+			if r.FwdSimdPct != "" {
+				simdFwd += " " + r.FwdSimdPct
+			}
+			simdBwd := r.BwdSimdDur
+			if r.BwdSimdPct != "" {
+				simdBwd += " " + r.BwdSimdPct
+			}
+			fmt.Printf("  │ %-10s %5s %5s %5s %5s %8.4f %8.4f %8s %8s %8s %s\n",
+				r.DType,
+				markOK(r.NativeOK), markOK(r.FwdOK), markOK(r.BwdOK), markOK(r.TrainOK),
+				r.LossInit, r.LossFinal, simdFwd, simdBwd, r.TrainDur, r.Err)
+		} else {
+			fmt.Printf("  │ %-10s %5s %5s %5s %5s %8.4f %8.4f %8s %s\n",
+				r.DType,
+				markOK(r.NativeOK), markOK(r.FwdOK), markOK(r.BwdOK), markOK(r.TrainOK),
+				r.LossInit, r.LossFinal, r.TrainDur, r.Err)
+		}
 	}
 	fmt.Println("  └──────────────────────────────────────────────────────────────────────")
 }

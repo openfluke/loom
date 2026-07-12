@@ -299,10 +299,17 @@ func MHAForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 		return MHAForwardTiled(layer, input)
 	}
 	var preF, postF *Tensor[float32]
-	if useMHATrueNative(layer) {
-		preF, postF = mhaForwardIntegerNative(layer, in)
-	} else {
-		preF, postF = mhaForwardNativeMAC(layer, in)
+	if layerUseSimdForward(layer) {
+		if pre, post, simdOK := tryMHAForwardNativeSimd(layer, in); simdOK {
+			preF, postF = pre, post
+		}
+	}
+	if preF == nil {
+		if useMHATrueNative(layer) {
+			preF, postF = mhaForwardIntegerNative(layer, in)
+		} else {
+			preF, postF = mhaForwardNativeMAC(layer, in)
+		}
 	}
 	pre, post, ok2 := nativeTensorsAs[T](preF, postF)
 	if !ok2 {
@@ -319,10 +326,17 @@ func MHABackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput, input
 		return MHABackwardTiled(layer, gradOutput, input, preAct)
 	}
 	var giF, gwF *Tensor[float32]
-	if useMHATrueNative(layer) {
-		giF, gwF = mhaBackwardIntegerNative(layer, goT, in, preF)
-	} else {
-		giF, gwF = mhaBackwardNativeMAC(layer, goT, in, preF)
+	if layerUseSimdForward(layer) {
+		if gi, gw, simdOK := tryMHABackwardNativeSimd(layer, goT, in, preF); simdOK {
+			giF, gwF = gi, gw
+		}
+	}
+	if giF == nil {
+		if useMHATrueNative(layer) {
+			giF, gwF = mhaBackwardIntegerNative(layer, goT, in, preF)
+		} else {
+			giF, gwF = mhaBackwardNativeMAC(layer, goT, in, preF)
+		}
 	}
 	gi, okGI := nativeTensorAs[T](giF)
 	gw, okGW := nativeTensorAs[T](gwF)

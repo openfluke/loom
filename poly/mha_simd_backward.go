@@ -26,6 +26,15 @@ func tryMHABackwardSimd[T Numeric](layer *VolumetricLayer, gradOutput, input, pr
 }
 
 func mhaBackwardSimdF32(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32]) {
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return mhaBackwardSimdF32WithWeights(layer, gradOutput, input, preAct, wData)
+}
+
+func mhaBackwardSimdF32WithWeights(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32], wData []float32) (gradInput, gradWeights *Tensor[float32]) {
 	dModel, numHeads, numKVHeads, headDim, qDim, kvDim := mhaLayerDims(layer)
 	lay := mhaParseLayout(layer, input)
 	seqLen := lay.seqLen
@@ -36,12 +45,6 @@ func mhaBackwardSimdF32(layer *VolumetricLayer, gradOutput, input, preAct *Tenso
 
 	gradInput = NewTensor[float32](input.Shape...)
 	gradWeights = NewTensor[float32](layer.WeightStore.WeightCount(layer.DType))
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	qwStart := 0
 	kwStart := qwStart + qDim*dModel

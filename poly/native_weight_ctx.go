@@ -282,3 +282,12 @@ func mhaProjectRowCtx(ctx *nativeWeightCtx, inRow []float32, wStart, bStart, out
 		out[o] = sum
 	}
 }
+
+// materializeF32Weights decodes native storage into a contiguous float32 buffer once per pass.
+func (ctx *nativeWeightCtx) materializeF32Weights(count int) []float32 {
+	out := make([]float32, count)
+	for i := 0; i < count; i++ {
+		out[i] = float32(ctx.weightF64(i))
+	}
+	return out
+}

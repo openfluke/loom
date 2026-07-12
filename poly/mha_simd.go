@@ -56,6 +56,15 @@ func mhaForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, 
 		return mhaForwardScalarFallbackF32(layer, input)
 	}
 
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return mhaForwardSimdF32WithWeights(layer, input, wData)
+}
+
+func mhaForwardSimdF32WithWeights(layer *VolumetricLayer, input *Tensor[float32], wData []float32) (preAct, postAct *Tensor[float32]) {
 	dModel, numHeads, numKVHeads, headDim, qDim, kvDim := mhaLayerDims(layer)
 	lay := mhaParseLayout(layer, input)
 	seqLen := lay.seqLen
@@ -72,12 +81,6 @@ func mhaForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, 
 	outShape = append(outShape, dModel)
 	preAct = NewTensor[float32](outShape...)
 	postAct = NewTensor[float32](outShape...)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	qwStart := 0
 	kwStart := qwStart + qDim*dModel
