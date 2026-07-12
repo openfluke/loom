@@ -462,10 +462,17 @@ func CNN1ForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 		return CNN1ForwardTiled(layer, input)
 	}
 	var preF, postF *Tensor[float32]
-	if useCNNTrueNative(layer) {
-		preF, postF = cnn1ForwardIntegerNative(layer, in)
-	} else {
-		preF, postF = cnn1ForwardNativeMAC(layer, in)
+	if layerUseSimdForward(layer) {
+		if pre, post, simdOK := tryCNN1ForwardNativeSimd(layer, in); simdOK {
+			preF, postF = pre, post
+		}
+	}
+	if preF == nil {
+		if useCNNTrueNative(layer) {
+			preF, postF = cnn1ForwardIntegerNative(layer, in)
+		} else {
+			preF, postF = cnn1ForwardNativeMAC(layer, in)
+		}
 	}
 	pre, post, ok2 := nativeTensorsAs[T](preF, postF)
 	if !ok2 {
@@ -482,10 +489,17 @@ func CNN1BackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput, inpu
 		return CNN1BackwardTiled(layer, gradOutput, input, preAct)
 	}
 	var giF, gwF *Tensor[float32]
-	if useCNNTrueNative(layer) {
-		giF, gwF = cnn1BackwardIntegerNative(layer, goT, in, preF)
-	} else {
-		giF, gwF = cnn1BackwardNativeMAC(layer, goT, in, preF)
+	if layerUseSimdForward(layer) {
+		if gi, gw, simdOK := tryCNN1BackwardNativeSimd(layer, goT, in, preF); simdOK {
+			giF, gwF = gi, gw
+		}
+	}
+	if giF == nil {
+		if useCNNTrueNative(layer) {
+			giF, gwF = cnn1BackwardIntegerNative(layer, goT, in, preF)
+		} else {
+			giF, gwF = cnn1BackwardNativeMAC(layer, goT, in, preF)
+		}
 	}
 	gi, okGI := nativeTensorAs[T](giF)
 	gw, okGW := nativeTensorAs[T](gwF)

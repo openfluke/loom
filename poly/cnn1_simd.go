@@ -19,7 +19,6 @@ func tryCNN1ForwardSimd[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (pr
 func cnn1ForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
-	// Only correctness-based formats fall back; explicit SIMD is honored at any width.
 	if useBitpackedCPUCNN1(layer) {
 		return CNN1ForwardPackedCPU(layer, input)
 	}
@@ -27,6 +26,15 @@ func cnn1ForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct,
 		return CNN1ForwardTiled(layer, input)
 	}
 
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return cnn1ForwardSimdF32WithWeights(layer, input, wData)
+}
+
+func cnn1ForwardSimdF32WithWeights(layer *VolumetricLayer, input *Tensor[float32], wData []float32) (preAct, postAct *Tensor[float32]) {
 	batchSize := input.Shape[0]
 	seqLen, inC := layer.InputHeight, layer.InputChannels
 	outLen, filters := layer.OutputHeight, layer.Filters
@@ -35,12 +43,6 @@ func cnn1ForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct,
 
 	preAct = NewTensor[float32](batchSize, filters, outLen)
 	postAct = NewTensor[float32](batchSize, filters, outLen)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	useParallel := layer.EnableMultiCoreTiling && filters > 1
 	if useParallel {

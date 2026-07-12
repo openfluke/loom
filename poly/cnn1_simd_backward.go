@@ -27,6 +27,15 @@ func tryCNN1BackwardSimd[T Numeric](layer *VolumetricLayer, gradOutput, input, p
 }
 
 func cnn1BackwardSimdF32(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32]) {
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return cnn1BackwardSimdF32WithWeights(layer, gradOutput, input, preAct, wData)
+}
+
+func cnn1BackwardSimdF32WithWeights(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32], wData []float32) (gradInput, gradWeights *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
 	batchSize := input.Shape[0]
@@ -37,12 +46,6 @@ func cnn1BackwardSimdF32(layer *VolumetricLayer, gradOutput, input, preAct *Tens
 
 	gradInput = NewTensor[float32](batchSize, inC, seqLen)
 	gradWeights = NewTensor[float32](filters, inC, kSize)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	gi64 := make([]float64, len(gradInput.Data))
 	gw64 := make([]float64, len(gradWeights.Data))
