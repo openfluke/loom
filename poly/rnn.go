@@ -1,5 +1,7 @@
 package poly
 
+// rnn.go — default RNN path: GetActive FP32 dequant. Native: rnn_native.go.
+
 import (
 	"math"
 	"runtime"
@@ -10,6 +12,9 @@ import (
 
 // RNNForwardPolymorphic performs a forward pass through an RNN layer.
 func RNNForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if useRNNNativeExact(layer) {
+		return RNNForwardNativeExact(layer, input)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if pre, post, ok := tryRNNForwardSimd(layer, input); ok {
 			return pre, post
@@ -20,6 +25,9 @@ func RNNForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 
 // RNNBackwardPolymorphic calculates gradients for the RNN layer using BPTT.
 func RNNBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if useRNNNativeExact(layer) {
+		return RNNBackwardNativeExact(layer, gradOutput, input, preAct)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if gi, gw, ok := tryRNNBackwardSimd(layer, gradOutput, input, preAct); ok {
 			return gi, gw
@@ -52,9 +60,8 @@ func rnnForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 	if weights == nil {
 		weights = layer.WeightStore.Master
 	}
-
-	ihSize, hhSize := hiddenSize*inputSize, hiddenSize*hiddenSize
 	wData := CastWeights[T](weights)
+	ihSize, hhSize := hiddenSize*inputSize, hiddenSize*hiddenSize
 	wIH, wHH, bH := wData[0:ihSize], wData[ihSize:ihSize+hhSize], wData[ihSize+hhSize:]
 
 	numCPUs := runtime.NumCPU()

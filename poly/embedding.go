@@ -7,11 +7,17 @@ import (
 
 // EmbeddingForwardPolymorphic performs an embedding lookup using purely generic T execution.
 func EmbeddingForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if useEmbeddingNativeExact(layer) {
+		return EmbeddingForwardNativeExact(layer, input)
+	}
 	return EmbeddingForwardTiled(layer, input)
 }
 
 // EmbeddingBackwardPolymorphic computes gradients for embedding lookup.
 func EmbeddingBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if useEmbeddingNativeExact(layer) {
+		return EmbeddingBackwardNativeExact(layer, gradOutput, input, preAct)
+	}
 	return EmbeddingBackwardTiled(layer, gradOutput, input, preAct)
 }
 

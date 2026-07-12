@@ -13,6 +13,9 @@ import (
 
 // CNN2ForwardPolymorphic performs a forward pass through a 2D convolutional layer.
 func CNN2ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if useCNNNativeExact(layer) {
+		return CNN2ForwardNativeExact(layer, input)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if pre, post, ok := tryCNN2ForwardSimd(layer, input); ok {
 			return pre, post
@@ -23,6 +26,9 @@ func CNN2ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 
 // CNN2BackwardPolymorphic calculates gradients for a 2D convolutional layer.
 func CNN2BackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if useCNNNativeExact(layer) {
+		return CNN2BackwardNativeExact(layer, gradOutput, input, preAct)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if gi, gw, ok := tryCNN2BackwardSimd(layer, gradOutput, input, preAct); ok {
 			return gi, gw

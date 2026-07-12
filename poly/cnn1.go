@@ -8,10 +8,7 @@ import (
 )
 
 func useNativeQuantCNN1(layer *VolumetricLayer) bool {
-	return layer != nil &&
-		layer.Network != nil &&
-		layer.Network.UseExactDType &&
-		isCNN1NativeQuantDType(layer.DType)
+	return useCNNNativeExact(layer)
 }
 
 func cnn1NativeWeights(layer *VolumetricLayer) ([]float32, float64) {
@@ -37,6 +34,9 @@ func cnn1NativeWeights(layer *VolumetricLayer) ([]float32, float64) {
 
 // CNN1ForwardPolymorphic performs a forward pass through a 1D convolutional layer.
 func CNN1ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if useCNNNativeExact(layer) {
+		return CNN1ForwardNativeExact(layer, input)
+	}
 	if useBitpackedCPUCNN1(layer) {
 		return CNN1ForwardPackedCPU(layer, input)
 	}
@@ -50,6 +50,9 @@ func CNN1ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 
 // CNN1BackwardPolymorphic calculates gradients for a 1D convolutional layer.
 func CNN1BackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if useCNNNativeExact(layer) {
+		return CNN1BackwardNativeExact(layer, gradOutput, input, preAct)
+	}
 	if useBitpackedCPUCNN1(layer) {
 		return CNN1BackwardPackedCPU(layer, gradOutput, input, preAct)
 	}

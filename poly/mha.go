@@ -25,6 +25,9 @@ func mhaQKNormEpsilon(layer *VolumetricLayer) float64 {
 
 // MHAForwardPolymorphic performs Multi-Head Attention using strictly generic arithmetic.
 func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if useMHANativeExact(layer) {
+		return MHAForwardNativeExact(layer, input)
+	}
 	if usePackedTernaryCPU(layer) {
 		return MHAForwardPackedTernaryCPU(layer, input)
 	}
@@ -372,11 +375,18 @@ func MHAForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor
 
 // MHABackwardPolymorphic calculates gradients for the MHA layer.
 func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if useMHANativeExact(layer) {
+		return MHABackwardNativeExact(layer, gradOutput, input, preAct)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if gi, gw, ok := tryMHABackwardSimd(layer, gradOutput, input, preAct); ok {
 			return gi, gw
 		}
 	}
+	return mhaBackwardCPU(layer, gradOutput, input, preAct)
+}
+
+func mhaBackwardCPU[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
 	dModel := layer.DModel
 	numHeads := layer.NumHeads
 	numKVHeads := layer.NumKVHeads

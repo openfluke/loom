@@ -13,6 +13,9 @@ import (
 
 // CNN3ForwardPolymorphic performs a forward pass through a 3D convolutional layer.
 func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if useCNNNativeExact(layer) {
+		return CNN3ForwardNativeExact(layer, input)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if pre, post, ok := tryCNN3ForwardSimd(layer, input); ok {
 			return pre, post
@@ -23,6 +26,9 @@ func CNN3ForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 
 // CNN3BackwardPolymorphic calculates gradients for a 3D convolutional layer.
 func CNN3BackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if useCNNNativeExact(layer) {
+		return CNN3BackwardNativeExact(layer, gradOutput, input, preAct)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if gi, gw, ok := tryCNN3BackwardSimd(layer, gradOutput, input, preAct); ok {
 			return gi, gw

@@ -13,11 +13,12 @@ import (
 	"sync"
 )
 
-// DenseExactCache holds integer-native activations for true integer dense backprop.
+// DenseExactCache holds integer-native activations for true exact training.
 type DenseExactCache struct {
 	InputI8        []int8
-	PreI8          []int8
+	PreI8          []int8    // MHA: attn output int8 before O-proj; else pre-activation
 	PostI8         []int8
+	QF64           []float64 // MHA: Q after RoPE (for attention backward)
 	WeightsUpdated bool
 }
 

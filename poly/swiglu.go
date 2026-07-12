@@ -1,5 +1,8 @@
 package poly
 
+// swiglu.go — default SwiGLU path: dequant weights to FP32 (GetActive) for matmul.
+// Native path: swiglu_native.go when UseExactDType is set.
+
 import (
 	"math"
 	"runtime"
@@ -13,6 +16,9 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 	if layer.UseGPU {
 		return SwiGLUForwardWGPU(layer, input)
 	}
+	if useSwiGLUNativeExact(layer) {
+		return SwiGLUForwardNativeExact(layer, input)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if pre, post, ok := trySwiGLUForwardSimd(layer, input); ok {
 			return pre, post
@@ -25,6 +31,9 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 func SwiGLUBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
 	if layer.UseGPU {
 		return SwiGLUBackwardWGPU(layer, gradOutput, input, preAct)
+	}
+	if useSwiGLUNativeExact(layer) {
+		return SwiGLUBackwardNativeExact(layer, gradOutput, input, preAct)
 	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if gi, gw, ok := trySwiGLUBackwardSimd(layer, gradOutput, input, preAct); ok {
@@ -237,6 +246,14 @@ func swigluForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor
 		return SwiGLUForwardPackedTernaryCPU(layer, input)
 	}
 
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	return swigluForwardWithWeights(layer, input, CastWeights[T](weights))
+}
+
+func swigluForwardWithWeights[T Numeric](layer *VolumetricLayer, input *Tensor[T], wData []T) (preAct, postAct *Tensor[T]) {
 	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
 	seqLen := len(input.Data) / inputSize
 	tileSize := layer.GetCPUTileSize(layer.DType)
@@ -247,12 +264,6 @@ func swigluForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor
 
 	preAct = NewTensor[T](seqLen, intermediateSize)
 	postAct = NewTensor[T](seqLen, inputSize)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[T](weights)
 
 	gateWStart := 0
 	upWStart := inputSize * intermediateSize
@@ -327,22 +338,24 @@ func SwiGLUForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Ten
 }
 
 func swigluBackwardTiledParallel[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	return swigluBackwardWithWeights(layer, gradOutput, input, preAct, CastWeights[T](weights))
+}
+
+func swigluBackwardWithWeights[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T], wData []T) (gradInput, gradWeights *Tensor[T]) {
 	inputSize, intermediateSize := layer.InputHeight, layer.OutputHeight
 	seqLen := len(input.Data) / inputSize
 	tileSize := layer.GetCPUTileSize(layer.DType)
 	if tileSize <= 0 {
 		tileSize = 32
 	}
+	wCount := len(wData)
 
 	gradInput = NewTensor[T](input.Shape...)
-	wCount := layer.WeightStore.WeightCount(layer.DType)
 	gradWeights = NewTensor[T](wCount)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[T](weights)
 
 	gateWStart := 0
 	upWStart := inputSize * intermediateSize

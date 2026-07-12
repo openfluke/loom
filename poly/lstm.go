@@ -11,6 +11,9 @@ import (
 // LSTMForwardPolymorphic performs a forward pass through a polymorphic LSTM layer.
 // preAct stores [iSum, fSum, gSum, oSum, cCurr] (5 * hiddenSize)
 func LSTMForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if useLSTMNativeExact(layer) {
+		return LSTMForwardNativeExact(layer, input)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if pre, post, ok := tryLSTMForwardSimd(layer, input); ok {
 			return pre, post
@@ -21,6 +24,9 @@ func LSTMForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 
 // LSTMBackwardPolymorphic calculates gradients for the LSTM layer using BPTT.
 func LSTMBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if useLSTMNativeExact(layer) {
+		return LSTMBackwardNativeExact(layer, gradOutput, input, preAct)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if gi, gw, ok := tryLSTMBackwardSimd(layer, gradOutput, input, preAct); ok {
 			return gi, gw
