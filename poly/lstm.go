@@ -21,6 +21,11 @@ func LSTMForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 
 // LSTMBackwardPolymorphic calculates gradients for the LSTM layer using BPTT.
 func LSTMBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if gi, gw, ok := tryLSTMBackwardSimd(layer, gradOutput, input, preAct); ok {
+			return gi, gw
+		}
+	}
 	return LSTMBackwardTiled(layer, gradOutput, input, preAct)
 }
 

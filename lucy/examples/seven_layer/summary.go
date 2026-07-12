@@ -207,7 +207,7 @@ func PrintSCMCSimdParityTable(layerName string, rows []DTypeRow, simdLayer bool)
 	fmt.Printf("\n╔══════════════════════════════════════════════════════════════════════╗\n")
 	if simdLayer {
 		fmt.Printf("║  %s — parity SC ↔ MC ↔ SIMD (all numerical types)                     ║\n", layerName)
-		fmt.Println("║  Fwd: dot_tile .s | Bwd SIMD: saxpy/dot .s (Dense+SwiGLU+MHA+CNN1-3+RNN; LSTM tiled) ║")
+		fmt.Println("║  Fwd: dot_tile .s | Bwd SIMD: saxpy/dot .s (all seven layer types)           ║")
 	} else {
 		fmt.Printf("║  %s — parity SC ↔ MC (all numerical types)                            ║\n", layerName)
 	}

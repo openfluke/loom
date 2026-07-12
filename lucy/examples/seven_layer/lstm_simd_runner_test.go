@@ -72,6 +72,32 @@ func TestLSTMDiagAllDTypes1x1(t *testing.T) {
 	}
 }
 
+func TestLSTMSimdParityFloat32_1x1(t *testing.T) {
+	if !poly.Plan9SimdForwardForLayer(poly.LayerLSTM) {
+		t.Skip("no Plan 9 SIMD")
+	}
+	g := GridSpec{Depth: 1, Rows: 1, Cols: 1}
+	s := lstmSuiteForGrid(g)
+	assertSCMCSimdParity(t, s, allDTypes[1])
+}
+
+func TestLSTMSimdParityAllGrids_Float32(t *testing.T) {
+	if !poly.Plan9SimdForwardForLayer(poly.LayerLSTM) {
+		t.Skip("no Plan 9 SIMD")
+	}
+	tc := allDTypes[1]
+	for _, g := range StandardGrids {
+		g := g
+		t.Run(g.String(), func(t *testing.T) {
+			if testing.Short() && g.StackLayers() > 7 {
+				t.Skip("short mode")
+			}
+			s := lstmSuiteForGrid(g)
+			assertSCMCSimdParity(t, s, tc)
+		})
+	}
+}
+
 func TestLSTMSimdParityAllGrids(t *testing.T) {
 	if !poly.Plan9SimdForwardForLayer(poly.LayerLSTM) {
 		t.Skip("no Plan 9 SIMD on this GOARCH")
