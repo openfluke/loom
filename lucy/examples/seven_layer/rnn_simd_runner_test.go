@@ -72,6 +72,32 @@ func TestRNNDiagAllDTypes1x1(t *testing.T) {
 	}
 }
 
+func TestRNNSimdParityFloat32_1x1(t *testing.T) {
+	if !poly.Plan9SimdForwardForLayer(poly.LayerRNN) {
+		t.Skip("no Plan 9 SIMD")
+	}
+	g := GridSpec{Depth: 1, Rows: 1, Cols: 1}
+	s := rnnSuiteForGrid(g)
+	assertSCMCSimdParity(t, s, allDTypes[1])
+}
+
+func TestRNNSimdParityAllGrids_Float32(t *testing.T) {
+	if !poly.Plan9SimdForwardForLayer(poly.LayerRNN) {
+		t.Skip("no Plan 9 SIMD")
+	}
+	tc := allDTypes[1]
+	for _, g := range StandardGrids {
+		g := g
+		t.Run(g.String(), func(t *testing.T) {
+			if testing.Short() && g.StackLayers() > 7 {
+				t.Skip("short mode")
+			}
+			s := rnnSuiteForGrid(g)
+			assertSCMCSimdParity(t, s, tc)
+		})
+	}
+}
+
 // Verifies SIMD now actually runs (and matches tiled) on the narrow 2³/3³ grids,
 // where the old width gate used to silently fall back to tiled.
 func TestRNNSimdParityAllGrids(t *testing.T) {

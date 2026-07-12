@@ -20,6 +20,11 @@ func RNNForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 
 // RNNBackwardPolymorphic calculates gradients for the RNN layer using BPTT.
 func RNNBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if gi, gw, ok := tryRNNBackwardSimd(layer, gradOutput, input, preAct); ok {
+			return gi, gw
+		}
+	}
 	return RNNBackwardTiled(layer, gradOutput, input, preAct)
 }
 
