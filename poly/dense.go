@@ -1,5 +1,8 @@
 package poly
 
+// dense.go — default dense path: dequant weights to FP32 (GetActive) for matmul.
+// When UseExactDType is set, routes to dense_native.go instead.
+
 import (
 	"runtime"
 	"sync"
@@ -9,6 +12,9 @@ import (
 
 // DenseForwardPolymorphic performs a forward pass through a dense layer.
 func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if useDenseNativeExact(layer) {
+		return DenseForwardNativeExact(layer, input)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if pre, post, ok := tryDenseForwardSimd(layer, input); ok {
 			return pre, post
@@ -19,6 +25,9 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 
 // DenseBackwardPolymorphic calculates gradients for the dense layer.
 func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if useDenseNativeExact(layer) {
+		return DenseBackwardNativeExact(layer, gradOutput, input, preAct)
+	}
 	if layerUseSimdForward(layer) && simd.SimdEnabled() {
 		if gi, gw, ok := tryDenseBackwardSimd(layer, gradOutput, input, preAct); ok {
 			return gi, gw

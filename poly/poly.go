@@ -534,6 +534,9 @@ type VolumetricNetwork struct {
 	UseGPU                bool
 	UseExactDType         bool
 
+	// ExactNativeLR is the current training LR for true integer-native dense updates.
+	ExactNativeLR float32
+
 	// UseSimdForward routes Dense/SwiGLU/MHA CPU forward through Plan 9 AVX2/NEON tile dots.
 	UseSimdForward bool
 
@@ -672,6 +675,9 @@ type VolumetricLayer struct {
 
 	// gpuParScratch holds nested forward buffers for one GPU batch when Type==LayerParallel (training).
 	gpuParScratch *gpuParallelScratch
+
+	// ExactDense caches integer-native activations for true exact dense training.
+	ExactDense *DenseExactCache
 }
 
 // ResetState clears persistent internal state of the layer (e.g. KV caches).
@@ -679,6 +685,7 @@ func (l *VolumetricLayer) ResetState() {
 	l.KVOffset = 0
 	l.KVCacheK = nil
 	l.KVCacheV = nil
+	l.ExactDense = nil
 	// Note: We don't null out GPU base buffers here to avoid expensive re-allocation
 	// unless specifically requested, but the offset reset will force overwriting.
 }

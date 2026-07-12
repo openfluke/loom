@@ -88,7 +88,7 @@ func applyDType(net *poly.VolumetricNetwork, tc dtypeCase) {
 // Other ops use their default float MAC paths; forcing exact on CNN1/MHA caused unstable training.
 func configureTrainingNet(net *poly.VolumetricNetwork, tc dtypeCase, primary poly.LayerType) {
 	wireLayerTree(net)
-	net.UseExactDType = primary == poly.LayerDense && poly.IsDenseNativeTrainDType(tc.dtype)
+	net.UseExactDType = primary == poly.LayerDense && poly.IsDenseNativeExactDType(tc.dtype)
 }
 
 // configureInferenceNet drops FP32 Master after native sync so forward-only RAM

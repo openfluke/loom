@@ -352,6 +352,7 @@ func Train[T Numeric](n *VolumetricNetwork, batches []TrainingBatch[T], config *
 }
 
 func executeBatchCPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], config *TrainingConfig) (float64, [][2]*Tensor[T]) {
+	n.ExactNativeLR = config.LearningRate
 	// 1. Forward Pass
 	histIn := make([]*Tensor[T], len(n.Layers))
 	histPre := make([]*Tensor[T], len(n.Layers))
@@ -390,9 +391,14 @@ func executeBatchCPU[T Numeric](n *VolumetricNetwork, batch TrainingBatch[T], co
 }
 
 func applyGradientsCPU[T Numeric](n *VolumetricNetwork, layerGradients [][2]*Tensor[T], config *TrainingConfig) {
+	n.ExactNativeLR = config.LearningRate
 	// 4. Update Weights
 	for idx := range n.Layers {
 		l := &n.Layers[idx]
+		if l.ExactDense != nil && l.ExactDense.WeightsUpdated {
+			l.ExactDense.WeightsUpdated = false
+			continue
+		}
 		if layerGradients[idx][1] != nil {
 			gW := ConvertTensor[T, float32](layerGradients[idx][1])
 			ApplyRecursiveGradients(l, gW, config.LearningRate, config.GradientClip)
