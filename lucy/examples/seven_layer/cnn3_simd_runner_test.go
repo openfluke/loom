@@ -73,6 +73,32 @@ func TestCNN3DiagAllDTypes1x1(t *testing.T) {
 	}
 }
 
+func TestCNN3SimdParityFloat32_1x1(t *testing.T) {
+	if !poly.Plan9SimdForwardForLayer(poly.LayerCNN3) {
+		t.Skip("no Plan 9 SIMD")
+	}
+	g := GridSpec{Depth: 1, Rows: 1, Cols: 1}
+	s := cnn3SuiteForGrid(g)
+	assertSCMCSimdParity(t, s, allDTypes[1])
+}
+
+func TestCNN3SimdParityAllGrids_Float32(t *testing.T) {
+	if !poly.Plan9SimdForwardForLayer(poly.LayerCNN3) {
+		t.Skip("no Plan 9 SIMD")
+	}
+	tc := allDTypes[1]
+	for _, g := range StandardGrids {
+		g := g
+		t.Run(g.String(), func(t *testing.T) {
+			if testing.Short() && g.StackLayers() > 1 {
+				t.Skip("short mode")
+			}
+			s := cnn3SuiteForGrid(g)
+			assertSCMCSimdParity(t, s, tc)
+		})
+	}
+}
+
 func TestCNN3ForwardSimdCapture1x1(t *testing.T) {
 	if !poly.Plan9SimdForwardForLayer(poly.LayerCNN3) {
 		t.Skip("no Plan 9 SIMD on this GOARCH")
