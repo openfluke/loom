@@ -486,7 +486,12 @@ type backwardCapture struct {
 }
 
 func captureBackward(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], multiCore bool) backwardCapture {
-	dx, dw, avg := benchmarkBackward(net, input, target, multiCore)
+	dx, dw, avg := benchmarkBackward(net, input, target, multiCore, false)
+	return backwardCapture{dx: dx, dw: dw, dur: avg}
+}
+
+func captureBackwardSimd(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], multiCore bool) backwardCapture {
+	dx, dw, avg := benchmarkBackward(net, input, target, multiCore, true)
 	return backwardCapture{dx: dx, dw: dw, dur: avg}
 }
 
@@ -743,24 +748,35 @@ func formatSimdSpeedup(tiledMC, simd time.Duration) string {
 	return "≈0%"
 }
 
-func benchmarkBackward(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], multiCore bool) (dx, dw []float32, avg time.Duration) {
+func benchmarkBackward(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], multiCore, simd bool) (dx, dw []float32, avg time.Duration) {
 	setCPUMode(net, multiCore)
+	if simd {
+		setSimdForward(net, true)
+		defer setSimdForward(net, false)
+	} else {
+		setSimdForward(net, false)
+	}
 	for i := 0; i < 3; i++ {
-		_, _, dur := runBackwardOnce(net, input, target)
-		_ = dur
+		_, _, _ = runBackwardOnce(net, input, target, multiCore, simd)
 	}
 	var total time.Duration
 	var lastDx, lastDw []float32
 	for i := 0; i < activeBenchIters; i++ {
-		dx, dw, dur := runBackwardOnce(net, input, target)
+		dx, dw, dur := runBackwardOnce(net, input, target, multiCore, simd)
 		total += dur
 		lastDx, lastDw = dx, dw
 	}
 	return lastDx, lastDw, total / time.Duration(activeBenchIters)
 }
 
-func runBackwardOnce(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32]) (dx, dw []float32, dur time.Duration) {
-	setCPUMode(net, false)
+func runBackwardOnce(net *poly.VolumetricNetwork, input, target *poly.Tensor[float32], multiCore, simd bool) (dx, dw []float32, dur time.Duration) {
+	setCPUMode(net, multiCore)
+	if simd {
+		setSimdForward(net, true)
+		defer setSimdForward(net, false)
+	} else {
+		setSimdForward(net, false)
+	}
 	resetNetwork(net)
 
 	histIn := make([]*poly.Tensor[float32], len(net.Layers))

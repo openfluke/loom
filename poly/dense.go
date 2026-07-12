@@ -19,6 +19,11 @@ func DenseForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 
 // DenseBackwardPolymorphic calculates gradients for the dense layer.
 func DenseBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if gi, gw, ok := tryDenseBackwardSimd(layer, gradOutput, input, preAct); ok {
+			return gi, gw
+		}
+	}
 	return DenseBackwardTiled(layer, gradOutput, input, preAct)
 }
 
@@ -173,8 +178,10 @@ func denseForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[
 	wg.Wait()
 }
 
-// DenseBackwardTiled performs a tiled backward pass for the dense layer (multi-core).
+// DenseBackwardTiled performs a tiled backward pass for the dense layer.
 func DenseBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	layer.EnsureRuntimeTileSizes()
+
 	batchSize := input.Shape[0]
 	inputSize := layer.InputHeight
 	outputSize := layer.OutputHeight
@@ -182,6 +189,7 @@ func DenseBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, pr
 	if tileSize <= 0 {
 		tileSize = 32
 	}
+	tileSize = capDenseTileToLayer(tileSize, inputSize, outputSize)
 
 	gradInput = NewTensor[T](batchSize, inputSize)
 	gradWeights = NewTensor[T](outputSize, inputSize)
@@ -192,11 +200,89 @@ func DenseBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, pr
 	}
 	wData := CastWeights[T](weights)
 
-	gradPre := make([]float64, batchSize*outputSize)
+	gradPre := denseGradPreAct(gradOutput, preAct, layer.Activation)
+
+	if layer.EnableMultiCoreTiling {
+		denseBackwardTiledParallel(gradInput, gradWeights, input, wData, gradPre, batchSize, inputSize, outputSize, tileSize)
+	} else {
+		denseBackwardTiledSerial(gradInput, gradWeights, input, wData, gradPre, batchSize, inputSize, outputSize, tileSize)
+	}
+	return gradInput, gradWeights
+}
+
+func denseGradPreAct[T Numeric](gradOutput, preAct *Tensor[T], activation ActivationType) []float64 {
+	gradPre := make([]float64, len(gradOutput.Data))
 	for i := 0; i < len(gradOutput.Data); i++ {
-		gradPre[i] = float64(gradOutput.Data[i]) * float64(ActivateDerivative(preAct.Data[i], layer.Activation))
+		gradPre[i] = float64(gradOutput.Data[i]) * float64(ActivateDerivative(preAct.Data[i], activation))
+	}
+	return gradPre
+}
+
+// denseBackwardDWLocal accumulates ∂L/∂W into localGW for output rows [oTile,oEnd).
+func denseBackwardDWLocal[T Numeric](localGW []float64, input *Tensor[T], gradPre []float64, batchSize, inputSize, outputSize, oTile, oEnd int) {
+	for b := 0; b < batchSize; b++ {
+		inOff := b * inputSize
+		outOff := b * outputSize
+		for o := oTile; o < oEnd; o++ {
+			g := gradPre[outOff+o]
+			lo := (o - oTile) * inputSize
+			for i := 0; i < inputSize; i++ {
+				localGW[lo+i] += float64(input.Data[inOff+i]) * g
+			}
+		}
+	}
+}
+
+// denseBackwardDXLocal accumulates ∂L/∂X into localGI for batch index b.
+func denseBackwardDXLocal[T Numeric](localGI []float64, wData []T, gradPre []float64, b, inputSize, outputSize int) {
+	outOff := b * outputSize
+	for o := 0; o < outputSize; o++ {
+		g := gradPre[outOff+o]
+		rowOff := o * inputSize
+		for i := 0; i < inputSize; i++ {
+			localGI[i] += float64(wData[rowOff+i]) * g
+		}
+	}
+}
+
+func denseBackwardTiledSerial[T Numeric](gradInput, gradWeights *Tensor[T], input *Tensor[T], wData []T, gradPre []float64, batchSize, inputSize, outputSize, tileSize int) {
+	gi64 := make([]float64, len(gradInput.Data))
+	gw64 := make([]float64, len(gradWeights.Data))
+
+	for oTile := 0; oTile < outputSize; oTile += tileSize {
+		oEnd := oTile + tileSize
+		if oEnd > outputSize {
+			oEnd = outputSize
+		}
+		localGW := make([]float64, (oEnd-oTile)*inputSize)
+		denseBackwardDWLocal(localGW, input, gradPre, batchSize, inputSize, outputSize, oTile, oEnd)
+		for o := oTile; o < oEnd; o++ {
+			rowOff := o * inputSize
+			lo := (o - oTile) * inputSize
+			for i := 0; i < inputSize; i++ {
+				gw64[rowOff+i] += localGW[lo+i]
+			}
+		}
 	}
 
+	for b := 0; b < batchSize; b++ {
+		localGI := make([]float64, inputSize)
+		denseBackwardDXLocal(localGI, wData, gradPre, b, inputSize, outputSize)
+		inOff := b * inputSize
+		for i := 0; i < inputSize; i++ {
+			gi64[inOff+i] += localGI[i]
+		}
+	}
+
+	for i := range gradInput.Data {
+		gradInput.Data[i] = T(gi64[i])
+	}
+	for i := range gradWeights.Data {
+		gradWeights.Data[i] = T(gw64[i])
+	}
+}
+
+func denseBackwardTiledParallel[T Numeric](gradInput, gradWeights *Tensor[T], input *Tensor[T], wData []T, gradPre []float64, batchSize, inputSize, outputSize, tileSize int) {
 	gi64 := make([]float64, len(gradInput.Data))
 	gw64 := make([]float64, len(gradWeights.Data))
 	var mu sync.Mutex
@@ -215,18 +301,13 @@ func DenseBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, pr
 				oEnd = outputSize
 			}
 			localGW := make([]float64, (oEnd-oTile)*inputSize)
-			for b := 0; b < batchSize; b++ {
-				for o := oTile; o < oEnd; o++ {
-					g := gradPre[b*outputSize+o]
-					for i := 0; i < inputSize; i++ {
-						localGW[(o-oTile)*inputSize+i] += float64(input.Data[b*inputSize+i]) * g
-					}
-				}
-			}
+			denseBackwardDWLocal(localGW, input, gradPre, batchSize, inputSize, outputSize, oTile, oEnd)
 			mu.Lock()
 			for o := oTile; o < oEnd; o++ {
+				rowOff := o * inputSize
+				lo := (o - oTile) * inputSize
 				for i := 0; i < inputSize; i++ {
-					gw64[o*inputSize+i] += localGW[(o-oTile)*inputSize+i]
+					gw64[rowOff+i] += localGW[lo+i]
 				}
 			}
 			mu.Unlock()
@@ -240,15 +321,11 @@ func DenseBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, pr
 		go func(b int) {
 			defer func() { <-sem; wg.Done() }()
 			localGI := make([]float64, inputSize)
-			for o := 0; o < outputSize; o++ {
-				g := gradPre[b*outputSize+o]
-				for i := 0; i < inputSize; i++ {
-					localGI[i] += float64(wData[o*inputSize+i]) * g
-				}
-			}
+			denseBackwardDXLocal(localGI, wData, gradPre, b, inputSize, outputSize)
 			mu.Lock()
+			inOff := b * inputSize
 			for i := 0; i < inputSize; i++ {
-				gi64[b*inputSize+i] += localGI[i]
+				gi64[inOff+i] += localGI[i]
 			}
 			mu.Unlock()
 		}(b)
@@ -261,7 +338,6 @@ func DenseBackwardTiled[T Numeric](layer *VolumetricLayer, gradOutput, input, pr
 	for i := range gradWeights.Data {
 		gradWeights.Data[i] = T(gw64[i])
 	}
-	return gradInput, gradWeights
 }
 
 // DenseGPUTileSizes returns the SC and MC GPU tile sizes for Dense kernels.

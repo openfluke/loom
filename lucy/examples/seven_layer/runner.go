@@ -257,7 +257,7 @@ func RunLayerSuite(s LayerSuite) bool {
 
 	fmt.Println()
 	fmt.Println("══════════════════════════════════════════════════════════════════════")
-	fmt.Printf("  Loom seven-layer %s — JSON + .entity · CPU SC/MC · train · save/reload\n", suiteLabel)
+	fmt.Printf("  Loom seven-layer %s — JSON + .entity · CPU SC/MC/SIMD · train · save/reload\n", suiteLabel)
 	fmt.Println(s.Banner)
 	fmt.Println("══════════════════════════════════════════════════════════════════════")
 	fmt.Printf("  %d dtypes × %d epochs · grid %s (%d-layer stack)\n",
@@ -303,12 +303,19 @@ func RunLayerSuite(s LayerSuite) bool {
 			row.FwdSimdPct = formatSimdSpeedup(fwdMC.dur, fwdSimd.dur)
 		}
 
-		// Backward determinism: SC vs MC
+		// Backward: SC vs MC and SIMD vs tiled SC (when layer supports Plan 9 SIMD).
 		bwdSC := captureBackward(net, input, target, false)
 		bwdMC := captureBackward(net, input, target, true)
 		row.BwdSCDur = formatDur(bwdSC.dur)
 		row.BwdMCDur = formatDur(bwdMC.dur)
 		row.BwdSCMC = maxAbsDiff(append(bwdSC.dx, bwdSC.dw...), append(bwdMC.dx, bwdMC.dw...))
+
+		if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
+			bwdSimd := captureBackwardSimd(net, input, target, true)
+			row.BwdSimdDur = formatDur(bwdSimd.dur)
+			row.BwdTiledSimd = maxAbsDiff(append(bwdSC.dx, bwdSC.dw...), append(bwdSimd.dx, bwdSimd.dw...))
+			row.BwdSimdPct = formatSimdSpeedup(bwdMC.dur, bwdSimd.dur)
+		}
 
 		// Infer-native weight accounting only (after parity benches; not on forward hot path).
 		configureInferenceNet(net)
@@ -322,9 +329,13 @@ func RunLayerSuite(s LayerSuite) bool {
 			detTol = 1e-4
 		}
 		row.DetOK = row.FwdSCMC <= detTol && row.BwdSCMC <= detTol*10
+		row.FwdSCMCOK = row.FwdSCMC <= detTol
+		row.BwdSCMCOK = row.BwdSCMC <= detTol*10
 		if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
 			row.SimdOK = row.FwdTiledSimd <= simdParityTol(s.PrimaryType, tc)
-			row.DetOK = row.DetOK && row.SimdOK
+			bwdSimdTol := simdParityTol(s.PrimaryType, tc) * 10
+			row.BwdSimdOK = row.BwdTiledSimd <= bwdSimdTol
+			row.DetOK = row.DetOK && row.SimdOK && row.BwdSimdOK
 		}
 
 		lossBefore := forwardLoss(net, input, target)
@@ -381,6 +392,30 @@ func RunLayerSuite(s LayerSuite) bool {
 		row.TrainMCDur = formatDur(durMC)
 		row.TrainMCSps = samplesPerSec(durMC, epochs)
 
+		if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
+			netSimd, _ := poly.BuildNetworkFromJSON(s.BuildJSON(tc.jsonName))
+			applyDType(netSimd, tc)
+			configureTrainingNet(netSimd, tc, s.PrimaryType)
+			netSimd.ReleaseFP32MasterWhenIdle = true
+			resSimd, durSimd, err := trainCPU(netSimd, input, target, poly.TrainingModeCPUSimd, tc, s.PrimaryType, epochs)
+			if err != nil {
+				row.Err = "TRAIN-SIMD"
+				rows = append(rows, row)
+				failed++
+				fmt.Println("TRAIN SIMD ERR")
+				continue
+			}
+			row.TrainSimdDur = formatDur(durSimd)
+			row.TrainSimdSps = samplesPerSec(durSimd, epochs)
+			row.LossSimd = resSimd.FinalLoss
+			if len(resSimd.LossHistory) > 0 {
+				row.LossSimd = resSimd.LossHistory[len(resSimd.LossHistory)-1]
+			}
+			lossSimdInit := resSimd.LossHistory[0]
+			row.TrainSimdOK = lossFiniteOK(lossSimdInit, row.LossSimd, requiresLearn) &&
+				(!requiresLearn || trainingOK(lossSimdInit, row.LossSimd, tc.dtype))
+		}
+
 		lossInit := resMC.LossHistory[0]
 		lossFinal := resMC.FinalLoss
 		if len(resMC.LossHistory) > 0 {
@@ -388,6 +423,7 @@ func RunLayerSuite(s LayerSuite) bool {
 		}
 		row.LossInit = lossInit
 		row.LossFinal = lossFinal
+		row.LossSC = lossSC
 		row.Learned = lossFiniteOK(lossInit, lossFinal, requiresLearn) &&
 			(!requiresLearn || trainingOK(lossInit, lossFinal, tc.dtype))
 
@@ -428,32 +464,44 @@ func RunLayerSuite(s LayerSuite) bool {
 		// CPU SC/MC parity + train + JSON/.entity save/reload.
 		row.OverallOK = row.BeforeOK && row.AfterOK && row.EntityBeforeOK && row.EntityAfterOK &&
 			row.Learned && row.DetOK && lossFiniteOK(lossInit, lossFinal, requiresLearn)
+		if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
+			row.OverallOK = row.OverallOK && row.TrainSimdOK
+		}
 		rows = append(rows, row)
 
 		if row.OverallOK {
 			passed++
-			fmt.Printf("PASS  loss %.4e→%.4e det=%s json=%s entity=%s fwd/bwd SC=%s/%s MC=%s/%s mem=%s json=%s entity=%s\n",
-				lossInit, lossFinal, markOK(row.DetOK), markOK(row.AfterOK), markOK(row.EntityAfterOK),
-				row.FwdSCDur, row.BwdSCDur, row.FwdMCDur, row.BwdMCDur,
-				row.MemHeapTrain, row.Checkpoint, row.EntityCheckpoint)
+			if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
+				fmt.Printf("PASS  loss %.4e→%.4e det=%s fwd SC/MC/SIMD=%s/%s/%s bwd SC/MC/SIMD=%s/%s/%s\n",
+					lossInit, lossFinal, markOK(row.DetOK),
+					row.FwdSCDur, row.FwdMCDur, row.FwdSimdDur,
+					row.BwdSCDur, row.BwdMCDur, row.BwdSimdDur)
+			} else {
+				fmt.Printf("PASS  loss %.4e→%.4e det=%s json=%s entity=%s fwd/bwd SC=%s/%s MC=%s/%s\n",
+					lossInit, lossFinal, markOK(row.DetOK), markOK(row.AfterOK), markOK(row.EntityAfterOK),
+					row.FwdSCDur, row.BwdSCDur, row.FwdMCDur, row.BwdMCDur)
+			}
 		} else {
 			failed++
-			fmt.Printf("FAIL  loss %.4e→%.4e learn=%s json=%s entity=%s det=%s reload_Δloss=%.2e\n",
-				lossInit, lossFinal, markOK(row.Learned), markOK(row.BeforeOK && row.AfterOK),
-				markOK(row.EntityBeforeOK && row.EntityAfterOK), markOK(row.DetOK), row.ReloadLossDelta)
+			if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
+				fmt.Printf("FAIL  loss %.4e→%.4e learn=%s det=%s fwdΔ(SC↔MC)=%.2e fwdΔ(SC↔SIMD)=%.2e bwdΔ(SC↔MC)=%.2e bwdΔ(SC↔SIMD)=%.2e\n",
+					lossInit, lossFinal, markOK(row.Learned), markOK(row.DetOK),
+					row.FwdSCMC, row.FwdTiledSimd, row.BwdSCMC, row.BwdTiledSimd)
+			} else {
+				fmt.Printf("FAIL  loss %.4e→%.4e learn=%s det=%s reload_Δloss=%.2e\n",
+					lossInit, lossFinal, markOK(row.Learned), markOK(row.DetOK), row.ReloadLossDelta)
+			}
 		}
 		_ = lossSC
 	}
 
-	PrintDeterminismTable(suiteLabel, rows)
-	PrintForwardBackwardTimingTable(suiteLabel, rows)
-	if poly.Plan9SimdForwardForLayer(s.PrimaryType) {
-		PrintSimdTimingTable(suiteLabel, rows)
-	}
+	simdLayer := poly.Plan9SimdForwardForLayer(s.PrimaryType)
+	PrintDeterminismTable(suiteLabel, rows, simdLayer)
+	PrintForwardBackwardTimingTable(suiteLabel, rows, simdLayer)
 	PrintMemoryTable(suiteLabel, rows)
-	PrintTimingTable(suiteLabel, rows)
-	PrintTrainedReloadTable(suiteLabel, rows)
-	PrintDTypeResultsTable(suiteLabel, rows)
+	PrintTimingTable(suiteLabel, rows, simdLayer)
+	PrintTrainedReloadTable(suiteLabel, rows, simdLayer)
+	PrintDTypeResultsTable(suiteLabel, rows, simdLayer)
 	RegisterLayerSummary(suiteLabel, passed, failed, rows)
 	return failed == 0
 }

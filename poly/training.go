@@ -15,6 +15,7 @@ const (
 	TrainingModeCPUNormal TrainingMode = iota // serial CPU, no tiling
 	TrainingModeCPUSC                         // CPU tiling, single-core
 	TrainingModeCPUMC                         // CPU tiling, multi-core parallel
+	TrainingModeCPUSimd                       // CPU MC tiling + Plan 9 SIMD (dot+saxpy .s)
 	TrainingModeGPUNormal                     // GPU global-memory path
 	TrainingModeGPUSC                         // GPU tiled SC (workgroup 64)
 	TrainingModeGPUMC                         // GPU tiled MC (workgroup 256)
@@ -28,6 +29,8 @@ func (m TrainingMode) String() string {
 		return "CPU-SC-Tiled"
 	case TrainingModeCPUMC:
 		return "CPU-MC-Tiled"
+	case TrainingModeCPUSimd:
+		return "CPU-SIMD"
 	case TrainingModeGPUNormal:
 		return "GPU-Normal"
 	case TrainingModeGPUSC:
@@ -104,15 +107,20 @@ func resolveMode(config *TrainingConfig) TrainingMode {
 // ConfigureNetworkForMode sets tiling/GPU flags on all layers and syncs state.
 func ConfigureNetworkForMode(n *VolumetricNetwork, mode TrainingMode) error {
 	switch mode {
-	case TrainingModeCPUNormal, TrainingModeCPUSC, TrainingModeCPUMC:
+	case TrainingModeCPUNormal, TrainingModeCPUSC, TrainingModeCPUMC, TrainingModeCPUSimd:
 		n.UseGPU = false
-		multiCore := mode == TrainingModeCPUMC
+		multiCore := mode == TrainingModeCPUMC || mode == TrainingModeCPUSimd
 		useTiling := mode != TrainingModeCPUNormal
 		n.EnableMultiCoreTiling = multiCore
 		n.RefreshRuntimeTileSizes()
 		for i := range n.Layers {
 			n.Layers[i].UseTiling = useTiling
 			n.Layers[i].EnableMultiCoreTiling = multiCore
+		}
+		if mode == TrainingModeCPUSimd {
+			n.SetSimdForwardRecursive(true)
+		} else {
+			n.SetSimdForwardRecursive(false)
 		}
 		n.SyncToCPU()
 	case TrainingModeGPUNormal, TrainingModeGPUSC, TrainingModeGPUMC:
