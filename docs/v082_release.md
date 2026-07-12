@@ -5,7 +5,7 @@
 
 Two headline items land on top of the v0.81 Intel bridge:
 
-1. **SIMD CPU forward** — hand-written AVX2/FMA (x86-64) and NEON (ARM64) dot-tile kernels behind `SetSimdForward`, with portable Go loops still the parity reference.
+1. **SIMD CPU** — hand-written AVX2/FMA (x86-64) and NEON (ARM64) kernels behind `SetSimdForward` / `TrainingModeCPUSimd`. **v0.82 shipped forward (`DotTile`) only**; the current tree adds **backward (`SaxpyF32AccF64`) on all seven compute layers** — see [simd.md](simd.md).
 2. **Qualcomm / Hexagon NPU** — the second `poly/accel` vendor plugin, running on **Windows ARM64** through the **QNN AI Engine Direct** SDK. Forward-only, per-layer, experimental — the same maturity bar as Intel.
 
 ---
@@ -18,9 +18,11 @@ Two headline items land on top of the v0.81 Intel bridge:
 |------|--------|
 | **x86-64** | AVX2/FMA `DotTile` dot-product tiles for dense/matmul-heavy forward paths |
 | **ARM64** | NEON `DotTile` (`neon_arm64.go`) — `unsafe.Slice` over `float32` pointers |
-| **Toggle** | `SetSimdForward(true/false)` — off falls back to portable Go tiled loops |
-| **Parity** | Go loops remain the bit-exact reference; SIMD is an opt-in throughput path |
-| **Docs / bench** | [`simd.md`](simd.md); Lucy **[7]** (seven-layer) and **[11]** (transformer decode) |
+| **Toggle** | `SetSimdForwardRecursive` / `TrainingModeCPUSimd` — off falls back to portable Go tiled loops |
+| **Forward** | `DotTile` (AVX2 / NEON) |
+| **Backward** | `SaxpyF32AccF64` on Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM (current tree; not in original v0.82 tag) |
+| **Parity** | Go tiled loops remain the reference; seven-layer SC/MC/SIMD suite |
+| **Docs / bench** | [`simd.md`](simd.md); Lucy **[7]** amd64/arm64 logs (`seven_layer_amd.txt`, `seven_layer_arm.txt`) |
 
 ### Qualcomm / Hexagon NPU plugin (`accel/qualcomm`)
 
@@ -61,7 +63,7 @@ Two headline items land on top of the v0.81 Intel bridge:
 **You now have:**
 
 - A **second vendor NPU** (Qualcomm/Hexagon) on Windows ARM64 through the same `poly/accel` C ABI as Intel
-- A **SIMD CPU fast-path** (AVX2/NEON) that keeps Go loops as the parity reference
+- A **SIMD CPU fast-path** (AVX2/NEON forward + backward on seven layer types) with Go tiled loops as the parity reference
 - Persistent, all-user QNN environment setup and a reproducible `clang++` build
 - **Experimental** label — a rocky-but-real bridge, good for a release, not for prod
 

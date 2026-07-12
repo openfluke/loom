@@ -18,7 +18,7 @@ This wave does not add a new compute backend. It hardens the **Go CPU** path, **
 | **Dense Ternary save** | Checkpoint re-quantized from FP32 Master, not native path | `GetBitNetTernaryMatrix` → `packNativeTernaryToBitNetMatrix` (same matmul as forward) |
 | **Signed low-bit I/O** | Int2/Int4/Ternary round-trip gaps on `[]uint8` | `persistence.go` encode/decode aligned with CPU kernels |
 | **FP32 Master lifecycle** | Bindings could not mirror post-train native-only RAM | `LoomSyncInferenceWeights` in `welvet/cabi` (C-ABI parity **461/461** at v0.79) |
-| **Regression harness** | False PASS (zeros/NaN); suite gaps | Lucy **[7] seven-layer** CPU suite: 10 layer types × 21 dtypes × SC/MC × train × save/reload |
+| **Regression harness** | False PASS (zeros/NaN); suite gaps | Lucy **[7] seven-layer** CPU suite: 10 layer types × 21 dtypes × SC/MC/**SIMD** × train × save/reload |
 
 ---
 
@@ -29,15 +29,17 @@ This wave does not add a new compute backend. It hardens the **Go CPU** path, **
 
 **Harness:** `lucy/examples/seven_layer/` — builds a volumetric JSON network per layer family, morphs all **21 dtypes**, checks:
 
-- Forward **SC ↔ MC** parity (dtype tolerance)
-- Backward **SC ↔ MC** parity (10× fwd tol)
-- **50-epoch** CPU training (loss decrease on MC path)
+- Forward **SC ↔ MC ↔ SIMD** parity (dtype tolerance)
+- Backward **SC ↔ MC ↔ SIMD** parity (10× fwd tol)
+- **50-epoch** CPU training on SC, MC, and **SIMD** paths (loss decrease)
 - **Save/reload before train** and **after train** (forward match + native blob)
 - Grids **1³**, **2³**, **3³** (CNN1/2 skip 3³; CNN3 is 1³ only; Embedding at `(0,0,0)`)
 
 **Layer types:** Dense, SwiGLU, MHA, CNN1, CNN2, CNN3, RNN, LSTM, Embedding, Residual.
 
-**ASM:** Dense forward only (`UseAsmForward` after JSON build); other types report asm N/A.
+**SIMD:** All seven compute layers use Plan 9 `DotTile` (forward) and `SaxpyF32AccF64` (backward) when `TrainingModeCPUSimd` / `SetSimdForwardRecursive(true)`. Banner: `Fwd: dot_tile .s | Bwd SIMD: saxpy/dot .s (all seven layer types)`.
+
+**ASM:** Dense forward only (`UseAsmForward` after JSON build); separate from the `poly/simd` path above.
 
 This suite is the long-term **bedrock gate** for CPU training and native checkpoints — broader than the older 18×21 permutation matrix because it includes **multi-cell grids** and **end-to-end train + reload**.
 
@@ -80,8 +82,10 @@ Python / TypeScript / WASM consumers that train outside `LoomTrain` should call 
 **You do not yet claim:**
 
 - Beating PyTorch/llama.cpp on model zoo size or raw tok/s.
-- ASM on MHA/SwiGLU/CNN (still **Dense forward** only).
+- Plan 9 **asm** on MHA/SwiGLU/CNN (still **Dense forward** only in `poly/asm/`).
 - Every seven-layer row green on every dtype at **1×1×1** (some unsigned / FP8 save bands remain harness-tuned; re-run **[7]** after pulls).
+
+**Plan 9 SIMD** (`poly/simd/`) now covers forward + backward on all seven compute layer types; see [simd.md](simd.md) for amd64/arm64 benchmark tables.
 
 **Next named target (unchanged):** **v0.81** — ASM rollout (Dense backward, SwiGLU, MHA); GPU fusion. See [`v080_release.md`](v080_release.md) for the **0.80.0** wave.
 

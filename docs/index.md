@@ -41,7 +41,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [v081_release.md](v081_release.md) | **v0.81.0** — Intel NPU bridge (`poly/accel`), Lucy [9], vendor plugin model, Qualcomm/Google TPU roadmap |
 | [v082_release.md](v082_release.md) | **v0.82.0** — SIMD CPU fast-path (AVX2/NEON) + Snapdragon/Hexagon NPU bridge (QNN, Windows ARM64), Lucy [12] |
 | [v083_release.md](v083_release.md) | **v0.83.0** — Apple GPU / Metal (MPSGraph) bridge (macOS Apple silicon), Lucy [13], + BF16 wire dtype for the shared accel bridge |
-| [simd.md](simd.md) | **Plan 9 SIMD forward** (current): hand-written AVX2/FMA `DotTile` + BitNet AVX2 ternary MAD kernel, `SetSimdForward`, 8 layer types × 21 dtypes, Lucy `[7]`/`[11]` benchmarks |
+| [simd.md](simd.md) | **Plan 9 SIMD** (forward + backward): AVX2/NEON `DotTile` + `SaxpyF32AccF64`, `TrainingModeCPUSimd`, seven-layer amd64/arm64 benchmarks |
 | [`../poly/asm/README.md`](../poly/asm/README.md) | **Plan 9 CPU kernels**: `UseAsmForward`, dense forward routing, dot/matmul layout, Lucy speedup interpretation |
 | [asm-and-volumetric-exploration.md](asm-and-volumetric-exploration.md) | **Archive (Jun 2026)**: BitNet W8A8 ASM, I2_S scaffolding, volumetric executor v1, Lucy `[7]` findings — exploratory work removed from tree |
 
@@ -90,7 +90,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **Reading Lucy / Glitch test transcripts or parity tables?** See [testing_and_validation.md](testing_and_validation.md).
 
-**Speeding up CPU inference (SIMD)?** Read [simd.md](simd.md) — `SetSimdForward`, AVX2/FMA `DotTile`, BitNet AVX2 ternary MAD, Lucy **[7]** (seven-layer) and **[11]** (transformer decode) benchmarks.
+**Speeding up CPU inference and training (SIMD)?** Read [simd.md](simd.md) — `TrainingModeCPUSimd`, AVX2/NEON `DotTile` + `SaxpyF32AccF64`, Lucy **[7]** seven-layer SC/MC/SIMD parity and benchmarks.
 
 ---
 

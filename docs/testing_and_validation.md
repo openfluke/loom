@@ -11,7 +11,7 @@ The **Lucy** tree (`lucy/`) drives broad layer suites: forward/backward parity, 
 | Log | Menu | Contents |
 |-----|------|----------|
 | `lucy/lucy_testing_output/log.txt` | Dense L1 / GPU parity / layer matrices | Forward/backward parity, ASM timers, GPU tables |
-| `lucy/lucy_testing_output/seven_layer.txt` | **[7] Seven-layer CPU suite** | 10 layer types × 21 dtypes × 1³/2³/3³ grids, SC/MC, train, **JSON + `.entity` save/reload** |
+| `lucy/lucy_testing_output/seven_layer.txt` | **[7] Seven-layer CPU suite** | 10 layer types × 21 dtypes × 1³/2³/3³ grids, **SC/MC/SIMD** fwd+bwd+train, **JSON + `.entity` save/reload** |
 | `lucy/lucy_testing_output/nine_layer.txt` | **[9] Intel NPU bridge** | 15 layers × FP32/FP16/INT8 × small/medium/large — Loom vs Intel CPU/NPU timing + drift manifest |
 
 Per-dtype checkpoints are written under the same folder: `tag_DType.json` (debug lane) and `tag_DType.entity` (native lane). The memory table compares both file sizes side by side.
@@ -20,7 +20,9 @@ Per-dtype checkpoints are written under the same folder: `tag_DType.json` (debug
 
 Both files are meant for human review and regression diffing (adapter name, per-dtype rows, summary tallies).
 
-**Seven-layer suite (v0.79+):** See [`bedrock_validation.md`](bedrock_validation.md) for what the harness gates (MHA layout, KV decode, native ternary save, C-ABI `SyncInferenceWeights`). Run `cd lucy && go run .` → **[7]** or **[0]**.
+**Seven-layer suite (v0.79+):** See [`bedrock_validation.md`](bedrock_validation.md) for what the harness gates (MHA layout, KV decode, native ternary save, C-ABI `SyncInferenceWeights`, **SC/MC/SIMD parity** on all seven compute layers). Run `cd lucy && go run .` → **[7]** or **[0]**.
+
+External benchmark logs (amd64 / arm64, Float32 timing tables): `seven_layer_amd.txt`, `seven_layer_arm.txt` — summarized in [simd.md](simd.md#seven-layer-benchmark-results).
 
 **GPU load memory timeline (Lucy [1] / [8]):** Enable *Measure memory during GPU load* at the prompt, or set `LOOM_MEMORY_HISTORY=1`. After load, Lucy prints a braille chart, sample table, and diagnosis (block release, sequential globals, peak host+gpu overlap). See [memory_history.md](memory_history.md).
 
@@ -91,7 +93,7 @@ Lucy **Dense → Generic Layer Suite** prints **Go SC · Go MC · ASM SC · ASM 
 
 Low-bit and morphed-`uint8` paths benefit most from native integer dots in Plan 9. Float64 SC/MC still favors Go tiled matmul on the current tile sizes — tuning item, not a broken toggle.
 
-**Backward / training:** asm is **forward-only** today; Dense backward parity uses Go CPU vs GPU; training does not call asm.
+**Backward / training:** Plan 9 **asm** (`poly/asm/`) is **Dense forward-only**. Plan 9 **SIMD** (`poly/simd/`) covers **forward + backward** on Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM via `TrainingModeCPUSimd` / `SetSimdForwardRecursive`; see [simd.md](simd.md).
 
 ---
 

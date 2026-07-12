@@ -33,10 +33,34 @@ A `TrainingBatch[T]` pairs `Input *Tensor[T]` with `Target *Tensor[T]`. Multiple
 
 Before the training loop runs, `Train` wires the network through `ConfigureNetworkForMode` (`training.go`), which aligns tiling flags with the selected `TrainingMode`:
 
-- **CPU modes** (`TrainingModeCPUNormal`, `TrainingModeCPUSC`, `TrainingModeCPUMC`): **all three are configured the same way** — `EnableMultiCoreTiling = true`, `RefreshRuntimeTileSizes()`, then `UseTiling` and `EnableMultiCoreTiling` on **every** layer. The CPU forward (`executeBatchCPU`) does **not** branch on `TrainingMode`; poly has **one** CPU tile map per layer (`CPUTileSizes`), not separate SC/MC maps. The SC/MC names in the enum are for labeling and benchmarks, not a second tile-size profile on CPU today.
+| Mode | Tiling | Multi-core | SIMD |
+|------|--------|------------|------|
+| `TrainingModeCPUNormal` | off | off | off |
+| `TrainingModeCPUSC` | on | off | off |
+| `TrainingModeCPUMC` | on | on | off |
+| `TrainingModeCPUSimd` | on | on | **on** (`SetSimdForwardRecursive`) |
+
+- **CPU modes** (`TrainingModeCPUNormal` … `TrainingModeCPUSimd`): `ConfigureNetworkForMode` sets `UseTiling` and `EnableMultiCoreTiling` per row above, calls `RefreshRuntimeTileSizes()`, and syncs every layer. **`TrainingModeCPUSimd`** additionally enables Plan 9 SIMD on all seven compute layers (Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM): forward `DotTile`, backward `SaxpyF32AccF64`. Other CPU modes call `SetSimdForwardRecursive(false)`.
 - **GPU modes** (`TrainingModeGPUNormal`, `TrainingModeGPUSC`, `TrainingModeGPUMC`): initializes WebGPU if needed, `RefreshRuntimeTileSizes()`, resets the bind-group cache, `SyncToGPU()`, and ensures FP32 master buffers exist for backward. **`trainBatchWGPU`** uses **`TrainingModeGPUSC`** vs **`TrainingModeGPUMC`** to select **`GetGPUSCTileSize`** vs **`GetGPUMCTileSize`** per layer; **`GPUNormal`** uses untiled or generic dispatch per layer type.
 
 For **interactive inference** (no explicit training mode), toggling **`VolumetricNetwork.EnableMultiCoreTiling`** chooses GPU SC vs MC tile maps (`wgpu_forward.go`), the same underlying maps training uses.
+
+### CPU-SIMD training
+
+```go
+config := poly.DefaultTrainingConfig()
+config.Mode = poly.TrainingModeCPUSimd
+result, err := poly.Train[float32](network, batches, config)
+```
+
+The seven-layer example (`lucy/examples/seven_layer`) benchmarks SC, MC, and SIMD training in its summary tables. On a Dense Float32 1×1×1 micro-benchmark (50 epochs), typical wall times are:
+
+| Platform | SC | MC | SIMD |
+|----------|-----|-----|------|
+| amd64 | ~14 ms | ~16 ms | **~10 ms** |
+| arm64 | ~9 ms | ~12 ms | **~10 ms** |
+
+Per-layer forward/backward SIMD vs SC tables (amd64 and arm64) are in [simd.md — seven-layer benchmark results](simd.md#seven-layer-benchmark-results). SIMD is a CPU path only; it does not replace GPU training.
 
 ---
 
