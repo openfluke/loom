@@ -1,0 +1,56 @@
+#include "textflag.h"
+
+// int32 dotU8AccI32Avx2(uint8 *q, uint8 *k, int n, int32 prev)
+TEXT ·dotU8AccI32Avx2(SB), NOSPLIT, $0-36
+	MOVQ	q+0(FP), DI
+	MOVQ	k+8(FP), SI
+	MOVQ	n+16(FP), CX
+	MOVL	prev+24(FP), AX
+
+	VPXOR	X0, X0, X0
+	VPCMPEQW X7, X7, X7
+	VPABSW	X7, X7
+
+	CMPQ	CX, $8
+	JL	reduce
+
+loop8:
+	MOVQ	(DI), X1
+	MOVQ	(SI), X2
+	VPMOVZXBW X1, X3
+	VPMOVZXBW X2, X4
+	VPMULLW	X3, X4, X5
+	VPMADDWD X5, X7, X6
+	VPADDD	X6, X0, X0
+	ADDQ	$8, DI
+	ADDQ	$8, SI
+	SUBQ	$8, CX
+	CMPQ	CX, $8
+	JGE	loop8
+
+reduce:
+	MOVD	X0, R10
+	PEXTRD	$1, X0, R11
+	PEXTRD	$2, X0, R12
+	PEXTRD	$3, X0, R13
+	ADDL	R10, AX
+	ADDL	R11, AX
+	ADDL	R12, AX
+	ADDL	R13, AX
+
+	TESTQ	CX, CX
+	JE	done
+
+tail:
+	MOVBQZX	(DI), R8
+	MOVBQZX	(SI), R9
+	IMULL	R9, R8
+	ADDL	R8, AX
+	ADDQ	$1, DI
+	ADDQ	$1, SI
+	DECQ	CX
+	JNZ	tail
+
+done:
+	MOVL	AX, ret+32(FP)
+	RET

@@ -7,7 +7,7 @@ import (
 	"github.com/openfluke/loom/poly/simd"
 )
 
-// integer_native.go — shared int8 matmul / backward / stochastic update for all layers.
+// integer_native.go — shared int8/u8 matmul / backward / stochastic update for all layers.
 
 func int8DotRow(weights []int8, input []int8, rowOff, inSz int) int8 {
 	acc := int8DotRowAcc(weights, input, rowOff, inSz)
@@ -17,6 +17,17 @@ func int8DotRow(weights []int8, input []int8, rowOff, inSz int) int8 {
 func int8DotRowAcc(weights []int8, input []int8, rowOff, inSz int) int32 {
 	if simd.Int8DotSimdActive() && inSz >= 8 {
 		return simd.DotI8Tile(weights, input, rowOff, 0, inSz, 0)
+	}
+	var acc int32
+	for i := 0; i < inSz; i++ {
+		acc += int32(weights[rowOff+i]) * int32(input[i])
+	}
+	return acc
+}
+
+func uint8DotRowAcc(weights []uint8, input []uint8, rowOff, inSz int) int32 {
+	if simd.Int8DotSimdActive() && inSz >= 8 {
+		return simd.DotU8Tile(weights, input, rowOff, 0, inSz, 0)
 	}
 	var acc int32
 	for i := 0; i < inSz; i++ {
@@ -35,7 +46,31 @@ func int8AccumWeightGrad(gradW []int32, weights []int8, input []int8, gradOut in
 	}
 }
 
+func uint8AccumWeightGrad(gradW []int32, input []uint8, gradOut int32, rowOff, inSz int) {
+	if simd.Int8DotSimdActive() && inSz >= 8 {
+		simd.SaxpyU8ScaleI32Acc(gradW, rowOff, input, gradOut, inSz)
+		return
+	}
+	for i := 0; i < inSz; i++ {
+		gradW[rowOff+i] += int32(input[i]) * gradOut
+	}
+}
+
 func int8AccumInputGrad(gradIn []int32, weights []int8, gradOut int32, rowOff, inSz int) {
+	if simd.Int8DotSimdActive() && inSz >= 8 {
+		simd.SaxpyI8ShiftedInputGradAcc(gradIn, weights, rowOff, gradOut, inSz)
+		return
+	}
+	for i := 0; i < inSz; i++ {
+		gradIn[i] += (int32(weights[rowOff+i]) * gradOut) >> 8
+	}
+}
+
+func uint8AccumInputGrad(gradIn []int32, weights []uint8, gradOut int32, rowOff, inSz int) {
+	if simd.Int8DotSimdActive() && inSz >= 8 {
+		simd.SaxpyU8ShiftedInputGradAcc(gradIn, weights, rowOff, gradOut, inSz)
+		return
+	}
 	for i := 0; i < inSz; i++ {
 		gradIn[i] += (int32(weights[rowOff+i]) * gradOut) >> 8
 	}

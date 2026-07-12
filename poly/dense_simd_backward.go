@@ -39,6 +39,15 @@ func simdTensorAsBackward[T Numeric](t *Tensor[float32]) (*Tensor[T], bool) {
 }
 
 func denseBackwardSimdF32(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32]) {
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return denseBackwardSimdF32WithWeights(layer, gradOutput, input, preAct, wData)
+}
+
+func denseBackwardSimdF32WithWeights(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32], wData []float32) (gradInput, gradWeights *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
 	batchSize := input.Shape[0]
@@ -49,12 +58,6 @@ func denseBackwardSimdF32(layer *VolumetricLayer, gradOutput, input, preAct *Ten
 
 	gradInput = NewTensor[float32](batchSize, inputSize)
 	gradWeights = NewTensor[float32](outputSize, inputSize)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	gradPre := denseGradPreAct(gradOutput, preAct, layer.Activation)
 

@@ -76,25 +76,25 @@ func useDenseTrueNative(layer *VolumetricLayer) bool {
 
 // DenseForwardNativeExact runs dense forward in storage dtype rules.
 func DenseForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
-	if useDenseTrueNative(layer) {
-		in, ok := any(input).(*Tensor[float32])
-		if !ok {
-			return DenseForwardTiled(layer, input)
-		}
-		preF, postF := denseForwardIntegerNative(layer, in)
-		pre, post, ok := nativeTensorsAs[T](preF, postF)
-		if !ok {
-			return DenseForwardTiled(layer, input)
-		}
-		return pre, post
-	}
 	in, ok := any(input).(*Tensor[float32])
 	if !ok {
 		return DenseForwardTiled(layer, input)
 	}
-	preF, postF := denseForwardNativeMAC(layer, in)
-	pre, post, ok := nativeTensorsAs[T](preF, postF)
-	if !ok {
+	var preF, postF *Tensor[float32]
+	if layerUseSimdForward(layer) {
+		if pre, post, simdOK := tryDenseForwardNativeSimd(layer, in); simdOK {
+			preF, postF = pre, post
+		}
+	}
+	if preF == nil {
+		if useDenseTrueNative(layer) {
+			preF, postF = denseForwardIntegerNative(layer, in)
+		} else {
+			preF, postF = denseForwardNativeMAC(layer, in)
+		}
+	}
+	pre, post, ok2 := nativeTensorsAs[T](preF, postF)
+	if !ok2 {
 		return DenseForwardTiled(layer, input)
 	}
 	return pre, post
@@ -102,27 +102,25 @@ func DenseForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tensor[T]
 
 // DenseBackwardNativeExact runs dense backward in storage dtype rules.
 func DenseBackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
-	if useDenseTrueNative(layer) {
-		in, okIn := any(input).(*Tensor[float32])
-		goT, okGO := any(gradOutput).(*Tensor[float32])
-		if !okIn || !okGO {
-			return DenseBackwardTiled(layer, gradOutput, input, preAct)
-		}
-		giF, gwF := denseBackwardIntegerNative(layer, goT, in)
-		gi, okGI := nativeTensorAs[T](giF)
-		gw, okGW := nativeTensorAs[T](gwF)
-		if !okGI || !okGW {
-			return DenseBackwardTiled(layer, gradOutput, input, preAct)
-		}
-		return gi, gw
-	}
 	in, okIn := any(input).(*Tensor[float32])
 	goT, okGO := any(gradOutput).(*Tensor[float32])
 	preF, okPre := any(preAct).(*Tensor[float32])
 	if !okIn || !okGO || !okPre {
 		return DenseBackwardTiled(layer, gradOutput, input, preAct)
 	}
-	giF, gwF := denseBackwardNativeMAC(layer, goT, in, preF)
+	var giF, gwF *Tensor[float32]
+	if layerUseSimdForward(layer) {
+		if gi, gw, simdOK := tryDenseBackwardNativeSimd(layer, goT, in, preF); simdOK {
+			giF, gwF = gi, gw
+		}
+	}
+	if giF == nil {
+		if useDenseTrueNative(layer) {
+			giF, gwF = denseBackwardIntegerNative(layer, goT, in)
+		} else {
+			giF, gwF = denseBackwardNativeMAC(layer, goT, in, preF)
+		}
+	}
 	gi, okGI := nativeTensorAs[T](giF)
 	gw, okGW := nativeTensorAs[T](gwF)
 	if !okGI || !okGW {
@@ -347,18 +345,26 @@ func TrueInt8DenseForward(weights, inputs []int8, batch, inSz, outSz int, pre, p
 		inOff := b * inSz
 		outOff := b * outSz
 		for o := 0; o < outSz; o++ {
-			var acc int32
-			rowOff := o * inSz
-			for i := 0; i < inSz; i++ {
-				acc += int32(weights[rowOff+i]) * int32(inputs[inOff+i])
-			}
-			acc >>= 8
-			pre[outOff+o] = clampI8(acc)
+			acc := int8DotRowAcc(weights, inputs[inOff:inOff+inSz], o*inSz, inSz)
+			pre[outOff+o] = clampI8(acc >> 8)
 			if act == ActivationReLU && pre[outOff+o] <= 0 {
 				post[outOff+o] = 0
 			} else {
 				post[outOff+o] = pre[outOff+o]
 			}
+		}
+	}
+}
+
+// TrueUint8DenseForward: uint8 weights × uint8 activations → int8 pre-activation.
+func TrueUint8DenseForward(weights, inputs []uint8, batch, inSz, outSz int, pre, post []int8) {
+	for b := 0; b < batch; b++ {
+		inOff := b * inSz
+		outOff := b * outSz
+		for o := 0; o < outSz; o++ {
+			acc := uint8DotRowAcc(weights, inputs[inOff:inOff+inSz], o*inSz, inSz)
+			pre[outOff+o] = int8(clampU8(acc >> 8))
+			post[outOff+o] = pre[outOff+o]
 		}
 	}
 }
@@ -392,12 +398,9 @@ func TrueInt8DenseBackwardUpdate(
 		for o := 0; o < outSz; o++ {
 			gOut := int32(gradPre[outOff+o])
 			rowOff := o * inSz
-			for i := 0; i < inSz; i++ {
-				xIn := int32(inputs[inOff+i])
-				gradWeights[rowOff+i] += xIn * gOut
-				wNative := int32(weights[rowOff+i])
-				gradInputAcc[inOff+i] += (wNative * gOut) >> 8
-			}
+			inRow := inputs[inOff : inOff+inSz]
+			int8AccumWeightGrad(gradWeights, weights, inRow, gOut, rowOff, inSz)
+			int8AccumInputGrad(gradInputAcc[inOff:inOff+inSz], weights, gOut, rowOff, inSz)
 		}
 	}
 	for i, acc := range gradInputAcc {
@@ -418,19 +421,23 @@ func TrueInt8DenseBackwardUpdate(
 }
 
 func trueUint8DenseBackwardUpdate(weights []uint8, inputs, gradOutput []uint8, batch, inSz, outSz int, lrBitShift uint) ([]uint8, []uint8) {
-	gradInput := make([]uint8, batch*inSz)
+	gradInputAcc := make([]int32, batch*inSz)
 	gradWeights := make([]int32, outSz*inSz)
+
 	for b := 0; b < batch; b++ {
 		inOff := b * inSz
 		outOff := b * outSz
 		for o := 0; o < outSz; o++ {
 			gOut := int32(gradOutput[outOff+o])
 			rowOff := o * inSz
-			for i := 0; i < inSz; i++ {
-				gradWeights[rowOff+i] += int32(inputs[inOff+i]) * gOut
-				gradInput[inOff+i] = clampU8(int32(gradInput[inOff+i]) + int32((int32(weights[rowOff+i])*gOut)>>8))
-			}
+			inRow := inputs[inOff : inOff+inSz]
+			uint8AccumWeightGrad(gradWeights, inRow, gOut, rowOff, inSz)
+			uint8AccumInputGrad(gradInputAcc[inOff:inOff+inSz], weights, gOut, rowOff, inSz)
 		}
+	}
+	gradInput := make([]uint8, batch*inSz)
+	for i, acc := range gradInputAcc {
+		gradInput[i] = clampU8(acc)
 	}
 	mask := int32((1 << lrBitShift) - 1)
 	for i := range weights {
@@ -476,20 +483,7 @@ func denseForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (
 		for i, c := range cache.InputI8 {
 			inU8[i] = uint8(clampU8(int32(c)))
 		}
-		for b := 0; b < batch; b++ {
-			inOff := b * inSz
-			outOff := b * outSz
-			for o := 0; o < outSz; o++ {
-				var acc int32
-				rowOff := o * inSz
-				for i := 0; i < inSz; i++ {
-					acc += int32(w[rowOff+i]) * int32(inU8[inOff+i])
-				}
-				acc >>= 8
-				cache.PreI8[outOff+o] = int8(clampU8(acc))
-				cache.PostI8[outOff+o] = cache.PreI8[outOff+o]
-			}
-		}
+		TrueUint8DenseForward(w, inU8, batch, inSz, outSz, cache.PreI8, cache.PostI8)
 	default:
 		w := nativeWeightsI8(ws, layer.DType)
 		if w == nil {

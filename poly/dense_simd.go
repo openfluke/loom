@@ -33,12 +33,20 @@ func simdTensorsAs[T Numeric](pre, post *Tensor[float32]) (*Tensor[T], *Tensor[T
 func denseForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
-	// Only correctness-based formats fall back; explicit SIMD is honored at any width.
 	if usePackedTernaryCPU(layer) {
 		pre, post := DenseForwardPackedTernaryCPU(layer, input)
 		return pre, post
 	}
 
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return denseForwardSimdF32WithWeights(layer, input, wData)
+}
+
+func denseForwardSimdF32WithWeights(layer *VolumetricLayer, input *Tensor[float32], wData []float32) (preAct, postAct *Tensor[float32]) {
 	batchSize := input.Shape[0]
 	inputSize := layer.InputHeight
 	outputSize := layer.OutputHeight
@@ -47,12 +55,6 @@ func denseForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct
 
 	preAct = NewTensor[float32](batchSize, outputSize)
 	postAct = NewTensor[float32](batchSize, outputSize)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	useParallel := layer.EnableMultiCoreTiling && outputSize > tileSize
 	if useParallel {

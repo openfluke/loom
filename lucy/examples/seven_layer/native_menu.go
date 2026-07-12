@@ -221,20 +221,22 @@ func runNativeLayerSuite(s LayerSuite, primary poly.LayerType, reader *bufio.Rea
 			row.BwdOK = row.BwdOK && len(bwd.dw) > 0 && tensorFinite(bwd.dw)
 		}
 
-		if primary == poly.LayerMultiHeadAttention && poly.Plan9SimdForwardForLayer(primary) {
-			resetNetwork(net)
-			fwdSimd := captureForwardSimd(net, input, true)
-			row.FwdSimdDur = formatDur(fwdSimd.dur)
-			row.FwdSimdPct = formatSimdSpeedup(fwd.dur, fwdSimd.dur)
-			row.SimdOK = len(fwdSimd.out) > 0 && tensorFinite(fwdSimd.out)
+		if primary == poly.LayerMultiHeadAttention || primary == poly.LayerDense {
+			if poly.Plan9SimdForwardForLayer(primary) {
+				resetNetwork(net)
+				fwdSimd := captureForwardSimd(net, input, true)
+				row.FwdSimdDur = formatDur(fwdSimd.dur)
+				row.FwdSimdPct = formatSimdSpeedup(fwd.dur, fwdSimd.dur)
+				row.SimdOK = len(fwdSimd.out) > 0 && tensorFinite(fwdSimd.out)
 
-			resetNetwork(net)
-			bwdSimd := captureBackwardSimd(net, input, target, true)
-			row.BwdSimdDur = formatDur(bwdSimd.dur)
-			row.BwdSimdPct = formatSimdSpeedup(bwd.dur, bwdSimd.dur)
-			row.SimdOK = row.SimdOK && len(bwdSimd.dx) > 0 && tensorFinite(bwdSimd.dx)
-			if primary != poly.LayerResidual {
-				row.SimdOK = row.SimdOK && len(bwdSimd.dw) > 0 && tensorFinite(bwdSimd.dw)
+				resetNetwork(net)
+				bwdSimd := captureBackwardSimd(net, input, target, true)
+				row.BwdSimdDur = formatDur(bwdSimd.dur)
+				row.BwdSimdPct = formatSimdSpeedup(bwd.dur, bwdSimd.dur)
+				row.SimdOK = row.SimdOK && len(bwdSimd.dx) > 0 && tensorFinite(bwdSimd.dx)
+				if primary != poly.LayerResidual {
+					row.SimdOK = row.SimdOK && len(bwdSimd.dw) > 0 && tensorFinite(bwdSimd.dw)
+				}
 			}
 		}
 
