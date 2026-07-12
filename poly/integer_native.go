@@ -1,6 +1,9 @@
 package poly
 
-import "math/rand"
+import (
+	"math"
+	"math/rand"
+)
 
 // integer_native.go — shared int8 matmul / backward / stochastic update for all layers.
 
@@ -30,6 +33,24 @@ func int8AccumInputGrad(gradIn []int32, weights []int8, gradOut int32, rowOff, i
 	for i := 0; i < inSz; i++ {
 		gradIn[i] += (int32(weights[rowOff+i]) * gradOut) >> 8
 	}
+}
+
+// gradF64ToI32 maps a float-space gradient into int8 MAC/update units (plain round, no forced sign).
+func gradF64ToI32(v float64, scale float32) int32 {
+	if v == 0 {
+		return 0
+	}
+	if scale == 0 {
+		scale = 1
+	}
+	g := int64(math.Round(v / float64(scale)))
+	if g > 32767 {
+		g = 32767
+	}
+	if g < -32768 {
+		g = -32768
+	}
+	return int32(g)
 }
 
 func applyStochasticInt8Update(weights []int8, gradWeights []int32, lrShift uint) {

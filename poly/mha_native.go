@@ -2,7 +2,9 @@ package poly
 
 import "math"
 
-// mha_native.go — MHA native training: int8 projections + float attention, or per-dot native MAC.
+// mha_native.go — MHA native training:
+//   - Integer dtypes: int8 Q/K/V/O projections, int8 Q·K + uint8 softmax attention, stochastic int8 update
+//   - Other dtypes: cached native weight slices + dtype-aware MAC (no per-element GetNative)
 
 func useMHANativeExact(layer *VolumetricLayer) bool {
 	return useLayerNativeExact(layer) && layer.Type == LayerMultiHeadAttention
@@ -24,12 +26,8 @@ func mhaWeightOffsets(layer *VolumetricLayer, dModel, qDim, kvDim int) (qw, kw, 
 	return
 }
 
-func mhaNativeProjectRow(layer *VolumetricLayer, inRow []float32, wStart, bStart, outDim, inDim int, out []float64) {
-	for o := 0; o < outDim; o++ {
-		sum := float64(nativeBiasAt(layer, bStart+o))
-		sum += float64(nativeDotRow(layer, inRow, wStart+o*inDim, inDim))
-		out[o] = sum
-	}
+func mhaNativeProjectRow(ctx *nativeWeightCtx, inRow []float32, wStart, bStart, outDim, inDim int, out []float64) {
+	mhaProjectRowCtx(ctx, inRow, wStart, bStart, outDim, inDim, out)
 }
 
 func mhaInt8ProjectRow(w []int8, inI8 []int8, wStart, bStart, outDim, inDim int, scale float32) []float64 {
@@ -42,23 +40,26 @@ func mhaInt8ProjectRow(w []int8, inI8 []int8, wStart, bStart, outDim, inDim int,
 	return out
 }
 
-func ensureMHAExactCache(layer *VolumetricLayer, batch, seqLen, dModel, qDim int) *DenseExactCache {
+func ensureMHAExactCache(layer *VolumetricLayer, batch, seqLen, dModel, qDim, msl, kvDim int) *DenseExactCache {
 	if layer.ExactDense == nil {
 		layer.ExactDense = &DenseExactCache{}
 	}
 	c := layer.ExactDense
 	needIn := batch * seqLen * dModel
 	needAttn := batch * seqLen * qDim
-	if cap(c.InputI8) < needIn {
-		c.InputI8 = make([]int8, needIn)
-	} else {
-		c.InputI8 = c.InputI8[:needIn]
+	needKV := batch * msl * kvDim
+	growI8 := func(buf *[]int8, need int) {
+		if cap(*buf) < need {
+			*buf = make([]int8, need)
+		} else {
+			*buf = (*buf)[:need]
+		}
 	}
-	if cap(c.PreI8) < needAttn {
-		c.PreI8 = make([]int8, needAttn)
-	} else {
-		c.PreI8 = c.PreI8[:needAttn]
-	}
+	growI8(&c.InputI8, needIn)
+	growI8(&c.PreI8, needAttn)
+	growI8(&c.QI8, needAttn)
+	growI8(&c.KI8, needKV)
+	growI8(&c.VI8, needKV)
 	if cap(c.QF64) < needAttn {
 		c.QF64 = make([]float64, needAttn)
 	} else {
@@ -108,6 +109,36 @@ func intAttnSoftmaxU8(scores []int32, invSqrtHead float64) []uint8 {
 		probs[n-1] = uint8(int(probs[n-1]) + diff)
 	}
 	return probs
+}
+
+// mhaRoPEBackwardGrad applies inverse RoPE to Q/K gradients.
+func mhaRoPEBackwardGrad(layer *VolumetricLayer, seqLen, msl, seqBase int, gQ, gK []float64, qDim, kvDim, headDim, numHeads, numKVHeads int) {
+	half := headDim / 2
+	theta := mhaRoPETheta(layer)
+	for s := 0; s < seqLen; s++ {
+		pos := seqBase + s
+		for h := 0; h < numHeads; h++ {
+			for d := 0; d < half; d++ {
+				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+				c, sVal := math.Cos(angle), math.Sin(angle)
+				qOff := s*qDim + h*headDim + d
+				v0, v1 := gQ[qOff], gQ[qOff+half]
+				gQ[qOff] = v0*c + v1*sVal
+				gQ[qOff+half] = -v0*sVal + v1*c
+			}
+		}
+		kIdx := pos % msl
+		for h := 0; h < numKVHeads; h++ {
+			for d := 0; d < half; d++ {
+				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
+				c, sVal := math.Cos(angle), math.Sin(angle)
+				kOff := kIdx*kvDim + h*headDim + d
+				v0, v1 := gK[kOff], gK[kOff+half]
+				gK[kOff] = v0*c + v1*sVal
+				gK[kOff+half] = -v0*sVal + v1*c
+			}
+		}
+	}
 }
 
 // mhaAttentionBackwardFloat computes gQ/gK/gV from gradPre through softmax attention (float).
@@ -173,34 +204,76 @@ func mhaAttentionBackwardFloat(
 		}
 	}
 
-	half := headDim / 2
-	theta := mhaRoPETheta(layer)
-	for s := 0; s < seqLen; s++ {
-		pos := seqBase + s
-		for h := 0; h < numHeads; h++ {
-			for d := 0; d < half; d++ {
-				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-				c, sVal := math.Cos(angle), math.Sin(angle)
-				qOff := s*qDim + h*headDim + d
-				v0, v1 := gQ[qOff], gQ[qOff+half]
-				gQ[qOff] = v0*c + v1*sVal
-				gQ[qOff+half] = -v0*sVal + v1*c
+	mhaRoPEBackwardGrad(layer, seqLen, msl, seqBase, gQ, gK, qDim, kvDim, headDim, numHeads, numKVHeads)
+	_ = dModel
+	_ = lay
+	return gQ, gK, gV
+}
+
+// mhaAttentionBackwardIntNative backprops through int8 Q·K scores + uint8 softmax (code space).
+// gradPre is in float activation units (post-dequant); Q/K/V slices are int8 codes.
+func mhaAttentionBackwardIntNative(
+	layer *VolumetricLayer,
+	seqLen, msl, seqBase int,
+	qI8, kI8, vI8 []int8,
+	gradPre []float64,
+	qDim, kvDim, headDim, numHeads, numKVHeads int,
+	invSqrtHead float64,
+	scale float32,
+) (gQ, gK, gV []float64) {
+	headsPerKV := numHeads / numKVHeads
+	attnScale := invSqrtHead
+	invScale := 1.0 / float64(scale)
+	// int8 MAC uses >>8; attention scores live in that fixed-point space.
+	macNorm := 1.0 / 256.0
+
+	gQ = make([]float64, seqLen*qDim)
+	gK = make([]float64, msl*kvDim)
+	gV = make([]float64, msl*kvDim)
+	intScores := make([]int32, seqLen)
+
+	for h := 0; h < numHeads; h++ {
+		kvHead := h / headsPerKV
+		for qPos := 0; qPos < seqLen; qPos++ {
+			nPos := seqBase + qPos + 1
+			if cap(intScores) < nPos {
+				intScores = make([]int32, nPos)
+			} else {
+				intScores = intScores[:nPos]
 			}
-		}
-		kIdx := pos % msl
-		for h := 0; h < numKVHeads; h++ {
-			for d := 0; d < half; d++ {
-				angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-				c, sVal := math.Cos(angle), math.Sin(angle)
-				kOff := kIdx*kvDim + h*headDim + d
-				v0, v1 := gK[kOff], gK[kOff+half]
-				gK[kOff] = v0*c + v1*sVal
-				gK[kOff+half] = -v0*sVal + v1*c
+			for kPos := 0; kPos < nPos; kPos++ {
+				kIdx := kPos % msl
+				intScores[kPos] = int8HeadDot(qI8, kI8, qPos*qDim+h*headDim, kIdx*kvDim+kvHead*headDim, headDim)
+			}
+			probsU8 := intAttnSoftmaxU8(intScores, invSqrtHead)
+			probs := make([]float64, nPos)
+			for kPos := 0; kPos < nPos; kPos++ {
+				probs[kPos] = float64(probsU8[kPos]) / 255.0
+			}
+			for d := 0; d < headDim; d++ {
+				// gradPre is dL/d(attn_float); convert to code-space sensitivity.
+				dy := gradPre[qPos*qDim+h*headDim+d] * invScale
+				var dSSum float64
+				for kPos := 0; kPos < nPos; kPos++ {
+					vIdx := kPos % msl
+					vCode := float64(vI8[vIdx*kvDim+kvHead*headDim+d])
+					gV[vIdx*kvDim+kvHead*headDim+d] += probs[kPos] * dy * float64(scale)
+					dSSum += vCode * dy * probs[kPos]
+				}
+				for kPos := 0; kPos < nPos; kPos++ {
+					kIdx := kPos % msl
+					kCode := float64(kI8[kIdx*kvDim+kvHead*headDim+d])
+					qCode := float64(qI8[qPos*qDim+h*headDim+d])
+					vCode := float64(vI8[kIdx*kvDim+kvHead*headDim+d])
+					dScore := (probs[kPos]*dy*vCode - probs[kPos]*dSSum) * attnScale * macNorm
+					gQ[qPos*qDim+h*headDim+d] += dScore * kCode * float64(scale)
+					gK[kIdx*kvDim+kvHead*headDim+d] += dScore * qCode * float64(scale)
+				}
 			}
 		}
 	}
-	_ = dModel
-	_ = lay
+
+	mhaRoPEBackwardGrad(layer, seqLen, msl, seqBase, gQ, gK, qDim, kvDim, headDim, numHeads, numKVHeads)
 	return gQ, gK, gV
 }
 
@@ -260,6 +333,7 @@ func MHABackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput, input
 }
 
 func mhaForwardNativeMAC(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
+	wctx := newNativeWeightCtx(layer)
 	dModel, numHeads, numKVHeads, headDim, qDim, kvDim := mhaLayerDims(layer)
 	lay := mhaParseLayout(layer, input)
 	seqLen := lay.seqLen
@@ -295,15 +369,15 @@ func mhaForwardNativeMAC(layer *VolumetricLayer, input *Tensor[float32]) (preAct
 			kRow := cacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
 			vRow := cacheV.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
 
-			mhaNativeProjectRow(layer, inRow, qwStart, qbStart, qDim, dModel, qScratch)
+			mhaNativeProjectRow(&wctx, inRow, qwStart, qbStart, qDim, dModel, qScratch)
 			for i := 0; i < qDim; i++ {
 				Q[s*qDim+i] = qScratch[i]
 			}
-			mhaNativeProjectRow(layer, inRow, kwStart, kbStart, kvDim, dModel, qScratch[:kvDim])
+			mhaNativeProjectRow(&wctx, inRow, kwStart, kbStart, kvDim, dModel, qScratch[:kvDim])
 			for i := 0; i < kvDim; i++ {
 				kScratch[i] = float32(qScratch[i])
 			}
-			mhaNativeProjectRow(layer, inRow, vwStart, vbStart, kvDim, dModel, qScratch[:kvDim])
+			mhaNativeProjectRow(&wctx, inRow, vwStart, vbStart, kvDim, dModel, qScratch[:kvDim])
 			for i := 0; i < kvDim; i++ {
 				vScratch[i] = float32(qScratch[i])
 			}
@@ -386,7 +460,7 @@ func mhaForwardNativeMAC(layer *VolumetricLayer, input *Tensor[float32]) (preAct
 			for j := 0; j < qDim; j++ {
 				attnScratch[j] = float32(attnOut[s*qDim+j])
 			}
-			mhaNativeProjectRow(layer, attnScratch, owStart, obStart, dModel, qDim, qScratch[:dModel])
+			mhaNativeProjectRow(&wctx, attnScratch, owStart, obStart, dModel, qDim, qScratch[:dModel])
 			for i := 0; i < dModel; i++ {
 				postAct.Data[base+s*dModel+i] = float32(qScratch[i])
 			}
@@ -423,7 +497,7 @@ func mhaForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (pr
 
 	qwStart, kwStart, vwStart, owStart, qbStart, kbStart, vbStart, obStart := mhaWeightOffsets(layer, dModel, qDim, kvDim)
 	_ = vbStart
-	cache := ensureMHAExactCache(layer, lay.batch, seqLen, dModel, qDim)
+	cache := ensureMHAExactCache(layer, lay.batch, seqLen, dModel, qDim, msl, kvDim)
 
 	mhaPrepareKVForForward[float32](layer, lay, msl, kvDim)
 	cacheK := layer.KVCacheK.(*Tensor[float32])
@@ -435,10 +509,9 @@ func mhaForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (pr
 	for b := 0; b < lay.batch; b++ {
 		base := lay.base(b)
 		seqBase := kvStart + b*seqLen
-		Q := make([]float64, seqLen*qDim)
-		qI8 := make([]int8, seqLen*qDim)
-		kI8Buf := make([]int8, msl*kvDim)
-		vI8Buf := make([]int8, msl*kvDim)
+		qI8 := cache.QI8[b*seqLen*qDim : b*seqLen*qDim+seqLen*qDim]
+		kI8 := cache.KI8[b*msl*kvDim : b*msl*kvDim+msl*kvDim]
+		vI8 := cache.VI8[b*msl*kvDim : b*msl*kvDim+msl*kvDim]
 		qkEps := mhaQKNormEpsilon(layer)
 		kScratch := make([]float32, kvDim)
 		vScratch := make([]float32, kvDim)
@@ -453,10 +526,10 @@ func mhaForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (pr
 			kRow := cacheK.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
 			vRow := cacheV.Data[(pos%msl)*kvDim : (pos%msl+1)*kvDim]
 
+			qOff := b*seqLen*qDim + s*qDim
+			Q := cache.QF64[qOff : qOff+qDim]
 			qProj := mhaInt8ProjectRow(w, inI8, qwStart, qbStart, qDim, dModel, scale)
-			for i := 0; i < qDim; i++ {
-				Q[s*qDim+i] = qProj[i]
-			}
+			copy(Q, qProj)
 			kProj := mhaInt8ProjectRow(w, inI8, kwStart, kbStart, kvDim, dModel, scale)
 			vProj := mhaInt8ProjectRow(w, inI8, vwStart, vbStart, kvDim, dModel, scale)
 			for i := 0; i < kvDim; i++ {
@@ -467,7 +540,7 @@ func mhaForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (pr
 			copy(vRow, vScratch)
 
 			if len(layer.QNormWeight) > 0 {
-				applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
+				applyPerHeadRMSNormFloat64(Q, layer.QNormWeight, numHeads, headDim, qkEps)
 			}
 			if len(layer.KNormWeight) > 0 {
 				applyPerHeadRMSNormTensor(kRow, layer.KNormWeight, numKVHeads, headDim, qkEps)
@@ -479,10 +552,10 @@ func mhaForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (pr
 				for d := 0; d < half; d++ {
 					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
 					c, sVal := math.Cos(angle), math.Sin(angle)
-					qOff := s*qDim + h*headDim + d
-					v0, v1 := Q[qOff], Q[qOff+half]
-					Q[qOff] = v0*c - v1*sVal
-					Q[qOff+half] = v0*sVal + v1*c
+					hOff := h*headDim + d
+					v0, v1 := Q[hOff], Q[hOff+half]
+					Q[hOff] = v0*c - v1*sVal
+					Q[hOff+half] = v0*sVal + v1*c
 				}
 			}
 			for h := 0; h < numKVHeads; h++ {
@@ -496,15 +569,13 @@ func mhaForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (pr
 				}
 			}
 
-			qOff := b*seqLen*qDim + s*qDim
-			copy(cache.QF64[qOff:qOff+qDim], Q[s*qDim:(s+1)*qDim])
 			for i := 0; i < qDim; i++ {
-				qI8[s*qDim+i] = clampI8(int32(math.Round(Q[s*qDim+i] / float64(scale))))
+				qI8[s*qDim+i] = clampI8(int32(math.Round(Q[i] / float64(scale))))
 			}
 			kBufOff := (pos % msl) * kvDim
 			for i := 0; i < kvDim; i++ {
-				kI8Buf[kBufOff+i] = clampI8(int32(math.Round(float64(kRow[i]) / float64(scale))))
-				vI8Buf[kBufOff+i] = clampI8(int32(math.Round(float64(vRow[i]) / float64(scale))))
+				kI8[kBufOff+i] = clampI8(int32(math.Round(float64(kRow[i]) / float64(scale))))
+				vI8[kBufOff+i] = clampI8(int32(math.Round(float64(vRow[i]) / float64(scale))))
 			}
 		}
 
@@ -524,14 +595,14 @@ func mhaForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (pr
 				kvHead := h / headsPerKV
 				for kPos := 0; kPos < nPos; kPos++ {
 					kIdx := kPos % msl
-					intScores[kPos] = int8HeadDot(qI8, kI8Buf, s*qDim+h*headDim, kIdx*kvDim+kvHead*headDim, headDim)
+					intScores[kPos] = int8HeadDot(qI8, kI8, s*qDim+h*headDim, kIdx*kvDim+kvHead*headDim, headDim)
 				}
 				probs := intAttnSoftmaxU8(intScores, invSqrtHead)
 				for d := 0; d < headDim; d++ {
 					var acc int32
 					for kPos := 0; kPos < nPos; kPos++ {
 						kIdx := kPos % msl
-						acc += int32(probs[kPos]) * int32(vI8Buf[kIdx*kvDim+kvHead*headDim+d])
+						acc += int32(probs[kPos]) * int32(vI8[kIdx*kvDim+kvHead*headDim+d])
 					}
 					attnOut[s*qDim+h*headDim+d] = float64(clampI8(acc>>8)) * float64(scale)
 				}
@@ -557,7 +628,8 @@ func mhaForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (pr
 }
 
 func mhaBackwardNativeMAC(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32]) {
-	dModel, numHeads, numKVHeads, headDim, qDim, kvDim := mhaLayerDims(layer)
+	wctx := newNativeWeightCtx(layer)
+	dModel, numHeads, _, headDim, qDim, kvDim := mhaLayerDims(layer)
 	lay := mhaParseLayout(layer, input)
 	seqLen := lay.seqLen
 	msl := layer.MaxSeqLen
@@ -572,35 +644,38 @@ func mhaBackwardNativeMAC(layer *VolumetricLayer, gradOutput, input, preAct *Ten
 	giAcc := make([]float64, len(gradInput.Data))
 	gwAcc := make([]float64, len(gradWeights.Data))
 
+	cacheK := layer.KVCacheK.(*Tensor[float32])
+	cacheV := layer.KVCacheV.(*Tensor[float32])
 	kvEnd := layer.KVOffset
+
 	for b := 0; b < lay.batch; b++ {
 		seqBase := kvEnd - lay.batch*seqLen + b*seqLen
 		gradPre := make([]float64, seqLen*qDim)
+
+		// O projection backward — attn output (preAct) × gradOutput
 		for s := 0; s < seqLen; s++ {
+			outBase := lay.outIdx(b, s, 0)
 			for i := 0; i < dModel; i++ {
-				dy := float64(gradOutput.Data[lay.outIdx(b, s, i)])
+				dy := float64(gradOutput.Data[outBase+i])
 				gwAcc[obStart+i] += dy
 				for j := 0; j < qDim; j++ {
-					preVal := 0.0
+					attnVal := 0.0
 					if j < dModel {
-						preVal = float64(preAct.Data[lay.outIdx(b, s, j)])
+						attnVal = float64(preAct.Data[outBase+j])
 					}
 					wIdx := owStart + i*qDim + j
-					gwAcc[wIdx] += preVal * dy
-					gradPre[s*qDim+j] += dy * float64(nativeWeightValueF32(layer.WeightStore, layer.DType, wIdx))
+					gwAcc[wIdx] += attnVal * dy
+					gradPre[s*qDim+j] += dy * wctx.weightF64(wIdx)
 				}
 			}
 		}
-
-		cacheK := layer.KVCacheK.(*Tensor[float32])
-		cacheV := layer.KVCacheV.(*Tensor[float32])
 
 		Q := make([]float64, seqLen*qDim)
 		qkEps := mhaQKNormEpsilon(layer)
 		for s := 0; s < seqLen; s++ {
 			inBase := lay.inIdx(b, s, 0)
 			inRow := input.Data[inBase : inBase+dModel]
-			mhaNativeProjectRow(layer, inRow, qwStart, qbStart, qDim, dModel, Q[s*qDim:(s+1)*qDim])
+			mhaNativeProjectRow(&wctx, inRow, qwStart, qbStart, qDim, dModel, Q[s*qDim:(s+1)*qDim])
 			if len(layer.QNormWeight) > 0 {
 				applyPerHeadRMSNormFloat64(Q[s*qDim:(s+1)*qDim], layer.QNormWeight, numHeads, headDim, qkEps)
 			}
@@ -619,109 +694,33 @@ func mhaBackwardNativeMAC(layer *VolumetricLayer, gradOutput, input, preAct *Ten
 			}
 		}
 
-		headsPerKV := numHeads / numKVHeads
-		attnScale := 1.0 / math.Sqrt(float64(headDim))
-		gQ := make([]float64, seqLen*qDim)
-		gK := make([]float64, msl*kvDim)
-		gV := make([]float64, msl*kvDim)
-
-		for h := 0; h < numHeads; h++ {
-			kvHead := h / headsPerKV
-			for qPos := 0; qPos < seqLen; qPos++ {
-				currentTotalPos := seqBase + qPos
-				scores := make([]float64, currentTotalPos+1)
-				maxScore := float64(-1e9)
-				for kPos := 0; kPos <= currentTotalPos; kPos++ {
-					kIdx := kPos % msl
-					var dot float64
-					for d := 0; d < headDim; d++ {
-						dot += Q[qPos*qDim+h*headDim+d] * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
-					}
-					score := dot * attnScale
-					scores[kPos] = score
-					if score > maxScore {
-						maxScore = score
-					}
-				}
-				var expSum float64
-				probs := make([]float64, currentTotalPos+1)
-				for kPos := 0; kPos <= currentTotalPos; kPos++ {
-					probs[kPos] = math.Exp(scores[kPos] - maxScore)
-					expSum += probs[kPos]
-				}
-				for kPos := 0; kPos <= currentTotalPos; kPos++ {
-					probs[kPos] /= expSum
-				}
-				for d := 0; d < headDim; d++ {
-					dy := gradPre[qPos*qDim+h*headDim+d]
-					var dSSum float64
-					for kPos := 0; kPos <= currentTotalPos; kPos++ {
-						vIdx := kPos % msl
-						gV[vIdx*kvDim+kvHead*headDim+d] += probs[kPos] * dy
-						dSSum += float64(cacheV.Data[vIdx*kvDim+kvHead*headDim+d]) * dy * probs[kPos]
-					}
-					for kPos := 0; kPos <= currentTotalPos; kPos++ {
-						kIdx := kPos % msl
-						dScore := (probs[kPos]*dy*float64(cacheV.Data[kIdx*kvDim+kvHead*headDim+d]) - probs[kPos]*dSSum) * attnScale
-						gQ[qPos*qDim+h*headDim+d] += dScore * float64(cacheK.Data[kIdx*kvDim+kvHead*headDim+d])
-						gK[kIdx*kvDim+kvHead*headDim+d] += dScore * Q[qPos*qDim+h*headDim+d]
-					}
-				}
-			}
-		}
-
-		half := headDim / 2
-		theta := mhaRoPETheta(layer)
-		for s := 0; s < seqLen; s++ {
-			pos := seqBase + s
-			for h := 0; h < numHeads; h++ {
-				for d := 0; d < half; d++ {
-					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-					c, sVal := math.Cos(angle), math.Sin(angle)
-					qOff := s*qDim + h*headDim + d
-					v0, v1 := gQ[qOff], gQ[qOff+half]
-					gQ[qOff] = v0*c + v1*sVal
-					gQ[qOff+half] = -v0*sVal + v1*c
-				}
-			}
-			kIdx := pos % msl
-			for h := 0; h < numKVHeads; h++ {
-				for d := 0; d < half; d++ {
-					angle := float64(pos) / math.Pow(theta, float64(2*d)/float64(headDim))
-					c, sVal := math.Cos(angle), math.Sin(angle)
-					kOff := kIdx*kvDim + h*headDim + d
-					v0, v1 := gK[kOff], gK[kOff+half]
-					gK[kOff] = v0*c + v1*sVal
-					gK[kOff+half] = -v0*sVal + v1*c
-				}
-			}
-		}
+		gQ, gK, gV := mhaAttentionBackwardFloat(layer, lay, seqLen, msl, seqBase, Q, gradPre, cacheK, cacheV)
 
 		for s := 0; s < seqLen; s++ {
 			kIdx := (seqBase + s) % msl
+			inBase := lay.inIdx(b, s, 0)
+			inRow := input.Data[inBase : inBase+dModel]
 			for i := 0; i < qDim; i++ {
 				dq := gQ[s*qDim+i]
 				gwAcc[qbStart+i] += dq
-				inBase := lay.inIdx(b, s, 0)
-				inRow := input.Data[inBase : inBase+dModel]
 				for j := 0; j < dModel; j++ {
 					wIdx := qwStart + i*dModel + j
 					inIdx := lay.inIdx(b, s, j)
-					gwAcc[wIdx] += nativeGradW(layer, inRow[j], dq)
-					giAcc[inIdx] += nativeGradX(layer, wIdx, dq)
+					gwAcc[wIdx] += wctx.gradWTerm(inRow[j], dq)
+					giAcc[inIdx] += wctx.gradXAt(wIdx, dq)
 				}
 			}
 			for i := 0; i < kvDim; i++ {
 				dk, dv := gK[kIdx*kvDim+i], gV[kIdx*kvDim+i]
 				gwAcc[kbStart+i] += dk
 				gwAcc[vbStart+i] += dv
-				inBase := lay.inIdx(b, s, 0)
-				inRow := input.Data[inBase : inBase+dModel]
 				for j := 0; j < dModel; j++ {
 					inIdx := lay.inIdx(b, s, j)
-					gwAcc[kwStart+i*dModel+j] += nativeGradW(layer, inRow[j], dk)
-					gwAcc[vwStart+i*dModel+j] += nativeGradW(layer, inRow[j], dv)
-					giAcc[inIdx] += nativeGradX(layer, kwStart+i*dModel+j, dk) + nativeGradX(layer, vwStart+i*dModel+j, dv)
+					kwIdx := kwStart + i*dModel + j
+					vwIdx := vwStart + i*dModel + j
+					gwAcc[kwIdx] += wctx.gradWTerm(inRow[j], dk)
+					gwAcc[vwIdx] += wctx.gradWTerm(inRow[j], dv)
+					giAcc[inIdx] += wctx.gradXAt(kwIdx, dk) + wctx.gradXAt(vwIdx, dv)
 				}
 			}
 		}
@@ -748,11 +747,11 @@ func mhaBackwardIntegerNative(layer *VolumetricLayer, gradOutput, input, preAct 
 		return mhaBackwardNativeMAC(layer, gradOutput, input, preAct)
 	}
 	cache := layer.ExactDense
-	if cache == nil || len(cache.InputI8) == 0 || len(cache.QF64) == 0 {
+	if cache == nil || len(cache.InputI8) == 0 || len(cache.QF64) == 0 || len(cache.QI8) == 0 {
 		return mhaBackwardNativeMAC(layer, gradOutput, input, preAct)
 	}
 
-	dModel, _, _, _, qDim, kvDim := mhaLayerDims(layer)
+	dModel, numHeads, numKVHeads, headDim, qDim, kvDim := mhaLayerDims(layer)
 	lay := mhaParseLayout(layer, input)
 	seqLen := lay.seqLen
 	msl := layer.MaxSeqLen
@@ -761,6 +760,7 @@ func mhaBackwardIntegerNative(layer *VolumetricLayer, gradOutput, input, preAct 
 	}
 	qwStart, kwStart, vwStart, owStart, qbStart, kbStart, vbStart, obStart := mhaWeightOffsets(layer, dModel, qDim, kvDim)
 	_ = obStart
+	invSqrtHead := 1.0 / math.Sqrt(float64(headDim))
 
 	lrShift := learningRateToBitShift(layer.Network.ExactNativeLR)
 	gradW := make([]int32, len(w))
@@ -768,20 +768,21 @@ func mhaBackwardIntegerNative(layer *VolumetricLayer, gradOutput, input, preAct 
 	gradWeights = NewTensor[float32](len(w))
 	giAcc := make([]int32, len(gradInput.Data))
 
-	cacheK := layer.KVCacheK.(*Tensor[float32])
-	cacheV := layer.KVCacheV.(*Tensor[float32])
 	kvEnd := layer.KVOffset
 
 	for b := 0; b < lay.batch; b++ {
 		seqBase := kvEnd - lay.batch*seqLen + b*seqLen
 		gradPre := make([]float64, seqLen*qDim)
+		qI8 := cache.QI8[b*seqLen*qDim : b*seqLen*qDim+seqLen*qDim]
+		kI8 := cache.KI8[b*msl*kvDim : b*msl*kvDim+msl*kvDim]
+		vI8 := cache.VI8[b*msl*kvDim : b*msl*kvDim+msl*kvDim]
 
 		// O projection backward — int8 MAC (input = cached attn int8)
 		for s := 0; s < seqLen; s++ {
 			attnOff := b*seqLen*qDim + s*qDim
 			attnI8 := cache.PreI8[attnOff : attnOff+qDim]
 			for i := 0; i < dModel; i++ {
-				g := int32(math.Round(float64(gradOutput.Data[lay.outIdx(b, s, i)]) / float64(scale)))
+				g := gradF64ToI32(float64(gradOutput.Data[lay.outIdx(b, s, i)]), scale)
 				gradW[obStart+i] += g
 				int8AccumWeightGrad(gradW, w, attnI8, g, owStart+i*qDim, qDim)
 				for j := 0; j < qDim; j++ {
@@ -790,21 +791,25 @@ func mhaBackwardIntegerNative(layer *VolumetricLayer, gradOutput, input, preAct 
 			}
 		}
 
-		Q := cache.QF64[b*seqLen*qDim : b*seqLen*qDim+seqLen*qDim]
-		gQ, gK, gV := mhaAttentionBackwardFloat(layer, lay, seqLen, msl, seqBase, Q, gradPre, cacheK, cacheV)
+		gQ, gK, gV := mhaAttentionBackwardIntNative(
+			layer, seqLen, msl, seqBase,
+			qI8, kI8, vI8, gradPre,
+			qDim, kvDim, headDim, numHeads, numKVHeads,
+			invSqrtHead, scale,
+		)
 
 		// Q/K/V projection backward — int8 MAC
 		for s := 0; s < seqLen; s++ {
 			inOff := lay.inIdx(b, s, 0)
 			inI8 := cache.InputI8[b*seqLen*dModel+s*dModel : b*seqLen*dModel+(s+1)*dModel]
 			for i := 0; i < qDim; i++ {
-				g := int32(math.Round(gQ[s*qDim+i] / float64(scale)))
+				g := gradF64ToI32(gQ[s*qDim+i], scale)
 				mhaInt8LinearBackwardRow(gradW, w, inI8, g, qwStart+i*dModel, qbStart+i, dModel, giAcc, inOff)
 			}
 			kIdx := (seqBase + s) % msl
 			for i := 0; i < kvDim; i++ {
-				dk := int32(math.Round(gK[kIdx*kvDim+i] / float64(scale)))
-				dv := int32(math.Round(gV[kIdx*kvDim+i] / float64(scale)))
+				dk := gradF64ToI32(gK[kIdx*kvDim+i], scale)
+				dv := gradF64ToI32(gV[kIdx*kvDim+i], scale)
 				mhaInt8LinearBackwardRow(gradW, w, inI8, dk, kwStart+i*dModel, kbStart+i, dModel, giAcc, inOff)
 				mhaInt8LinearBackwardRow(gradW, w, inI8, dv, vwStart+i*dModel, vbStart+i, dModel, giAcc, inOff)
 			}

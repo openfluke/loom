@@ -19,6 +19,9 @@ type DenseExactCache struct {
 	PreI8          []int8    // MHA: attn output int8 before O-proj; else pre-activation
 	PostI8         []int8
 	QF64           []float64 // MHA: Q after RoPE (for attention backward)
+	QI8            []int8    // MHA: quantized Q after RoPE
+	KI8            []int8    // MHA: int8 KV cache (batch*msl*kvDim)
+	VI8            []int8    // MHA: int8 V cache (batch*msl*kvDim)
 	WeightsUpdated bool
 }
 
