@@ -372,6 +372,11 @@ func MHAForwardPackedTernaryCPU[T Numeric](layer *VolumetricLayer, input *Tensor
 
 // MHABackwardPolymorphic calculates gradients for the MHA layer.
 func MHABackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if gi, gw, ok := tryMHABackwardSimd(layer, gradOutput, input, preAct); ok {
+			return gi, gw
+		}
+	}
 	dModel := layer.DModel
 	numHeads := layer.NumHeads
 	numKVHeads := layer.NumKVHeads
