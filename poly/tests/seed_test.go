@@ -92,6 +92,29 @@ func TestRNNManifestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLSTMManifestRoundTrip(t *testing.T) {
+	sizes := []int{4, 8, 3}
+	topo := LSTMTopologySeed("test", sizes)
+	m, err := BuildLSTMManifest(topo, sizes, []string{"float32", "int8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildLSTMManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	net, err := BuildLSTMVolumetricFromManifest(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extracted, err := ManifestFromLSTMNetwork(net, topo, sizes, []string{"float32", "int8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extracted.NetworkFP != m.NetworkFP {
+		t.Fatalf("network fp mismatch: %x %x", extracted.NetworkFP, m.NetworkFP)
+	}
+}
+
 func TestBuildSeededEntityTransformer(t *testing.T) {
 	seed := SeedFrom("test", "lm")
 	dims := HFDecoderDims{
