@@ -203,21 +203,18 @@ func TweenBackwardLayerwise[T Numeric](n *VolumetricNetwork, s *TweenState[T], t
 		case LayerDense:
 			outSize := l.OutputHeight
 			inSize := l.InputHeight
-			if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
-				weights := l.WeightStore.Master
+			if tweenHasWeights(l) {
 				for in := 0; in < inSize; in++ {
 					importance := float32(0)
 					totalWeight := float32(0)
 					for out := 0; out < outSize && out < len(currentTarget.Data); out++ {
 						wIdx := in*outSize + out
-						if wIdx < len(weights) {
-							w := weights[wIdx]
-							importance += w * float32(currentTarget.Data[out])
-							if w < 0 {
-								totalWeight -= w
-							} else {
-								totalWeight += w
-							}
+						w := tweenWeightF32(l, wIdx)
+						importance += w * float32(currentTarget.Data[out])
+						if w < 0 {
+							totalWeight -= w
+						} else {
+							totalWeight += w
 						}
 					}
 					// Only assign target if enough weight connects this neuron
@@ -230,11 +227,7 @@ func TweenBackwardLayerwise[T Numeric](n *VolumetricNetwork, s *TweenState[T], t
 			// For RNN, calculate input target using wIH
 			inSize := l.InputChannels
 			hiddenSize := l.OutputHeight
-			if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
-				weights := l.WeightStore.Master
-				ihSize := hiddenSize * inSize
-				wIH := weights[0:ihSize]
-
+			if tweenHasWeights(l) {
 				seqLen := len(input.Data) / inSize
 				for s := 0; s < seqLen; s++ {
 					for in := 0; in < inSize; in++ {
@@ -242,8 +235,38 @@ func TweenBackwardLayerwise[T Numeric](n *VolumetricNetwork, s *TweenState[T], t
 						totalWeight := float32(0)
 						for h := 0; h < hiddenSize; h++ {
 							wIdx := h*inSize + in
-							if wIdx < len(wIH) {
-								w := wIH[wIdx]
+							w := tweenWeightF32(l, wIdx)
+							importance += w * float32(currentTarget.Data[s*hiddenSize+h])
+							if w < 0 {
+								totalWeight -= w
+							} else {
+								totalWeight += w
+							}
+						}
+						if totalWeight > 0.01 {
+							estimatedTarget.Data[s*inSize+in] = T(importance / totalWeight)
+						}
+					}
+				}
+			}
+		case LayerLSTM:
+			// For LSTM, calculate target by aggregating signals through all 4 gates
+			inSize := l.InputChannels
+			hiddenSize := l.OutputHeight
+			if tweenHasWeights(l) {
+				ihSize := hiddenSize * inSize
+				gateWeightCount := ihSize + hiddenSize*hiddenSize + hiddenSize
+
+				seqLen := len(input.Data) / inSize
+				for s := 0; s < seqLen; s++ {
+					for in := 0; in < inSize; in++ {
+						importance := float32(0)
+						totalWeight := float32(0)
+						for g := 0; g < 4; g++ {
+							gateOffset := g * gateWeightCount
+							for h := 0; h < hiddenSize; h++ {
+								wIdx := gateOffset + h*inSize + in
+								w := tweenWeightF32(l, wIdx)
 								importance += w * float32(currentTarget.Data[s*hiddenSize+h])
 								if w < 0 {
 									totalWeight -= w
@@ -258,75 +281,24 @@ func TweenBackwardLayerwise[T Numeric](n *VolumetricNetwork, s *TweenState[T], t
 					}
 				}
 			}
-		case LayerLSTM:
-			// For LSTM, calculate target by aggregating signals through all 4 gates
-			inSize := l.InputChannels
-			hiddenSize := l.OutputHeight
-			if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
-				weights := l.WeightStore.Master
-				// In LSTMForwardPolymorphic, each gate weight size is ihSize + hhSize + bSize
-				// gateWeightCount = ihSize + hhSize + bSize
-				ihSize := hiddenSize * inSize
-				hhSize := hiddenSize * hiddenSize
-				bSize := hiddenSize
-				gateWeightCount := ihSize + hhSize + bSize
-
-				// Map the 4 gates (using only Input-to-Hidden for back-targeting simplicity)
-				gates := [][]float32{
-					weights[0:ihSize], // Input (IH part)
-					weights[gateWeightCount : gateWeightCount+ihSize],     // Forget (IH part)
-					weights[2*gateWeightCount : 2*gateWeightCount+ihSize], // Cell (IH part)
-					weights[3*gateWeightCount : 3*gateWeightCount+ihSize], // Output (IH part)
-				}
-
-				seqLen := len(input.Data) / inSize
-				for s := 0; s < seqLen; s++ {
-					for in := 0; in < inSize; in++ {
-						importance := float32(0)
-						totalWeight := float32(0)
-						for g := 0; g < 4; g++ {
-							wIH := gates[g][0:ihSize]
-							for h := 0; h < hiddenSize; h++ {
-								wIdx := h*inSize + in
-								if wIdx < len(wIH) {
-									w := wIH[wIdx]
-									importance += w * float32(currentTarget.Data[s*hiddenSize+h])
-									if w < 0 {
-										totalWeight -= w
-									} else {
-										totalWeight += w
-									}
-								}
-							}
-						}
-						if totalWeight > 0.01 {
-							estimatedTarget.Data[s*inSize+in] = T(importance / totalWeight)
-						}
-					}
-				}
-			}
 		case LayerMultiHeadAttention:
 			// Approximation: Input should move towards a weighted combination of targets
 			// based on Output projection weights (most direct connection).
 			dModel := l.OutputHeight
-			if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {
-				weights := l.WeightStore.Master
+			if tweenHasWeights(l) {
 				seqLen := len(input.Data) / dModel
 				for s := 0; s < seqLen; s++ {
 					for in := 0; in < dModel; in++ {
 						importance := float32(0)
 						totalWeight := float32(0)
 						for out := 0; out < dModel && out < len(currentTarget.Data)/seqLen; out++ {
-							// Output weights: [dModel, dModel]
 							wIdx := in*dModel + out
-							if wIdx < len(weights) {
-								w := weights[wIdx]
-								importance += w * float32(currentTarget.Data[s*dModel+out])
-								if w < 0 {
-									totalWeight -= w
-								} else {
-									totalWeight += w
-								}
+							w := tweenWeightF32(l, wIdx)
+							importance += w * float32(currentTarget.Data[s*dModel+out])
+							if w < 0 {
+								totalWeight -= w
+							} else {
+								totalWeight += w
 							}
 						}
 						if totalWeight > 0.01 {
@@ -477,6 +449,10 @@ func applyChainRuleGradients[T Numeric](n *VolumetricNetwork, s *TweenState[T], 
 
 // applyTweenGapsLayerwise updates weights using the Local Error Signal (Target - Actual).
 func applyTweenGapsLayerwise[T Numeric](n *VolumetricNetwork, s *TweenState[T], lr float32) {
+	if tweenUsesNativeExact(n) {
+		applyTweenGapsLayerwiseNative(n, s, lr)
+		return
+	}
 	for i := 0; i < s.TotalLayers; i++ {
 		// 1. LINK BUDGET GATING
 		budget := s.LinkBudgets[i]

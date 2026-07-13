@@ -57,6 +57,7 @@ func main() {
 		"[13] Apple GPU bridge — Loom ↔ libloom_accel_apple.dylib (Metal) · all layers/dtypes (→ "+lucytesting.DefaultOutputDir+"/apple.txt)\n"+
 		"[14] Native layer suite — per-layer dtype forward/backward/train (→ "+lucytesting.DefaultOutputDir+"/native_layers.txt)\n"+
 		"[15] Cross-path CPU suite — SC/MC/SIMD vs native vs native-SIMD (→ "+lucytesting.DefaultOutputDir+"/cross_path_layers.txt)\n"+
+		"[16] Tween native suite — native SC vs native-SIMD target propagation (→ "+lucytesting.DefaultOutputDir+"/tween_native_layers.txt)\n"+
 		"Choice [1]: ", "1")
 	switch strings.TrimSpace(mode) {
 	case "2":
@@ -88,6 +89,8 @@ func main() {
 		examples.RunDenseNativeMenu(reader)
 	case "15":
 		examples.RunCrossPathMenu(reader)
+	case "16":
+		examples.RunTweenNativeMenu(reader)
 	default:
 		runHuggingFaceMode(reader)
 	}
