@@ -9,7 +9,14 @@ func useLSTMNativeExact(layer *VolumetricLayer) bool {
 }
 
 func useLSTMTrueNative(layer *VolumetricLayer) bool {
-	return useLSTMNativeExact(layer) && IsTrueNativeDType(layer.DType)
+	if !useLSTMNativeExact(layer) || !IsTrueNativeDType(layer.DType) {
+		return false
+	}
+	switch layer.DType {
+	case DTypeBinary, DTypeInt4:
+		return false
+	}
+	return true
 }
 
 func LSTMForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
@@ -74,6 +81,10 @@ func lstmGateLayout(hid, inSz int) (ih, hh, b, gateSz int) {
 }
 
 func lstmGateWeights(w []int8, gateSz, gate int) []int8 {
+	return w[gate*gateSz : (gate+1)*gateSz]
+}
+
+func lstmGateWeightsU8(w []uint8, gateSz, gate int) []uint8 {
 	return w[gate*gateSz : (gate+1)*gateSz]
 }
 
@@ -273,7 +284,7 @@ func lstmBackwardIntegerNative(layer *VolumetricLayer, gradOutput, input, preAct
 		}
 	}
 
-	applyStochasticInt8Update(w, gradW, lrShift)
+	applyStochasticNativeI8Update(layer.DType, w, gradW, lrShift)
 	publishInt8Weights(ws, layer.DType, w)
 	markLayerNativeWeightsUpdated(layer, ws, layer.DType, ws.Versions[layer.DType].([]uint8))
 	return gradInput, gradWeights
