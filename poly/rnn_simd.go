@@ -20,6 +20,15 @@ func tryRNNForwardSimd[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (pre
 func rnnForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return rnnForwardSimdF32WithWeights(layer, input, wData)
+}
+
+func rnnForwardSimdF32WithWeights(layer *VolumetricLayer, input *Tensor[float32], wData []float32) (preAct, postAct *Tensor[float32]) {
 	batchSize := input.Shape[0]
 	inputSize := layer.InputHeight
 	hiddenSize := layer.OutputHeight
@@ -29,12 +38,6 @@ func rnnForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, 
 
 	preAct = NewTensor[float32](batchSize, seqLength, hiddenSize)
 	postAct = NewTensor[float32](batchSize, seqLength, hiddenSize)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	ihSize, hhSize := hiddenSize*inputSize, hiddenSize*hiddenSize
 	wIH, wHH, bH := wData[0:ihSize], wData[ihSize:ihSize+hhSize], wData[ihSize+hhSize:]

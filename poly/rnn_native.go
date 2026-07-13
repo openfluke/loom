@@ -18,10 +18,17 @@ func RNNForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 		return RNNForwardTiled(layer, input)
 	}
 	var preF, postF *Tensor[float32]
-	if useRNNTrueNative(layer) {
-		preF, postF = rnnForwardIntegerNative(layer, in)
-	} else {
-		preF, postF = rnnForwardNativeMAC(layer, in)
+	if layerUseSimdForward(layer) {
+		if pre, post, simdOK := tryRNNForwardNativeSimd(layer, in); simdOK {
+			preF, postF = pre, post
+		}
+	}
+	if preF == nil {
+		if useRNNTrueNative(layer) {
+			preF, postF = rnnForwardIntegerNative(layer, in)
+		} else {
+			preF, postF = rnnForwardNativeMAC(layer, in)
+		}
 	}
 	pre, post, ok2 := nativeTensorsAs[T](preF, postF)
 	if !ok2 {
@@ -38,10 +45,17 @@ func RNNBackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput, input
 		return RNNBackwardTiled(layer, gradOutput, input, preAct)
 	}
 	var giF, gwF *Tensor[float32]
-	if useRNNTrueNative(layer) {
-		giF, gwF = rnnBackwardIntegerNative(layer, goT, in, preF)
-	} else {
-		giF, gwF = rnnBackwardNativeMAC(layer, goT, in, preF)
+	if layerUseSimdForward(layer) {
+		if gi, gw, simdOK := tryRNNBackwardNativeSimd(layer, goT, in, preF); simdOK {
+			giF, gwF = gi, gw
+		}
+	}
+	if giF == nil {
+		if useRNNTrueNative(layer) {
+			giF, gwF = rnnBackwardIntegerNative(layer, goT, in, preF)
+		} else {
+			giF, gwF = rnnBackwardNativeMAC(layer, goT, in, preF)
+		}
 	}
 	gi, okGI := nativeTensorAs[T](giF)
 	gw, okGW := nativeTensorAs[T](gwF)
