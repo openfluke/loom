@@ -13,7 +13,8 @@ func trySwiGLUForwardNativeSimd(layer *VolumetricLayer, input *Tensor[float32]) 
 		return nil, nil, false
 	}
 	if usePackedTernaryCPU(layer) {
-		return nil, nil, false
+		pre, post := SwiGLUForwardPackedTernaryCPU(layer, input)
+		return pre, post, true
 	}
 	if useSwiGLUTrueNative(layer) {
 		return swigluForwardIntegerNativeSimd(layer, input)
@@ -28,6 +29,13 @@ func trySwiGLUBackwardNativeSimd(layer *VolumetricLayer, gradOutput, input, preA
 	if !layerUseSimdForward(layer) || !simd.SimdEnabled() {
 		return nil, nil, false
 	}
+	// Packed ternary forward uses BitNet matvec; backward gradients match MAC SIMD on cached f32 weights.
+	if usePackedTernaryCPU(layer) {
+		if !swigluLayerSimdViable(layer) {
+			return nil, nil, false
+		}
+		return swigluBackwardNativeMACSimd(layer, gradOutput, input, preAct)
+	}
 	if useSwiGLUTrueNative(layer) {
 		return swigluBackwardIntegerNativeSimd(layer, gradOutput, input, preAct)
 	}
@@ -38,23 +46,37 @@ func trySwiGLUBackwardNativeSimd(layer *VolumetricLayer, gradOutput, input, preA
 }
 
 func swigluForwardNativeMACSimd(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32], ok bool) {
-	wctx := newNativeWeightCtx(layer)
-	count := layer.WeightStore.WeightCount(layer.DType)
+	if layer.DType == DTypeFloat32 {
+		preAct, postAct = swigluForwardSimdF32(layer, input)
+		return preAct, postAct, true
+	}
+	ws := layer.WeightStore
+	count := ws.WeightCount(layer.DType)
 	if count <= 0 {
 		return nil, nil, false
 	}
-	wData := wctx.materializeF32Weights(count)
+	wData := ws.NativeSimdF32Weights(layer.DType)
+	if wData == nil {
+		return nil, nil, false
+	}
 	preAct, postAct = swigluForwardSimdF32WithWeights(layer, input, wData)
 	return preAct, postAct, true
 }
 
 func swigluBackwardNativeMACSimd(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32], ok bool) {
-	wctx := newNativeWeightCtx(layer)
-	count := layer.WeightStore.WeightCount(layer.DType)
+	if layer.DType == DTypeFloat32 {
+		gradInput, gradWeights = swigluBackwardSimdF32(layer, gradOutput, input, preAct)
+		return gradInput, gradWeights, true
+	}
+	ws := layer.WeightStore
+	count := ws.WeightCount(layer.DType)
 	if count <= 0 {
 		return nil, nil, false
 	}
-	wData := wctx.materializeF32Weights(count)
+	wData := ws.NativeSimdF32Weights(layer.DType)
+	if wData == nil {
+		return nil, nil, false
+	}
 	gradInput, gradWeights = swigluBackwardSimdF32WithWeights(layer, gradOutput, input, preAct, wData)
 	return gradInput, gradWeights, true
 }
@@ -70,7 +92,7 @@ func swigluForwardIntegerNativeSimd(layer *VolumetricLayer, input *Tensor[float3
 	seqLen := len(input.Data) / inSz
 	gateW, upW, downW, gateB, upB, downB := swigluWeightLayout(inSz, interSz)
 
-	w := nativeWeightsI8(ws, layer.DType)
+	w := ws.NativeSimdI8Weights(layer.DType)
 	if w == nil {
 		return nil, nil, false
 	}
@@ -124,7 +146,7 @@ func swigluBackwardIntegerNativeSimd(layer *VolumetricLayer, gradOutput, input, 
 	_ = upB
 	_ = downB
 
-	w := nativeWeightsI8(ws, layer.DType)
+	w := ws.NativeSimdI8Weights(layer.DType)
 	if w == nil {
 		return nil, nil, false
 	}
