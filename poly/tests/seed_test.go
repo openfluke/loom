@@ -69,6 +69,29 @@ func TestMHAManifestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRNNManifestRoundTrip(t *testing.T) {
+	sizes := []int{4, 8, 3}
+	topo := RNNTopologySeed("test", sizes)
+	m, err := BuildRNNManifest(topo, sizes, []string{"float32", "int8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildRNNManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	net, err := BuildRNNVolumetricFromManifest(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extracted, err := ManifestFromRNNNetwork(net, topo, sizes, []string{"float32", "int8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extracted.NetworkFP != m.NetworkFP {
+		t.Fatalf("network fp mismatch: %x %x", extracted.NetworkFP, m.NetworkFP)
+	}
+}
+
 func TestBuildSeededEntityTransformer(t *testing.T) {
 	seed := SeedFrom("test", "lm")
 	dims := HFDecoderDims{
