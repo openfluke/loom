@@ -1,6 +1,9 @@
 package poly
 
-import "math"
+import (
+	"math"
+	"math/rand"
+)
 
 // embedding_native.go — embedding lookup/update in storage dtype (no bulk GetActive decode).
 
@@ -9,7 +12,23 @@ func useEmbeddingNativeExact(layer *VolumetricLayer) bool {
 }
 
 func useEmbeddingTrueNative(layer *VolumetricLayer) bool {
-	return useEmbeddingNativeExact(layer) && IsTrueNativeDType(layer.DType)
+	if !useEmbeddingNativeExact(layer) || !IsTrueNativeDType(layer.DType) {
+		return false
+	}
+	switch layer.DType {
+	case DTypeBinary, DTypeInt4:
+		return false
+	}
+	return true
+}
+
+func embeddingTrueNativeUsesU8(dtype DType) bool {
+	switch dtype {
+	case DTypeUint8, DTypeUint4, DTypeUint2:
+		return true
+	default:
+		return false
+	}
 }
 
 func embeddingDim(layer *VolumetricLayer) int {
@@ -57,7 +76,11 @@ func EmbeddingForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tenso
 	}
 	if preF == nil {
 		if useEmbeddingTrueNative(layer) {
-			preF, postF = embeddingForwardIntegerNative(layer, in)
+			if embeddingTrueNativeUsesU8(layer.DType) {
+				preF, postF = embeddingForwardUIntegerNative(layer, in)
+			} else {
+				preF, postF = embeddingForwardIntegerNative(layer, in)
+			}
 		} else {
 			preF, postF = embeddingForwardNativeMAC(layer, in)
 		}
@@ -83,7 +106,11 @@ func EmbeddingBackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput,
 	}
 	if giF == nil {
 		if useEmbeddingTrueNative(layer) {
-			giF, gwF = embeddingBackwardIntegerNative(layer, goT, in)
+			if embeddingTrueNativeUsesU8(layer.DType) {
+				giF, gwF = embeddingBackwardUIntegerNative(layer, goT, in)
+			} else {
+				giF, gwF = embeddingBackwardIntegerNative(layer, goT, in)
+			}
 		} else {
 			giF, gwF = embeddingBackwardNativeMAC(layer, goT, in)
 		}
@@ -103,7 +130,7 @@ func embeddingForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32
 	if scale == 0 {
 		scale = 1
 	}
-	w := nativeWeightsI8(ws, layer.DType)
+	w := ws.NativeSimdI8Weights(layer.DType)
 	if w == nil {
 		return embeddingForwardNativeMAC(layer, input)
 	}
@@ -172,7 +199,7 @@ func embeddingBackwardIntegerNative(layer *VolumetricLayer, gradOutput, input *T
 	if scale == 0 {
 		scale = 1
 	}
-	w := nativeWeightsI8(ws, layer.DType)
+	w := ws.NativeSimdI8Weights(layer.DType)
 	if w == nil {
 		return embeddingBackwardNativeMAC(layer, gradOutput, input)
 	}
@@ -208,8 +235,111 @@ func embeddingBackwardIntegerNative(layer *VolumetricLayer, gradOutput, input *T
 	}
 
 	lrShift := learningRateToBitShift(layer.Network.ExactNativeLR)
-	applyStochasticInt8Update(w, gradW, lrShift)
+	applyStochasticNativeI8Update(layer.DType, w, gradW, lrShift)
 	publishInt8Weights(ws, layer.DType, w)
+	markLayerNativeWeightsUpdated(layer, ws, layer.DType, ws.Versions[layer.DType].([]uint8))
+	return gradInput, gradWeights
+}
+
+func embeddingForwardUIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
+	ws := layer.WeightStore
+	ws.Morph(layer.DType)
+	scale := ws.Scale
+	if scale == 0 {
+		scale = 1
+	}
+	w := ws.NativeSimdU8Weights(layer.DType)
+	if w == nil {
+		return embeddingForwardNativeMAC(layer, input)
+	}
+
+	vocabSize := layer.VocabSize
+	embDim := embeddingDim(layer)
+	seqLen := embeddingTokenCount(input)
+	outShape := append([]int{}, input.Shape...)
+	outShape = append(outShape, embDim)
+	preAct = NewTensor[float32](outShape...)
+	postAct = NewTensor[float32](outShape...)
+
+	for i := 0; i < seqLen; i++ {
+		tokenID := int(input.Data[i])
+		if tokenID < 0 || tokenID >= vocabSize {
+			continue
+		}
+		rowBase := tokenID * embDim
+		outBase := i * embDim
+		for j := 0; j < embDim; j++ {
+			if rowBase+j >= len(w) {
+				break
+			}
+			v := float32(w[rowBase+j]) * scale
+			preAct.Data[outBase+j] = v
+			postAct.Data[outBase+j] = Activate(v, layer.Activation)
+		}
+	}
+	return preAct, postAct
+}
+
+func embeddingBackwardUIntegerNative(layer *VolumetricLayer, gradOutput, input *Tensor[float32]) (gradInput, gradWeights *Tensor[float32]) {
+	ws := layer.WeightStore
+	scale := ws.Scale
+	if scale == 0 {
+		scale = 1
+	}
+	w := ws.NativeSimdU8Weights(layer.DType)
+	if w == nil {
+		return embeddingBackwardNativeMAC(layer, gradOutput, input)
+	}
+
+	vocabSize := layer.VocabSize
+	embDim := embeddingDim(layer)
+	gradStride := embeddingGradStride(gradOutput, embDim)
+	seqLen := embeddingTokenCount(input)
+	wCount := len(w)
+
+	gradInput = NewTensor[float32](input.Shape...)
+	gradWeights = NewTensor[float32](wCount)
+	gradW := make([]int32, wCount)
+
+	for i := 0; i < seqLen; i++ {
+		tokenID := int(input.Data[i])
+		if tokenID < 0 || tokenID >= vocabSize {
+			continue
+		}
+		rowBase := tokenID * embDim
+		outBase := embeddingOutBase(i, gradStride)
+		if outBase+embDim > len(gradOutput.Data) {
+			continue
+		}
+		for j := 0; j < embDim; j++ {
+			idx := rowBase + j
+			if idx >= wCount {
+				break
+			}
+			g := int32(math.Round(float64(gradOutput.Data[outBase+j]) / float64(scale)))
+			gradW[idx] += g
+		}
+	}
+
+	lrShift := learningRateToBitShift(layer.Network.ExactNativeLR)
+	mask := int32((1 << lrShift) - 1)
+	for i := range w {
+		scaledGrad := gradW[i] >> lrShift
+		if (gradW[i] & mask) > rand.Int31n(1<<lrShift) {
+			scaledGrad++
+		}
+		w[i] = clampNativeU8Weight(layer.DType, clampU8(int32(w[i])-scaledGrad))
+	}
+	ws.Versions[layer.DType] = w
+	ws.Master = nil
+	if layer.ExactDense != nil {
+		layer.ExactDense.WeightsUpdated = true
+	}
+	ws.GPUWeights = make(map[DType]any)
+	if ws.CPUPacked != nil {
+		delete(ws.CPUPacked, layer.DType)
+	}
+	ws.invalidateNativeSimdCache(layer.DType)
 	markLayerNativeWeightsUpdated(layer, ws, layer.DType, ws.Versions[layer.DType].([]uint8))
 	return gradInput, gradWeights
 }

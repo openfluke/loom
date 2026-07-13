@@ -477,7 +477,6 @@ func buildLSTMNativeSuite(g GridSpec) LayerSuite {
 
 func buildEmbeddingNativeSuite(g GridSpec) LayerSuite {
 	vocab := embeddingVocab(g)
-	dims := embeddingDims(g)
 	seq := embeddingSeqLen(g)
 	acts := []string{"RELU", "RELU", "RELU", "RELU", "RELU", "SIGMOID"}
 	return LayerSuite{
@@ -485,19 +484,32 @@ func buildEmbeddingNativeSuite(g GridSpec) LayerSuite {
 		Grid:        g,
 		PrimaryType: poly.LayerEmbedding,
 		BuildJSON: func(jsonDType string) []byte {
+			dims := embeddingDims(g)
+			denseOnly := flatEndpoints(dims[len(dims)-1])
 			var b strings.Builder
 			writeNetworkHeader(&b, "loom-embedding-native", g)
 			first := true
-			appendLayerJSON(&b, &first, fmt.Sprintf(
-				`{"z":0,"y":0,"x":0,"l":0,"type":"EMBEDDING","dtype":"%s","vocab_size":%d,"embedding_dim":%d}`,
-				jsonDType, vocab, dims[0],
-			))
-			for i := 0; i < len(dims)-1; i++ {
-				appendLayerJSON(&b, &first, fmt.Sprintf(
-					`{"z":0,"y":0,"x":0,"l":%d,"type":"DENSE","activation":"%s","dtype":"%s","input_height":%d,"output_height":%d}`,
-					i+1, acts[i], jsonDType, dims[i], dims[i+1],
-				))
-			}
+			forEachGridCell(g, func(z, y, x int) {
+				if isStackOrigin(z, y, x) {
+					appendLayerJSON(&b, &first, fmt.Sprintf(
+						`{"z":%d,"y":%d,"x":%d,"l":0,"type":"EMBEDDING","dtype":"%s","vocab_size":%d,"embedding_dim":%d}`,
+						z, y, x, jsonDType, vocab, dims[0],
+					))
+					for i := 0; i < len(dims)-1; i++ {
+						appendLayerJSON(&b, &first, fmt.Sprintf(
+							`{"z":%d,"y":%d,"x":%d,"l":%d,"type":"DENSE","activation":"%s","dtype":"%s","input_height":%d,"output_height":%d}`,
+							z, y, x, i+1, acts[i], jsonDType, dims[i], dims[i+1],
+						))
+					}
+					return
+				}
+				for i := 0; i < sevenLayersPerCell; i++ {
+					appendLayerJSON(&b, &first, fmt.Sprintf(
+						`{"z":%d,"y":%d,"x":%d,"l":%d,"type":"DENSE","activation":"%s","dtype":"%s","input_height":%d,"output_height":%d}`,
+						z, y, x, i, acts[i%len(acts)], jsonDType, denseOnly[i], denseOnly[i+1],
+					))
+				}
+			})
 			b.WriteString(`]}`)
 			return []byte(b.String())
 		},

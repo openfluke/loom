@@ -23,7 +23,10 @@ func tryResidualBackwardNativeSimd(layer *VolumetricLayer, gradOutput *Tensor[fl
 
 func residualForwardSimdF32(layer *VolumetricLayer, input, skip *Tensor[float32]) *Tensor[float32] {
 	output := NewTensor[float32](input.Shape...)
-	tileSize := layer.GetCPUTileSize(layer.DType)
+	tileSize := layer.GetCPUSimdTileSize(layer.DType)
+	if tileSize <= 0 {
+		tileSize = layer.GetCPUTileSize(layer.DType)
+	}
 	if tileSize <= 0 {
 		tileSize = 1024
 	}
