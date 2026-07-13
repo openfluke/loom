@@ -167,6 +167,55 @@ func TestCNNManifestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEmbeddingManifestRoundTrip(t *testing.T) {
+	specs := []EmbeddingSpec{
+		{VocabSize: 32, EmbeddingDim: 8, SeqLen: 8},
+		{VocabSize: 32, EmbeddingDim: 8, SeqLen: 8},
+	}
+	topo := EmbeddingTopologySeed("test", specs)
+	m, err := BuildEmbeddingManifest(topo, specs, []string{"float32", "int8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildEmbeddingManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	net, err := BuildEmbeddingVolumetricFromManifest(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extracted, err := ManifestFromEmbeddingNetwork(net, topo, specs, []string{"float32", "int8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extracted.NetworkFP != m.NetworkFP {
+		t.Fatalf("network fp mismatch: %x %x", extracted.NetworkFP, m.NetworkFP)
+	}
+}
+
+func TestResidualManifestRoundTrip(t *testing.T) {
+	spec := ResidualSpec{In: 8, Out: 8}
+	topo := ResidualTopologySeed("test", spec)
+	m, err := BuildResidualManifest(topo, spec, "float32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildResidualManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	net, err := BuildResidualVolumetricFromManifest(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extracted, err := ManifestFromResidualNetwork(net, topo, spec, "float32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extracted.DenseSeed != m.DenseSeed {
+		t.Fatalf("dense seed mismatch: %x %x", extracted.DenseSeed, m.DenseSeed)
+	}
+}
+
 func TestBuildSeededEntityTransformer(t *testing.T) {
 	seed := SeedFrom("test", "lm")
 	dims := HFDecoderDims{
