@@ -498,7 +498,7 @@ func mhaForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (pr
 	if scale == 0 {
 		scale = 1
 	}
-	w := nativeWeightsI8(ws, layer.DType)
+	w := ws.NativeSimdI8Weights(layer.DType)
 	if w == nil {
 		return mhaForwardNativeMAC(layer, input)
 	}
@@ -763,7 +763,7 @@ func mhaBackwardIntegerNative(layer *VolumetricLayer, gradOutput, input, preAct 
 	if scale == 0 {
 		scale = 1
 	}
-	w := nativeWeightsI8(ws, layer.DType)
+	w := ws.NativeSimdI8Weights(layer.DType)
 	if w == nil {
 		return mhaBackwardNativeMAC(layer, gradOutput, input, preAct)
 	}

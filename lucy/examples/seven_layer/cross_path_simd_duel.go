@@ -169,6 +169,7 @@ func runCrossPathSimdDuelSuite(s LayerSuite, primary poly.LayerType) {
 
 	printSimdDuelTimingTable(s.Name, rows)
 	printSimdDuelComparisonTable(s.Name, rows)
+	printDtypeSpreadTable(s.Name, "Best SIMD path per dtype (QAT-SIMD vs Nat-SIMD)", rows, simdDuelDtypeSpreadPhases)
 	printSimdDuelTrainTable(s.Name, rows, epochs)
 	printSimdDuelTestTally(s.Name, layerTally)
 	fmt.Printf("\n  %s SIMD duel · %s: %d passed · %d failed (of %d dtypes) · tests %d/%d\n",

@@ -673,6 +673,9 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 
 	printCrossPathTimingTable(s.Name, rows, simdLayer)
 	printCrossPathComparisonTable(s.Name, rows, simdLayer)
+	if simdLayer {
+		printDtypeSpreadTable(s.Name, "Best path per dtype (SC/MC/SIMD · Nat/Nat-SIMD)", rows, crossPathDtypeSpreadPhases)
+	}
 	printCrossPathTrainTimingTable(s.Name, rows, simdLayer, epochs)
 	printCrossPathTrainComparisonTable(s.Name, rows, simdLayer)
 	printCrossPathParityTable(s.Name, rows, simdLayer)
@@ -768,6 +771,145 @@ func paradigmWinner(qat, nat namedDur) (winner, ratio, faster string) {
 		return fmt.Sprintf("Nat %s", nat.name), fmt.Sprintf("%.1f×", float64(qat.d)/float64(nat.d)), formatSimdSpeedup(qat.d, nat.d)
 	}
 	return "tie", "1.0×", "≈0%"
+}
+
+// dtypeTimed names a dtype timing sample (optional path tag: QAT SIMD-f, NatS, etc.).
+type dtypeTimed struct {
+	dtype string
+	tag   string
+	d     time.Duration
+}
+
+func (dt dtypeTimed) label() string {
+	if dt.tag == "" {
+		return dt.dtype
+	}
+	return dt.dtype + " " + dt.tag
+}
+
+func slowestFastestDtypes(rows []crossPathRow, pick func(crossPathRow) (dtypeTimed, bool)) (slow, fast dtypeTimed, ok bool) {
+	for _, r := range rows {
+		if r.Err != "" {
+			continue
+		}
+		cur, valid := pick(r)
+		if !valid || cur.d <= 0 {
+			continue
+		}
+		if !ok || fast.d == 0 || cur.d < fast.d {
+			fast = cur
+		}
+		if slow.d == 0 || cur.d > slow.d {
+			slow = cur
+		}
+		ok = true
+	}
+	return slow, fast, ok
+}
+
+func pairFromDtypeSpread(slow, fast dtypeTimed) pairCmp {
+	return makePair(slow.label(), slow.d, fast.d, fast.label())
+}
+
+func bestSimdDuelFwd(r crossPathRow) (dtypeTimed, bool) {
+	if r.fwdSimd <= 0 && r.natFwdSimd <= 0 {
+		return dtypeTimed{}, false
+	}
+	if r.natFwdSimd <= 0 || (r.fwdSimd > 0 && r.fwdSimd <= r.natFwdSimd) {
+		return dtypeTimed{r.DType, "QAT SIMD-f", r.fwdSimd}, true
+	}
+	return dtypeTimed{r.DType, "NatS-f", r.natFwdSimd}, true
+}
+
+func bestSimdDuelBwd(r crossPathRow) (dtypeTimed, bool) {
+	if r.bwdSimd <= 0 && r.natBwdSimd <= 0 {
+		return dtypeTimed{}, false
+	}
+	if r.natBwdSimd <= 0 || (r.bwdSimd > 0 && r.bwdSimd <= r.natBwdSimd) {
+		return dtypeTimed{r.DType, "QAT SIMD-b", r.bwdSimd}, true
+	}
+	return dtypeTimed{r.DType, "NatS-b", r.natBwdSimd}, true
+}
+
+func bestSimdDuelTrain(r crossPathRow) (dtypeTimed, bool) {
+	if r.trainSimd <= 0 && r.trainNativeSimd <= 0 {
+		return dtypeTimed{}, false
+	}
+	if r.trainNativeSimd <= 0 || (r.trainSimd > 0 && r.trainSimd <= r.trainNativeSimd) {
+		return dtypeTimed{r.DType, "QAT SIMD", r.trainSimd}, true
+	}
+	return dtypeTimed{r.DType, "NatS", r.trainNativeSimd}, true
+}
+
+func bestCrossPathFwd(r crossPathRow) (dtypeTimed, bool) {
+	best := fastestNamed([]namedDur{
+		{"SC-f", r.fwdSC}, {"MC-f", r.fwdMC}, {"SIMD-f", r.fwdSimd},
+		{"Nat-f", r.natFwd}, {"NatS-f", r.natFwdSimd},
+	})
+	if best.d <= 0 {
+		return dtypeTimed{}, false
+	}
+	return dtypeTimed{r.DType, best.name, best.d}, true
+}
+
+func bestCrossPathBwd(r crossPathRow) (dtypeTimed, bool) {
+	best := fastestNamed([]namedDur{
+		{"SC-b", r.bwdSC}, {"MC-b", r.bwdMC}, {"SIMD-b", r.bwdSimd},
+		{"Nat-b", r.natBwd}, {"NatS-b", r.natBwdSimd},
+	})
+	if best.d <= 0 {
+		return dtypeTimed{}, false
+	}
+	return dtypeTimed{r.DType, best.name, best.d}, true
+}
+
+func bestCrossPathTrain(r crossPathRow) (dtypeTimed, bool) {
+	best := fastestNamed([]namedDur{
+		{"SC", r.trainSC}, {"MC", r.trainMC}, {"SIMD", r.trainSimd},
+		{"Nat", r.trainNative}, {"NatS", r.trainNativeSimd},
+	})
+	if best.d <= 0 {
+		return dtypeTimed{}, false
+	}
+	return dtypeTimed{r.DType, best.name, best.d}, true
+}
+
+type dtypeSpreadPhase struct {
+	name string
+	pick func(crossPathRow) (dtypeTimed, bool)
+}
+
+func printDtypeSpreadTable(layerName, subtitle string, rows []crossPathRow, phases []dtypeSpreadPhase) {
+	fmt.Printf("\n  ┌─ %s — dtype spread (slowest → fastest) ─────────────────────────\n", layerName)
+	fmt.Println("  │ " + subtitle)
+	fmt.Printf("  │ %-10s │ %-42s %-5s %-7s\n", "Phase", "slowest dtype → fastest dtype", "×", "gap")
+	fmt.Println("  ├──────────┼──────────────────────────────────────────────┼─────┼────────")
+	printed := false
+	for _, ph := range phases {
+		slow, fast, ok := slowestFastestDtypes(rows, ph.pick)
+		if !ok {
+			continue
+		}
+		p := pairFromDtypeSpread(slow, fast)
+		fmt.Printf("  │ %-10s │ %-42s %-5s %-7s\n", ph.name, p.label(), p.ratio(), p.fasterPct())
+		printed = true
+	}
+	if !printed {
+		fmt.Println("  │ (no timing rows)")
+	}
+	fmt.Println("  └──────────┴──────────────────────────────────────────────┴─────┴────────")
+}
+
+var simdDuelDtypeSpreadPhases = []dtypeSpreadPhase{
+	{"forward", bestSimdDuelFwd},
+	{"backward", bestSimdDuelBwd},
+	{"train", bestSimdDuelTrain},
+}
+
+var crossPathDtypeSpreadPhases = []dtypeSpreadPhase{
+	{"forward", bestCrossPathFwd},
+	{"backward", bestCrossPathBwd},
+	{"train", bestCrossPathTrain},
 }
 
 func computeCrossPathComparisons(row *crossPathRow, simdLayer bool) {
