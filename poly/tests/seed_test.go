@@ -43,6 +43,32 @@ func TestSwiGLUManifestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMHAManifestRoundTrip(t *testing.T) {
+	specs := []MHASpec{
+		{DModel: 8, NumHeads: 2, NumKVHeads: 2, HeadDim: 4, QueryDim: 8},
+		{DModel: 8, NumHeads: 4, NumKVHeads: 2, HeadDim: 2, QueryDim: 8},
+	}
+	topo := MHATopologySeed("test", specs)
+	m, err := BuildMHAManifest(topo, specs, []string{"float32", "int8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildMHAManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	net, err := BuildMHAVolumetricFromManifest(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extracted, err := ManifestFromMHANetwork(net, topo, specs, []string{"float32", "int8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extracted.NetworkFP != m.NetworkFP {
+		t.Fatalf("network fp mismatch: %x %x", extracted.NetworkFP, m.NetworkFP)
+	}
+}
+
 func TestBuildSeededEntityTransformer(t *testing.T) {
 	seed := SeedFrom("test", "lm")
 	dims := HFDecoderDims{
