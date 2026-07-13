@@ -55,13 +55,16 @@ type Result struct {
 }
 
 // Run executes one mid-stream adaptation benchmark.
-func Run(wire []byte, path Path, scenario Scenario, cfg Config) *Result {
-	res := &Result{
+func Run(wire []byte, path Path, scenario Scenario, cfg Config) (res *Result) {
+	res = &Result{
 		Path:  path,
 		Steps: cfg.Steps,
 	}
 	defer func() {
 		if v := recover(); v != nil {
+			if res == nil {
+				res = &Result{Path: path, Steps: cfg.Steps}
+			}
 			res.Err = fmt.Sprintf("panic: %v", v)
 		}
 	}()

@@ -202,6 +202,11 @@ func runAdaptationLayerSuite(s LayerSuite, primary poly.LayerType, layerName str
 
 		for _, path := range paths {
 			r := adaptationsuite.Run(wire, path, scenario, cfg)
+			if r == nil {
+				r = &adaptationsuite.Result{Path: path, Err: "nil result"}
+				errors++
+				dtypeErrors++
+			}
 			r.DType = tc.name
 			r.Layer = layerName
 			dtypeResults = append(dtypeResults, r)
@@ -216,7 +221,11 @@ func runAdaptationLayerSuite(s LayerSuite, primary poly.LayerType, layerName str
 			fmt.Printf("FAIL %d/%d paths\n", len(paths)-dtypeErrors, len(paths))
 		} else {
 			best := bestAdaptScore(dtypeResults)
-			fmt.Printf("PASS %2d paths  best=%s score=%.0f\n", len(paths), best.Path.Label(), best.Score)
+			if best == nil {
+				fmt.Printf("PASS %2d paths  (no scored winner)\n", len(paths))
+			} else {
+				fmt.Printf("PASS %2d paths  best=%s score=%.0f\n", len(paths), best.Path.Label(), best.Score)
+			}
 		}
 
 		adaptationsuite.PrintLayerSummary(layerName, tc.name, dtypeResults)
