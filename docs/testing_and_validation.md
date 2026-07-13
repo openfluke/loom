@@ -28,6 +28,8 @@ External benchmark logs (amd64 / arm64, Float32 timing tables): `seven_layer_amd
 
 **Native-exact suite [14]:** archived logs `native_layers_amd.txt`, `native_layers_arm.txt` — full pass matrix, SIMD speedups, and known train flakes in [native_layers.md](native_layers.md).
 
+**Cross-path SIMD duel [15] grid [5]:** archived logs `~/Documents/loom/simd/cross_path_layers_amd.txt`, `cross_path_layers_arm.txt` — QAT-SIMD vs Nat-SIMD at 3³, dtype spread tables, and platform pass matrix in [cross_path_layers.md](cross_path_layers.md#archived-simd-duel-results-jul-2026).
+
 **GPU load memory timeline (Lucy [1] / [8]):** Enable *Measure memory during GPU load* at the prompt, or set `LOOM_MEMORY_HISTORY=1`. After load, Lucy prints a braille chart, sample table, and diagnosis (block release, sequential globals, peak host+gpu overlap). See [memory_history.md](memory_history.md).
 
 **HF → `.entity` convert:** Block-wise import is visible in the terminal (one `Finished loading weights with prefixes` per decoder block). Convert is not charted yet; see [entity.md — convert memory](entity.md#hf--entity-convert-memory).

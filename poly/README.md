@@ -9,18 +9,18 @@ M-POLY-VTD is a next-generation neural inference engine designed for high-perfor
 
 | Backend | Role | Status |
 | :--- | :--- | :--- |
-| **Go** | Portable CPU: SC/MC tiled loops + Plan 9 SIMD (DotTile fwd, Saxpy bwd on 7 layer types), 21 dtypes — reference + `TrainingModeCPUSimd` | ✅ baseline |
+| **Go** | Portable CPU: SC/MC tiled loops + Plan 9 SIMD (DotTile fwd, Saxpy bwd on **10 layer types**), native-exact (`UseExactDType` + `*_native.go` / `*_native_simd.go`), 21 dtypes — reference + `TrainingModeCPUSimd` | ✅ baseline |
 | **WebGPU** | GPU forward / backward / training (WGSL from Go) | ✅ production — **[openfluke/webgpu](https://github.com/openfluke/webgpu) v1.0.4** (wgpu-native v29) |
 | **`poly/accel`** | Vendor NPU/TPU/GPU via `libloom_accel_*` (`dlopen`/`LoadLibrary`, CGO) | 🧪 **experimental** — **Intel CPU+NPU** (Linux, OpenVINO) · **Qualcomm/Hexagon NPU** (Windows ARM64, QNN) · **Apple GPU** (macOS, Metal/MPSGraph) · **Google TPU** planned |
 | **Network** | Remote inference & compute offload (`donate_compute_*.go`) | 🚧 protocol shipped · live inference wiring next |
 
-**Performance work is GPU-first** for decoder stacks, with **NPU offload** for medium/large MAC-heavy layers where compile tax amortizes. CPU Go paths remain the bedrock parity surface (Lucy **[7]**).
+**Performance work is GPU-first** for decoder stacks, with **NPU offload** for medium/large MAC-heavy layers where compile tax amortizes. CPU Go paths remain the bedrock parity surface — Lucy **[7]** (tiled SC/MC/SIMD), **[14]** (native exact), **[15]** (cross-path / SIMD duel).
 
 **Vendor accel** = init-once compile + steady infer through `DispatchLayer`. See **[`docs/accelerators.md`](../docs/accelerators.md)** and Lucy menu **[9]** (`nine_layer`).
 
-### Where we are now — **v0.83.0 “Apple Bridge”** (was **v0.82.0 “Snapdragon Bridge”**)
+### Where we are now — **v0.84.0 “Native Bedrock”** (was **v0.83.0 “Apple Bridge”**)
 
-**Device-aware** = **Go** on CPU (Plan 9 **SIMD**: AVX2 `DotTile` + `SaxpyF32AccF64` on x86-64, NEON on ARM64 — forward + backward on Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM via `TrainingModeCPUSimd` / `SetSimdForwardRecursive`), **WebGPU** when `UseGPU` is on, and three experimental accelerator vendors online through `poly/accel`: **Intel CPU+NPU** on Linux (OpenVINO), **Qualcomm/Hexagon** on Windows ARM64 (QNN), and **Apple GPU** on macOS Apple silicon (Metal / MPSGraph). Production GPU uses **openfluke/webgpu v1.0.4** (wgpu-native **v29**).
+**Device-aware** = **Go** on CPU (Plan 9 **SIMD**: AVX2 `DotTile` + `SaxpyF32AccF64` on x86-64, NEON on ARM64 — forward + backward on Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM, Embedding, Residual via `TrainingModeCPUSimd` / `SetSimdForwardRecursive`), plus **native-exact** training (`UseExactDType`, `*_native.go`, `*_native_simd.go` on the same 10 types), **WebGPU** when `UseGPU` is on, and three experimental accelerator vendors online through `poly/accel`: **Intel CPU+NPU** on Linux (OpenVINO), **Qualcomm/Hexagon** on Windows ARM64 (QNN), and **Apple GPU** on macOS Apple silicon (Metal / MPSGraph). Production GPU uses **openfluke/webgpu v1.0.4** (wgpu-native **v29**).
 
 ## Core Pillars
 
@@ -93,7 +93,7 @@ A comprehensive suite is provided to measure the speed, memory, and bit-level fi
 
 ### Running checks in this repo
 
-Layer matrices, GPU parity tables, and training transcripts are exercised from **`lucy/`** (`lucy_testing_output/log.txt`). The **seven-layer CPU bedrock suite** writes `lucy_testing_output/seven_layer.txt` (menu **[7]**). The **Intel NPU bridge suite** writes `lucy_testing_output/nine_layer.txt` (menu **[9]**). See [`docs/testing_and_validation.md`](../docs/testing_and_validation.md), [`docs/bedrock_validation.md`](../docs/bedrock_validation.md), and [`docs/accelerators.md`](../docs/accelerators.md).
+Layer matrices, GPU parity tables, and training transcripts are exercised from **`lucy/`** (`lucy_testing_output/log.txt`). The **seven-layer CPU bedrock suite** writes `lucy_testing_output/seven_layer.txt` (menu **[7]**). The **native-exact layer suite** writes `native_layers.txt` (menu **[14]**). The **cross-path CPU suite** writes `cross_path_layers.txt` (menu **[15]** — grid **[5]** for QAT-SIMD vs Nat-SIMD duel @ 3³). **Tween native** and **adaptation** suites write `tween_native_layers.txt` (**[16]**) and `adaptation_suite.txt` (**[17]**). The **Intel NPU bridge suite** writes `nine_layer.txt` (menu **[9]**). See [`docs/testing_and_validation.md`](../docs/testing_and_validation.md), [`docs/bedrock_validation.md`](../docs/bedrock_validation.md), [`docs/native_layers.md`](../docs/native_layers.md), [`docs/cross_path_layers.md`](../docs/cross_path_layers.md), and [`docs/accelerators.md`](../docs/accelerators.md).
 
 ```bash
 go test ./poly/...
@@ -107,7 +107,7 @@ cd welvet/cabi/internal/check && go run check.go
 
 ### Lucy GPU & bedrock benchmarks
 
-From repo root, run **`lucy/`** → **[7] seven-layer suite** (CPU parity) or **[8] ENTITY Talk** (GPU inference). Logs: `lucy_testing_output/seven_layer.txt`, `lucy_testing_output/log.txt`.
+From repo root, run **`lucy/`** → **[7]** seven-layer suite (CPU tiled parity) · **[14]** native exact · **[15]** cross-path / SIMD duel · **[16]** tween native · **[17]** adaptation · **[8]** ENTITY Talk (GPU inference). Logs under `lucy_testing_output/`. Archived cross-path duel logs: `~/Documents/loom/simd/cross_path_layers_amd.txt`, `cross_path_layers_arm.txt`.
 
 ```bash
 cd loom/lucy && go run .
@@ -247,7 +247,7 @@ All runs share a single pre-initialised `WGPUContext`. Weights are copied CPU→
 ## The Bedrock Philosophy
 M-POLY-VTD is a **"Bedrock Edition"** neural engine: bit-level dtypes, volumetric dispatch, and a clear split between **reference CPU (Go)** and **throughput backends (WebGPU → NPU → network)**.
 
-*   **Go** owns correctness, portability, and Lucy **[7]** regression — SC/MC tiled loops across all 21 dtypes.
+*   **Go** owns correctness, portability, and Lucy **[7]**/**[14]**/**[15]** regression — SC/MC/SIMD tiled loops and native-exact paths across all 21 dtypes.
 *   **WebGPU** owns GPU inference and training; **backward completion** for decoder layers is the current perf milestone.
 *   **NPU** (Intel, Qualcomm) extends the same ENTITY / morph pipeline to fixed-function AI silicon on laptops and phones.
 *   **Network + step mesh (later)** distribute inference and enable HA for long-running volumetric meshes.
@@ -461,10 +461,12 @@ Our semantic version number directly reflects our progress against this absolute
 - [x] Multi-core CPU tiling (18 layers × 21 dtypes, Go paths)
 - [x] GPU register tiling (WebGPU, layer-dependent)
 - [x] SIMD CPU forward — `DotTile` AVX2 (x86-64) + NEON (ARM64) (`poly/simd`, `SetSimdForwardRecursive`; see [`docs/simd.md`](../docs/simd.md))
-- [x] SIMD CPU backward — `SaxpyF32AccF64` on all seven compute layers (Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM; `*_simd_backward.go`)
+- [x] SIMD CPU backward — `SaxpyF32AccF64` on ten compute layers (Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM, Embedding, Residual; `*_simd_backward.go`)
+- [x] Native-exact CPU paths — `UseExactDType` + `*_native.go` (storage-dtype MAC / integer dot; 10 layer types × 21 dtypes; Lucy **[14]**)
+- [x] Native-exact SIMD — `*_native_simd.go` (`DotI8Tile` / int8 saxpy + `materializeF32Weights` for MAC dtypes; Lucy **[14]** / **[15]**)
 - [ ] GPU execution plan — compile volumetric visit order to batched device dispatches
 
-**Numerical Progress: 25 / 34**
+**Numerical Progress: 27 / 36**
 
 ---
 
@@ -568,6 +570,7 @@ Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on 
 - [x] Atomic Time-Step execution (StepForward/StepBackward)
 - [x] Neural Tweening / Hybrid Geometric Training
 - [x] Neural Tweening Chain Rule Support
+- [x] Native-exact tween (`tween_native.go` — gap updates in storage dtype; Lucy **[16]**)
 - [x] Gradient Explosion Detection & Damping
 - [x] **Tiled dispatch as the primary path** — forward/backward unified on CPU/GPU tiling; legacy non-tiled paths removed or gated for a single source of truth
 - [x] **`TrainingModeCPUSimd`** — MC tiling + recursive Plan 9 SIMD forward/backward (`training.go`, seven-layer SIMD train column)
@@ -587,14 +590,14 @@ Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on 
 - [x] Random Architecture Generation & Mutation
 - [ ] Speculative Decoding (draft model + verify for faster autoregressive token generation)
 
-**Automation Progress: 15 / 19**
+**Automation Progress: 16 / 20**
 
 ---
 
 ## 5. Deployment, Compilation & Ecosystem
 
 ### 5.1 Backends (Loom)
-- [x] **Go** — tiled CPU loops (all layers) + Plan 9 SIMD fwd/bwd (7 compute types, AVX2/NEON) + `TrainingModeCPUSimd` — reference & Lucy [7]
+- [x] **Go** — tiled CPU loops (all layers) + Plan 9 SIMD fwd/bwd (10 compute types, AVX2/NEON) + native-exact (`UseExactDType`, `*_native.go` / `*_native_simd.go`) + `TrainingModeCPUSimd` — reference & Lucy [7]/[14]/[15]
 - [x] **WebGPU** — GPU via WGPU (Metal / Vulkan / DX12)
 - [x] **Intel NPU** — laptop AI accelerator path (experimental, OpenVINO, Lucy [9])
 - [x] **Qualcomm NPU** — Snapdragon / Hexagon path (experimental, QNN, Windows ARM64, Lucy [12])
@@ -628,13 +631,17 @@ Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on 
 - [x] Training Method Comparison Analysis
 - **Lucy / log interpretation** — [`docs/testing_and_validation.md`](../docs/testing_and_validation.md) (parity legend, `lucy/lucy_testing_output/log.txt`, poly file map for suites)
 - [x] **Lucy seven-layer CPU suite** — 10 layer types × 21 dtypes × 1³/2³/3³ grids, **SC/MC/SIMD** fwd/bwd, train (incl. SIMD), native save/reload (`lucy/examples/seven_layer/`, `seven_layer.txt`)
+- [x] **Lucy [14] native layer suite** — `UseExactDType` per dtype, fwd/bwd/train (30 epochs), native-SIMD speedup columns; archived `native_layers_amd.txt` / `_arm.txt` ([`docs/native_layers.md`](../docs/native_layers.md))
+- [x] **Lucy [15] cross-path suite** — SC/MC/SIMD vs native vs native-SIMD; grid **[5] SIMD duel** (QAT-SIMD vs Nat-SIMD @ 3³); archived `cross_path_layers_amd.txt` / `_arm.txt` ([`docs/cross_path_layers.md`](../docs/cross_path_layers.md))
+- [x] **Lucy [16] tween native suite** — native SC vs native-SIMD target propagation (`tween_native_layers.txt`)
+- [x] **Lucy [17] adaptation suite** — mid-stream task flip (A→B→A′), 6 update modes, all layers × dtypes × QAT/Nat × SC/SIMD (`adaptation_suite.txt`)
 - [x] **ENTITY native checkpoints** — `.entity` binary format; Lucy [7] JSON+entity parity; Lucy [8] HF→entity→GPU chat ([`docs/entity.md`](../docs/entity.md))
 - [x] **WebGPU v29 module** — `github.com/openfluke/webgpu@v1.0.4`; cross-platform GPU validated (Metal, Win ARM64 Vulkan, Linux Intel + NVIDIA)
 - [x] **Planet Bridging POC** — planets→Loom complete for 12 layer types ([`planetbridging/`](../planetbridging/)); **separate release after Loom 0.80**
 - [x] **C-ABI functional parity** — `welvet/cabi/internal/check` at **461/461** (100%); includes `LoomSyncInferenceWeights`
 - [x] **MHA volumetric layout + KV** — `[B,S,D]` parsing, training vs decode cache policy, backward Q/K norm parity (`mha_layout.go`, `mha.go`)
 
-**Ecosystem Progress: 28 / 28**
+**Ecosystem Progress: 32 / 32**
 
 ---
 
@@ -665,7 +672,16 @@ Part of the **Go + WebGPU + NPU + network** stack. **Device-aware** = **Go** on 
 
 ---
 
-## v0.83.0 — *Apple Bridge* (current)
+## v0.84.0 — *Native Bedrock* (current)
+
+- **Native-exact training** — `UseExactDType` + `*_native.go` for **10 layer types** (Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM, Embedding, Residual): forward/backward in storage dtype, native gradient application, 21 dtypes. Lucy **[14]** (`native_layers.txt`; archived amd64/arm64 logs in [`docs/native_layers.md`](../docs/native_layers.md)).
+- **Native-exact SIMD** — `*_native_simd.go`: MAC dtypes materialize f32 weight tiles once then `DotTile`; true integers use `DotI8Tile` / `SaxpyI8*`. CNN Int8 backward speedups up to **~210×** on arm64. See [`docs/simd.md`](../docs/simd.md).
+- **Cross-path suite [15]** — one log compares **SC / MC / SIMD / native / native-SIMD** per layer × dtype. Grid **[5] SIMD duel** @ 3³ isolates **QAT-SIMD vs Nat-SIMD** (208/210 amd64, 206/210 arm64 dtype-rows in archived runs). [`docs/cross_path_layers.md`](../docs/cross_path_layers.md).
+- **Tween native [16]** — target propagation with native scalar vs native-SIMD (`poly/tween_native.go`, `tween_native_layers.txt`).
+- **Adaptation suite [17]** — generalized mid-stream benchmark: phase flip A→B→A′, six update modes (SGD, tween, step-tween, …), all layers × 21 dtypes × QAT/Nat × SC/SIMD (`lucy/examples/adaptation_suite/`).
+- **Three training paradigms** documented — default QAT-like (`GetActive` FP32), PTQ inference, native exact — in [`docs/training.md`](../docs/training.md) and [`docs/quantization.md`](../docs/quantization.md).
+
+## v0.83.0 — *Apple Bridge* (previous)
 
 - **Apple GPU / Metal (experimental)** — third accelerator vendor: `libloom_accel_apple.dylib` built with CMake against Apple's **Metal Performance Shaders Graph** (no SDK to vendor — Metal ships with macOS). Two devices behind the vendor-neutral `loom_accel.h` C ABI: a portable **CPU reference** (deterministic parity anchor) and a **Metal GPU** (MPSGraph for MatMul/MHA/ReLU/Sigmoid/Softmax/Add/Multiply, per-op CPU fallback for the rest). Darwin CGO loader (`plugin_darwin.go`), `ExecAppleCPU`/`ExecAppleGPU` targets, per-layer `DispatchLayer` offload, and Lucy **[13]** `apple` bench, mirroring the Intel **[9]** and Qualcomm **[12]** suites.
 - **BF16 wire dtype** — the shared accel bridge (`poly/accel_intel.go`) now packs/unpacks **bfloat16** (top 16 bits of FP32, round-to-nearest-even), the native low-precision type on Apple silicon. Apple advertises **FP32/FP16/BF16/INT16/INT8/INT4** via its `bench_manifest.json`.
@@ -725,21 +741,24 @@ Instead of arbitrarily bumping version numbers, we derive our exact semantic ver
 
 | Category | Completed | Total |
 | :--- | :---: | :---: |
-| 1. Numerical Core | 25 | 34 |
+| 1. Numerical Core | 27 | 36 |
 | 2. Architectural Layers | 32 | 37 |
 | 3. Accelerators & Distributed | 7 | 19 |
-| 4. Training Automation | 15 | 19 |
-| 5. Deployment Ecosystem | 28 | 28 |
+| 4. Training Automation | 16 | 20 |
+| 5. Deployment Ecosystem | 32 | 32 |
 | 6. LLM & Tokenization | 15 | 15 |
-| **GRAND TOTAL** | **122** | **152** |
+| **GRAND TOTAL** | **129** | **159** |
 
-### **Completion Ratio: 80.3%**
+### **Completion Ratio: 81.1%**
 
-## **Version 0.83.0 — CURRENT**
-*(**v0.83.0 "Apple Bridge"** — from **0.82.0**. Third experimental accelerator vendor: **Apple GPU** (Metal / MPSGraph, macOS Apple silicon, Lucy **[13]**) alongside **Intel CPU+NPU** (Lucy **[9]**) and **Qualcomm/Hexagon** (Lucy **[12]**). Adds a **BF16** wire dtype to the shared accel bridge. **Current tree** also completes **Plan 9 SIMD backward** on seven compute layers + `TrainingModeCPUSimd` (seven-layer SC/MC/SIMD parity). Checklist **122 / 152** (80.3%). **Next:** whole-model `.entity` → NPU lowering, NPU parity suite, GPU backward (SwiGLU/MHA), AccelPlanner + JSON `exec`.)*
+## **Version 0.84.0 — CURRENT**
+*(**v0.84.0 "Native Bedrock"** — from **0.83.0**. **Native-exact** CPU training + **native-SIMD** on 10 layer types; Lucy **[14]**–**[17]** validation suites (native, cross-path / SIMD duel, tween native, adaptation). Cross-path archived: **208/210** (amd64) and **206/210** (arm64) dtype-rows @ 3³ duel. Checklist **129 / 159** (81.1%). **Next:** whole-model `.entity` → NPU lowering, GPU backward (SwiGLU/MHA), AccelPlanner + JSON `exec`.)*
+
+## **Version 0.83.0** (previous)
+*(**v0.83.0 "Apple Bridge"** — third accelerator vendor: **Apple GPU** (Metal / MPSGraph, macOS, Lucy **[13]**). **BF16** wire dtype. Plan 9 SIMD backward on seven compute layers + `TrainingModeCPUSimd`. Checklist **122 / 152** (80.3%).)*
 
 ## **Version 0.82.0** (previous)
-*(**v0.82.0 "Snapdragon Bridge"** — **SIMD** CPU fast-path (AVX2/NEON); second experimental NPU vendor: **Qualcomm/Hexagon** (QNN, Windows ARM64, Lucy **[12]**) alongside **Intel CPU+NPU** (Lucy **[9]**). Checklist **117 / 147** (79.6%).)*
+*(**v0.82.0 "Snapdragon Bridge"** — **SIMD** CPU fast-path (AVX2/NEON); **Qualcomm/Hexagon** (QNN, Windows ARM64, Lucy **[12]**) alongside **Intel CPU+NPU** (Lucy **[9]**). Checklist **117 / 147** (79.6%).)*
 
 ## **Version 0.81.0** (previous)
 *(**v0.81.0 "Accelerator Bridge"** — Experimental **Intel CPU+NPU** via `poly/accel`; Lucy **[9]**. Checklist **112 / 146** (76.7%).)*

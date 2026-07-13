@@ -12,7 +12,7 @@ Loom's CPU SIMD path uses **Plan 9 assembly** (`.s` files) for hot GEMV-style ke
 
 **Layers with SIMD forward + backward:** Dense, SwiGLU, MHA, CNN1, CNN2, CNN3, RNN, LSTM, Embedding, Residual.
 
-**Native-exact SIMD** (`*_native_simd.go`): same numerics as `*_native.go`, faster kernels — MAC dtypes via `materializeF32Weights` + `DotTile`; true integers via `DotI8Tile` / `SaxpyI8*`. Enabled when both `UseExactDType` and `UseSimdForward` are on (Lucy menu **[14]**).
+**Native-exact SIMD** (`*_native_simd.go`): same numerics as `*_native.go`, faster kernels — MAC dtypes via `materializeF32Weights` + `DotTile`; true integers via `DotI8Tile` / `SaxpyI8*`. Enabled when both `UseExactDType` and `UseSimdForward` are on (Lucy menus **[14]** and **[15]**).
 
 **Layers without heavy GEMV SIMD:** RMSNorm, Softmax (attention softmax/RoPE in MHA remain scalar).
 
@@ -162,3 +162,4 @@ Ternary / packed BitNet forward kernels live in the same `poly/simd` package (`b
 - [Quantization](quantization.md) — [three training/inference modes](quantization.md#three-traininginference-modes)
 - [Testing and validation](testing_and_validation.md) — seven-layer SC/MC/SIMD suite
 - [Bedrock validation](bedrock_validation.md) — menu option [7] and artifact layout
+- [Cross-path layers](cross_path_layers.md) — menu [15] QAT-SIMD vs Nat-SIMD duel (grid [5], archived amd64/arm64 logs)
