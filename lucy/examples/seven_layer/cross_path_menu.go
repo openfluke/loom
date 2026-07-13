@@ -17,6 +17,7 @@ import (
 const CrossPathLogFile = "cross_path_layers.txt"
 
 var crossPathActiveGrids []GridSpec
+var crossPathSimdDuel bool // grid [5]: 3³ QAT-SIMD vs Nat-SIMD only
 
 type testTally struct {
 	total   int
@@ -135,6 +136,7 @@ type crossPathRow struct {
 	natFwdPair, natBwdPair, natTrainPair pairCmp
 	trainSCSimd, trainMCSimd pairCmp
 	trainSimdVsNat, trainSimdVsNatS pairCmp
+	duelFwd, duelBwd, duelTrain       pairCmp
 	fwdWinner, bwdWinner, trainWinner string
 	fwdWinRatio, bwdWinRatio, trainWinRatio string
 	fwdWinFaster, bwdWinFaster, trainWinFaster string
@@ -250,6 +252,7 @@ func verifyNativePath(net *poly.VolumetricNetwork, primary poly.LayerType, tc dt
 // RunCrossPathMenu is Lucy [15]: SC/MC/SIMD (tiled) vs native / native-SIMD on all layers.
 func RunCrossPathMenu(reader *bufio.Reader) {
 	defer BeginCrossPathSession()()
+	crossPathSimdDuel = false
 
 	fmt.Println()
 	fmt.Println("╔══════════════════════════════════════════════════════════════════════╗")
@@ -264,9 +267,13 @@ func RunCrossPathMenu(reader *bufio.Reader) {
 	fmt.Println("    [2] 2³ — 56-layer stack (default)")
 	fmt.Println("    [3] 3³ — 189-layer stack (best perf signal)")
 	fmt.Println("    [4] All grids (1³ + 2³ + 3³)")
+	fmt.Println("    [5] 3³ SIMD duel — QAT-SIMD vs Nat-SIMD only (apples to apples)")
 	fmt.Print("  Grid [2]: ")
 	gridLine, _ := reader.ReadString('\n')
 	crossPathActiveGrids = crossPathGridsFromChoice(strings.TrimSpace(gridLine))
+	if crossPathSimdDuel {
+		fmt.Println("  Mode: SIMD duel — only QAT-SIMD vs Nat-SIMD (fwd / bwd / train)")
+	}
 	for _, g := range crossPathActiveGrids {
 		fmt.Printf("  → %s: %d cells × %d layers/cell = %d forward stack · %d train epochs\n",
 			g, g.Cells(), sevenLayersPerCell, g.StackLayers(), trainEpochsForGrid(g))
@@ -311,6 +318,9 @@ func crossPathGridsFromChoice(choice string) []GridSpec {
 		return []GridSpec{StandardGrids[2]}
 	case "4":
 		return append([]GridSpec(nil), StandardGrids...)
+	case "5":
+		crossPathSimdDuel = true
+		return []GridSpec{StandardGrids[2]}
 	default:
 		return []GridSpec{StandardGrids[1]}
 	}
@@ -341,6 +351,10 @@ func runCrossPathEntry(e crossPathLayerEntry) {
 }
 
 func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
+	if crossPathSimdDuel {
+		runCrossPathSimdDuelSuite(s, primary)
+		return
+	}
 	activeBenchIters = benchItersForGrid(s.Grid)
 	simdLayer := poly.Plan9SimdForwardForLayer(primary)
 	requiresLearn := layerRequiresLearn(primary)
@@ -1000,7 +1014,11 @@ func PrintCrossPathGlobalManifest() {
 	}
 	fmt.Println()
 	fmt.Println("╔══════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║  [15] Cross-path global manifest                                      ║")
+	if crossPathSimdDuel {
+		fmt.Println("║  [15] SIMD duel @ 3³ — QAT-SIMD vs Nat-SIMD manifest                  ║")
+	} else {
+		fmt.Println("║  [15] Cross-path global manifest                                      ║")
+	}
 	fmt.Println("╚══════════════════════════════════════════════════════════════════════╝")
 
 	dtypePass, dtypeFail := 0, 0

@@ -18,7 +18,7 @@ Unifies **[7]** (tiled SC/MC/SIMD) and **[14]** (native exact + native SIMD) in 
 | **Native** | `UseExactDType=true`, SIMD off | `*_native.go` storage-dtype MAC |
 | **Native SIMD** | `UseExactDType=true`, SIMD on | `*_native_simd.go` |
 
-**Grid:** selectable **1³ / 2³ / 3³** (default **2³**) · **7 layers/cell** · **21 dtypes** · train epochs scale by grid (50 / 12 / 6)
+**Grid:** selectable **1³ / 2³ / 3³** (default **2³**) · **[5] 3³ SIMD duel** (QAT-SIMD vs Nat-SIMD only) · **7 layers/cell** · **21 dtypes** · train epochs scale by grid (50 / 12 / 6)
 
 **Layer types:** Dense, SwiGLU, MHA, CNN1, CNN2, CNN3, RNN, LSTM, Embedding, Residual
 
@@ -47,6 +47,21 @@ Unifies **[7]** (tiled SC/MC/SIMD) and **[14]** (native exact + native SIMD) in 
 Non-SIMD layers omit SIMD columns (fewer checks).
 
 Native↔native-SIMD parity is **reported but not gated** — MAC dtypes can legitimately differ from tiled SIMD tolerance bands.
+
+---
+
+## SIMD duel mode (grid **[5]**)
+
+**3³ only** · **189-layer stack** · **6 train epochs** · compares **only**:
+
+| Path | What runs |
+|------|-----------|
+| **QAT-SIMD** | Tiled `GetActive` FP32 + Plan 9 SIMD |
+| **Nat-SIMD** | `UseExactDType` + `*_native_simd.go` |
+
+Skips SC, MC, native scalar, and parity-vs-SC tables. Output is three focused tables (raw fwd/bwd, pairwise winner, train loss) plus a 6-check-per-dtype tally (126/dtype-row for SIMD layers).
+
+Use this when you want **apples-to-apples fastest SIMD** at the largest practical grid without noise from non-SIMD paths.
 
 ---
 
