@@ -24,6 +24,10 @@ func cnn2NativeWeightIndex(filters, inC, kSize, f, ic, kh, kw int) int {
 	return f*inC*kSize*kSize + ic*kSize*kSize + kh*kSize + kw
 }
 
+func cnn3NativeWeightIndex(filters, inC, kSize, f, ic, kd, kh, kw int) int {
+	return f*inC*kSize*kSize*kSize + ic*kSize*kSize*kSize + kd*kSize*kSize + kh*kSize + kw
+}
+
 func cnn1ForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
 	ws := layer.WeightStore
 	ws.Morph(layer.DType)
@@ -444,12 +448,215 @@ func cnn2BackwardNativeMAC(layer *VolumetricLayer, gradOutput, input, preAct *Te
 	return gradInput, gradWeights
 }
 
+func cnn3ForwardIntegerNative(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
+	ws := layer.WeightStore
+	ws.Morph(layer.DType)
+	scale := ws.Scale
+	if scale == 0 {
+		scale = 1
+	}
+	w := nativeWeightsI8(ws, layer.DType)
+	if w == nil {
+		return cnn3ForwardNativeMAC(layer, input)
+	}
+
+	batch := input.Shape[0]
+	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
+	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
+	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
+
+	preAct = NewTensor[float32](batch, filters, outD, outH, outW)
+	postAct = NewTensor[float32](batch, filters, outD, outH, outW)
+
+	for b := 0; b < batch; b++ {
+		for f := 0; f < filters; f++ {
+			for od := 0; od < outD; od++ {
+				for oh := 0; oh < outH; oh++ {
+					for ow := 0; ow < outW; ow++ {
+						var acc int32
+						for ic := 0; ic < inC; ic++ {
+							for kd := 0; kd < kSize; kd++ {
+								for kh := 0; kh < kSize; kh++ {
+									for kw := 0; kw < kSize; kw++ {
+										id := od*stride + kd - padding
+										ih := oh*stride + kh - padding
+										iw := ow*stride + kw - padding
+										if id >= 0 && id < inD && ih >= 0 && ih < inH && iw >= 0 && iw < inW {
+											inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id*inH*inW + ih*inW + iw
+											wIdx := cnn3NativeWeightIndex(filters, inC, kSize, f, ic, kd, kh, kw)
+											inQ := clampI8(int32(math.Round(float64(input.Data[inIdx]) / float64(scale))))
+											acc += int32(w[wIdx]) * int32(inQ)
+										}
+									}
+								}
+							}
+						}
+						out := float32(clampI8(acc>>8)) * scale
+						outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
+						preAct.Data[outIdx] = out
+						postAct.Data[outIdx] = Activate(out, layer.Activation)
+					}
+				}
+			}
+		}
+	}
+	return preAct, postAct
+}
+
+func cnn3BackwardIntegerNative(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32]) {
+	ws := layer.WeightStore
+	scale := ws.Scale
+	if scale == 0 {
+		scale = 1
+	}
+	w := nativeWeightsI8(ws, layer.DType)
+	if w == nil {
+		return cnn3BackwardNativeMAC(layer, gradOutput, input, preAct)
+	}
+
+	batch := input.Shape[0]
+	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
+	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
+	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
+
+	gradInput = NewTensor[float32](batch, inC, inD, inH, inW)
+	gradWeights = NewTensor[float32](len(w))
+	gradW := make([]int32, len(w))
+
+	for b := 0; b < batch; b++ {
+		for f := 0; f < filters; f++ {
+			for od := 0; od < outD; od++ {
+				for oh := 0; oh < outH; oh++ {
+					for ow := 0; ow < outW; ow++ {
+						outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
+						g := int32(math.Round(float64(gradOutput.Data[outIdx]) / float64(scale)))
+						if layer.Activation == ActivationReLU && preAct.Data[outIdx] <= 0 {
+							g = 0
+						}
+						for ic := 0; ic < inC; ic++ {
+							for kd := 0; kd < kSize; kd++ {
+								for kh := 0; kh < kSize; kh++ {
+									for kw := 0; kw < kSize; kw++ {
+										id := od*stride + kd - padding
+										ih := oh*stride + kh - padding
+										iw := ow*stride + kw - padding
+										if id >= 0 && id < inD && ih >= 0 && ih < inH && iw >= 0 && iw < inW {
+											inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id*inH*inW + ih*inW + iw
+											wIdx := cnn3NativeWeightIndex(filters, inC, kSize, f, ic, kd, kh, kw)
+											inQ := clampI8(int32(math.Round(float64(input.Data[inIdx]) / float64(scale))))
+											gradW[wIdx] += int32(inQ) * g
+											gradInput.Data[inIdx] += float32(clampI8((int32(w[wIdx])*g)>>8)) * scale
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	lrShift := learningRateToBitShift(layer.Network.ExactNativeLR)
+	applyStochasticInt8Update(w, gradW, lrShift)
+	publishInt8Weights(ws, layer.DType, w)
+	markLayerNativeWeightsUpdated(layer, ws, layer.DType, ws.Versions[layer.DType].([]uint8))
+	return gradInput, gradWeights
+}
+
 func cnn3ForwardNativeMAC(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
-	return cnn2ForwardNativeMAC(layer, input)
+	batch := input.Shape[0]
+	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
+	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
+	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
+
+	preAct = NewTensor[float32](batch, filters, outD, outH, outW)
+	postAct = NewTensor[float32](batch, filters, outD, outH, outW)
+
+	for b := 0; b < batch; b++ {
+		for f := 0; f < filters; f++ {
+			for od := 0; od < outD; od++ {
+				for oh := 0; oh < outH; oh++ {
+					for ow := 0; ow < outW; ow++ {
+						var sum float64
+						for ic := 0; ic < inC; ic++ {
+							for kd := 0; kd < kSize; kd++ {
+								for kh := 0; kh < kSize; kh++ {
+									for kw := 0; kw < kSize; kw++ {
+										id := od*stride + kd - padding
+										ih := oh*stride + kh - padding
+										iw := ow*stride + kw - padding
+										if id >= 0 && id < inD && ih >= 0 && ih < inH && iw >= 0 && iw < inW {
+											inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id*inH*inW + ih*inW + iw
+											wIdx := cnn3NativeWeightIndex(filters, inC, kSize, f, ic, kd, kh, kw)
+											sum += float64(input.Data[inIdx]) * float64(nativeWeightValueF32(layer.WeightStore, layer.DType, wIdx))
+										}
+									}
+								}
+							}
+						}
+						outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
+						preAct.Data[outIdx] = float32(sum)
+						postAct.Data[outIdx] = Activate(float32(sum), layer.Activation)
+					}
+				}
+			}
+		}
+	}
+	return preAct, postAct
 }
 
 func cnn3BackwardNativeMAC(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32]) {
-	return cnn2BackwardNativeMAC(layer, gradOutput, input, preAct)
+	batch := input.Shape[0]
+	inD, inH, inW, inC := layer.InputDepth, layer.InputHeight, layer.InputWidth, layer.InputChannels
+	outD, outH, outW, filters := layer.OutputDepth, layer.OutputHeight, layer.OutputWidth, layer.Filters
+	kSize, stride, padding := layer.KernelSize, layer.Stride, layer.Padding
+	wCount := layer.WeightStore.WeightCount(layer.DType)
+
+	gradInput = NewTensor[float32](batch, inC, inD, inH, inW)
+	gradWeights = NewTensor[float32](wCount)
+	gwAcc := make([]float64, wCount)
+	giAcc := make([]float64, len(gradInput.Data))
+
+	for b := 0; b < batch; b++ {
+		for f := 0; f < filters; f++ {
+			for od := 0; od < outD; od++ {
+				for oh := 0; oh < outH; oh++ {
+					for ow := 0; ow < outW; ow++ {
+						outIdx := b*filters*outD*outH*outW + f*outD*outH*outW + od*outH*outW + oh*outW + ow
+						g := float64(gradOutput.Data[outIdx])
+						if layer.Activation == ActivationReLU && preAct.Data[outIdx] <= 0 {
+							g = 0
+						}
+						for ic := 0; ic < inC; ic++ {
+							for kd := 0; kd < kSize; kd++ {
+								for kh := 0; kh < kSize; kh++ {
+									for kw := 0; kw < kSize; kw++ {
+										id := od*stride + kd - padding
+										ih := oh*stride + kh - padding
+										iw := ow*stride + kw - padding
+										if id >= 0 && id < inD && ih >= 0 && ih < inH && iw >= 0 && iw < inW {
+											inIdx := b*inC*inD*inH*inW + ic*inD*inH*inW + id*inH*inW + ih*inW + iw
+											wIdx := cnn3NativeWeightIndex(filters, inC, kSize, f, ic, kd, kh, kw)
+											gwAcc[wIdx] += nativeGradW(layer, input.Data[inIdx], g)
+											giAcc[inIdx] += nativeGradX(layer, wIdx, g)
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	for i := range gradWeights.Data {
+		gradWeights.Data[i] = float32(gwAcc[i])
+	}
+	for i := range gradInput.Data {
+		gradInput.Data[i] = float32(giAcc[i])
+	}
+	return gradInput, gradWeights
 }
 
 func useCNNTrueNative(layer *VolumetricLayer) bool {
@@ -563,9 +770,54 @@ func CNN2BackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput, inpu
 }
 
 func CNN3ForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
-	return CNN2ForwardNativeExact(layer, input)
+	in, ok := any(input).(*Tensor[float32])
+	if !ok {
+		return CNN3ForwardTiled(layer, input)
+	}
+	var preF, postF *Tensor[float32]
+	if layerUseSimdForward(layer) {
+		if pre, post, simdOK := tryCNN3ForwardNativeSimd(layer, in); simdOK {
+			preF, postF = pre, post
+		}
+	}
+	if preF == nil {
+		if useCNNTrueNative(layer) {
+			preF, postF = cnn3ForwardIntegerNative(layer, in)
+		} else {
+			preF, postF = cnn3ForwardNativeMAC(layer, in)
+		}
+	}
+	pre, post, ok2 := nativeTensorsAs[T](preF, postF)
+	if !ok2 {
+		return CNN3ForwardTiled(layer, input)
+	}
+	return pre, post
 }
 
 func CNN3BackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
-	return CNN2BackwardNativeExact(layer, gradOutput, input, preAct)
+	in, okIn := any(input).(*Tensor[float32])
+	goT, okGO := any(gradOutput).(*Tensor[float32])
+	preF, okPre := any(preAct).(*Tensor[float32])
+	if !okIn || !okGO || !okPre {
+		return CNN3BackwardTiled(layer, gradOutput, input, preAct)
+	}
+	var giF, gwF *Tensor[float32]
+	if layerUseSimdForward(layer) {
+		if gi, gw, simdOK := tryCNN3BackwardNativeSimd(layer, goT, in, preF); simdOK {
+			giF, gwF = gi, gw
+		}
+	}
+	if giF == nil {
+		if useCNNTrueNative(layer) {
+			giF, gwF = cnn3BackwardIntegerNative(layer, goT, in, preF)
+		} else {
+			giF, gwF = cnn3BackwardNativeMAC(layer, goT, in, preF)
+		}
+	}
+	gi, okGI := nativeTensorAs[T](giF)
+	gw, okGW := nativeTensorAs[T](gwF)
+	if !okGI || !okGW {
+		return CNN3BackwardTiled(layer, gradOutput, input, preAct)
+	}
+	return gi, gw
 }
