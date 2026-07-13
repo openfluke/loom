@@ -1,5 +1,7 @@
 # v0.81.0 — Accelerator Bridge (Intel NPU + vendor plugin model)
 
+> **v0.84+:** Lucy lives in [lucy_bloom_rivers](lucy.md) (was `loom/lucy/`). Log and harness paths below are relative to the Lucy repo root.
+
 **Release:** **0.80.0 "Native Ship"** → **0.81.0 "Accelerator Bridge"**  
 **Checklist:** **112 / 146** (76.7%) on `adjustments` — Intel forward dispatch advances **Accelerators & Distributed** (experimental)
 
@@ -90,12 +92,12 @@ cd accel/intel && ./install_openvino.sh && source ./setup_env.sh && ./build.sh
 export LOOM_ACCEL_INTEL_SO="$PWD/accel/intel/build/libloom_accel_intel.so"
 
 # 3. Run Lucy validation
-cd lucy
+cd lucy_bloom_rivers
 CGO_ENABLED=1 go run .
 # → 9 → 4
 ```
 
-Or: `./run_npu_bridge.sh` from `lucy/`.
+Or: `./run_npu_bridge.sh` from Lucy repo .
 
 Monolithic MLP demo: `cd accel/intel/example && CGO_ENABLED=1 go run .`
 
@@ -130,7 +132,7 @@ Loom code path is identical: `DiscoverAccel` → `ExecTarget` → `SyncToAccel` 
 | Accel package | `poly/accel/*.go` |
 | Intel dispatch | `poly/accel_intel.go`, `poly/forward.go` |
 | Types | `poly/poly.go` (`ExecTarget`, `AccelBinding`, `net.Accel`) |
-| Lucy suite | `lucy/examples/nine_layer/` |
+| Lucy suite | `Lucy examples/nine_layer/` |
 | Intel plugin C++ | `accel/intel/include/loom_accel.h`, `accel/intel/src/` |
 | Welvet C-ABI | `welvet/cabi/accel_ext.go`, `entity_ext.go`, `transformer_ext.go` |
 

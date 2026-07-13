@@ -139,7 +139,7 @@ So: **proper multi-dtype weight upload for the three Intel bench dtypes** — ye
 | Intel **CPU + NPU** on Linux, CGO + `libloom_accel_intel.so` | Training / backward on vendor path |
 | Init-once compile + dtype-aware weight bake | LayerNorm / RMSNorm weight bake |
 | Lucy **[9]** 90-cell matrix + `nine_layer.txt` | Bit-perfect parity all layers/dtypes |
-| Auto OpenVINO path discovery from `loom/lucy` cwd | Windows plugin, zero-copy I/O |
+| Auto OpenVINO path discovery from Lucy cwd | Windows plugin, zero-copy I/O |
 | Intel infer **💎 EXACT** repeat-forward (90/90) | Qualcomm / Google plugins |
 
 Treat integration as **proven plumbing** you can build on — not a finished “flip NPU on for any network” product feature.
@@ -147,7 +147,7 @@ Treat integration as **proven plumbing** you can build on — not a finished “
 ### Benchmark snapshot — Lucy [9] → [5] (90 cells)
 
 **Host:** Fedora, Core Ultra class NPU, OpenVINO via chaosglue deps.  
-**Log:** `lucy/lucy_testing_output/nine_layer.txt`  
+**Log:** `lucy_testing_output/nine_layer.txt` (Lucy repo — see [lucy.md](lucy.md))  
 **Method:** `SyncToAccel` once per device, median infer ms (compile excluded). **Spd** = Loom ÷ Intel (&lt; 1 = Intel slower).
 
 #### Manifest
@@ -224,14 +224,14 @@ Must match bench manifest tiers used when the OpenVINO graph was authored: **`sm
 ### Validation — Lucy menu [9]
 
 ```bash
-cd loom/lucy
+cd lucy_bloom_rivers
 CGO_ENABLED=1 go run .
 # OpenVINO paths auto-discovered from chaosglue npu deps (no setup_env.sh required)
 # → 9 → 4   medium DispatchLayer suite
 # → 9 → 5   full 90-cell matrix
 ```
 
-Or: `./run_npu_bridge.sh` (sources `accel/intel/setup_env.sh` explicitly).
+Or: `./run_npu_bridge.sh` from Lucy repo root (sources `accel/intel/setup_env.sh` explicitly).
 
 Output: timing table (Loom vs Intel CPU vs Intel NPU, speedup ratios) + seven-style drift spectrum + manifest histogram.
 

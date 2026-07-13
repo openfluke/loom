@@ -57,7 +57,7 @@ Scale   float32  `json:"scale,omitempty"`    // morph/quant scale used when the 
 2. Calls `WeightStore.Morph(dt)` for that dtype and `encodeNativeWeights(active, dt)` — Int8 as 1 byte/weight, FP4/Int4 as nibbles, Binary as bit-packs, Float64 as LE uint64, etc.
 3. Sets `Native: true` and persists `Scale` so reload uses the same quant mapping training saw.
 
-**Implication:** a **Uint8** Dense checkpoint is ~**0.8 KB** on disk for the Lucy 8×1024→512 bench; **Float64** is ~**5.4 MB** for the same topology — see the **File** column in Lucy’s training matrix (`lucy/lucy_testing_output/log.txt`). You can train, save, and reload **each of the 21 dtypes** independently; Lucy’s Dense suite reports **Save/Reload PASS** on all of them in the latest full run.
+**Implication:** a **Uint8** Dense checkpoint is ~**0.8 KB** on disk for the Lucy 8×1024→512 bench; **Float64** is ~**5.4 MB** for the same topology — see the **File** column in Lucy’s training matrix (`lucy_testing_output/log.txt`). You can train, save, and reload **each of the 21 dtypes** independently; Lucy’s Dense suite reports **Save/Reload PASS** on all of them in the latest full run.
 
 Older checkpoints with `Native: false` (FP32 master only) still load via `decodeWeights`; new saves prefer native packing.
 

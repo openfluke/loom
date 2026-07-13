@@ -1,20 +1,20 @@
 # Testing, validation, and Lucy logs
 
-This page ties together **how we stress `poly/`**, where **artifacts land**, and how to read **parity tables** in captured logs (for example `lucy/lucy_testing_output/log.txt`).
+This page ties together **how we stress `poly/`**, where **artifacts land**, and how to read **parity tables** in captured logs (for example `lucy_testing_output/log.txt` in the [Lucy Bloom Rivers](lucy.md) repo).
 
 ---
 
 ## Where logs come from
 
-The **Lucy** tree (`lucy/`) drives broad layer suites: forward/backward parity, training matrices, save/reload checks, and GPU timing tables. Typical transcripts:
+**[Lucy Bloom Rivers](lucy.md)** (`lucy_bloom_rivers` on GitHub) drives broad layer suites: forward/backward parity, training matrices, save/reload checks, and GPU timing tables. Typical transcripts (paths relative to **Lucy repo root**):
 
 | Log | Menu | Contents |
 |-----|------|----------|
-| `lucy/lucy_testing_output/log.txt` | Dense L1 / GPU parity / layer matrices | Forward/backward parity, ASM timers, GPU tables |
-| `lucy/lucy_testing_output/seven_layer.txt` | **[7] Seven-layer CPU suite** | 10 layer types × 21 dtypes × 1³/2³/3³ grids, **SC/MC/SIMD** fwd+bwd+train, **JSON + `.entity` save/reload** |
-| `lucy/lucy_testing_output/native_layers.txt` | **[14] Native layer suite** | 10 layer types × 21 dtypes, **native-exact** fwd+bwd+train (30 epochs), SIMD speedup columns — see [native_layers.md](native_layers.md) |
-| `lucy/lucy_testing_output/cross_path_layers.txt` | **[15] Cross-path CPU suite** | SC/MC/SIMD vs native vs native-SIMD side-by-side — see [cross_path_layers.md](cross_path_layers.md) |
-| `lucy/lucy_testing_output/nine_layer.txt` | **[9] Intel NPU bridge** | 15 layers × FP32/FP16/INT8 × small/medium/large — Loom vs Intel CPU/NPU timing + drift manifest |
+| `lucy_testing_output/log.txt` | Dense L1 / GPU parity / layer matrices | Forward/backward parity, ASM timers, GPU tables |
+| `lucy_testing_output/seven_layer.txt` | **[7] Seven-layer CPU suite** | 10 layer types × 21 dtypes × 1³/2³/3³ grids, **SC/MC/SIMD** fwd+bwd+train, **JSON + `.entity` save/reload** |
+| `lucy_testing_output/native_layers.txt` | **[14] Native layer suite** | 10 layer types × 21 dtypes, **native-exact** fwd+bwd+train (30 epochs), SIMD speedup columns — see [native_layers.md](native_layers.md) |
+| `lucy_testing_output/cross_path_layers.txt` | **[15] Cross-path CPU suite** | SC/MC/SIMD vs native vs native-SIMD side-by-side — see [cross_path_layers.md](cross_path_layers.md) |
+| `lucy_testing_output/nine_layer.txt` | **[9] Intel NPU bridge** | 15 layers × FP32/FP16/INT8 × small/medium/large — Loom vs Intel CPU/NPU timing + drift manifest |
 
 Per-dtype checkpoints are written under the same folder: `tag_DType.json` (debug lane) and `tag_DType.entity` (native lane). The memory table compares both file sizes side by side.
 
@@ -22,7 +22,7 @@ Per-dtype checkpoints are written under the same folder: `tag_DType.json` (debug
 
 Both files are meant for human review and regression diffing (adapter name, per-dtype rows, summary tallies).
 
-**Seven-layer suite (v0.79+):** See [`bedrock_validation.md`](bedrock_validation.md) for what the harness gates (MHA layout, KV decode, native ternary save, C-ABI `SyncInferenceWeights`, **SC/MC/SIMD parity** on all seven compute layers). Run `cd lucy && go run .` → **[7]** or **[0]**.
+**Seven-layer suite (v0.79+):** See [`bedrock_validation.md`](bedrock_validation.md) for what the harness gates (MHA layout, KV decode, native ternary save, C-ABI `SyncInferenceWeights`, **SC/MC/SIMD parity** on all seven compute layers). Run [Lucy](lucy.md) → **[7]** or **[0]**.
 
 External benchmark logs (amd64 / arm64, Float32 timing tables): `seven_layer_amd.txt`, `seven_layer_arm.txt` — summarized in [simd.md](simd.md#seven-layer-benchmark-results).
 
@@ -188,7 +188,7 @@ Intel can be slower than Loom when tensor work is tiny (NPU ~0.5 ms floor) or wh
 
 Exact entrypoints move with refactors; prefer:
 
-- `lucy/README.md` — MRBiVS stack and pointers into `poly/`.
+- [lucy.md](lucy.md) — Lucy Bloom Rivers repo, menus, log layout; Lucy `README.md` for MRBiVS stack.
 - `poly/README.md` — version checklist and capability matrix.
 - `welvet/cabi/internal/check/` — C-ABI vs `poly/` export parity scanner (Go); expect **461/461 (100%)** after v0.79 (`LoomSyncInferenceWeights`).
 

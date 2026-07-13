@@ -3,7 +3,7 @@
 **Version:** Loom **v0.82.0 "Snapdragon Bridge"** — **experimental** (same maturity bar as the Intel NPU bridge)
 **Status:** Windows on Snapdragon X · Hexagon v73 HTP + Kryo CPU reference · forward-only
 **Plugin:** `loom_accel_qualcomm.dll` (Qualcomm **QNN AI Engine Direct** inside)
-**Lucy menu:** **[12]** — log: `lucy/lucy_testing_output/snapdragon.txt`
+**Lucy menu:** **[12]** — log: `lucy_testing_output/snapdragon.txt` (see [lucy.md](lucy.md))
 
 > This is the Snapdragon mirror of the Intel path in [`accelerators.md`](accelerators.md).
 > It shares the identical vendor-neutral C ABI (`accel/qualcomm/include/loom_accel.h`),
@@ -19,7 +19,7 @@ chain of blockers, none of which were "the neural net" itself:
 
 - **ARM64 SIMD** kernels (`neon_arm64.go`) so the Loom CPU baseline runs natively.
 - **`webgpu` `go.mod` replace** — the published static archive has an ABI mismatch on
-  windows/arm64; both `loom/go.mod` and `lucy/go.mod` must point at a local build.
+  windows/arm64; both `loom/go.mod` and Lucy `go.mod` must point at a local build.
 - **QAIRT SDK acquisition** — ~1.3 GB Qualcomm SDK behind a login, vendored under
   `accel/qualcomm/deps/`, plus the free HTP runtime with signed Hexagon skel/cat.
 - **A C++ QNN plugin** built with **llvm-mingw** (no CMake/MSVC on the box) that
@@ -196,7 +196,7 @@ pwsh -File .\install_qairt.ps1 -Persist   # runtime + SDK detect + machine env (
 . .\setup_env.ps1
 .\build_clang.ps1                         # llvm-mingw → build/loom_accel_qualcomm.dll
 
-cd ..\..\lucy
+cd ..\..\lucy_bloom_rivers
 go run .                                  # → [12] Snapdragon NPU bridge
 #   [4] medium DispatchLayer suite  (fast, ~9 s)
 #   [5] full 15×5×3 matrix          (minutes — HTP compiles per graph)

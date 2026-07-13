@@ -6,7 +6,7 @@ Native Loom checkpoint files. One `.entity` file = one saved brain: **full volum
 
 Implementation: [`poly/entity.go`](../poly/entity.go), [`poly/entity_file.go`](../poly/entity_file.go), HF convert helpers [`poly/hf_entity_convert.go`](../poly/hf_entity_convert.go) + [`poly/entity_convert_io.go`](../poly/entity_convert_io.go)
 
-Validated in Lucy menu **[7] Seven-layer CPU suite** — JSON and `.entity` save/reload run side by side for all 21 dtypes (`lucy/examples/seven_layer/runner.go`). Lucy **[8] ENTITY Talk** converts HF LLMs to `.entity` and runs GPU chat from native checkpoints (`lucy/hf_entity.go`).
+Validated in Lucy menu **[7] Seven-layer CPU suite** — JSON and `.entity` save/reload run side by side for all 21 dtypes (Lucy `examples/seven_layer/runner.go`). Lucy **[8] ENTITY Talk** converts HF LLMs to `.entity` and runs GPU chat from native checkpoints (Lucy `hf_entity.go`). See [lucy.md](lucy.md).
 
 ---
 
@@ -147,7 +147,7 @@ See [parallel_sequential.md](parallel_sequential.md), [evolution.md](evolution.m
 
 ## LLM transformer checkpoints (Lucy [8])
 
-Lucy menu **[8] ENTITY Talk** (`lucy/hf_entity.go`) converts supported HF models (SmolLM2, Qwen, Llama-style) to universal-transformer `.entity` files and runs GPU chat without loading safetensors at runtime.
+Lucy menu **[8] ENTITY Talk** (Lucy `hf_entity.go`) converts supported HF models (SmolLM2, Qwen, Llama-style) to universal-transformer `.entity` files and runs GPU chat without loading safetensors at runtime.
 
 Flow (standard — Lucy `[8]` on desktop):
 
@@ -227,7 +227,7 @@ Two **llama-style** convert lanes — see [memory_history.md](memory_history.md#
 
 After `LoadEntityTransformer`, weights live on CPU until GPU setup runs. Lucy **[8]** uses the same path as Poly Talk **[1]**:
 
-1. `setupTransformerForInference` (`lucy/inference_setup.go`) — optional block-by-block decoder upload with `ReleaseInferenceHostWeights()` per block  
+1. `setupTransformerForInference` (Lucy `inference_setup.go`) — optional block-by-block decoder upload with `ReleaseInferenceHostWeights()` per block  
 2. `SyncGlobalWeightsToGPUSequential()` — embeddings → LM head → final norm, releasing CPU after each  
 3. GPU warmup + `ReleaseInferenceHostWeights()` + `GC`
 
@@ -375,7 +375,7 @@ jsonWire, _ := poly.SerializeNetwork(net) // still valid debug export
 
 ## Size vs JSON — observed compression (Lucy [7])
 
-Source: [`lucy/lucy_testing_output/seven_layer.txt`](../lucy/lucy_testing_output/seven_layer.txt) — full **[7] Seven-layer CPU suite** run (10 layer types × up to three grids × 21 dtypes). Checkpoints are written after MC training as `tag_DType.json` and `tag_DType.entity`.
+Source: Lucy `lucy_testing_output/seven_layer.txt` — full **[7] Seven-layer CPU suite** run (10 layer types × up to three grids × 21 dtypes). Checkpoints are written after MC training as `tag_DType.json` and `tag_DType.entity`.
 
 ### Headline numbers
 
@@ -496,10 +496,10 @@ Topology fields are canonicalized on save (e.g. default `seq_length` omitted for
 | Suite | What it checks |
 |:------|:---------------|
 | Lucy **[7]** (`seven_layer/runner.go`) | Before/after train: JSON **and** `.entity` save/reload PASS; memory table shows both checkpoint sizes |
-| Lucy **[8]** (`lucy/hf_entity.go`) | HF cache → Q4 `.entity` convert → GPU ENTITY Talk; SmolLM2 parity with Poly Talk; Qwen load + Q4 GPU path |
+| Lucy **[8]** (Lucy `hf_entity.go`) | HF cache → Q4 `.entity` convert → GPU ENTITY Talk; SmolLM2 parity with Poly Talk; Qwen load + Q4 GPU path |
 | `poly/tests/entity_test.go` | Round-trip, idempotent bytes, selective layer load, Q4_0 blob round-trip for transformers |
 
-Checkpoints land in `lucy/lucy_testing_output/` as `tag_DType.json` and `tag_DType.entity`. Full-run numbers and compression observations: [entity.md — observed compression](entity.md#size-vs-json--observed-compression-lucy-7) (from `seven_layer.txt`).
+Checkpoints land in Lucy `lucy_testing_output/` as `tag_DType.json` and `tag_DType.entity`. Full-run numbers and compression observations: [entity.md — observed compression](entity.md#size-vs-json--observed-compression-lucy-7) (from `seven_layer.txt`).
 
 ---
 

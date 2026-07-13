@@ -53,7 +53,7 @@ config.Mode = poly.TrainingModeCPUSimd
 result, err := poly.Train[float32](network, batches, config)
 ```
 
-The seven-layer example (`lucy/examples/seven_layer`) benchmarks SC, MC, and SIMD training in its summary tables. On a Dense Float32 1×1×1 micro-benchmark (50 epochs), typical wall times are:
+The seven-layer harness (Lucy `examples/seven_layer`) benchmarks SC, MC, and SIMD training in its summary tables. On a Dense Float32 1×1×1 micro-benchmark (50 epochs), typical wall times are:
 
 | Platform | SC | MC | SIMD |
 |----------|-----|-----|------|

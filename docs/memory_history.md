@@ -42,7 +42,7 @@ When GPU is enabled, Lucy prompts:
 📈 Measure memory during GPU load? (terminal chart after load — CPU weights vs GPU upload vs release) (1=yes / 0=no) [1]:
 ```
 
-This appears in **Poly Talk [1]** and **ENTITY Talk [8]** (`lucy/poly_talk_session.go`, `lucy/hf_entity.go`). Answering **yes** calls `poly.SetMemoryHistoryRecording(true)`.
+This appears in **Poly Talk [1]** and **ENTITY Talk [8]** (Lucy `poly_talk_session.go`, `hf_entity.go`). Answering **yes** calls `poly.SetMemoryHistoryRecording(true)`.
 
 Block-by-block upload is a separate prompt:
 
@@ -237,7 +237,7 @@ Even the low-RAM lane still holds **one block’s FP32 weights** plus the **glob
 
 ## GPU load path (what the history measures)
 
-Lucy centralizes inference GPU setup in `lucy/inference_setup.go` → `setupTransformerForInference`. Welvet SoulGlitch mirrors the same policy in `welvet/cabi/llm_ext.go` (`LoomCreateLLM`).
+Lucy centralizes inference GPU setup in `inference_setup.go` → `setupTransformerForInference`. Welvet SoulGlitch mirrors the same policy in `welvet/cabi/llm_ext.go` (`LoomCreateLLM`).
 
 ### Step 1 — Init WGPU
 

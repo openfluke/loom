@@ -1,8 +1,8 @@
 # Cross-path CPU suite (Lucy menu [15])
 
-**Run:** `cd lucy && go run .` → **[15]** → pick grid (default **2³**) → layer type (or **[0]** for all).  
-**Code:** `lucy/examples/seven_layer/cross_path_menu.go`  
-**Log:** `lucy/lucy_testing_output/cross_path_layers.txt`
+**Run:** [Lucy Bloom Rivers](lucy.md) → **[15]** → pick grid (default **2³**) → layer type (or **[0]** for all).  
+**Code:** Lucy `examples/seven_layer/cross_path_menu.go`  
+**Log:** `lucy_testing_output/cross_path_layers.txt`
 
 Unifies **[7]** (tiled SC/MC/SIMD) and **[14]** (native exact + native SIMD) in one side-by-side matrix per layer × dtype.
 
@@ -93,7 +93,7 @@ Full **[15] → grid [5] → [0] all layers** runs, captured off-machine:
 | **amd64** (AVX2) | `~/Documents/loom/simd/cross_path_layers_amd.txt` |
 | **arm64** (NEON) | `~/Documents/loom/simd/cross_path_layers_arm.txt` |
 
-Runtime log during a session: `lucy/lucy_testing_output/cross_path_layers.txt` (reset each run).
+Runtime log during a session: `lucy_testing_output/cross_path_layers.txt` (reset each run).
 
 ### Pass summary (21 dtypes × layer)
 
@@ -206,7 +206,7 @@ After **[0]** or a single layer, the log ends with:
 ## Reproduce archived run
 
 ```bash
-cd lucy && go run .
+cd lucy_bloom_rivers && go run .
 # [15] → grid [5] 3³ SIMD duel → layer [0] all types
 # Copy lucy_testing_output/cross_path_layers.txt to ~/Documents/loom/simd/ for archiving
 ```

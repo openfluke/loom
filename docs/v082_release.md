@@ -1,5 +1,7 @@
 # v0.82.0 — Snapdragon Bridge (SIMD CPU + Qualcomm/Hexagon NPU)
 
+> **v0.84+:** Lucy lives in [lucy_bloom_rivers](lucy.md) (was `loom/lucy/`). Log and harness paths below are relative to the Lucy repo root.
+
 **Release:** **0.81.0 "Accelerator Bridge"** → **0.82.0 "Snapdragon Bridge"**  
 **Checklist:** **117 / 147** (79.6%) on `adjustments` — a **second** vendor NPU (Qualcomm/Hexagon) plus a **SIMD CPU fast-path** advance the Numerical Core, Accelerators, and Ecosystem categories.
 
@@ -50,7 +52,7 @@ Two headline items land on top of the v0.81 Intel bridge:
 |------|--------|
 | **Menu** | `[12]` — mirrors the Intel `[9]` `nine_layer` suite |
 | **Tables** | Timing (Loom / Qualcomm CPU / Qualcomm NPU, speedup) + seven-style drift spectrum |
-| **Log** | `lucy/lucy_testing_output/snapdragon.txt` |
+| **Log** | `lucy_testing_output/snapdragon.txt` |
 
 ### webgpu on Windows ARM64
 
@@ -88,7 +90,7 @@ cd accel\qualcomm
 ./build_clang.ps1
 
 # 3. Run the Lucy Snapdragon suite
-cd ..\..\lucy
+cd ..\..\lucy_bloom_rivers
 go run .
 # -> 12
 ```
@@ -127,7 +129,7 @@ Set `LOOM_QNN_VERBOSE=1` to see full QNN/HTP logs in the terminal (otherwise cla
 | Qualcomm dispatch | `poly/accel_qualcomm.go`, `poly/forward.go` |
 | Qualcomm plugin C++ | `accel/qualcomm/src/` (`qnn_wrapper.*`, `loom_accel_qualcomm.cpp`, `layer_models.*`) |
 | Build / install | `accel/qualcomm/build_clang.ps1`, `install_qairt.ps1`, `bench_manifest.json` |
-| Lucy suite | `lucy/examples/snapdragon/` |
+| Lucy suite | `Lucy examples/snapdragon/` |
 
 ---
 

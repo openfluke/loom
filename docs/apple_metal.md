@@ -3,7 +3,7 @@
 **Version:** Loom **v0.83.0 "Apple Bridge"** — **experimental** (same maturity bar as the Intel & Qualcomm NPU bridges)
 **Status:** macOS on Apple silicon · Metal GPU (MPSGraph) + Accelerate/CPU reference · forward-only
 **Plugin:** `libloom_accel_apple.dylib` (Apple **Metal Performance Shaders Graph** inside)
-**Lucy menu:** **[13]** — log: `lucy/lucy_testing_output/apple.txt`
+**Lucy menu:** **[13]** — log: `lucy_testing_output/apple.txt` (see [lucy.md](lucy.md))
 
 > This is the Apple mirror of the Intel path in [`accelerators.md`](accelerators.md) and the
 > Qualcomm path in [`snapdragon_npu.md`](snapdragon_npu.md). It shares the identical
@@ -224,7 +224,7 @@ No SDK download — just Xcode command-line tools (for the Metal frameworks). Fu
 cd accel/apple
 ./build.sh                 # CMake → build/libloom_accel_apple.dylib
 
-cd ../../lucy
+cd ../../lucy_bloom_rivers
 CGO_ENABLED=1 go run .      # → [13] Apple GPU bridge
 #   [4] medium DispatchLayer suite   (fast)
 #   [5] full 10×6×3 matrix           (the apple.txt tables above)

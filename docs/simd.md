@@ -92,7 +92,7 @@ Lucy **[14]** reports SIMD fwd/bwd speedup columns for layers that implement thi
 
 **Unit tests** (`poly/tests/*_backward_test.go`): SIMD backward vs tiled forward/backward; SC vs MC where applicable.
 
-**Seven-layer suite** (`lucy/examples/seven_layer/`):
+**Seven-layer suite** (Lucy `examples/seven_layer/`):
 
 - `TestSimdParityAllLayers_Float32_1x1` — fwd/bwd SC ↔ MC ↔ SIMD, all seven compute layers
 - Per-layer grid tests (e.g. `TestCNN3SimdParityAllGrids_Float32`, `TestLSTMSimdParityAllGrids_Float32`)
@@ -101,7 +101,7 @@ Lucy **[14]** reports SIMD fwd/bwd speedup columns for layers that implement thi
 Run:
 
 ```bash
-go test ./lucy/examples/seven_layer/ -run Simd -count=1
+cd lucy_bloom_rivers && go test ./examples/seven_layer/ -run Simd -count=1
 go test ./poly/tests/ -run Backward -count=1
 ```
 

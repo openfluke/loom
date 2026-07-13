@@ -1,5 +1,7 @@
 # v0.80.0 — Native Ship (ENTITY + Modern GPU)
 
+> **v0.84+:** Lucy lives in [lucy_bloom_rivers](lucy.md) (was `loom/lucy/`). Log and harness paths below are relative to the Lucy repo root.
+
 **Release:** **0.79.0 "Bedrock Validation"** → **0.80.0 "Native Ship"**  
 **Checklist:** **111 / 142** (78.2%) → **114 / 142** (80.3%)
 
@@ -28,7 +30,7 @@ Import lane unchanged: HuggingFace **`.safetensors`** for download. Ship lane: *
 |------|--------|
 | **Module** | Standalone [openfluke/webgpu](https://github.com/openfluke/webgpu) (no longer a cogentcore fork) |
 | **Native stack** | wgpu-native **v29** C API — futures, `WGPUStringView`, Go-side validation error scopes |
-| **Loom dependency** | `require github.com/openfluke/webgpu v1.0.4` in root and `lucy/go.mod` |
+| **Loom dependency** | `require github.com/openfluke/webgpu v1.0.4` in root and `Lucy go.mod` |
 | **Binaries** | Prebuilt `libwgpu_native.a` per platform under the module; `ios/amd64` (Intel simulator) dropped to satisfy Go module size limits |
 
 See webgpu README for platform table and version history.
@@ -89,7 +91,7 @@ Not a llama.cpp/Ollama tok/s contest yet — custom WGSL through wgpu-native —
 
 ```bash
 # Lucy ENTITY + GPU (from repo root)
-cd lucy && go get github.com/openfluke/webgpu@v1.0.4 && go mod tidy
+cd lucy_bloom_rivers && go get github.com/openfluke/webgpu@v1.0.4 && go mod tidy
 go run .   # [7] seven-layer (entity save/reload), [8] ENTITY Talk, [1] Poly Talk GPU
 
 # ENTITY round-trip tests
@@ -113,7 +115,7 @@ export WGPU_ADAPTER_NAME=NVIDIA
 | Area | Files |
 |------|-------|
 | ENTITY | `poly/entity.go`, `poly/entity_q4.go`, `poly/hf_import.go` |
-| Lucy [8] | `lucy/hf_entity.go` |
+| Lucy [8] | Lucy `hf_entity.go` |
 | WebGPU init | `poly/wgpu_context_native.go` |
 | Docs | [`entity.md`](entity.md), [`gpu.md`](gpu.md), [`transformer.md`](transformer.md) |
 | Planet Bridging | `planetbridging/README.md`, `planetbridging/PROGRESS.md` |

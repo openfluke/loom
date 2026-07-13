@@ -578,7 +578,7 @@ Poly Talk loads HF safetensors every run. **ENTITY Talk** converts once to a Luc
 
 | Path | Entry |
 |:-----|:------|
-| Convert + chat UI | Lucy menu **[8]** — `lucy/hf_entity.go` |
+| Convert + chat UI | Lucy menu **[8]** — Lucy `hf_entity.go` (see [lucy.md](lucy.md)) |
 | Import API | `poly.ImportHFToEntity` — [`hf_import.go`](../poly/hf_import.go) |
 | Save/load | `SaveEntityTransformer` / `LoadEntityTransformer` — [`entity.go`](../poly/entity.go) |
 | Q4 bake on disk | [`entity_q4.go`](../poly/entity_q4.go) — decoder MHA/SwiGLU only in v1 |

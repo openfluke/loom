@@ -1,5 +1,7 @@
 # v0.83.0 — Apple Bridge (Apple GPU / Metal + BF16)
 
+> **v0.84+:** Lucy lives in [lucy_bloom_rivers](lucy.md) (was `loom/lucy/`). Log and harness paths below are relative to the Lucy repo root.
+
 **Release:** **0.82.0 "Snapdragon Bridge"** → **0.83.0 "Apple Bridge"**  
 **Checklist:** **119 / 149** (79.9%) on `adjustments` — a **third** accelerator vendor (Apple GPU via Metal/MPSGraph) advances the Accelerators and Ecosystem categories, plus a **BF16** wire dtype for the shared accel bridge.
 
@@ -37,7 +39,7 @@ One headline item lands on top of the v0.82 Intel + Qualcomm bridges:
 |------|--------|
 | **Menu** | `[13]` — mirrors the Intel `[9]` and Qualcomm `[12]` suites |
 | **Tables** | Timing (Loom / Apple CPU / Metal GPU, speedup + compile) + seven-style drift spectrum |
-| **Log** | `lucy/lucy_testing_output/apple.txt` |
+| **Log** | `lucy_testing_output/apple.txt` |
 
 ---
 
@@ -78,7 +80,7 @@ cd accel/apple
 ./build.sh
 
 # 2. Run the Lucy Apple suite
-cd ../../lucy
+cd ../../lucy_bloom_rivers
 CGO_ENABLED=1 go run .
 # -> 13
 #   [4] medium DispatchLayer suite
@@ -120,7 +122,7 @@ CGO_ENABLED=1 go run .
 | Build | `accel/apple/CMakeLists.txt`, `accel/apple/build.sh`, `accel/apple/bench_manifest.json` |
 | Accel package | `poly/accel/plugin_darwin.go`, `poly/accel/apple_stub.go`, `target.go`, `registry.go`, `accel.go` |
 | Apple dispatch | `poly/accel_apple.go`, `poly/accel_intel.go` (BF16 + vendor-neutral routing), `poly/forward.go` |
-| Lucy suite | `lucy/examples/apple/`, `lucy/examples/apple_menu.go` |
+| Lucy suite | `Lucy examples/apple/`, `Lucy examples/apple_menu.go` |
 
 ---
 

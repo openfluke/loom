@@ -1,8 +1,8 @@
 # Native layer suite (Lucy menu [14])
 
-**Run:** `cd lucy && go run .` → **[14]** (or **[0]** for all layer types).  
-**Code:** `lucy/examples/seven_layer/native_menu.go`  
-**Runtime log:** `lucy/lucy_testing_output/native_layers.txt` (reset each session)
+**Run:** [Lucy Bloom Rivers](lucy.md) → **[14]** (or **[0]** for all layer types).  
+**Code:** Lucy `examples/seven_layer/native_menu.go`  
+**Runtime log:** `lucy_testing_output/native_layers.txt` (reset each session)
 
 This suite exercises **native-exact training** (`UseExactDType = true`): forward and backward in storage dtype via `*_native.go`, plus **30-epoch** CPU training per dtype. When Plan 9 SIMD is linked, each row also reports **native-exact SIMD** fwd/bwd timing vs scalar native.
 
@@ -144,7 +144,7 @@ Table footer per layer: `Dense native: 21 passed · 0 failed (of 21 dtypes)`.
 ## Reproduce
 
 ```bash
-cd lucy && go run .
+cd lucy_bloom_rivers && go run .
 # [14] → pick layer [1]–[10] or [0] for full matrix
 ```
 

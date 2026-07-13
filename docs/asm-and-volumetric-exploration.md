@@ -185,7 +185,7 @@ UseBitNetNativeQuant  bool  // Dense: BitNet W8A8 Go ref (Lucy quant parity colu
 
 ### Lucy `[7]` ASM integration
 
-**Files:** `lucy/examples/seven_layer/runner.go`, `summary.go`, `common.go`
+**Files:** Lucy `examples/seven_layer/runner.go`, `summary.go`, `common.go`
 
 - `requiresAsmGoTiledParity` — Float32/64: ASM vs Go tiled
 - `requiresAsmBitNetParity` — quant: ASM vs `captureForwardBitNetNative` (Go BitNet ref)
@@ -405,7 +405,7 @@ Use `git status` / `git log` for the exact commit set. Approximate list:
 - `i2s_amd64.s`, `i2s_arm64.s`
 - `ternary_amd64.s`, `ternary_arm64.s`
 
-### `lucy/examples/seven_layer/`
+### Lucy `examples/seven_layer/` (in [lucy_bloom_rivers](lucy.md))
 
 - Executor fields in `summary.go` (`DTypeRow` executor columns, `printDenseExecutorTimingTable`)
 - Executor capture in `runner.go`, `benchmarkExecutorForward` in `common.go`
@@ -432,14 +432,14 @@ cd loom/poly
 go test ./tests/ -run 'DenseExecutor|DenseAsm|BitNet' -count=1
 
 # Lucy Dense 1³ regression (21 dtypes + ASM + executor tables)
-cd loom/lucy/examples/seven_layer
+cd lucy_bloom_rivers/examples/seven_layer
 go test -run TestRunLayerSuiteDense1x1AllDTypes -v -count=1
 
 # Lucy 3³ executor smoke
 go test -run TestDenseExecutor3x3Float32Smoke -v -count=1
 
 # Full menu
-cd loom/lucy && go run .   # → [7] Dense
+cd lucy_bloom_rivers && go run .   # → [7] Dense
 ```
 
 ---

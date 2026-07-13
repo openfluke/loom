@@ -37,6 +37,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [quantization.md](quantization.md) | **Three modes**: default QAT-like train, PTQ inference, native exact train; `Morph`/`Unpack`, `Q4_0Block`, calibration |
 | [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, Qwen-style expanded-query + Q/K norm support, `Transformer[T]` generation type; CPU vs GPU tiling behavior |
 | [quick_reference.md](quick_reference.md) | Concise copy-paste snippets for all common operations |
+| [lucy.md](lucy.md) | **Lucy Bloom Rivers** — separate harness repo; menus [1]–[17], log paths, clone layout |
 | [testing_and_validation.md](testing_and_validation.md) | **Lucy logs**, parity table legend, how to read `lucy_testing_output/log.txt`, Dense **Go÷ASM** benchmarks, and a compact map of `poly/` files the suites hit |
 | [bedrock_validation.md](bedrock_validation.md) | **v0.79.0** — seven-layer CPU suite, MHA/KV/persistence fixes; C-ABI **489/489** (v0.81 accel + entity exports) |
 | [v080_release.md](v080_release.md) | **v0.80.0** — ENTITY native checkpoints, WebGPU v1.0.4, cross-platform GPU, Planet Bridging POC |
@@ -62,7 +63,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **Want to train a model?** Read [training.md](training.md) and [dispatch.md](dispatch.md).
 
-**Training in storage dtype (not FP32 surrogate)?** Read [training.md — Training paradigms](training.md#training-paradigms-default-qat-like-vs-native-exact) and [quantization.md — Three modes](quantization.md#three-traininginference-modes). Run Lucy **[14]** ([native_layers.md](native_layers.md)) — `lucy/examples/seven_layer/native_menu.go`.
+**Training in storage dtype (not FP32 surrogate)?** Read [training.md — Training paradigms](training.md#training-paradigms-default-qat-like-vs-native-exact) and [quantization.md — Three modes](quantization.md#three-traininginference-modes). Run Lucy **[14]** ([native_layers.md](native_layers.md)) — see [lucy.md](lucy.md).
 
 **Using the GPU?** Read [gpu.md](gpu.md).
 
@@ -92,7 +93,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **Just need a code snippet?** Go straight to [quick_reference.md](quick_reference.md).
 
-**Reading Lucy / Glitch test transcripts or parity tables?** See [testing_and_validation.md](testing_and_validation.md).
+**Reading Lucy / Glitch test transcripts or parity tables?** See [lucy.md](lucy.md) and [testing_and_validation.md](testing_and_validation.md).
 
 **Speeding up CPU inference and training (SIMD)?** Read [simd.md](simd.md) — `TrainingModeCPUSimd`, AVX2/NEON `DotTile` + `SaxpyF32AccF64`, Lucy **[7]** seven-layer SC/MC/SIMD parity and benchmarks. Native-exact SIMD timings: [native_layers.md](native_layers.md).
 

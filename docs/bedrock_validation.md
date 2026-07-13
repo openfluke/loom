@@ -24,10 +24,10 @@ This wave does not add a new compute backend. It hardens the **Go CPU** path, **
 
 ## Lucy seven-layer CPU suite
 
-**Run:** `cd lucy && go run .` → **[7]** (or **[0]** for all layer types).  
-**Log:** `lucy/lucy_testing_output/seven_layer.txt` (reset each run).
+**Run:** [Lucy Bloom Rivers](lucy.md) → **[7]** (or **[0]** for all layer types).  
+**Log:** `lucy_testing_output/seven_layer.txt` (reset each run).
 
-**Harness:** `lucy/examples/seven_layer/` — builds a volumetric JSON network per layer family, morphs all **21 dtypes**, checks:
+**Harness:** Lucy `examples/seven_layer/` — builds a volumetric JSON network per layer family, morphs all **21 dtypes**, checks:
 
 - Forward **SC ↔ MC ↔ SIMD** parity (dtype tolerance)
 - Backward **SC ↔ MC ↔ SIMD** parity (10× fwd tol)
@@ -101,7 +101,7 @@ Python / TypeScript / WASM consumers that train outside `LoomTrain` should call 
 | BitNet CPU / ternary | `poly/bitnet_cpu.go` |
 | Persistence | `poly/persistence.go`, `poly/serialization.go` |
 | Master / inference RAM | `poly/weight_master.go` |
-| Seven-layer harness | `lucy/examples/seven_layer/*.go` |
+| Seven-layer harness | Lucy `examples/seven_layer/*.go` |
 | C-ABI export | `welvet/cabi/acceleration_ext.go` (`LoomSyncInferenceWeights`); v0.81: `accel_ext.go`, `entity_ext.go`, `transformer_ext.go`, `io_ext.go` |
 
 ---
