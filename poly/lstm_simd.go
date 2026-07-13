@@ -40,6 +40,15 @@ func lstmGateSum(wGate []float32, h int, xT, hPrev []float32, inputSize, hiddenS
 }
 
 func lstmForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32]) {
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return lstmForwardSimdF32WithWeights(layer, input, wData)
+}
+
+func lstmForwardSimdF32WithWeights(layer *VolumetricLayer, input *Tensor[float32], wData []float32) (preAct, postAct *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
 	batchSize := input.Shape[0]
@@ -51,12 +60,6 @@ func lstmForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct,
 
 	preAct = NewTensor[float32](batchSize, seqLength, 5*hiddenSize)
 	postAct = NewTensor[float32](batchSize, seqLength, hiddenSize)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	ihSize, hhSize, bSize := hiddenSize*inputSize, hiddenSize*hiddenSize, hiddenSize
 	gateSize := ihSize + hhSize + bSize

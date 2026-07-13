@@ -50,10 +50,17 @@ func EmbeddingForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tenso
 		return EmbeddingForwardTiled(layer, input)
 	}
 	var preF, postF *Tensor[float32]
-	if useEmbeddingTrueNative(layer) {
-		preF, postF = embeddingForwardIntegerNative(layer, in)
-	} else {
-		preF, postF = embeddingForwardNativeMAC(layer, in)
+	if layerUseSimdForward(layer) {
+		if pre, post, simdOK := tryEmbeddingForwardNativeSimd(layer, in); simdOK {
+			preF, postF = pre, post
+		}
+	}
+	if preF == nil {
+		if useEmbeddingTrueNative(layer) {
+			preF, postF = embeddingForwardIntegerNative(layer, in)
+		} else {
+			preF, postF = embeddingForwardNativeMAC(layer, in)
+		}
 	}
 	pre, post, ok2 := nativeTensorsAs[T](preF, postF)
 	if !ok2 {
@@ -69,10 +76,17 @@ func EmbeddingBackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput,
 		return EmbeddingBackwardTiled(layer, gradOutput, input, preAct)
 	}
 	var giF, gwF *Tensor[float32]
-	if useEmbeddingTrueNative(layer) {
-		giF, gwF = embeddingBackwardIntegerNative(layer, goT, in)
-	} else {
-		giF, gwF = embeddingBackwardNativeMAC(layer, goT, in)
+	if layerUseSimdForward(layer) {
+		if gi, gw, simdOK := tryEmbeddingBackwardNativeSimd(layer, goT, in); simdOK {
+			giF, gwF = gi, gw
+		}
+	}
+	if giF == nil {
+		if useEmbeddingTrueNative(layer) {
+			giF, gwF = embeddingBackwardIntegerNative(layer, goT, in)
+		} else {
+			giF, gwF = embeddingBackwardNativeMAC(layer, goT, in)
+		}
 	}
 	gi, okGI := nativeTensorAs[T](giF)
 	gw, okGW := nativeTensorAs[T](gwF)

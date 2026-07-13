@@ -3,18 +3,31 @@ package poly
 import (
 	"runtime"
 	"sync"
+
+	"github.com/openfluke/loom/poly/simd"
 )
 
 // ResidualForwardPolymorphic adds a residual connection: output = input + skip.
 func ResidualForwardPolymorphic[T Numeric](layer *VolumetricLayer, input, skip *Tensor[T]) (preAct, postAct *Tensor[T]) {
+	if useResidualNativeExact(layer) {
+		return ResidualForwardNativeExact(layer, input, skip)
+	}
 	if skip == nil || len(skip.Data) != len(input.Data) {
 		return input, input.Clone()
+	}
+	if layerUseSimdForward(layer) && simd.SimdEnabled() {
+		if pre, post, ok := tryResidualForwardSimd(layer, input, skip); ok {
+			return pre, post
+		}
 	}
 	return ResidualForwardTiled(layer, input, skip)
 }
 
 // ResidualBackwardPolymorphic computes gradients for Residual layer.
 func ResidualBackwardPolymorphic[T Numeric](layer *VolumetricLayer, gradOutput, input, preAct *Tensor[T]) (gradInput, gradWeights *Tensor[T]) {
+	if useResidualNativeExact(layer) {
+		return ResidualBackwardNativeExact(layer, gradOutput, input, preAct)
+	}
 	return ResidualBackwardTiled(layer, gradOutput, input, preAct)
 }
 

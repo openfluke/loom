@@ -18,10 +18,17 @@ func LSTMForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tensor[T])
 		return LSTMForwardTiled(layer, input)
 	}
 	var preF, postF *Tensor[float32]
-	if useLSTMTrueNative(layer) {
-		preF, postF = lstmForwardIntegerNative(layer, in)
-	} else {
-		preF, postF = lstmForwardNativeMAC(layer, in)
+	if layerUseSimdForward(layer) {
+		if pre, post, simdOK := tryLSTMForwardNativeSimd(layer, in); simdOK {
+			preF, postF = pre, post
+		}
+	}
+	if preF == nil {
+		if useLSTMTrueNative(layer) {
+			preF, postF = lstmForwardIntegerNative(layer, in)
+		} else {
+			preF, postF = lstmForwardNativeMAC(layer, in)
+		}
 	}
 	pre, post, ok2 := nativeTensorsAs[T](preF, postF)
 	if !ok2 {
@@ -38,10 +45,17 @@ func LSTMBackwardNativeExact[T Numeric](layer *VolumetricLayer, gradOutput, inpu
 		return LSTMBackwardTiled(layer, gradOutput, input, preAct)
 	}
 	var giF, gwF *Tensor[float32]
-	if useLSTMTrueNative(layer) {
-		giF, gwF = lstmBackwardIntegerNative(layer, goT, in, preF)
-	} else {
-		giF, gwF = lstmBackwardNativeMAC(layer, goT, in, preF)
+	if layerUseSimdForward(layer) {
+		if gi, gw, simdOK := tryLSTMBackwardNativeSimd(layer, goT, in, preF); simdOK {
+			giF, gwF = gi, gw
+		}
+	}
+	if giF == nil {
+		if useLSTMTrueNative(layer) {
+			giF, gwF = lstmBackwardIntegerNative(layer, goT, in, preF)
+		} else {
+			giF, gwF = lstmBackwardNativeMAC(layer, goT, in, preF)
+		}
 	}
 	gi, okGI := nativeTensorAs[T](giF)
 	gw, okGW := nativeTensorAs[T](gwF)

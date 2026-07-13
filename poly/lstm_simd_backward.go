@@ -25,6 +25,15 @@ func tryLSTMBackwardSimd[T Numeric](layer *VolumetricLayer, gradOutput, input, p
 }
 
 func lstmBackwardSimdF32(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32]) {
+	weights := layer.WeightStore.GetActive(layer.DType)
+	if weights == nil {
+		weights = layer.WeightStore.Master
+	}
+	wData := CastWeights[float32](weights)
+	return lstmBackwardSimdF32WithWeights(layer, gradOutput, input, preAct, wData)
+}
+
+func lstmBackwardSimdF32WithWeights(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32], wData []float32) (gradInput, gradWeights *Tensor[float32]) {
 	layer.EnsureRuntimeTileSizes()
 
 	batchSize := input.Shape[0]
@@ -35,12 +44,6 @@ func lstmBackwardSimdF32(layer *VolumetricLayer, gradOutput, input, preAct *Tens
 	gradInput = NewTensor[float32](batchSize, seqLength, inputSize)
 	wCount := layer.WeightStore.WeightCount(layer.DType)
 	gradWeights = NewTensor[float32](wCount)
-
-	weights := layer.WeightStore.GetActive(layer.DType)
-	if weights == nil {
-		weights = layer.WeightStore.Master
-	}
-	wData := CastWeights[float32](weights)
 
 	ihSize := hiddenSize * inputSize
 	hhSize := hiddenSize * hiddenSize
