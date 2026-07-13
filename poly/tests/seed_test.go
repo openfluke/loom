@@ -17,6 +17,32 @@ func TestDenseManifestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSwiGLUManifestRoundTrip(t *testing.T) {
+	specs := []SwiGLUSpec{
+		{Hidden: 8, Intermediate: 16},
+		{Hidden: 8, Intermediate: 12},
+	}
+	topo := SwiGLUTopologySeed("test", specs)
+	m, err := BuildSwiGLUManifest(topo, specs, []string{"float32", "int8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RebuildSwiGLUManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	net, err := BuildSwiGLUVolumetricFromManifest(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extracted, err := ManifestFromSwiGLUNetwork(net, topo, specs, []string{"float32", "int8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extracted.NetworkFP != m.NetworkFP {
+		t.Fatalf("network fp mismatch: %x %x", extracted.NetworkFP, m.NetworkFP)
+	}
+}
+
 func TestBuildSeededEntityTransformer(t *testing.T) {
 	seed := SeedFrom("test", "lm")
 	dims := HFDecoderDims{
