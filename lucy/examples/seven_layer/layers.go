@@ -116,8 +116,15 @@ func cnnSpatial(g GridSpec) int {
 }
 
 func cnn3Spatial(g GridSpec) (d, h, w int) {
-	// Small cube on 1³ only (seven_layer runs CNN3 on 1×1×1 grid).
-	return 8, 8, 8
+	switch g.Cells() {
+	case 1:
+		return 8, 8, 8
+	case 8:
+		return 6, 6, 6
+	default:
+		// 3³ × 7 layers/cell: keep voxels modest (4³) so 189-layer stacks finish in-menu.
+		return 4, 4, 4
+	}
 }
 
 type mhaShape struct {

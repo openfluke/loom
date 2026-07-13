@@ -29,23 +29,37 @@ func tryCNN3BackwardNativeSimd(layer *VolumetricLayer, gradOutput, input, preAct
 }
 
 func cnn3ForwardNativeMACSimd(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32], ok bool) {
-	wctx := newNativeWeightCtx(layer)
-	count := layer.WeightStore.WeightCount(layer.DType)
+	if layer.DType == DTypeFloat32 {
+		preAct, postAct = cnn3ForwardSimdF32(layer, input)
+		return preAct, postAct, true
+	}
+	ws := layer.WeightStore
+	count := ws.WeightCount(layer.DType)
 	if count <= 0 {
 		return nil, nil, false
 	}
-	wData := wctx.materializeF32Weights(count)
+	wData := ws.NativeSimdF32Weights(layer.DType)
+	if wData == nil {
+		return nil, nil, false
+	}
 	preAct, postAct = cnn3ForwardSimdF32WithWeights(layer, input, wData)
 	return preAct, postAct, true
 }
 
 func cnn3BackwardNativeMACSimd(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32], ok bool) {
-	wctx := newNativeWeightCtx(layer)
-	count := layer.WeightStore.WeightCount(layer.DType)
+	if layer.DType == DTypeFloat32 {
+		gradInput, gradWeights = cnn3BackwardSimdF32(layer, gradOutput, input, preAct)
+		return gradInput, gradWeights, true
+	}
+	ws := layer.WeightStore
+	count := ws.WeightCount(layer.DType)
 	if count <= 0 {
 		return nil, nil, false
 	}
-	wData := wctx.materializeF32Weights(count)
+	wData := ws.NativeSimdF32Weights(layer.DType)
+	if wData == nil {
+		return nil, nil, false
+	}
 	gradInput, gradWeights = cnn3BackwardSimdF32WithWeights(layer, gradOutput, input, preAct, wData)
 	return gradInput, gradWeights, true
 }

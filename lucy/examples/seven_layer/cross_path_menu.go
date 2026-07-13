@@ -327,18 +327,6 @@ func crossPathGridsFromChoice(choice string) []GridSpec {
 }
 
 func crossPathGridsForEntry(e crossPathLayerEntry) []GridSpec {
-	if e.primary == poly.LayerCNN3 {
-		var out []GridSpec
-		for _, g := range crossPathActiveGrids {
-			if g.Cells() == 1 {
-				out = append(out, g)
-			}
-		}
-		if len(out) == 0 {
-			fmt.Printf("\n  ▶ Cross-path %s — skipped (CNN3 only supports 1³; pick grid 1 or 4)\n", e.name)
-		}
-		return out
-	}
 	return crossPathActiveGrids
 }
 
@@ -346,6 +334,10 @@ func runCrossPathEntry(e crossPathLayerEntry) {
 	grids := crossPathGridsForEntry(e)
 	for _, g := range grids {
 		fmt.Printf("\n▶ Cross-path %s · %s (%d-layer stack) …\n", e.name, g, g.StackLayers())
+		if e.primary == poly.LayerCNN3 && g.Cells() > 1 {
+			d, h, w := cnn3Spatial(g)
+			fmt.Printf("  (CNN3 spatial %d×%d×%d on %s — scaled for stack depth)\n", d, h, w, g)
+		}
 		runCrossPathLayerSuite(e.build(g), e.primary)
 	}
 }
