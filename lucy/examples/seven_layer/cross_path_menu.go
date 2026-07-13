@@ -124,6 +124,18 @@ type crossPathRow struct {
 	// Tiled (layer.go / GetActive FP32 dequant)
 	FwdSCDur, FwdMCDur, FwdSimdDur string
 	BwdSCDur, BwdMCDur, BwdSimdDur string
+	fwdSC, fwdMC, fwdSimd                   time.Duration
+	bwdSC, bwdMC, bwdSimd                   time.Duration
+	trainSC, trainMC, trainSimd, trainNative time.Duration
+
+	// Pairwise speed comparisons (computed after all timings + train)
+	qatFwdSCSimd, qatFwdMCSimd pairCmp
+	qatBwdSCSimd, qatBwdMCSimd pairCmp
+	natFwdPair, natBwdPair     pairCmp
+	trainSCSimd, trainMCSimd   pairCmp
+	fwdWinner, bwdWinner, trainWinner string
+	fwdWinRatio, bwdWinRatio, trainWinRatio string
+	fwdWinFaster, bwdWinFaster, trainWinFaster string
 	FwdSCMC, BwdSCMC               float64
 	FwdTiledSimd, BwdTiledSimd     float64
 	FwdSCOK, FwdMCOK, FwdSimdOK    bool
@@ -138,6 +150,7 @@ type crossPathRow struct {
 	NatBwdDur        string
 	NatFwdSimdDur    string
 	NatBwdSimdDur    string
+	natFwd, natBwd, natFwdSimd, natBwdSimd time.Duration
 	NatFwdOK         bool
 	NatBwdOK         bool
 	NatFwdSimdOK       bool
@@ -222,7 +235,8 @@ func RunCrossPathMenu(reader *bufio.Reader) {
 	fmt.Println("║  [15] Cross-path CPU suite — SC/MC/SIMD vs native vs native-SIMD      ║")
 	fmt.Println("║  Log: lucy_testing_output/cross_path_layers.txt                        ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════════════╝")
-	fmt.Println("  Tiled: layer.go GetActive FP32 dequant · Native: *_native.go MAC rules")
+	fmt.Println("  Tiled (QAT): layer.go GetActive FP32 dequant · Native: *_native.go MAC rules")
+	fmt.Println("  Comparisons: QAT SC/MC→SIMD · Native→Native-SIMD · best-QAT vs best-Native")
 	fmt.Println("  Grid 1³ · 7 layers/cell · 30 train epochs · all 21 dtypes per layer")
 	fmt.Println()
 	fmt.Println("  [0] Run all layer types")
@@ -310,11 +324,13 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 		configureTiledNet(net)
 
 		fwdSC := captureForward(net, input, false)
+		row.fwdSC = fwdSC.dur
 		row.FwdSCDur = formatDur(fwdSC.dur)
 		row.FwdSCOK = len(fwdSC.out) > 0 && tensorFinite(fwdSC.out)
 		tally.record("tiled.fwd.sc", row.FwdSCOK)
 
 		fwdMC := captureForward(net, input, true)
+		row.fwdMC = fwdMC.dur
 		row.FwdMCDur = formatDur(fwdMC.dur)
 		row.FwdMCOK = len(fwdMC.out) > 0 && tensorFinite(fwdMC.out)
 		tally.record("tiled.fwd.mc", row.FwdMCOK)
@@ -326,6 +342,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 		if simdLayer {
 			resetNetwork(net)
 			fwdSimd := captureForwardSimd(net, input, true)
+			row.fwdSimd = fwdSimd.dur
 			row.FwdSimdDur = formatDur(fwdSimd.dur)
 			row.FwdSimdOK = len(fwdSimd.out) > 0 && tensorFinite(fwdSimd.out)
 			tally.record("tiled.fwd.simd", row.FwdSimdOK)
@@ -337,6 +354,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 		}
 
 		bwdSC := captureBackward(net, input, target, false)
+		row.bwdSC = bwdSC.dur
 		row.BwdSCDur = formatDur(bwdSC.dur)
 		row.BwdSCOK = len(bwdSC.dx) > 0 && tensorFinite(bwdSC.dx)
 		if primary != poly.LayerResidual {
@@ -345,6 +363,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 		tally.record("tiled.bwd.sc", row.BwdSCOK)
 
 		bwdMC := captureBackward(net, input, target, true)
+		row.bwdMC = bwdMC.dur
 		row.BwdMCDur = formatDur(bwdMC.dur)
 		row.BwdMCOK = len(bwdMC.dx) > 0 && tensorFinite(bwdMC.dx)
 		if primary != poly.LayerResidual {
@@ -359,6 +378,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 		if simdLayer {
 			resetNetwork(net)
 			bwdSimd := captureBackwardSimd(net, input, target, true)
+			row.bwdSimd = bwdSimd.dur
 			row.BwdSimdDur = formatDur(bwdSimd.dur)
 			row.BwdSimdOK = len(bwdSimd.dx) > 0 && tensorFinite(bwdSimd.dx)
 			if primary != poly.LayerResidual {
@@ -382,11 +402,13 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 			setCPUMode(net, false)
 			setSimdForward(net, false)
 			fwdNat := captureForward(net, input, false)
+			row.natFwd = fwdNat.dur
 			row.NatFwdDur = formatDur(fwdNat.dur)
 			row.NatFwdOK = len(fwdNat.out) > 0 && tensorFinite(fwdNat.out)
 			tally.record("native.fwd", row.NatFwdOK)
 
 			bwdNat := captureBackward(net, input, target, false)
+			row.natBwd = bwdNat.dur
 			row.NatBwdDur = formatDur(bwdNat.dur)
 			row.NatBwdOK = len(bwdNat.dx) > 0 && tensorFinite(bwdNat.dx)
 			if primary != poly.LayerResidual {
@@ -399,6 +421,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 			if simdLayer {
 				resetNetwork(net)
 				fwdNatSimd := captureForwardSimd(net, input, true)
+				row.natFwdSimd = fwdNatSimd.dur
 				row.NatFwdSimdDur = formatDur(fwdNatSimd.dur)
 				row.NatFwdSimdOK = len(fwdNatSimd.out) > 0 && tensorFinite(fwdNatSimd.out)
 				tally.record("native.fwd.simd", row.NatFwdSimdOK)
@@ -408,6 +431,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 
 				resetNetwork(net)
 				bwdNatSimd := captureBackwardSimd(net, input, target, true)
+				row.natBwdSimd = bwdNatSimd.dur
 				row.NatBwdSimdDur = formatDur(bwdNatSimd.dur)
 				row.NatBwdSimdFinite = len(bwdNatSimd.dx) > 0 && tensorFinite(bwdNatSimd.dx)
 				if primary != poly.LayerResidual {
@@ -438,6 +462,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 			continue
 		}
 		row.TrainSCDur = formatDur(durSC)
+		row.trainSC = durSC
 		row.LossFinalSC = resSC.FinalLoss
 		if len(resSC.LossHistory) > 0 {
 			row.LossFinalSC = resSC.LossHistory[len(resSC.LossHistory)-1]
@@ -463,6 +488,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 			continue
 		}
 		row.TrainMCDur = formatDur(durMC)
+		row.trainMC = durMC
 		row.LossFinalMC = resMC.FinalLoss
 		if len(resMC.LossHistory) > 0 {
 			row.LossFinalMC = resMC.LossHistory[len(resMC.LossHistory)-1]
@@ -486,6 +512,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 				continue
 			}
 			row.TrainSimdDur = formatDur(durSimd)
+			row.trainSimd = durSimd
 			row.LossFinalSimd = resSimd.FinalLoss
 			if len(resSimd.LossHistory) > 0 {
 				row.LossFinalSimd = resSimd.LossHistory[len(resSimd.LossHistory)-1]
@@ -512,6 +539,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 			t0 := time.Now()
 			resNat, err := poly.Train(netNat, []poly.TrainingBatch[float32]{{Input: input, Target: target}}, cfg)
 			row.TrainNativeDur = formatDur(time.Since(t0))
+			row.trainNative = time.Since(t0)
 			if err != nil {
 				row.Err = "TRAIN-NAT"
 				rows = append(rows, row)
@@ -529,6 +557,8 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 			tally.record("train.native", row.TrainNativeOK)
 		}
 
+		computeCrossPathComparisons(&row, simdLayer)
+
 		row.TestsTotal = tally.total
 		row.TestsPassed = tally.passed
 		row.OverallOK = row.TestsPassed == row.TestsTotal && row.Err == ""
@@ -537,11 +567,12 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 
 		if row.OverallOK {
 			passed++
-			fmt.Printf("PASS  %d/%d tests  tiled fwd SC/MC/SIMD=%s/%s/%s  native=%s/%s  train SC/MC/SIMD/Nat=%s/%s/%s/%s\n",
+			fmt.Printf("PASS  %d/%d  QAT-f SC→SIMD %s %s  Nat-f %s %s  best-fwd %s %s  train %s %s\n",
 				row.TestsPassed, row.TestsTotal,
-				row.FwdSCDur, row.FwdMCDur, dashIfEmpty(row.FwdSimdDur),
-				dashIfEmpty(row.NatFwdDur), dashIfEmpty(row.NatFwdSimdDur),
-				markOK(row.TrainSCOK), markOK(row.TrainMCOK), markOK(row.TrainSimdOK), markOK(row.TrainNativeOK))
+				row.qatFwdSCSimd.ratio(), row.qatFwdSCSimd.fasterPct(),
+				row.natFwdPair.ratio(), row.natFwdPair.fasterPct(),
+				row.fwdWinner, row.fwdWinRatio,
+				row.trainWinner, row.trainWinRatio)
 		} else {
 			failed++
 			fmt.Printf("FAIL  %d/%d tests  err=%s\n", row.TestsPassed, row.TestsTotal, row.Err)
@@ -549,6 +580,7 @@ func runCrossPathLayerSuite(s LayerSuite, primary poly.LayerType) {
 	}
 
 	printCrossPathTimingTable(s.Name, rows, simdLayer)
+	printCrossPathComparisonTable(s.Name, rows, simdLayer)
 	printCrossPathParityTable(s.Name, rows, simdLayer)
 	printCrossPathTrainTable(s.Name, rows, simdLayer)
 	printCrossPathTestTally(s.Name, rows, layerTally)
@@ -569,33 +601,188 @@ func dashIfEmpty(s string) string {
 	return s
 }
 
-func printCrossPathTimingTable(layerName string, rows []crossPathRow, simdLayer bool) {
-	fmt.Printf("\n  ┌─ %s timing (fwd / bwd) ─────────────────────────────────────────\n", layerName)
-	if simdLayer {
-		fmt.Printf("  │ %-10s │ %-7s %-7s %-7s │ %-7s %-7s %-7s │ %-7s %-7s │ %-7s %-7s\n",
-			"DType", "SC-f", "MC-f", "SIMD-f", "SC-b", "MC-b", "SIMD-b", "Nat-f", "NatS-f", "Nat-b", "NatS-b")
-	} else {
-		fmt.Printf("  │ %-10s │ %-7s %-7s │ %-7s %-7s │ %-7s\n",
-			"DType", "SC-f", "MC-f", "SC-b", "MC-b", "Nat-f")
+type namedDur struct {
+	name string
+	d    time.Duration
+}
+
+type pairCmp struct {
+	from, to namedDur
+	valid    bool
+}
+
+func makePair(fromName string, from, to time.Duration, toName string) pairCmp {
+	if from <= 0 || to <= 0 {
+		return pairCmp{}
 	}
-	fmt.Println("  ├──────────────────────────────────────────────────────────────────────")
+	return pairCmp{
+		from:  namedDur{fromName, from},
+		to:    namedDur{toName, to},
+		valid: true,
+	}
+}
+
+func (p pairCmp) ratio() string {
+	if !p.valid || p.from.d <= 0 || p.to.d <= 0 || p.from.d == p.to.d {
+		return "—"
+	}
+	return fmt.Sprintf("%.1f×", float64(p.from.d)/float64(p.to.d))
+}
+
+func (p pairCmp) fasterPct() string {
+	if !p.valid || p.from.d <= 0 || p.to.d <= 0 || p.from.d == p.to.d {
+		return "—"
+	}
+	pct := float64(p.from.d-p.to.d) / float64(p.from.d) * 100
+	if pct >= 0.5 {
+		return fmt.Sprintf("%.0f%%", pct)
+	}
+	if pct <= -0.5 {
+		return fmt.Sprintf("%.0f%% slower", -pct)
+	}
+	return "≈0%"
+}
+
+func (p pairCmp) label() string {
+	if !p.valid {
+		return "—"
+	}
+	return fmt.Sprintf("%s %s→%s %s", p.from.name, formatDur(p.from.d), p.to.name, formatDur(p.to.d))
+}
+
+func fastestNamed(paths []namedDur) namedDur {
+	var best namedDur
+	for _, p := range paths {
+		if p.d <= 0 {
+			continue
+		}
+		if best.d == 0 || p.d < best.d {
+			best = p
+		}
+	}
+	return best
+}
+
+func paradigmWinner(qat, nat namedDur) (winner, ratio, faster string) {
+	if qat.d <= 0 || nat.d <= 0 {
+		return "—", "—", "—"
+	}
+	if qat.d < nat.d {
+		return fmt.Sprintf("QAT %s", qat.name), fmt.Sprintf("%.1f×", float64(nat.d)/float64(qat.d)), formatSimdSpeedup(nat.d, qat.d)
+	}
+	if nat.d < qat.d {
+		return fmt.Sprintf("Nat %s", nat.name), fmt.Sprintf("%.1f×", float64(qat.d)/float64(nat.d)), formatSimdSpeedup(qat.d, nat.d)
+	}
+	return "tie", "1.0×", "≈0%"
+}
+
+func computeCrossPathComparisons(row *crossPathRow, simdLayer bool) {
+	if simdLayer && row.fwdSimd > 0 {
+		row.qatFwdSCSimd = makePair("SC-f", row.fwdSC, row.fwdSimd, "SIMD-f")
+		row.qatFwdMCSimd = makePair("MC-f", row.fwdMC, row.fwdSimd, "SIMD-f")
+		row.qatBwdSCSimd = makePair("SC-b", row.bwdSC, row.bwdSimd, "SIMD-b")
+		row.qatBwdMCSimd = makePair("MC-b", row.bwdMC, row.bwdSimd, "SIMD-b")
+		row.trainSCSimd = makePair("SC", row.trainSC, row.trainSimd, "SIMD")
+		row.trainMCSimd = makePair("MC", row.trainMC, row.trainSimd, "SIMD")
+	}
+	if row.NativeApplicable && simdLayer && row.natFwdSimd > 0 {
+		row.natFwdPair = makePair("Nat-f", row.natFwd, row.natFwdSimd, "NatS-f")
+	}
+	if row.NativeApplicable && simdLayer && row.natBwdSimd > 0 {
+		row.natBwdPair = makePair("Nat-b", row.natBwd, row.natBwdSimd, "NatS-b")
+	}
+
+	qatFwd := fastestNamed([]namedDur{{"SC-f", row.fwdSC}, {"MC-f", row.fwdMC}, {"SIMD-f", row.fwdSimd}})
+	qatBwd := fastestNamed([]namedDur{{"SC-b", row.bwdSC}, {"MC-b", row.bwdMC}, {"SIMD-b", row.bwdSimd}})
+	qatTrain := fastestNamed([]namedDur{{"SC", row.trainSC}, {"MC", row.trainMC}, {"SIMD", row.trainSimd}})
+	natFwd := fastestNamed([]namedDur{{"Nat-f", row.natFwd}, {"NatS-f", row.natFwdSimd}})
+	natBwd := fastestNamed([]namedDur{{"Nat-b", row.natBwd}, {"NatS-b", row.natBwdSimd}})
+	natTrain := namedDur{"Nat", row.trainNative}
+
+	row.fwdWinner, row.fwdWinRatio, row.fwdWinFaster = paradigmWinner(qatFwd, natFwd)
+	row.bwdWinner, row.bwdWinRatio, row.bwdWinFaster = paradigmWinner(qatBwd, natBwd)
+	if row.NativeApplicable && row.trainNative > 0 {
+		row.trainWinner, row.trainWinRatio, row.trainWinFaster = paradigmWinner(qatTrain, natTrain)
+	} else {
+		row.trainWinner, row.trainWinRatio, row.trainWinFaster = "n/a", "—", "—"
+	}
+}
+
+func printCrossPathTimingTable(layerName string, rows []crossPathRow, simdLayer bool) {
+	fmt.Printf("\n  ┌─ %s raw timing per path ─────────────────────────────────────────\n", layerName)
+	if simdLayer {
+		fmt.Printf("  │ %-10s │ %-8s %-8s %-8s │ %-8s %-8s %-8s │ %-8s %-8s │ %-8s %-8s │ %-8s %-8s %-8s %-8s\n",
+			"DType", "SC-f", "MC-f", "SIMD-f", "SC-b", "MC-b", "SIMD-b", "Nat-f", "NatS-f", "Nat-b", "NatS-b",
+			"Trn-SC", "Trn-MC", "Trn-SIMD", "Trn-Nat")
+	} else {
+		fmt.Printf("  │ %-10s │ %-8s %-8s │ %-8s %-8s │ %-8s │ %-8s %-8s %-8s\n",
+			"DType", "SC-f", "MC-f", "SC-b", "MC-b", "Nat-f", "Trn-SC", "Trn-MC", "Trn-Nat")
+	}
+	fmt.Println("  ├──────────┼────────┬────────┬────────┼────────┬────────┬────────┼────────┬────────┼────────┬────────┬────────┬────────┬────────")
 	for _, r := range rows {
 		if r.Err != "" {
 			fmt.Printf("  │ %-10s │ ERR %s\n", r.DType, r.Err)
 			continue
 		}
 		if simdLayer {
-			fmt.Printf("  │ %-10s │ %-7s %-7s %-7s │ %-7s %-7s %-7s │ %-7s %-7s │ %-7s %-7s\n",
+			fmt.Printf("  │ %-10s │ %-8s %-8s %-8s │ %-8s %-8s %-8s │ %-8s %-8s │ %-8s %-8s │ %-8s %-8s %-8s %-8s\n",
 				r.DType, r.FwdSCDur, r.FwdMCDur, dashIfEmpty(r.FwdSimdDur),
 				r.BwdSCDur, r.BwdMCDur, dashIfEmpty(r.BwdSimdDur),
 				dashIfEmpty(r.NatFwdDur), dashIfEmpty(r.NatFwdSimdDur),
-				dashIfEmpty(r.NatBwdDur), dashIfEmpty(r.NatBwdSimdDur))
+				dashIfEmpty(r.NatBwdDur), dashIfEmpty(r.NatBwdSimdDur),
+				r.TrainSCDur, r.TrainMCDur, dashIfEmpty(r.TrainSimdDur), dashIfEmpty(r.TrainNativeDur))
 		} else {
-			fmt.Printf("  │ %-10s │ %-7s %-7s │ %-7s %-7s │ %-7s\n",
-				r.DType, r.FwdSCDur, r.FwdMCDur, r.BwdSCDur, r.BwdMCDur, dashIfEmpty(r.NatFwdDur))
+			fmt.Printf("  │ %-10s │ %-8s %-8s │ %-8s %-8s │ %-8s │ %-8s %-8s %-8s\n",
+				r.DType, r.FwdSCDur, r.FwdMCDur, r.BwdSCDur, r.BwdMCDur, dashIfEmpty(r.NatFwdDur),
+				r.TrainSCDur, r.TrainMCDur, dashIfEmpty(r.TrainNativeDur))
 		}
 	}
-	fmt.Println("  └──────────────────────────────────────────────────────────────────────")
+	fmt.Println("  └──────────┴────────┴────────┴────────┴────────┴────────┴────────┴────────┴────────┴────────┴────────┴────────┴────────┴────────")
+}
+
+func printCrossPathComparisonTable(layerName string, rows []crossPathRow, simdLayer bool) {
+	if !simdLayer {
+		return
+	}
+	fmt.Printf("\n  ┌─ %s comparisons (explicit pairs — same paradigm only) ───────────\n", layerName)
+	fmt.Println("  │ QAT = tiled GetActive FP32 · Nat = UseExactDType *_native.go")
+	fmt.Printf("  │ %-10s │ %-28s %-5s %-7s │ %-28s %-5s %-7s │ %-14s %-5s %-7s\n",
+		"DType", "QAT fwd SC→SIMD", "×", "faster", "Nat fwd→SIMD", "×", "faster", "best fwd", "×", "faster")
+	fmt.Println("  ├──────────┼────────────────────────────────────┼────────────────────────────────────┼────────────────────────")
+	for _, r := range rows {
+		if r.Err != "" {
+			continue
+		}
+		fmt.Printf("  │ %-10s │ %-28s %-5s %-7s │ %-28s %-5s %-7s │ %-14s %-5s %-7s\n",
+			r.DType, r.qatFwdSCSimd.label(), r.qatFwdSCSimd.ratio(), r.qatFwdSCSimd.fasterPct(),
+			r.natFwdPair.label(), r.natFwdPair.ratio(), r.natFwdPair.fasterPct(),
+			r.fwdWinner, r.fwdWinRatio, r.fwdWinFaster)
+	}
+	fmt.Println("  ├──────────┼────────────────────────────────────┼────────────────────────────────────┼────────────────────────")
+	fmt.Printf("  │ %-10s │ %-28s %-5s %-7s │ %-28s %-5s %-7s │ %-14s %-5s %-7s\n",
+		"DType", "QAT bwd SC→SIMD", "×", "faster", "Nat bwd→SIMD", "×", "faster", "best bwd", "×", "faster")
+	for _, r := range rows {
+		if r.Err != "" {
+			continue
+		}
+		fmt.Printf("  │ %-10s │ %-28s %-5s %-7s │ %-28s %-5s %-7s │ %-14s %-5s %-7s\n",
+			r.DType, r.qatBwdSCSimd.label(), r.qatBwdSCSimd.ratio(), r.qatBwdSCSimd.fasterPct(),
+			r.natBwdPair.label(), r.natBwdPair.ratio(), r.natBwdPair.fasterPct(),
+			r.bwdWinner, r.bwdWinRatio, r.bwdWinFaster)
+	}
+	fmt.Println("  ├──────────┼────────────────────────────────────┼────────────────────────────────────┼────────────────────────")
+	fmt.Printf("  │ %-10s │ %-28s %-5s %-7s │ %-28s %-5s %-7s │ %-14s %-5s %-7s\n",
+		"DType", "QAT train MC→SIMD", "×", "faster", "QAT train SC→SIMD", "×", "faster", "best train", "×", "faster")
+	for _, r := range rows {
+		if r.Err != "" {
+			continue
+		}
+		fmt.Printf("  │ %-10s │ %-28s %-5s %-7s │ %-28s %-5s %-7s │ %-14s %-5s %-7s\n",
+			r.DType, r.trainMCSimd.label(), r.trainMCSimd.ratio(), r.trainMCSimd.fasterPct(),
+			r.trainSCSimd.label(), r.trainSCSimd.ratio(), r.trainSCSimd.fasterPct(),
+			r.trainWinner, r.trainWinRatio, r.trainWinFaster)
+	}
+	fmt.Println("  └──────────┴────────────────────────────────────┴────────────────────────────────────┴────────────────────────")
 }
 
 func printCrossPathParityTable(layerName string, rows []crossPathRow, simdLayer bool) {

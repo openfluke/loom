@@ -26,7 +26,11 @@ Unifies **[7]** (tiled SC/MC/SIMD) and **[14]** (native exact + native SIMD) in 
 
 ## Per-dtype output
 
-1. **Timing table** — fwd/bwd for all five paths (SC, MC, SIMD, native, native-SIMD)
+1. **Raw timing table** — wall times per path (SC/MC/SIMD/Nat/NatS + train SC/MC/SIMD/Nat)
+2. **Comparison table** — explicit same-paradigm pairs only:
+   - **QAT** SC→SIMD and MC→SIMD (fwd, bwd, train)
+   - **Native** Nat-f→NatS-f and Nat-b→NatS-b
+   - **best fwd/bwd/train** — fastest QAT path vs fastest Native path (who wins, ×, % faster)
 2. **Parity table** — tiled SC↔MC, SC↔SIMD (gated); native↔native-SIMD and SC↔native (informational)
 3. **Train table** — loss after SC, MC, SIMD, native train
 4. **Test tally** — gated checks per category + session manifest
