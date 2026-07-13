@@ -115,6 +115,58 @@ func TestLSTMManifestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCNNManifestRoundTrip(t *testing.T) {
+	cases := []struct {
+		name  string
+		specs []CNNSpec
+	}{
+		{
+			"cnn1",
+			[]CNNSpec{
+				{Dim: 1, InputChannels: 2, Filters: 4, Spatial: 8, KernelSize: 3},
+				{Dim: 1, InputChannels: 4, Filters: 2, Spatial: 8, KernelSize: 3},
+			},
+		},
+		{
+			"cnn2",
+			[]CNNSpec{
+				{Dim: 2, InputChannels: 2, Filters: 4, Spatial: 6, KernelSize: 3},
+				{Dim: 2, InputChannels: 4, Filters: 2, Spatial: 6, KernelSize: 3},
+			},
+		},
+		{
+			"cnn3",
+			[]CNNSpec{
+				{Dim: 3, InputChannels: 2, Filters: 4, Spatial: 4, KernelSize: 3},
+				{Dim: 3, InputChannels: 4, Filters: 2, Spatial: 4, KernelSize: 3},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			topo := CNNTopologySeed("test", tc.specs)
+			m, err := BuildCNNManifest(topo, tc.specs, []string{"float32", "int8"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := RebuildCNNManifest(m); err != nil {
+				t.Fatal(err)
+			}
+			net, err := BuildCNNVolumetricFromManifest(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			extracted, err := ManifestFromCNNNetwork(net, topo, tc.specs, []string{"float32", "int8"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if extracted.NetworkFP != m.NetworkFP {
+				t.Fatalf("network fp mismatch: %x %x", extracted.NetworkFP, m.NetworkFP)
+			}
+		})
+	}
+}
+
 func TestBuildSeededEntityTransformer(t *testing.T) {
 	seed := SeedFrom("test", "lm")
 	dims := HFDecoderDims{
