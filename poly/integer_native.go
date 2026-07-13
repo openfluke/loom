@@ -95,6 +95,11 @@ func gradF64ToI32(v float64, scale float32) int32 {
 }
 
 func applyStochasticInt8Update(weights []int8, gradWeights []int32, lrShift uint) {
+	applyStochasticNativeI8Update(DTypeInt8, weights, gradWeights, lrShift)
+}
+
+// applyStochasticNativeI8Update applies stochastic SGD then reclamps to native MAC range per dtype.
+func applyStochasticNativeI8Update(dtype DType, weights []int8, gradWeights []int32, lrShift uint) {
 	mask := int32((1 << lrShift) - 1)
 	for i := range weights {
 		scaledGrad := gradWeights[i] >> lrShift
@@ -102,7 +107,7 @@ func applyStochasticInt8Update(weights []int8, gradWeights []int32, lrShift uint
 			scaledGrad++
 		}
 		next := int32(weights[i]) - scaledGrad
-		weights[i] = clampI8(next)
+		weights[i] = trueNativeWeightI8(dtype, uint8(byte(clampI8(next))))
 	}
 }
 

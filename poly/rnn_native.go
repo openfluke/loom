@@ -9,7 +9,15 @@ func useRNNNativeExact(layer *VolumetricLayer) bool {
 }
 
 func useRNNTrueNative(layer *VolumetricLayer) bool {
-	return useRNNNativeExact(layer) && IsTrueNativeDType(layer.DType)
+	if !useRNNNativeExact(layer) || !IsTrueNativeDType(layer.DType) {
+		return false
+	}
+	// Narrow int4 / binary int8 recurrence diverges from tiled f32 MAC on deep RNN stacks.
+	switch layer.DType {
+	case DTypeBinary, DTypeInt4:
+		return false
+	}
+	return true
 }
 
 func RNNForwardNativeExact[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
@@ -174,7 +182,7 @@ func rnnBackwardIntegerNative(layer *VolumetricLayer, gradOutput, input, preAct 
 		}
 	}
 
-	applyStochasticInt8Update(w, gradW, lrShift)
+	applyStochasticNativeI8Update(layer.DType, w, gradW, lrShift)
 	publishInt8Weights(ws, layer.DType, w)
 	markLayerNativeWeightsUpdated(layer, ws, layer.DType, ws.Versions[layer.DType].([]uint8))
 	return gradInput, gradWeights

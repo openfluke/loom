@@ -208,6 +208,20 @@ func clampU8(v int32) uint8 {
 	return uint8(v)
 }
 
+func clampNativeU8Weight(dtype DType, v uint8) uint8 {
+	switch dtype {
+	case DTypeUint4:
+		if v > 15 {
+			return 15
+		}
+	case DTypeUint2:
+		if v > 3 {
+			return 3
+		}
+	}
+	return v
+}
+
 func quantizeRowF32ToI8(row []float32, scale float32) []int8 {
 	out := make([]int8, len(row))
 	if scale == 0 {
