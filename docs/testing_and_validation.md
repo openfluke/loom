@@ -13,6 +13,7 @@ The **Lucy** tree (`lucy/`) drives broad layer suites: forward/backward parity, 
 | `lucy/lucy_testing_output/log.txt` | Dense L1 / GPU parity / layer matrices | Forward/backward parity, ASM timers, GPU tables |
 | `lucy/lucy_testing_output/seven_layer.txt` | **[7] Seven-layer CPU suite** | 10 layer types × 21 dtypes × 1³/2³/3³ grids, **SC/MC/SIMD** fwd+bwd+train, **JSON + `.entity` save/reload** |
 | `lucy/lucy_testing_output/native_layers.txt` | **[14] Native layer suite** | 10 layer types × 21 dtypes, **native-exact** fwd+bwd+train (30 epochs), SIMD speedup columns — see [native_layers.md](native_layers.md) |
+| `lucy/lucy_testing_output/cross_path_layers.txt` | **[15] Cross-path CPU suite** | SC/MC/SIMD vs native vs native-SIMD side-by-side — see [cross_path_layers.md](cross_path_layers.md) |
 | `lucy/lucy_testing_output/nine_layer.txt` | **[9] Intel NPU bridge** | 15 layers × FP32/FP16/INT8 × small/medium/large — Loom vs Intel CPU/NPU timing + drift manifest |
 
 Per-dtype checkpoints are written under the same folder: `tag_DType.json` (debug lane) and `tag_DType.entity` (native lane). The memory table compares both file sizes side by side.

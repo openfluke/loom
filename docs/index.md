@@ -18,6 +18,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [dispatch.md](dispatch.md) | `DispatchLayer` routing, the 3D grid traversal, tiled parallel execution, `IsRemoteLink` spatial hopping, and the GPU dispatch path |
 | [training.md](training.md) | CPU and GPU training pipelines; **default (QAT-like) vs native exact** (`UseExactDType`); loss, tween, link budgets; Lucy menu [14] |
 | [native_layers.md](native_layers.md) | **Lucy [14]** native-exact layer suite — amd64/arm64 benchmark results, SIMD speedups, known train flakes |
+| [cross_path_layers.md](cross_path_layers.md) | **Lucy [15]** cross-path CPU suite — SC/MC/SIMD vs native vs native-SIMD side-by-side |
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
 | [memory_history.md](memory_history.md) | **Memory history**: GPU load chart/diagnosis; block-wise HF→`.entity` import **and** block-wise encode (`ImportHFSaveEntityTransformerBlockwise`); GPU upload + sequential global release |
 | [accelerators.md](accelerators.md) | **Vendor NPU/TPU/GPU** — `poly/accel`, Intel OpenVINO CPU+NPU (Lucy [9]) + Qualcomm/Hexagon QNN (Lucy [12]) + Apple Metal/MPSGraph (Lucy [13]); all experimental; Google TPU planned; `SyncToAccel` |

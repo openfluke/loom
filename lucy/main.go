@@ -56,6 +56,7 @@ func main() {
 		"[12] Snapdragon NPU bridge — Loom ↔ loom_accel_qualcomm.dll (QNN) · all layers/dtypes (→ "+lucytesting.DefaultOutputDir+"/snapdragon.txt)\n"+
 		"[13] Apple GPU bridge — Loom ↔ libloom_accel_apple.dylib (Metal) · all layers/dtypes (→ "+lucytesting.DefaultOutputDir+"/apple.txt)\n"+
 		"[14] Native layer suite — per-layer dtype forward/backward/train (→ "+lucytesting.DefaultOutputDir+"/native_layers.txt)\n"+
+		"[15] Cross-path CPU suite — SC/MC/SIMD vs native vs native-SIMD (→ "+lucytesting.DefaultOutputDir+"/cross_path_layers.txt)\n"+
 		"Choice [1]: ", "1")
 	switch strings.TrimSpace(mode) {
 	case "2":
@@ -85,6 +86,8 @@ func main() {
 		examples.RunAppleMenu(reader)
 	case "14":
 		examples.RunDenseNativeMenu(reader)
+	case "15":
+		examples.RunCrossPathMenu(reader)
 	default:
 		runHuggingFaceMode(reader)
 	}
