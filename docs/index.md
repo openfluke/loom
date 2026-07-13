@@ -17,6 +17,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [layers.md](layers.md) | Every layer type (Dense, CNN, RNN, MHA, SwiGLU, RMSNorm, Residual, Softmax, Parallel, Sequential, and more) with ASCII data-flow diagrams |
 | [dispatch.md](dispatch.md) | `DispatchLayer` routing, the 3D grid traversal, tiled parallel execution, `IsRemoteLink` spatial hopping, and the GPU dispatch path |
 | [training.md](training.md) | CPU and GPU training pipelines; **default (QAT-like) vs native exact** (`UseExactDType`); loss, tween, link budgets; Lucy menu [14] |
+| [neural_fountain.md](neural_fountain.md) | **Neural Fountain** — shard specialists · LT weight spray/peel · Master ensemble (`poly.NeuralFountain`); any layout via `NetworkFactory` |
 | [native_layers.md](native_layers.md) | **Lucy [14]** native-exact layer suite — amd64/arm64 benchmark results, SIMD speedups, known train flakes |
 | [cross_path_layers.md](cross_path_layers.md) | **Lucy [15]** cross-path CPU suite — SC/MC/SIMD vs native vs native-SIMD side-by-side |
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
@@ -63,6 +64,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Visualizing layer-by-layer execution (UDP → SoulGlitch TANHI)?** Read [tanhi.md](tanhi.md).
 
 **Want to train a model?** Read [training.md](training.md) and [dispatch.md](dispatch.md).
+
+**Shard specialists + LT weight fountain → Master ensemble?** Read [neural_fountain.md](neural_fountain.md) (`poly.NeuralFountain`).
 
 **Training in storage dtype (not FP32 surrogate)?** Read [training.md — Training paradigms](training.md#training-paradigms-default-qat-like-vs-native-exact) and [quantization.md — Three modes](quantization.md#three-traininginference-modes). Run Lucy **[14]** ([native_layers.md](native_layers.md)) — see [lucy.md](lucy.md).
 
