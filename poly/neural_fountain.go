@@ -49,9 +49,9 @@ type FountainMaster struct {
 	Recovered int
 	Received  int
 	Sprayed   int
-	// Wall-clock phases (milliseconds); filled by NeuralFountain.
-	SpecializeMs int64
-	FountainMs   int64
+	// Wall-clock phases (microseconds); filled by NeuralFountain.
+	SpecializeUs int64
+	FountainUs   int64
 }
 
 // NeuralFountain trains K specialists on shards of arbitrary TrainingBatch data,
@@ -127,7 +127,7 @@ func NeuralFountain(factory NetworkFactory, batches []TrainingBatch[float32], cf
 				s+1, cfg.K, len(shards[s]), len(blob), net.UseExactDType)
 		}
 	}
-	specializeMs := time.Since(specStart).Milliseconds()
+	specializeUs := time.Since(specStart).Microseconds()
 
 	if cfg.Verbose {
 		fmt.Printf("\n── Neural Fountain · LT spray/peel weight blobs ──\n")
@@ -161,7 +161,7 @@ func NeuralFountain(factory NetworkFactory, batches []TrainingBatch[float32], cf
 		}
 		out[s] = net
 	}
-	fountainMs := time.Since(fountainStart).Milliseconds()
+	fountainUs := time.Since(fountainStart).Microseconds()
 
 	return &FountainMaster{
 		Experts:      out,
@@ -170,8 +170,8 @@ func NeuralFountain(factory NetworkFactory, batches []TrainingBatch[float32], cf
 		Recovered:    cfg.K,
 		Received:     recv,
 		Sprayed:      sprayed,
-		SpecializeMs: specializeMs,
-		FountainMs:   fountainMs,
+		SpecializeUs: specializeUs,
+		FountainUs:   fountainUs,
 	}, nil
 }
 
