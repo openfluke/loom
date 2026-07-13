@@ -10,6 +10,7 @@ import (
 // NetworkSpec represents the top-level JSON structure for a network.
 type NetworkSpec struct {
 	ID            string      `json:"id"`
+	InitSeed      uint64      `json:"init_seed,omitempty"`
 	Depth         int         `json:"depth"`
 	Rows          int         `json:"rows"`
 	Cols          int         `json:"cols"`
@@ -84,12 +85,17 @@ func BuildNetworkFromJSON(jsonData []byte) (*VolumetricNetwork, error) {
 	}
 
 	net := NewVolumetricNetwork(spec.Depth, spec.Rows, spec.Cols, spec.LayersPerCell)
+	net.InitSeed = spec.InitSeed
 
 	for _, ls := range spec.Layers {
 		l := net.GetLayer(ls.Z, ls.Y, ls.X, ls.L)
 		if err := applyLayerSpec(l, ls); err != nil {
 			return nil, fmt.Errorf("layer (%d,%d,%d,%d): %v", ls.Z, ls.Y, ls.X, ls.L, err)
 		}
+	}
+
+	if net.InitSeed != 0 {
+		InitSeededNetwork(net, net.InitSeed)
 	}
 
 	net.RefreshRuntimeTileSizes()

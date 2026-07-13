@@ -544,6 +544,9 @@ type VolumetricNetwork struct {
 	// forward-only paths hold native Versions only. Training calls EnsureTrainingWeights.
 	ReleaseFP32MasterWhenIdle bool
 
+	// InitSeed is the topology/weight init seed (seedrng). Same seed rebuilds He-init weights.
+	InitSeed uint64
+
 	// GPU Acceleration context
 	GPUContext *WGPUContext
 

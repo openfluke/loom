@@ -12,6 +12,7 @@ import (
 // PersistenceNetworkSpec represents the serializable state of a VolumetricNetwork.
 type PersistenceNetworkSpec struct {
 	ID            string                 `json:"id"`
+	InitSeed      uint64                 `json:"init_seed,omitempty"`
 	Depth         int                    `json:"depth"`
 	Rows          int                    `json:"rows"`
 	Cols          int                    `json:"cols"`
@@ -88,6 +89,7 @@ type PersistenceLayerSpec struct {
 func BuildPersistenceNetworkSpec(net *VolumetricNetwork) PersistenceNetworkSpec {
 	spec := PersistenceNetworkSpec{
 		ID:            "network",
+		InitSeed:      net.InitSeed,
 		Depth:         net.Depth,
 		Rows:          net.Rows,
 		Cols:          net.Cols,
@@ -205,6 +207,7 @@ func DeserializeNetwork(jsonData []byte) (*VolumetricNetwork, error) {
 	}
 
 	net := NewVolumetricNetwork(spec.Depth, spec.Rows, spec.Cols, spec.LayersPerCell)
+	net.InitSeed = spec.InitSeed
 	for _, ls := range spec.Layers {
 		l := net.GetLayer(ls.Z, ls.Y, ls.X, ls.L)
 		if err := applyPersistenceLayerSpec(l, ls); err != nil {

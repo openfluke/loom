@@ -579,6 +579,7 @@ func applyEntityBlobToNetwork(net *VolumetricNetwork, blob EntityWeightBlob, raw
 
 func deserializeEntityNetwork(hdr *EntityHeader, readBlob entityBlobReader, opts *EntityLoadOptions) (*VolumetricNetwork, error) {
 	net := NewVolumetricNetwork(hdr.Network.Depth, hdr.Network.Rows, hdr.Network.Cols, hdr.Network.LayersPerCell)
+	net.InitSeed = hdr.Network.InitSeed
 	for _, ls := range hdr.Network.Layers {
 		l := net.GetLayer(ls.Z, ls.Y, ls.X, ls.L)
 		if err := applyPersistenceLayerSpec(l, ls); err != nil {
