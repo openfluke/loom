@@ -43,6 +43,8 @@ This wave does not add a new compute backend. It hardens the **Go CPU** path, **
 
 This suite is the long-term **bedrock gate** for CPU training and native checkpoints — broader than the older 18×21 permutation matrix because it includes **multi-cell grids** and **end-to-end train + reload**.
 
+**Companion suite — Lucy [14] native-exact:** Same 10 layer types × 21 dtypes, but `UseExactDType = true` (true storage-dtype MAC + in-place updates). No SC/MC parity or save/reload — focuses on native fwd/bwd/train gates and native-exact SIMD speedups. **Jul 2026:** amd64 **209/210**, arm64 **207/210** (train flakes on low-bit RNN; CNN3 Int32 on arm64). Details: [native_layers.md](native_layers.md).
+
 ---
 
 ## C-ABI (Welvet)

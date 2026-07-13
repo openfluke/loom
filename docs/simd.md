@@ -10,9 +10,11 @@ Loom's CPU SIMD path uses **Plan 9 assembly** (`.s` files) for hot GEMV-style ke
 | `SaxpyF32AccF64` | Backward weight/input accumulation | `saxpy_avx2_amd64.s` | `saxpy_neon_arm64.s` |
 | `BitNetTernaryMAD` | Ternary weight forward (optional) | `bitnet_ternary_amd64.s` | `bitnet_ternary_arm64.s` |
 
-**Layers with SIMD forward + backward:** Dense, SwiGLU, MHA, CNN1, CNN2, CNN3, RNN, LSTM.
+**Layers with SIMD forward + backward:** Dense, SwiGLU, MHA, CNN1, CNN2, CNN3, RNN, LSTM, Embedding, Residual.
 
-**Layers without SIMD:** RMSNorm, Residual, Embedding, Softmax (no GEMV to vectorize; attention softmax/RoPE in MHA remain scalar).
+**Native-exact SIMD** (`*_native_simd.go`): same numerics as `*_native.go`, faster kernels — MAC dtypes via `materializeF32Weights` + `DotTile`; true integers via `DotI8Tile` / `SaxpyI8*`. Enabled when both `UseExactDType` and `UseSimdForward` are on (Lucy menu **[14]**).
+
+**Layers without heavy GEMV SIMD:** RMSNorm, Softmax (attention softmax/RoPE in MHA remain scalar).
 
 ## Enabling SIMD
 
@@ -40,8 +42,11 @@ poly/simd/
 
 poly/
 ├── simd_forward.go            # layerUseSimdForward, SetSimdForwardRecursive
-├── {dense,swiglu,mha,cnn1,cnn2,cnn3,rnn,lstm}_simd.go          # forward
-└── {dense,swiglu,mha,cnn1,cnn2,cnn3,rnn,lstm}_simd_backward.go  # backward
+├── {dense,swiglu,mha,cnn1,cnn2,cnn3,rnn,lstm}_simd.go          # default forward (GetActive FP32)
+├── {dense,swiglu,mha,cnn1,cnn2,cnn3,rnn,lstm}_simd_backward.go # default backward
+├── {dense,swiglu,mha,cnn1,cnn2,cnn3,rnn,lstm,embedding,residual}_native_simd.go  # native-exact SIMD
+├── embedding_simd.go          # parallel lookup / scatter (MAC native bridge)
+└── residual_simd.go           # polymorphic residual add (non-native-exact)
 ```
 
 ## Forward path
@@ -68,6 +73,20 @@ When the same SIMD gate is true, each layer's `*BackwardPolymorphic` tries `try*
 CNN backward uses an **output-centric saxpy scatter** for ∂L/∂X (matches tiled exactly; stride-1 full-kernel fast paths, scalar at edges).
 
 RNN/LSTM: parallel over batch; ∂L/∂W_IH and ∂L/∂X via saxpy; hidden-hidden, bias, and cell state paths match tiled scalar code.
+
+## Native-exact SIMD (`*_native_simd.go`)
+
+When `UseExactDType` and `UseSimdForward` are both enabled, native-exact layers try SIMD before scalar native fallback:
+
+```
+LayerForwardNativeExact
+  └─ layerUseSimdForward → try*ForwardNativeSimd
+       ├─ use*TrueNative  → DotI8Tile / SaxpyI8* (int8 MAC)
+       └─ else             → materializeF32Weights → *SimdF32WithWeights
+  └─ fallback → scalar *_native.go
+```
+
+Lucy **[14]** reports SIMD fwd/bwd speedup columns for layers that implement this bridge (Dense through Residual). Default menu **[7]** SIMD uses `GetActive` FP32 tiles — same fast kernels, **QAT-like** numerics. Full **[14]** pass matrix and native-exact speedup tables: [native_layers.md](native_layers.md).
 
 ## Validation
 
@@ -139,6 +158,7 @@ Ternary / packed BitNet forward kernels live in the same `poly/simd` package (`b
 
 ## See also
 
-- [Training](training.md) — `TrainingModeCPUSimd` and `ConfigureNetworkForMode`
+- [Training](training.md) — `TrainingModeCPUSimd`, `UseExactDType`, and [training paradigms](training.md#training-paradigms-default-qat-like-vs-native-exact)
+- [Quantization](quantization.md) — [three training/inference modes](quantization.md#three-traininginference-modes)
 - [Testing and validation](testing_and_validation.md) — seven-layer SC/MC/SIMD suite
 - [Bedrock validation](bedrock_validation.md) — menu option [7] and artifact layout

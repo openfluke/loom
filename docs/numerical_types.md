@@ -91,7 +91,7 @@ type Numeric interface {
 This constraint makes `Tensor[T]`, `DispatchLayer[T]`, `ForwardPolymorphic[T]`, and all other generic functions work across any of Go's numeric primitives. The constraint is deliberately limited to types the compiler can generate native arithmetic for—no reflection, no `interface{}` boxing at the hot path.
 
 > [!NOTE]
-> FP4, FP8, BFloat16, and other non-native types are **simulated** via PTQ. Weights are stored as `float32` masters and quantized to the target dtype at GPU upload time via `MorphToFloat32ForGPU` (quantize → dequantize round-trip). On GPU, Dense/SwiGLU/MHA use native packed payloads in WGSL shaders; other layer types receive the pre-simulated float32 buffer.
+> FP4, FP8, BFloat16, and other non-native types are **simulated** via PTQ at GPU upload (`MorphToFloat32ForGPU`). **Default CPU training** (`UseExactDType = false`) also uses FP32 surrogate math via `GetActive` dequant — QAT-like. **Native exact training** (`UseExactDType = true`, `*_native.go`) runs forward/backward in storage-dtype rules; true integers (Int8, …) use real int8 MAC and in-place int8 updates. See [training.md — Training paradigms](training.md#training-paradigms-default-qat-like-vs-native-exact).
 
 ---
 
@@ -153,7 +153,7 @@ layer.WeightStore.Morph(DTypeInt8)
 layer.DType = DTypeInt8
 ```
 
-Now `DenseForwardPolymorphic` will find the `[]int8` version in `Versions[DTypeInt8]` and use the native INT8 fast-path loop. The FP32 master is untouched.
+Now `DenseForwardPolymorphic` will find the `[]int8` version in `Versions[DTypeInt8]` and use the INT8 fast-path loop **when `UseExactDType` is false** (default dequant matmul). With `UseExactDType = true`, `DenseForwardNativeExact` uses true int8 MAC instead. The FP32 master is untouched until `ApplyGradients` (default) or in-backward int8 update (true native).
 
 After training (`ApplyGradients`), the master is updated and **all cached versions are automatically purged**:
 

@@ -26,6 +26,65 @@ Running a 7B-parameter model at FP32 requires ~28 GB of RAM. Quantization trades
 
 ---
 
+## Three training/inference modes
+
+Do not conflate **storage dtype**, **inference PTQ**, and **native exact training**. Loom implements three related but distinct ideas:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Mode              When                         Weight math              │
+├─────────────────────────────────────────────────────────────────────────┤
+│  1. Default train  UseExactDType = false       FP32 surrogate (QAT-like)│
+│                    GetActive → dequant matmul  Master += lr × grad (FP32) │
+│                    Versions cleared each step  Morph re-quants forward  │
+├─────────────────────────────────────────────────────────────────────────┤
+│  2. PTQ inference  After FP32 train; Morph()    Quantized storage only    │
+│                    MorphToFloat32ForGPU        No training in quant     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  3. Native exact   UseExactDType = true        Storage-dtype MAC / int8 │
+│                    *_native.go paths           ApplyGradientsNative or  │
+│                    Lucy menu [14]              in-place int8 SGD in bwd │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1. Default training (QAT-like)
+
+The default layer stack (`dense.go`, `rnn.go`, `swiglu.go`, …) treats `layer.DType` as the **active storage view**, but performs forward/backward in **float**:
+
+```go
+weights := layer.WeightStore.GetActive(layer.DType)  // Versions[dtype] or Morph
+wData := CastWeights[float32](weights)               // dequant / widen for matmul
+```
+
+Gradients are FP32. `ApplyGradients` updates `Master` only, then clears `Versions`. This is **surrogate training**: the model learns in FP32; low-bit weights are regenerated each forward pass.
+
+Industry term: **QAT-adjacent** — not full fake-quant + STE, but the same practical goal (train float, deploy quant).
+
+### 2. PTQ (post-training quantization)
+
+Train at FP32, then `MorphLayer(net, DTypeInt8)` for deployment. `MorphToFloat32ForGPU` applies quantize→dequantize at GPU upload so inference sees rounding error without new shaders.
+
+**No gradients flow through the quantizer** in this mode — it is inference-time precision reduction only.
+
+### 3. Native exact training
+
+```go
+net.UseExactDType = true
+```
+
+Routes to `*_native.go`. Two sub-paths:
+
+| Sub-path | DTypes | Forward | Update |
+|----------|--------|---------|--------|
+| **Native MAC** | Int32, Int64, FP8, Float16, … | Per-dot rules via `GetNative` | `ApplyGradientsNative` |
+| **True native** | Int8, Int4, Ternary, Uint8, … | int8 MAC, int32 accum, `>>8` | `applyStochasticInt8Update` in backward |
+
+True native int8 is **not** QAT: weights and activations stay in integer form for the whole step. Lucy **[14]** (`native_menu.go`) benchmarks this path per layer × 21 dtypes.
+
+Full training-loop detail: [training.md — Training paradigms](training.md#training-paradigms-default-qat-like-vs-native-exact).
+
+---
+
 ## The WeightStore: Three-Layer Storage
 
 Every `VolumetricLayer` holds a `*WeightStore`:
@@ -149,7 +208,10 @@ For layers that don't have a dedicated packed GPU path (CNN1-3, RNN, LSTM, Embed
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-Training always operates on the FP32 `Master` — `MorphToFloat32ForGPU` is only called at GPU upload time (`SyncToGPU`). This is PTQ, not QAT: the model is trained at full precision and precision loss is applied at inference time.
+Training always operates on the FP32 `Master` — `MorphToFloat32ForGPU` is only called at GPU upload time (`SyncToGPU`). This is **PTQ inference simulation**, not training in quant.
+
+> [!NOTE]
+> **Default CPU training** (`UseExactDType = false`) also trains in FP32 master space and re-quants via `Morph` each forward — QAT-like surrogate training. **Native exact training** (`UseExactDType = true`, `*_native.go`) is a separate paradigm where MAC and true-int paths update storage dtype directly. See [Three training/inference modes](#three-traininginference-modes).
 
 ---
 
@@ -311,16 +373,26 @@ Q4_0 is the preferred format for loading HuggingFace/GGUF checkpoints. The `univ
 
 ## Forward Pass with Quantized Weights
 
-During a forward pass, `DispatchLayer` calls the layer-specific function (e.g., `DenseForwardPolymorphic`). Inside that function, the active weights are retrieved via:
+During a forward pass, layer dispatch chooses the path:
+
+| `UseExactDType` | Forward entry | Weight source |
+|-----------------|-----------------|---------------|
+| `false` (default) | `DenseForwardPolymorphic`, … | `GetActive(dtype)` → FP32 matmul |
+| `true` | `DenseForwardNativeExact`, … | `GetNative` / int8 MAC (`*_native.go`) |
+
+Default path:
 
 ```go
 weights := layer.WeightStore.GetActive(layer.DType)
 if weights == nil {
     weights = layer.WeightStore.Master
 }
+wData := CastWeights[float32](weights)
 ```
 
-`GetActive` returns `Versions[dtype]` if it exists, otherwise `nil`. If the version is missing (e.g., after a gradient update), the forward pass falls back to `Master` and `Morph` regenerates the version on the next call. This lazy re-quantization is always correct.
+`GetActive` returns `Versions[dtype]` if it exists, otherwise `nil`. If the version is missing (e.g., after a gradient update), the forward pass falls back to `Master` and `Morph` regenerates the version on the next call. This lazy re-quantization is always correct for **default** training.
+
+Native exact bypasses bulk dequant: see `dense_native.go`, `rnn_native.go`, etc.
 
 For the GPU path, `GetActive` for GPU dtypes reads from `GPUWeights[dtype]` via the shader's bind group. The CPU never sees these weights once they are on VRAM.
 

@@ -16,7 +16,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [numerical_types.md](numerical_types.md) | All 21 DTypes, the `Numeric` generic constraint, `WeightStore` lifecycle, `MorphToFloat32ForGPU` PTQ simulation, Q4_0, and compression ratios |
 | [layers.md](layers.md) | Every layer type (Dense, CNN, RNN, MHA, SwiGLU, RMSNorm, Residual, Softmax, Parallel, Sequential, and more) with ASCII data-flow diagrams |
 | [dispatch.md](dispatch.md) | `DispatchLayer` routing, the 3D grid traversal, tiled parallel execution, `IsRemoteLink` spatial hopping, and the GPU dispatch path |
-| [training.md](training.md) | CPU and GPU training pipelines, loss functions, gradient flow, tween / neural target propagation (chain-rule and gap-based modes), link budgets |
+| [training.md](training.md) | CPU and GPU training pipelines; **default (QAT-like) vs native exact** (`UseExactDType`); loss, tween, link budgets; Lucy menu [14] |
+| [native_layers.md](native_layers.md) | **Lucy [14]** native-exact layer suite — amd64/arm64 benchmark results, SIMD speedups, known train flakes |
 | [gpu.md](gpu.md) | `WGPUContext`, `InitWGPU`, `BeginFrame`/`FlushFrame`, buffer management, bind group cache, GPU support matrix, WGSL shader overview |
 | [memory_history.md](memory_history.md) | **Memory history**: GPU load chart/diagnosis; block-wise HF→`.entity` import **and** block-wise encode (`ImportHFSaveEntityTransformerBlockwise`); GPU upload + sequential global release |
 | [accelerators.md](accelerators.md) | **Vendor NPU/TPU/GPU** — `poly/accel`, Intel OpenVINO CPU+NPU (Lucy [9]) + Qualcomm/Hexagon QNN (Lucy [12]) + Apple Metal/MPSGraph (Lucy [13]); all experimental; Google TPU planned; `SyncToAccel` |
@@ -32,7 +33,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [entity.md](entity.md) | **ENTITY** (`.entity`) — native binary checkpoint; topology + weights in one file; HF→native bridge (Lucy [8]), Q4 LLM bake, experimental 3D unlock |
 | [planetbridging.md](planetbridging.md) | **Planet Bridging** — PyPI `planetbridging` package; live PyTorch/TF/JAX → `loom-stream` → `.entity`; welvet reload; roadmap (Loom → export v1.0) |
 | [parallel_sequential.md](parallel_sequential.md) | `LayerParallel` (5 combine modes, activation tree), `LayerSequential` (step containers, skip gradients), nesting patterns |
-| [quantization.md](quantization.md) | PTQ pipeline, `WeightStore` versioning, `Morph`/`Unpack`, `Q4_0Block` block quantization, calibration, accuracy trade-offs |
+| [quantization.md](quantization.md) | **Three modes**: default QAT-like train, PTQ inference, native exact train; `Morph`/`Unpack`, `Q4_0Block`, calibration |
 | [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, Qwen-style expanded-query + Q/K norm support, `Transformer[T]` generation type; CPU vs GPU tiling behavior |
 | [quick_reference.md](quick_reference.md) | Concise copy-paste snippets for all common operations |
 | [testing_and_validation.md](testing_and_validation.md) | **Lucy logs**, parity table legend, how to read `lucy_testing_output/log.txt`, Dense **Go÷ASM** benchmarks, and a compact map of `poly/` files the suites hit |
@@ -41,7 +42,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [v081_release.md](v081_release.md) | **v0.81.0** — Intel NPU bridge (`poly/accel`), Lucy [9], vendor plugin model, Qualcomm/Google TPU roadmap |
 | [v082_release.md](v082_release.md) | **v0.82.0** — SIMD CPU fast-path (AVX2/NEON) + Snapdragon/Hexagon NPU bridge (QNN, Windows ARM64), Lucy [12] |
 | [v083_release.md](v083_release.md) | **v0.83.0** — Apple GPU / Metal (MPSGraph) bridge (macOS Apple silicon), Lucy [13], + BF16 wire dtype for the shared accel bridge |
-| [simd.md](simd.md) | **Plan 9 SIMD** (forward + backward): AVX2/NEON `DotTile` + `SaxpyF32AccF64`, `TrainingModeCPUSimd`, seven-layer amd64/arm64 benchmarks |
+| [simd.md](simd.md) | **Plan 9 SIMD** (forward + backward): AVX2/NEON `DotTile` + `SaxpyF32AccF64`; default vs `*_native_simd.go`; Lucy [7] and [14] |
 | [`../poly/asm/README.md`](../poly/asm/README.md) | **Plan 9 CPU kernels**: `UseAsmForward`, dense forward routing, dot/matmul layout, Lucy speedup interpretation |
 | [asm-and-volumetric-exploration.md](asm-and-volumetric-exploration.md) | **Archive (Jun 2026)**: BitNet W8A8 ASM, I2_S scaffolding, volumetric executor v1, Lucy `[7]` findings — exploratory work removed from tree |
 
@@ -59,6 +60,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Visualizing layer-by-layer execution (UDP → SoulGlitch TANHI)?** Read [tanhi.md](tanhi.md).
 
 **Want to train a model?** Read [training.md](training.md) and [dispatch.md](dispatch.md).
+
+**Training in storage dtype (not FP32 surrogate)?** Read [training.md — Training paradigms](training.md#training-paradigms-default-qat-like-vs-native-exact) and [quantization.md — Three modes](quantization.md#three-traininginference-modes). Run Lucy **[14]** ([native_layers.md](native_layers.md)) — `lucy/examples/seven_layer/native_menu.go`.
 
 **Using the GPU?** Read [gpu.md](gpu.md).
 
@@ -80,7 +83,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **Streaming live PyTorch / TensorFlow / JAX weights into Loom (no HTTP)?** Read [planetbridging.md](planetbridging.md) — `pip install planetbridging`, bundled `loom-stream`, 13 layer bedrocks, welvet reload.
 
-**Changing precision / quantizing?** Read [numerical_types.md](numerical_types.md) and [quantization.md](quantization.md).
+**Changing precision / quantizing?** Read [numerical_types.md](numerical_types.md) and [quantization.md](quantization.md) — distinguish **default QAT-like train**, **PTQ deploy**, and **native exact train**.
 
 **Evolving or merging trained networks?** Read [dna.md](dna.md) and [evolution.md](evolution.md).
 
@@ -90,7 +93,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 **Reading Lucy / Glitch test transcripts or parity tables?** See [testing_and_validation.md](testing_and_validation.md).
 
-**Speeding up CPU inference and training (SIMD)?** Read [simd.md](simd.md) — `TrainingModeCPUSimd`, AVX2/NEON `DotTile` + `SaxpyF32AccF64`, Lucy **[7]** seven-layer SC/MC/SIMD parity and benchmarks.
+**Speeding up CPU inference and training (SIMD)?** Read [simd.md](simd.md) — `TrainingModeCPUSimd`, AVX2/NEON `DotTile` + `SaxpyF32AccF64`, Lucy **[7]** seven-layer SC/MC/SIMD parity and benchmarks. Native-exact SIMD timings: [native_layers.md](native_layers.md).
 
 ---
 

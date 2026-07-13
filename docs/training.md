@@ -40,7 +40,7 @@ Before the training loop runs, `Train` wires the network through `ConfigureNetwo
 | `TrainingModeCPUMC` | on | on | off |
 | `TrainingModeCPUSimd` | on | on | **on** (`SetSimdForwardRecursive`) |
 
-- **CPU modes** (`TrainingModeCPUNormal` … `TrainingModeCPUSimd`): `ConfigureNetworkForMode` sets `UseTiling` and `EnableMultiCoreTiling` per row above, calls `RefreshRuntimeTileSizes()`, and syncs every layer. **`TrainingModeCPUSimd`** additionally enables Plan 9 SIMD on all seven compute layers (Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM): forward `DotTile`, backward `SaxpyF32AccF64`. Other CPU modes call `SetSimdForwardRecursive(false)`.
+- **CPU modes** (`TrainingModeCPUNormal` … `TrainingModeCPUSimd`): `ConfigureNetworkForMode` sets `UseTiling` and `EnableMultiCoreTiling` per row above, calls `RefreshRuntimeTileSizes()`, and syncs every layer. **`TrainingModeCPUSimd`** additionally enables Plan 9 SIMD on compute layers (Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM, Embedding, Residual): forward `DotTile` / int8 dots, backward `SaxpyF32AccF64` / int8 saxpy. Other CPU modes call `SetSimdForwardRecursive(false)`.
 - **GPU modes** (`TrainingModeGPUNormal`, `TrainingModeGPUSC`, `TrainingModeGPUMC`): initializes WebGPU if needed, `RefreshRuntimeTileSizes()`, resets the bind-group cache, `SyncToGPU()`, and ensures FP32 master buffers exist for backward. **`trainBatchWGPU`** uses **`TrainingModeGPUSC`** vs **`TrainingModeGPUMC`** to select **`GetGPUSCTileSize`** vs **`GetGPUMCTileSize`** per layer; **`GPUNormal`** uses untiled or generic dispatch per layer type.
 
 For **interactive inference** (no explicit training mode), toggling **`VolumetricNetwork.EnableMultiCoreTiling`** chooses GPU SC vs MC tile maps (`wgpu_forward.go`), the same underlying maps training uses.
@@ -61,6 +61,88 @@ The seven-layer example (`lucy/examples/seven_layer`) benchmarks SC, MC, and SIM
 | arm64 | ~9 ms | ~12 ms | **~10 ms** |
 
 Per-layer forward/backward SIMD vs SC tables (amd64 and arm64) are in [simd.md — seven-layer benchmark results](simd.md#seven-layer-benchmark-results). SIMD is a CPU path only; it does not replace GPU training.
+
+---
+
+## Training paradigms: default (QAT-like) vs native exact
+
+Loom has **two CPU training semantics**. They share the same `Train()` loop, loss, and backward walk — but differ in **which forward/backward kernels run** and **where weights are updated**.
+
+| | **Default path** (`dense.go`, `rnn.go`, …) | **Native exact** (`*_native.go`, menu **[14]**) |
+|---|---------------------------------------------|--------------------------------------------------|
+| **Flag** | `UseExactDType = false` (default) | `UseExactDType = true` |
+| **Forward weights** | `GetActive(dtype)` → dequant to **FP32**, matmul in float | `GetNative` / per-dot MAC rules in **storage dtype** |
+| **Backward** | Gradients in **FP32** | Dtype-native gradient rules (int MAC for true integers) |
+| **Optimizer** | `ApplyGradients` → updates **FP32 Master**, clears `Versions`, re-`Morph` on next forward | `ApplyGradientsNative` (MAC dtypes) or **in-place int8 update in backward** (true integers) |
+| **What it models** | Train with a float surrogate; storage dtype is a cached view | Train as if the network literally runs in that dtype |
+
+The native menu prints the split explicitly:
+
+```
+layer.go = GetActive FP32 dequant · *_native.go = GetNative MAC rules
+```
+
+### Default path ≈ QAT-like surrogate training
+
+When `UseExactDType` is off, a layer tagged `DTypeInt8` (or Int32, FP8, …) still does most of its math in **float**:
+
+1. **Forward:** `WeightStore.GetActive(layer.DType)` returns `Versions[dtype]` if present; tiled/SIMD paths cast or dequant to FP32 for `DotTile` / matmul.
+2. **Backward:** `gradWeights` and `gradInput` accumulate in FP32.
+3. **Update:** `ApplyGradients` subtracts `lr × grad` from **Master** (`[]float32`), then clears all cached `Versions`.
+4. **Next forward:** `Morph(dtype)` re-quantizes Master into storage dtype.
+
+This is **not** textbook QAT (no fake-quant nodes, no straight-through estimator in the graph), but it is **QAT-adjacent**: *quantize → dequant → train in float → re-quant*. The low-bit dtype is a **storage and inference view**; learning happens in FP32 master space.
+
+`MorphToFloat32ForGPU` at upload time is pure **PTQ** (precision loss at inference only). Default CPU training is the same family: float math with periodic re-quantization.
+
+### Native exact — two sub-flavors
+
+Enable with:
+
+```go
+net.UseExactDType = true
+```
+
+Layers route to `DenseForwardNativeExact`, `RNNForwardNativeExact`, `LSTMForwardNativeExact`, etc. (`layer_native.go` lists supported types: Dense, SwiGLU, MHA, CNN1–3, RNN, LSTM, Embedding, Residual).
+
+#### 1. Native MAC dtypes (Int32, Int64, FP8, Float16, …)
+
+- Forward/backward use **per-dtype MAC rules** via `GetNative` — no bulk FP32 dequant buffer on the hot path.
+- Gradients follow those MAC rules (e.g. `nativeGradW` / `nativeGradX` in `native_weight_ctx.go`).
+- Optimizer: `ApplyGradientsNative` updates Master **and** the native storage slice (e.g. round to `int64` after each step).
+- **SIMD:** `*_native_simd.go` materializes f32 tiles once per pass (`materializeF32Weights`) then runs `DotTile` / `SaxpyF32AccF64` — same numerics, faster kernels.
+
+#### 2. True native integers (Int8, Int4, Ternary, Uint8, …)
+
+This is the largest departure from QAT:
+
+| Stage | Behaviour |
+|-------|-----------|
+| Forward | Real **int8 × int8 → int32** MAC, `>> 8`, clamp; activations cached as int8 (`ExactDense` cache) |
+| Backward | Integer gate grads; `SaxpyI8ScaleI32Acc` / `SaxpyI8ShiftedInputGradAcc` for weight/input accumulation |
+| Update | **`applyStochasticInt8Update` inside backward** — weights change in-place in int8 storage; external optimizer step is **skipped** (`ExactDense.WeightsUpdated`) |
+
+The network is **literally int8 during training**, not a float copy with int8 snapshots.
+
+### SIMD on top (not a third paradigm)
+
+| SIMD mode | Math semantics |
+|-----------|----------------|
+| Default `*_simd.go` | Still `GetActive` FP32 — faster QAT-like path |
+| Native `*_native_simd.go` | Same native-exact rules; `DotI8Tile` / int8 saxpy for true integers |
+
+`SetSimdForward(true)` / `TrainingModeCPUSimd` choose the fast kernels; `UseExactDType` chooses **which training paradigm**.
+
+### Lucy menus
+
+| Menu | Path | Purpose |
+|------|------|---------|
+| **[7]** seven-layer suite | Default (`UseExactDType` off for most runs) | SC/MC/SIMD parity, save/reload, training across 21 dtypes |
+| **[14]** native layer suite | `UseExactDType = true` per dtype | Per-layer native fwd/bwd/train × 21 dtypes; SIMD speedup columns when linked |
+
+Benchmark results (amd64/arm64): [native_layers.md](native_layers.md).
+
+See [quantization.md — Three training/inference modes](quantization.md#three-traininginference-modes) for how this relates to PTQ and [simd.md](simd.md) for native-exact SIMD file layout.
 
 ---
 
@@ -127,6 +209,10 @@ gradInput[b,i]   += W[o,i] × gradPre[b,o]
 
 ```go
 for idx := range n.Layers {
+    if l.ExactDense != nil && l.ExactDense.WeightsUpdated {
+        l.ExactDense.WeightsUpdated = false
+        continue  // true-int8 layers already updated in backward
+    }
     if layerGradients[idx][1] != nil {
         gW := ConvertTensor[T, float32](layerGradients[idx][1])
         ApplyRecursiveGradients(l, gW, config.LearningRate)
@@ -134,13 +220,20 @@ for idx := range n.Layers {
 }
 ```
 
-`ApplyRecursiveGradients` calls `WeightStore.ApplyGradients(gW, lr)`:
+**Default path** (`UseExactDType = false`): `ApplyRecursiveGradients` calls `WeightStore.ApplyGradients(gW, lr)`:
 
 ```
 Master[i] -= lr × gradWeights[i]
 ```
 
 After this, all cached `Versions` and `GPUWeights` are cleared, forcing re-quantization on the next forward pass.
+
+**Native exact path** (`UseExactDType = true`):
+
+- **MAC dtypes:** `ApplyGradientsNative` updates Master and the native storage slice together.
+- **True integers (Int8, …):** backward already ran `applyStochasticInt8Update`; the loop above skips the layer when `ExactDense.WeightsUpdated` is set.
+
+See [Training paradigms](#training-paradigms-default-qat-like-vs-native-exact) for the full comparison.
 
 `ApplyRecursiveGradients` also recurses into `ParallelBranches` and `SequentialLayers`, using the `Nested` structure of the returned `gradWeights` tensor to route updates to the correct sub-layer.
 
