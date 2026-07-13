@@ -16,7 +16,8 @@ import (
 // DenseExactCache holds integer-native activations for true exact training.
 type DenseExactCache struct {
 	InputI8        []int8
-	PreI8          []int8    // MHA: attn output int8 before O-proj; else pre-activation
+	InputU8        []uint8  // uint-native SIMD: quantized activations as uint8
+	PreI8          []int8   // MHA: attn output int8 before O-proj; else pre-activation
 	PostI8         []int8
 	QF64           []float64 // MHA: Q after RoPE (for attention backward)
 	QI8            []int8    // MHA: quantized Q after RoPE
@@ -172,6 +173,11 @@ func ensureDenseExactCache(layer *VolumetricLayer, batch, inSz, outSz int) *Dens
 	} else {
 		c.InputI8 = c.InputI8[:needIn]
 	}
+	if cap(c.InputU8) < needIn {
+		c.InputU8 = make([]uint8, needIn)
+	} else {
+		c.InputU8 = c.InputU8[:needIn]
+	}
 	if cap(c.PreI8) < needOut {
 		c.PreI8 = make([]int8, needOut)
 		c.PostI8 = make([]int8, needOut)
@@ -283,46 +289,11 @@ func trueNativeWeightI8(dtype DType, code uint8) int8 {
 }
 
 func nativeWeightsI8(ws *WeightStore, dtype DType) []int8 {
-	native := ws.GetNative(dtype)
-	codes, ok := nativeU8WeightsView(native)
-	if !ok {
-		return nil
-	}
-	out := make([]int8, len(codes))
-	for i, c := range codes {
-		out[i] = trueNativeWeightI8(dtype, c)
-	}
-	return out
+	return ws.NativeSimdI8Weights(dtype)
 }
 
 func nativeWeightsU8(ws *WeightStore, dtype DType) []uint8 {
-	native := ws.GetNative(dtype)
-	codes, ok := nativeU8WeightsView(native)
-	if !ok {
-		return nil
-	}
-	out := make([]uint8, len(codes))
-	switch dtype {
-	case DTypeUint4:
-		for i, c := range codes {
-			if c > 15 {
-				out[i] = 15
-			} else {
-				out[i] = c
-			}
-		}
-	case DTypeUint2:
-		for i, c := range codes {
-			if c > 3 {
-				out[i] = 3
-			} else {
-				out[i] = c
-			}
-		}
-	default:
-		copy(out, codes)
-	}
-	return out
+	return ws.NativeSimdU8Weights(dtype)
 }
 
 func learningRateToBitShift(lr float32) uint {
@@ -556,6 +527,7 @@ func denseBackwardIntegerNative(layer *VolumetricLayer, gradOutput, input *Tenso
 	if ws.CPUPacked != nil {
 		delete(ws.CPUPacked, layer.DType)
 	}
+	ws.invalidateNativeSimdCache(layer.DType)
 	return gradInput, gradWeights
 }
 

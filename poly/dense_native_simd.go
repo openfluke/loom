@@ -18,7 +18,8 @@ func tryDenseForwardNativeSimd(layer *VolumetricLayer, input *Tensor[float32]) (
 		return nil, nil, false
 	}
 	if usePackedTernaryCPU(layer) {
-		return nil, nil, false
+		pre, post := DenseForwardPackedTernaryCPU(layer, input)
+		return pre, post, true
 	}
 	if useDenseTrueNative(layer) {
 		return denseForwardIntegerNativeSimd(layer, input)
@@ -30,6 +31,10 @@ func tryDenseBackwardNativeSimd(layer *VolumetricLayer, gradOutput, input, preAc
 	if !layerUseSimdForward(layer) || !simd.SimdEnabled() {
 		return nil, nil, false
 	}
+	// Packed ternary forward uses BitNet matvec; backward gradients match MAC SIMD on cached f32 weights.
+	if usePackedTernaryCPU(layer) {
+		return denseBackwardNativeMACSimd(layer, gradOutput, input, preAct)
+	}
 	if useDenseTrueNative(layer) {
 		return denseBackwardIntegerNativeSimd(layer, gradOutput, input, preAct)
 	}
@@ -37,23 +42,37 @@ func tryDenseBackwardNativeSimd(layer *VolumetricLayer, gradOutput, input, preAc
 }
 
 func denseForwardNativeMACSimd(layer *VolumetricLayer, input *Tensor[float32]) (preAct, postAct *Tensor[float32], ok bool) {
-	wctx := newNativeWeightCtx(layer)
-	count := layer.WeightStore.WeightCount(layer.DType)
+	if layer.DType == DTypeFloat32 {
+		preAct, postAct = denseForwardSimdF32(layer, input)
+		return preAct, postAct, true
+	}
+	ws := layer.WeightStore
+	count := ws.WeightCount(layer.DType)
 	if count <= 0 {
 		return nil, nil, false
 	}
-	wData := wctx.materializeF32Weights(count)
+	wData := ws.NativeSimdF32Weights(layer.DType)
+	if wData == nil {
+		return nil, nil, false
+	}
 	preAct, postAct = denseForwardSimdF32WithWeights(layer, input, wData)
 	return preAct, postAct, true
 }
 
 func denseBackwardNativeMACSimd(layer *VolumetricLayer, gradOutput, input, preAct *Tensor[float32]) (gradInput, gradWeights *Tensor[float32], ok bool) {
-	wctx := newNativeWeightCtx(layer)
-	count := layer.WeightStore.WeightCount(layer.DType)
+	if layer.DType == DTypeFloat32 {
+		gradInput, gradWeights = denseBackwardSimdF32(layer, gradOutput, input, preAct)
+		return gradInput, gradWeights, true
+	}
+	ws := layer.WeightStore
+	count := ws.WeightCount(layer.DType)
 	if count <= 0 {
 		return nil, nil, false
 	}
-	wData := wctx.materializeF32Weights(count)
+	wData := ws.NativeSimdF32Weights(layer.DType)
+	if wData == nil {
+		return nil, nil, false
+	}
 	gradInput, gradWeights = denseBackwardSimdF32WithWeights(layer, gradOutput, input, preAct, wData)
 	return gradInput, gradWeights, true
 }
@@ -82,17 +101,16 @@ func denseForwardIntegerNativeSimd(layer *VolumetricLayer, input *Tensor[float32
 
 	switch layer.DType {
 	case DTypeUint8, DTypeUint4, DTypeUint2:
-		w := nativeWeightsU8(ws, layer.DType)
+		w := ws.NativeSimdU8Weights(layer.DType)
 		if w == nil {
 			return nil, nil, false
 		}
-		inU8 := make([]uint8, len(cache.InputI8))
 		for i, c := range cache.InputI8 {
-			inU8[i] = uint8(clampU8(int32(c)))
+			cache.InputU8[i] = uint8(clampU8(int32(c)))
 		}
-		trueUint8DenseForwardSimd(w, inU8, batch, inSz, outSz, cache.PreI8, cache.PostI8)
+		trueUint8DenseForwardSimd(w, cache.InputU8, batch, inSz, outSz, cache.PreI8, cache.PostI8)
 	default:
-		w := nativeWeightsI8(ws, layer.DType)
+		w := ws.NativeSimdI8Weights(layer.DType)
 		if w == nil {
 			return nil, nil, false
 		}
@@ -131,20 +149,19 @@ func denseBackwardIntegerNativeSimd(layer *VolumetricLayer, gradOutput, input, p
 
 	switch layer.DType {
 	case DTypeUint8, DTypeUint4, DTypeUint2:
-		w := nativeWeightsU8(ws, layer.DType)
-		inU8 := make([]uint8, len(cache.InputI8))
+		w := ws.NativeSimdU8Weights(layer.DType)
 		for i, c := range cache.InputI8 {
-			inU8[i] = uint8(clampU8(int32(c)))
+			cache.InputU8[i] = uint8(clampU8(int32(c)))
 		}
 		gOutU8 := make([]uint8, len(gradOutI8))
 		for i, c := range gradOutI8 {
 			gOutU8[i] = uint8(clampU8(int32(c)))
 		}
-		giU8, wU8 := trueUint8DenseBackwardSimd(w, inU8, gOutU8, batch, inSz, outSz, lrShift)
+		giU8, wU8 := trueUint8DenseBackwardSimd(w, cache.InputU8, gOutU8, batch, inSz, outSz, lrShift)
 		ws.Versions[layer.DType] = wU8
 		dequantU8Row(giU8, scale, gradInput.Data)
 	default:
-		w := nativeWeightsI8(ws, layer.DType)
+		w := ws.NativeSimdI8Weights(layer.DType)
 		giI8, wI8 := trueInt8DenseBackwardSimd(
 			w, cache.InputI8, gradOutI8,
 			batch, inSz, outSz,
@@ -164,6 +181,7 @@ func denseBackwardIntegerNativeSimd(layer *VolumetricLayer, gradOutput, input, p
 	if ws.CPUPacked != nil {
 		delete(ws.CPUPacked, layer.DType)
 	}
+	ws.invalidateNativeSimdCache(layer.DType)
 	return gradInput, gradWeights, true
 }
 

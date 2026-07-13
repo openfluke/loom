@@ -148,6 +148,7 @@ func markLayerNativeWeightsUpdated(layer *VolumetricLayer, ws *WeightStore, dtyp
 	if ws.CPUPacked != nil {
 		delete(ws.CPUPacked, dtype)
 	}
+	ws.invalidateNativeSimdCache(dtype)
 }
 
 func publishInt8Weights(ws *WeightStore, dtype DType, weights []int8) {

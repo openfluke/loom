@@ -21,6 +21,8 @@ type WeightStore struct {
 	Q4_0Scales     map[DType][]float32    // Baked Q4_0 scales from .entity (upload as-is)
 	Q4_0Packed     map[DType][]uint32     // Baked Q4_0 packed weights from .entity
 	Scale          float32                // Dynamic quantization scale factor
+	nativeSimdGen      uint32                 // bumped when native SIMD weight views go stale
+	nativeSimdCaches_ map[DType]*nativeSimdWeightCache // cached f32/i8/u8 views for native SIMD
 }
 
 // gpuPackedWeightsKeyBase offsets GPUWeights keys for packed post-optimizer quantize.
@@ -350,6 +352,7 @@ func (ws *WeightStore) ForceMorph(dtype DType) {
 	if ws.CPUPacked != nil {
 		delete(ws.CPUPacked, dtype)
 	}
+	ws.invalidateNativeSimdCache(dtype)
 	ws.morph(dtype, false)
 }
 
@@ -359,6 +362,7 @@ func (ws *WeightStore) InvalidateVersions() {
 	ws.Versions = make(map[DType]any)
 	ws.CPUPacked = make(map[DType]any)
 	ws.GPUWeights = make(map[DType]any)
+	ws.invalidateAllNativeSimdCache()
 }
 
 func (ws *WeightStore) morph(dtype DType, force bool) {
@@ -527,6 +531,7 @@ func (ws *WeightStore) Randomize(seed int64, scale float32) {
 	ws.Versions = make(map[DType]any)
 	ws.CPUPacked = make(map[DType]any)
 	ws.GPUWeights = make(map[DType]any)
+	ws.invalidateAllNativeSimdCache()
 }
 
 // HeRandomize initializes weights using He initialization (Kaiming Normal).
@@ -540,6 +545,7 @@ func (ws *WeightStore) HeRandomize(seed int64, inputSize int) {
 	ws.Versions = make(map[DType]any)
 	ws.CPUPacked = make(map[DType]any)
 	ws.GPUWeights = make(map[DType]any)
+	ws.invalidateAllNativeSimdCache()
 }
 
 func nativeU8WeightsView(v any) ([]uint8, bool) {
@@ -705,6 +711,7 @@ func (ws *WeightStore) SetLoadedWeights(dtype DType, data any) {
 	ws.Versions[dtype] = data
 	ws.CPUPacked = make(map[DType]any)
 	ws.GPUWeights = make(map[DType]any)
+	ws.invalidateAllNativeSimdCache()
 	if len(ws.Master) > 0 {
 		ws.Unpack(dtype)
 	}

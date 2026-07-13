@@ -186,15 +186,15 @@ func computeSimdDuelComparisons(row *crossPathRow) {
 	row.duelBwd = makePair("QAT SIMD-b", row.bwdSimd, row.natBwdSimd, "NatS-b")
 	row.duelTrain = makePair("QAT SIMD", row.trainSimd, row.trainNativeSimd, "NatS")
 
-	qatFwd := namedDur{"QAT SIMD-f", row.fwdSimd}
+	qatFwd := namedDur{"SIMD-f", row.fwdSimd}
 	natFwd := namedDur{"NatS-f", row.natFwdSimd}
 	row.fwdWinner, row.fwdWinRatio, row.fwdWinFaster = paradigmWinner(qatFwd, natFwd)
 
-	qatBwd := namedDur{"QAT SIMD-b", row.bwdSimd}
+	qatBwd := namedDur{"SIMD-b", row.bwdSimd}
 	natBwd := namedDur{"NatS-b", row.natBwdSimd}
 	row.bwdWinner, row.bwdWinRatio, row.bwdWinFaster = paradigmWinner(qatBwd, natBwd)
 
-	qatTrain := namedDur{"QAT SIMD", row.trainSimd}
+	qatTrain := namedDur{"SIMD", row.trainSimd}
 	natTrain := namedDur{"NatS", row.trainNativeSimd}
 	row.trainWinner, row.trainWinRatio, row.trainWinFaster = paradigmWinner(qatTrain, natTrain)
 }
