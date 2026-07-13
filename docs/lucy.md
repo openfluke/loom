@@ -37,6 +37,7 @@ Runtime transcripts (reset each session):
 | `lucy_testing_output/cross_path_layers.txt` | **[15]** | [cross_path_layers.md](cross_path_layers.md) |
 | `lucy_testing_output/tween_native_layers.txt` | **[16]** | — |
 | `lucy_testing_output/adaptation_suite.txt` | **[17]** | — |
+| `lucy_testing_output/proof.seeds` | **[20]** | [seed_manifests.md](seed_manifests.md#lucy-20--seed-proof-chaosglue-seed-proof-v4) |
 | `lucy_testing_output/nine_layer.txt` | **[9]** | [accelerators.md](accelerators.md) |
 | `lucy_testing_output/snapdragon.txt` | **[12]** | [snapdragon_npu.md](snapdragon_npu.md) |
 | `lucy_testing_output/apple.txt` | **[13]** | [apple_metal.md](apple_metal.md) |
@@ -57,6 +58,9 @@ Paths are relative to the **Lucy repo root** (`lucy_bloom_rivers/`). Per-dtype c
 | Cross-path [15] | `examples/seven_layer/cross_path_menu.go` |
 | Tween native [16] | `examples/seven_layer/tween_native_menu.go` |
 | Adaptation [17] | `examples/adaptation_suite/`, `examples/seven_layer/adaptation_menu.go` |
+| Seed topology POC [18] | `examples/seed_poc/` |
+| Seed round trip [19] | `examples/seed_roundtrip/` |
+| Seed proof [20] | `examples/seed_proof/` |
 | Intel NPU [9] | `examples/nine_layer/` |
 | Snapdragon [12] | `examples/snapdragon/` |
 | Apple Metal [13] | `examples/apple/` |
@@ -76,3 +80,4 @@ Go module path (current): `github.com/openfluke/loom/lucy` — imports use that 
 | Plan 9 SIMD | [simd.md](simd.md) |
 | Training paradigms | [training.md](training.md#training-paradigms-default-qat-like-vs-native-exact) |
 | ENTITY checkpoints | [entity.md](entity.md) |
+| Seed manifests & proof [18–20] | [seed_manifests.md](seed_manifests.md) |

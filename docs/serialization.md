@@ -16,6 +16,8 @@ This document covers how `VolumetricNetwork` instances are saved and loaded, the
 
 For production checkpoints on device, prefer **`.entity`**. Keep JSON when you want to inspect weights and topology in a text editor. See [entity.md](entity.md) for the full format spec.
 
+For **tiny init recipes** (topology + per-layer `layer_seed`, no weight bytes), see [seed_manifests.md](seed_manifests.md). Lucy **[20]** demonstrates train → save trained seeds → reload with bit-exact trained outputs.
+
 ---
 
 ## Full Save/Load (persistence.go)

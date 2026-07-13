@@ -31,13 +31,14 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | [evolution.md](evolution.md) | DNA Splice / Genetic Crossover and NEAT-style Topology Evolution: `SpliceDNA`, `NEATMutate`, `NEATPopulation`, all 3 crossover modes, all 6 mutation types |
 | [softmax.md](softmax.md) | All 10 softmax variants: Standard, Temperature, Gumbel, Masked, Sparse, Entmax, Grid, Hierarchical, Adaptive, Mixture |
 | [serialization.md](serialization.md) | JSON + ENTITY save/load, bit-packing, idempotency, SafeTensors import |
+| [seed_manifests.md](seed_manifests.md) | **Seed manifests** — topology + `layer_seed` → He-init weights; no weight blobs; Lucy [18–20] |
 | [entity.md](entity.md) | **ENTITY** (`.entity`) — native binary checkpoint; topology + weights in one file; HF→native bridge (Lucy [8]), Q4 LLM bake, experimental 3D unlock |
 | [planetbridging.md](planetbridging.md) | **Planet Bridging** — PyPI `planetbridging` package; live PyTorch/TF/JAX → `loom-stream` → `.entity`; welvet reload; roadmap (Loom → export v1.0) |
 | [parallel_sequential.md](parallel_sequential.md) | `LayerParallel` (5 combine modes, activation tree), `LayerSequential` (step containers, skip gradients), nesting patterns |
 | [quantization.md](quantization.md) | **Three modes**: default QAT-like train, PTQ inference, native exact train; `Morph`/`Unpack`, `Q4_0Block`, calibration |
 | [transformer.md](transformer.md) | MHA with RoPE, GQA/MQA, KV cache, SwiGLU, RMSNorm, Qwen-style expanded-query + Q/K norm support, `Transformer[T]` generation type; CPU vs GPU tiling behavior |
 | [quick_reference.md](quick_reference.md) | Concise copy-paste snippets for all common operations |
-| [lucy.md](lucy.md) | **Lucy Bloom Rivers** — separate harness repo; menus [1]–[17], log paths, clone layout |
+| [lucy.md](lucy.md) | **Lucy Bloom Rivers** — separate harness repo; menus [1]–[20], log paths, clone layout |
 | [testing_and_validation.md](testing_and_validation.md) | **Lucy logs**, parity table legend, how to read `lucy_testing_output/log.txt`, Dense **Go÷ASM** benchmarks, and a compact map of `poly/` files the suites hit |
 | [bedrock_validation.md](bedrock_validation.md) | **v0.79.0** — seven-layer CPU suite, MHA/KV/persistence fixes; C-ABI **489/489** (v0.81 accel + entity exports) |
 | [v080_release.md](v080_release.md) | **v0.80.0** — ENTITY native checkpoints, WebGPU v1.0.4, cross-platform GPU, Planet Bridging POC |
@@ -82,6 +83,8 @@ This directory contains comprehensive documentation for the `poly/` package — 
 **Loading a HuggingFace model?** Read [transformer.md](transformer.md) and [serialization.md](serialization.md).
 
 **Saving a native Loom checkpoint (not HF)?** Read [entity.md](entity.md) — includes Lucy **[8]** ENTITY Talk (HF → `.entity` → chat) and what the format unlocks for grafting / 3D experiments.
+
+**Saving or reloading by seeds only (no weight blob)?** Read [seed_manifests.md](seed_manifests.md) — topology + per-layer `layer_seed`, He-init weights, Lucy **[19]** round trip and **[20]** train→save→reload proof.
 
 **Streaming live PyTorch / TensorFlow / JAX weights into Loom (no HTTP)?** Read [planetbridging.md](planetbridging.md) — `pip install planetbridging`, bundled `loom-stream`, 13 layer bedrocks, welvet reload.
 
@@ -129,6 +132,10 @@ poly/
 ├── entity_convert_io.go Block-wise ENTITY encode: streaming payload, Q4 bake helpers, writeEntityWireStreaming
 ├── hf_entity_convert.go ImportHFSaveEntityTransformerBlockwise(Progress) — mobile-safe HF→`.entity`
 ├── hf_import.go         ImportHFCheckpointDir, ImportHFToEntity, ImportHFBitNetCheckpointDir
+├── seed_core.go         SeedFrom, DeriveLayerSeed, He-init from layer_seed
+├── seed_dense.go        Dense weight manifests (seeds only, no blobs)
+├── seed_*.go            Per-layer seed manifests (SwiGLU, MHA, CNN, …)
+├── seed_manifest.go     Entity .wseed tiny manifests
 ├── transformer.go       Transformer[T], NewTransformer, Generate, SyncGlobalWeightsToGPUSequential
 ├── memory_history.go    Load-path MemoryHistory, terminal chart, diagnosis
 ├── memory_history_chart.go  Braille/sparkline renderers for memory timeline
