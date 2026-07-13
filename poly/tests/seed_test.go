@@ -216,6 +216,29 @@ func TestResidualManifestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAllDTypeDenseRoundTrip(t *testing.T) {
+	results := RunAllDenseDTypeRoundTrips("test", []int{4, 8})
+	pass, fail, report := DTypeRoundTripSummary(results)
+	if fail > 0 {
+		t.Fatalf("%d/21 failed: %s", fail, report)
+	}
+	if pass != 21 {
+		t.Fatalf("want 21 pass got %d", pass)
+	}
+}
+
+func TestAllNumericalLayerDTypeMatrix(t *testing.T) {
+	matrix := RunAllNumericalLayerDTypeMatrix("test")
+	pass, fail, familyFails := MatrixDTypeRoundTripSummary(matrix)
+	want := len(matrix) * 21
+	if fail > 0 {
+		t.Fatalf("%d/%d failed: %v", fail, want, familyFails)
+	}
+	if pass != want {
+		t.Fatalf("want %d pass got %d", want, pass)
+	}
+}
+
 func TestBuildSeededEntityTransformer(t *testing.T) {
 	seed := SeedFrom("test", "lm")
 	dims := HFDecoderDims{
