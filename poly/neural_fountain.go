@@ -347,6 +347,12 @@ func trainSpecialistNet(net *VolumetricNetwork, batches []TrainingBatch[float32]
 	return nil
 }
 
+// RecoverWeightBlobs LT-sprays/peels equal-sized source blocks under a lossy channel.
+// Used by NeuralFountain and by hierarchical “fountain of Masters” demos.
+func RecoverWeightBlobs(blobs [][]byte, seed uint64, loss, maxOverhead float64) (recovered [][]byte, received, sprayed int, err error) {
+	return recoverWeightBlobs(blobs, seed, loss, maxOverhead)
+}
+
 func recoverWeightBlobs(blobs [][]byte, seed uint64, loss, maxOverhead float64) (recovered [][]byte, received, sprayed int, err error) {
 	enc, err := NewLTEncoder(blobs, seed)
 	if err != nil {
