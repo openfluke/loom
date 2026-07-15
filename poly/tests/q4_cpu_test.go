@@ -1,9 +1,10 @@
-package poly
+package poly_test
 
 import (
 	"math"
 	"testing"
 
+	. "github.com/openfluke/loom/poly"
 	"github.com/openfluke/loom/poly/simd"
 )
 
@@ -33,7 +34,7 @@ func TestGemvQ4_0PackedMatchesDequant(t *testing.T) {
 		}
 		want[o] = sum
 	}
-	gemvQ4_0Packed(scales, packed, in, bias, got, outRows, inCols)
+	GemvQ4_0Packed(scales, packed, in, bias, got, outRows, inCols)
 
 	for o := 0; o < outRows; o++ {
 		if math.Abs(want[o]-got[o]) > 1e-4 {
@@ -63,8 +64,8 @@ func TestGemvQ4_0PackedSIMDMatchesScalar(t *testing.T) {
 
 	scalar := make([]float64, outRows)
 	got := make([]float64, outRows)
-	gemvQ4_0PackedParallel(scales, packed, in, bias, scalar, outRows, inCols, false)
-	gemvQ4_0PackedParallel(scales, packed, in, bias, got, outRows, inCols, true)
+	GemvQ4_0PackedParallel(scales, packed, in, bias, scalar, outRows, inCols, false)
+	GemvQ4_0PackedParallel(scales, packed, in, bias, got, outRows, inCols, true)
 
 	for o := 0; o < outRows; o++ {
 		if math.Abs(scalar[o]-got[o]) > 1e-4 {

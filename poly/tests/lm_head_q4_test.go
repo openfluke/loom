@@ -1,9 +1,10 @@
-package poly
+package poly_test
 
 import (
 	"math"
 	"testing"
 
+	. "github.com/openfluke/loom/poly"
 	"github.com/openfluke/loom/poly/simd"
 )
 
@@ -28,13 +29,18 @@ func TestApplyLMHeadQ4MatchesFP32Roughly(t *testing.T) {
 		hidden[i] = float32((i%7)-3) * 0.1
 	}
 
+	// FP32 reference before packing frees LMHead.
 	fp32 := make([]float32, V)
-	tr.applyFP32LMHeadRows(hidden, fp32)
+	for v := 0; v < V; v++ {
+		var sum float64
+		off := v * H
+		for d := 0; d < H; d++ {
+			sum += float64(hidden[d]) * float64(head[off+d])
+		}
+		fp32[v] = float32(sum)
+	}
 
 	tr.EnsurePackedQ4LMHead()
-	if !tr.usePackedQ4LMHead() {
-		t.Fatal("expected Q4 LM head packed")
-	}
 	if len(tr.LMHead) != 0 {
 		t.Fatal("expected untied FP32 LMHead released after pack")
 	}

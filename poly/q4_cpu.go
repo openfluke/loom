@@ -27,13 +27,23 @@ func usePackedQ4SIMD(layer *VolumetricLayer) bool {
 	return usePackedQ4CPU(layer) && layerUseSimdForward(layer) && simd.SimdEnabled()
 }
 
-// gemvQ4_0Packed computes out[o] = bias[o] + sum_i in[i]*W[o,i] with W stored as PackQ4_0GPU.
-func gemvQ4_0Packed(scales []float32, packed []uint32, in []float32, bias []float32, out []float64, outRows, inCols int) {
+// GemvQ4_0Packed computes out[o] = bias[o] + sum_i in[i]*W[o,i] with W stored as PackQ4_0GPU.
+func GemvQ4_0Packed(scales []float32, packed []uint32, in []float32, bias []float32, out []float64, outRows, inCols int) {
 	gemvQ4_0PackedRows(scales, packed, in, bias, out, 0, outRows, inCols, false)
+}
+
+// gemvQ4_0Packed is the internal alias used by layer forwards.
+func gemvQ4_0Packed(scales []float32, packed []uint32, in []float32, bias []float32, out []float64, outRows, inCols int) {
+	GemvQ4_0Packed(scales, packed, in, bias, out, outRows, inCols)
 }
 
 func gemvQ4_0PackedSIMD(scales []float32, packed []uint32, in []float32, bias []float32, out []float64, outRows, inCols int) {
 	gemvQ4_0PackedRows(scales, packed, in, bias, out, 0, outRows, inCols, true)
+}
+
+// GemvQ4_0PackedParallel is the multi-row Q4 GEMV (optional SIMD).
+func GemvQ4_0PackedParallel(scales []float32, packed []uint32, in []float32, bias []float32, out []float64, outRows, inCols int, useSimd bool) {
+	gemvQ4_0PackedParallel(scales, packed, in, bias, out, outRows, inCols, useSimd)
 }
 
 func gemvQ4_0PackedParallel(scales []float32, packed []uint32, in []float32, bias []float32, out []float64, outRows, inCols int, useSimd bool) {
