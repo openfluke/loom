@@ -3,8 +3,8 @@ package poly
 // q4_cpu.go — CPU inference against baked Q4_0 .entity weights without expanding Master to FP32.
 // Matches wgpu ShaderTiledDenseQ4 indexing (block=32, 8 nibbles per u32 word).
 //
-// SIMD path uses fused Q4 GEMV (simd.DotQ4_0Row): AVX2 on amd64 unpacks nibbles in-register
-// per 32-weight block — no full-row FP32 dequant, no full-model Master inflate.
+// SIMD path uses fused Q4 GEMV (simd.DotQ4_0Row): AVX2 (amd64) / NEON (arm64) unpack
+// nibbles in-register per 32-weight block — no full-row FP32 dequant, no Master inflate.
 
 import (
 	"math"
