@@ -35,6 +35,9 @@ func QuantizeQ4_0(weights []float32) []Q4_0Block {
 		}
 
 		scale := maxAbs / 7.0
+		if scale == 0 {
+			scale = 1
+		}
 		blocks[i].Scale = scale
 
 		for j := 0; j < 16; j++ {
