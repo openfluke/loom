@@ -92,6 +92,12 @@ func ImportHFSaveEntityTransformerBlockwiseProgress(
 	collectEntityGlobalBlobAcc("embeddings", embeddings, acc, &blobs)
 	if !lmHeadTied {
 		collectEntityGlobalBlobAcc("lm_head", lmHead, acc, &blobs)
+		if weightDType == DTypeInt4 {
+			collectEntityLMHeadQ4Acc(lmHead, acc, &blobs)
+		}
+	} else if weightDType == DTypeInt4 {
+		// Tied: still bake a Q4 logits matrix from embeddings for CPU ApplyLMHead.
+		collectEntityLMHeadQ4Acc(embeddings, acc, &blobs)
 	}
 	if hasFinalNorm {
 		collectEntityGlobalBlobAcc("final_norm", finalNorm, acc, &blobs)

@@ -32,6 +32,9 @@ func swigluForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAc
 	if usePackedTernaryCPU(layer) {
 		return SwiGLUForwardPackedTernaryCPU(layer, input)
 	}
+	if usePackedQ4CPU(layer) {
+		return SwiGLUForwardPackedQ4CPU(layer, input)
+	}
 	if !swigluLayerSimdViable(layer) {
 		return swigluForwardTiledParallel(layer, input)
 	}

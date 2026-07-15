@@ -54,6 +54,17 @@ type Transformer[T Numeric] struct {
 	lmHeadPackedTernary *BitNetTernaryMatrix
 	lmHeadPackedLen     int
 
+	// Q4 LM head for CPU logits (UsePackedQ4CPU). Untied FP32 LMHead may be nil after pack.
+	lmHeadQ4Scales  []float32
+	lmHeadQ4Packed  []uint32
+	lmHeadQ4Rows    int
+	lmHeadQ4Cols    int
+	lmHeadLogitsF32 []float32
+	lmHeadLogitsF64 []float64
+
+	// embScratch avoids per-token alloc in getEmbedding during decode.
+	embScratch []T
+
 	// lmHeadTied: LM head shares embedding table (entity LMHeadTied or slice alias).
 	lmHeadTied bool
 
@@ -155,6 +166,8 @@ func (t *Transformer[T]) SyncInferenceCPU() {
 	if t.finalNormLayer != nil {
 		t.finalNormLayer.SyncToCPU()
 	}
+	t.EnsurePackedQ4LMHead()
+	t.EnsurePackedTernaryLMHead()
 }
 
 // SetRMSNormEps applies a consistent epsilon to all RMSNorm layers, including
@@ -534,7 +547,9 @@ func (t *Transformer[T]) calculateHostModelBytes() uint64 {
 	var total uint64
 	total += uint64(t.Network.CalculateTotalMemory())
 	total += uint64(len(t.Embeddings)) * 4
-	if !slicesShareBackingStoreFloat32(t.LMHead, t.Embeddings) {
+	if t.usePackedQ4LMHead() {
+		total += uint64(len(t.lmHeadQ4Scales))*4 + uint64(len(t.lmHeadQ4Packed))*4
+	} else if !slicesShareBackingStoreFloat32(t.LMHead, t.Embeddings) {
 		total += uint64(len(t.LMHead)) * 4
 	}
 	total += uint64(len(t.FinalNorm)) * 4
@@ -553,9 +568,13 @@ func (t *Transformer[T]) getEmbedding(tokenID int) []T {
 	if offset+t.HiddenSize > len(t.Embeddings) {
 		return make([]T, t.HiddenSize)
 	}
-	out := make([]T, t.HiddenSize)
+	if len(t.embScratch) != t.HiddenSize {
+		t.embScratch = make([]T, t.HiddenSize)
+	}
+	out := t.embScratch
+	emb := t.Embeddings[offset : offset+t.HiddenSize]
 	for i := 0; i < t.HiddenSize; i++ {
-		out[i] = T(t.Embeddings[offset+i])
+		out[i] = T(emb[i])
 	}
 	return out
 }
@@ -640,6 +659,13 @@ func (t *Transformer[T]) ApplyLMHead(hidden []T) []float32 {
 		}
 		return out
 	}
+
+	if t.usePackedQ4LMHead() {
+		if logits := t.applyPackedQ4LMHead(hidden); logits != nil {
+			return logits
+		}
+	}
+
 	if len(t.LMHead) == 0 {
 		out := make([]float32, t.VocabSize)
 		for i := range out {
@@ -722,9 +748,7 @@ func (t *Transformer[T]) usePackedTernaryLMHead() bool {
 	if t == nil || t.Network == nil || !t.Network.UseExactDType || t.Network.UseGPU {
 		return false
 	}
-	if slicesShareBackingStoreFloat32(t.LMHead, t.Embeddings) {
-		return false
-	}
+	// Tied emb/LM head is OK — we pack a separate ternary logits matrix (keep FP32 emb for gather).
 	for i := range t.Network.Layers {
 		if t.Network.Layers[i].DType == DTypeTernary {
 			return true
@@ -733,25 +757,67 @@ func (t *Transformer[T]) usePackedTernaryLMHead() bool {
 	return false
 }
 
+// EnsurePackedTernaryLMHead builds the BitNet logits matvec once at sync (including tied heads).
+func (t *Transformer[T]) EnsurePackedTernaryLMHead() {
+	if !t.usePackedTernaryLMHead() {
+		return
+	}
+	src := t.LMHead
+	if len(src) < t.VocabSize*t.HiddenSize {
+		src = t.Embeddings
+	}
+	if len(src) < t.VocabSize*t.HiddenSize {
+		return
+	}
+	if t.lmHeadPackedTernary != nil && t.lmHeadPackedTernary.Rows == t.VocabSize &&
+		t.lmHeadPackedTernary.Cols == t.HiddenSize {
+		return
+	}
+	start := time.Now()
+	packed, ok := packFloat32AsBitNetTernaryMatrix(src[:t.VocabSize*t.HiddenSize], t.VocabSize, t.HiddenSize)
+	if !ok {
+		return
+	}
+	t.lmHeadPackedTernary = packed
+	t.lmHeadPackedLen = len(src)
+	fmt.Printf("🧮 BitNet LM head → packed ternary for logits (%d×%d in %s)\n",
+		t.VocabSize, t.HiddenSize, time.Since(start).Round(time.Millisecond))
+}
+
 func (t *Transformer[T]) applyPackedTernaryLMHead(hidden []T) []float32 {
-	if t.lmHeadPackedTernary == nil || t.lmHeadPackedLen != len(t.LMHead) ||
-		t.lmHeadPackedTernary.Rows != t.VocabSize || t.lmHeadPackedTernary.Cols != t.HiddenSize {
-		packed, ok := packFloat32AsBitNetTernaryMatrix(t.LMHead, t.VocabSize, t.HiddenSize)
+	if t.lmHeadPackedTernary == nil || t.lmHeadPackedTernary.Rows != t.VocabSize ||
+		t.lmHeadPackedTernary.Cols != t.HiddenSize {
+		src := t.LMHead
+		if len(src) < t.VocabSize*t.HiddenSize {
+			src = t.Embeddings
+		}
+		if len(src) < t.VocabSize*t.HiddenSize {
+			return nil
+		}
+		packed, ok := packFloat32AsBitNetTernaryMatrix(src[:t.VocabSize*t.HiddenSize], t.VocabSize, t.HiddenSize)
 		if !ok {
 			return nil
 		}
 		t.lmHeadPackedTernary = packed
-		t.lmHeadPackedLen = len(t.LMHead)
+		t.lmHeadPackedLen = len(src)
 	}
-	logits64 := make([]float64, t.VocabSize)
-	if !bitNetTernaryMatVecNumeric(t.lmHeadPackedTernary, hidden, logits64) {
+	logits64 := t.lmHeadLogitsF64
+	if len(logits64) < t.VocabSize {
+		logits64 = make([]float64, t.VocabSize)
+		t.lmHeadLogitsF64 = logits64
+	}
+	if !bitNetTernaryMatVecNumeric(t.lmHeadPackedTernary, hidden, logits64[:t.VocabSize]) {
 		return nil
 	}
-	logits := make([]float32, t.VocabSize)
-	for i, v := range logits64 {
-		logits[i] = float32(v)
+	out := t.lmHeadLogitsF32
+	if len(out) < t.VocabSize {
+		out = make([]float32, t.VocabSize)
+		t.lmHeadLogitsF32 = out
 	}
-	return logits
+	for i := 0; i < t.VocabSize; i++ {
+		out[i] = float32(logits64[i])
+	}
+	return out[:t.VocabSize]
 }
 
 func (t *Transformer[T]) applyRepetitionPenalty(logits []float32, tokens []uint32, opts GenOptions) {

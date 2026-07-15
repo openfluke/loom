@@ -248,13 +248,10 @@ func applyEntityBiasBlob(l *VolumetricLayer, raw []byte) error {
 	if err != nil {
 		return err
 	}
-	h, inter := l.InputHeight, l.OutputHeight
-	wSize := h * inter
-	need := 3*wSize + len(bias)
-	if len(l.WeightStore.Master) < need {
-		l.WeightStore.Master = make([]float32, need)
-	}
-	copy(l.WeightStore.Master[3*wSize:], bias)
+	// Store biases only — do not allocate a zero-filled 3*wSize FP32 shell.
+	// Packed Q4 CPU/GPU paths read Master as [gateB|upB|downB]; MaterializeQ4_0ForCPU
+	// expands into the legacy padded Master layout when needed.
+	l.WeightStore.Master = append([]float32(nil), bias...)
 	return nil
 }
 
@@ -318,9 +315,13 @@ func (ws *WeightStore) dequantizeQ4_0Component(key DType) []float32 {
 
 // MaterializeQ4_0ForCPU expands baked Q4_0 components into Master for CPU forward.
 // GPU inference uses uploadQ4_0Cached; CPU tiled forward reads FP32 via GetActive/Master.
+// Skipped when Network.UsePackedQ4CPU — see q4_cpu.go.
 func (l *VolumetricLayer) MaterializeQ4_0ForCPU() {
 	ws := l.WeightStore
 	if ws == nil || !ws.HasAnyQ4_0() {
+		return
+	}
+	if l.Network != nil && l.Network.UsePackedQ4CPU {
 		return
 	}
 	switch l.Type {
@@ -369,7 +370,10 @@ func (l *VolumetricLayer) MaterializeQ4_0ForCPU() {
 		if down := ws.dequantizeQ4_0Component(DType(102)); len(down) >= wSize {
 			copy(master[2*wSize:3*wSize], down[:wSize])
 		}
-		if len(ws.Master) >= total {
+		switch {
+		case len(ws.Master) == biasTail:
+			copy(master[3*wSize:], ws.Master)
+		case len(ws.Master) >= total:
 			copy(master[3*wSize:], ws.Master[3*wSize:total])
 		}
 		ws.Master = master

@@ -52,6 +52,9 @@ func mhaForwardSimdF32(layer *VolumetricLayer, input *Tensor[float32]) (preAct, 
 	if usePackedTernaryCPU(layer) {
 		return mhaForwardPackedTernaryCPUAsF32(layer, input)
 	}
+	if usePackedQ4CPU(layer) {
+		return MHAForwardPackedQ4CPU(layer, input)
+	}
 	if !mhaLayerSimdViable(layer) {
 		return mhaForwardScalarFallbackF32(layer, input)
 	}

@@ -204,8 +204,10 @@ func DeserializeEntityTransformerWithOptions(data []byte, opts *EntityLoadOption
 		return nil, err
 	}
 	var embeddings, lmHead, finalNorm []float32
+	var lmHeadQ4Scales []float32
+	var lmHeadQ4Packed []uint32
 	if opts == nil || !opts.SkipLayerWeights {
-		embeddings, lmHead, finalNorm, err = loadEntityTransformerGlobals(hdr, entityBlobReaderFromBytes(data, hdr), hdr.Transformer)
+		embeddings, lmHead, finalNorm, lmHeadQ4Scales, lmHeadQ4Packed, err = loadEntityTransformerGlobals(hdr, entityBlobReaderFromBytes(data, hdr), hdr.Transformer)
 		if err != nil {
 			return nil, err
 		}
@@ -226,17 +228,19 @@ func DeserializeEntityTransformerWithOptions(data []byte, opts *EntityLoadOption
 	dims.HiddenSize = hdr.Transformer.HiddenSize
 	storedDT := entityTransformerWeightDType(hdr)
 	return &EntityTransformer{
-		Network:      net,
-		Architecture: parseSeedArchitecture(hdr.Transformer.Architecture),
-		HiddenSize:   hdr.Transformer.HiddenSize,
-		VocabSize:    hdr.Transformer.VocabSize,
-		LMHeadTied:   hdr.Transformer.LMHeadTied,
-		HasFinalNorm: hdr.Transformer.HasFinalNorm,
-		Dims:         dims,
-		WeightDType:  storedDT,
-		Embeddings:   embeddings,
-		LMHead:       lmHead,
-		FinalNorm:    finalNorm,
+		Network:        net,
+		Architecture:   parseSeedArchitecture(hdr.Transformer.Architecture),
+		HiddenSize:     hdr.Transformer.HiddenSize,
+		VocabSize:      hdr.Transformer.VocabSize,
+		LMHeadTied:     hdr.Transformer.LMHeadTied,
+		HasFinalNorm:   hdr.Transformer.HasFinalNorm,
+		Dims:           dims,
+		WeightDType:    storedDT,
+		Embeddings:     embeddings,
+		LMHead:         lmHead,
+		FinalNorm:      finalNorm,
+		LMHeadQ4Scales: lmHeadQ4Scales,
+		LMHeadQ4Packed: lmHeadQ4Packed,
 	}, nil
 }
 

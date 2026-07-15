@@ -28,6 +28,9 @@ func MHAForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T]) 
 	if useMHANativeExact(layer) {
 		return MHAForwardNativeExact(layer, input)
 	}
+	if usePackedQ4CPU(layer) {
+		return MHAForwardPackedQ4CPU(layer, input)
+	}
 	if usePackedTernaryCPU(layer) {
 		return MHAForwardPackedTernaryCPU(layer, input)
 	}

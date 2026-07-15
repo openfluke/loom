@@ -157,7 +157,7 @@ func (ef *EntityFile) loadEntityTransformer(opts *EntityLoadOptions) (*EntityTra
 	if err != nil {
 		return nil, err
 	}
-	embeddings, lmHead, finalNorm, err := loadEntityTransformerGlobals(ef.hdr, ef.blobReader(), ef.hdr.Transformer)
+	embeddings, lmHead, finalNorm, lmHeadQ4Scales, lmHeadQ4Packed, err := loadEntityTransformerGlobals(ef.hdr, ef.blobReader(), ef.hdr.Transformer)
 	if err != nil {
 		return nil, err
 	}
@@ -165,17 +165,19 @@ func (ef *EntityFile) loadEntityTransformer(opts *EntityLoadOptions) (*EntityTra
 	dims.HiddenSize = ef.hdr.Transformer.HiddenSize
 	storedDT := entityTransformerWeightDType(ef.hdr)
 	return &EntityTransformer{
-		Network:      net,
-		Architecture: parseEntityArchitecture(ef.hdr.Transformer.Architecture),
-		HiddenSize:   ef.hdr.Transformer.HiddenSize,
-		VocabSize:    ef.hdr.Transformer.VocabSize,
-		LMHeadTied:   ef.hdr.Transformer.LMHeadTied,
-		HasFinalNorm: ef.hdr.Transformer.HasFinalNorm,
-		Dims:         dims,
-		WeightDType:  storedDT,
-		Embeddings:   embeddings,
-		LMHead:       lmHead,
-		FinalNorm:    finalNorm,
+		Network:        net,
+		Architecture:   parseEntityArchitecture(ef.hdr.Transformer.Architecture),
+		HiddenSize:     ef.hdr.Transformer.HiddenSize,
+		VocabSize:      ef.hdr.Transformer.VocabSize,
+		LMHeadTied:     ef.hdr.Transformer.LMHeadTied,
+		HasFinalNorm:   ef.hdr.Transformer.HasFinalNorm,
+		Dims:           dims,
+		WeightDType:    storedDT,
+		Embeddings:     embeddings,
+		LMHead:         lmHead,
+		FinalNorm:      finalNorm,
+		LMHeadQ4Scales: lmHeadQ4Scales,
+		LMHeadQ4Packed: lmHeadQ4Packed,
 	}, nil
 }
 

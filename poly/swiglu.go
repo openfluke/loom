@@ -16,6 +16,9 @@ func SwiGLUForwardPolymorphic[T Numeric](layer *VolumetricLayer, input *Tensor[T
 	if layer.UseGPU {
 		return SwiGLUForwardWGPU(layer, input)
 	}
+	if usePackedQ4CPU(layer) {
+		return SwiGLUForwardPackedQ4CPU(layer, input)
+	}
 	if useSwiGLUNativeExact(layer) {
 		return SwiGLUForwardNativeExact(layer, input)
 	}
@@ -242,6 +245,9 @@ func swigluTiledProjectGateUpBackward[T Numeric](gradInter []float64, input []T,
 func swigluForwardTiledParallel[T Numeric](layer *VolumetricLayer, input *Tensor[T]) (preAct, postAct *Tensor[T]) {
 	layer.EnsureRuntimeTileSizes()
 
+	if usePackedQ4CPU(layer) {
+		return SwiGLUForwardPackedQ4CPU(layer, input)
+	}
 	if usePackedTernaryCPU(layer) {
 		return SwiGLUForwardPackedTernaryCPU(layer, input)
 	}

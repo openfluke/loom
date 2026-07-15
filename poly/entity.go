@@ -93,6 +93,9 @@ type EntityTransformer struct {
 	Embeddings   []float32
 	LMHead       []float32
 	FinalNorm    []float32
+	// Optional baked Q4 LM head (transformer.lm_head.q4_0) for CPU fused logits.
+	LMHeadQ4Scales []float32
+	LMHeadQ4Packed []uint32
 }
 
 type entityHeaderDoc struct {
@@ -189,7 +192,7 @@ func DeserializeEntityTransformer(data []byte) (*EntityTransformer, error) {
 	if err != nil {
 		return nil, err
 	}
-	embeddings, lmHead, finalNorm, err := loadEntityTransformerGlobals(hdr, entityBlobReaderFromBytes(data, hdr), hdr.Transformer)
+	embeddings, lmHead, finalNorm, lmHeadQ4Scales, lmHeadQ4Packed, err := loadEntityTransformerGlobals(hdr, entityBlobReaderFromBytes(data, hdr), hdr.Transformer)
 	if err != nil {
 		return nil, err
 	}
@@ -197,32 +200,50 @@ func DeserializeEntityTransformer(data []byte) (*EntityTransformer, error) {
 	dims.HiddenSize = hdr.Transformer.HiddenSize
 	storedDT := entityTransformerWeightDType(hdr)
 	return &EntityTransformer{
-		Network:      net,
-		Architecture: parseEntityArchitecture(hdr.Transformer.Architecture),
-		HiddenSize:   hdr.Transformer.HiddenSize,
-		VocabSize:    hdr.Transformer.VocabSize,
-		LMHeadTied:   hdr.Transformer.LMHeadTied,
-		HasFinalNorm: hdr.Transformer.HasFinalNorm,
-		Dims:         dims,
-		WeightDType:  storedDT,
-		Embeddings:   embeddings,
-		LMHead:       lmHead,
-		FinalNorm:    finalNorm,
+		Network:        net,
+		Architecture:   parseEntityArchitecture(hdr.Transformer.Architecture),
+		HiddenSize:     hdr.Transformer.HiddenSize,
+		VocabSize:      hdr.Transformer.VocabSize,
+		LMHeadTied:     hdr.Transformer.LMHeadTied,
+		HasFinalNorm:   hdr.Transformer.HasFinalNorm,
+		Dims:           dims,
+		WeightDType:    storedDT,
+		Embeddings:     embeddings,
+		LMHead:         lmHead,
+		FinalNorm:      finalNorm,
+		LMHeadQ4Scales: lmHeadQ4Scales,
+		LMHeadQ4Packed: lmHeadQ4Packed,
 	}, nil
 }
 
 // EntityTransformerWeightDType reads the decoder dtype stored in a .entity header.
 // Legacy checkpoints without weight_dtype infer from native layer blobs (default FLOAT32).
 func EntityTransformerWeightDType(path string) (DType, error) {
-	data, err := os.ReadFile(path)
+	ef, err := OpenEntityFile(path)
 	if err != nil {
 		return 0, err
 	}
-	hdr, err := ParseEntityHeader(data)
+	defer ef.Close()
+	return entityTransformerWeightDType(ef.Header()), nil
+}
+
+// EntityHasLMHeadQ4 reports whether path contains a baked transformer.lm_head.q4_0 blob.
+func EntityHasLMHeadQ4(path string) bool {
+	ef, err := OpenEntityFile(path)
 	if err != nil {
-		return 0, err
+		return false
 	}
-	return entityTransformerWeightDType(hdr), nil
+	defer ef.Close()
+	hdr := ef.Header()
+	if hdr == nil {
+		return false
+	}
+	for _, b := range hdr.Blobs {
+		if b.Path == "transformer.lm_head.q4_0" {
+			return true
+		}
+	}
+	return false
 }
 
 func entityTransformerWeightDType(hdr *EntityHeader) DType {
@@ -270,6 +291,15 @@ func BuildTransformerFromEntity[T Numeric](et *EntityTransformer, template Templ
 	tr.lmHeadTied = et.LMHeadTied
 	if !tr.lmHeadTied {
 		tr.lmHeadTied = entityLMHeadTied(et.Embeddings, et.LMHead)
+	}
+	if len(et.LMHeadQ4Scales) > 0 && len(et.LMHeadQ4Packed) > 0 && tr.VocabSize > 0 && tr.HiddenSize > 0 {
+		tr.lmHeadQ4Scales = et.LMHeadQ4Scales
+		tr.lmHeadQ4Packed = et.LMHeadQ4Packed
+		tr.lmHeadQ4Rows = tr.VocabSize
+		tr.lmHeadQ4Cols = tr.HiddenSize
+		tr.lmHeadLogitsF32 = make([]float32, tr.VocabSize)
+		et.LMHeadQ4Scales = nil
+		et.LMHeadQ4Packed = nil
 	}
 	return tr
 }
@@ -457,6 +487,17 @@ func serializeEntityWire(
 		}
 		if transformer.HasFinalNorm {
 			collectEntityGlobalBlob("final_norm", finalNorm, &payload, &blobs)
+		}
+		// Bake CPU logits matrix for Int4 ENTITY Talk (SaveEntityTransformer path used by Lucy).
+		if entityQuant == DTypeInt4 {
+			src := lmHead
+			if transformer.LMHeadTied || len(src) == 0 {
+				src = embeddings
+			}
+			if len(src) > 0 {
+				fmt.Printf("🧮 Baking Q4 LM head into .entity (%d weights)…\n", len(src))
+				collectEntityLMHeadQ4(src, &payload, &blobs)
+			}
 		}
 	}
 
@@ -996,19 +1037,45 @@ func collectEntityGlobalBlob(name string, weights []float32, payload *bytes.Buff
 	})
 }
 
-func loadEntityTransformerGlobals(hdr *EntityHeader, readBlob entityBlobReader, spec *EntityTransformerSpec) (embeddings, lmHead, finalNorm []float32, err error) {
+func collectEntityLMHeadQ4(weights []float32, payload *bytes.Buffer, blobs *[]EntityWeightBlob) {
+	if len(weights) == 0 {
+		return
+	}
+	scales, packed := PackQ4_0GPUParallel(weights)
+	raw := encodeEntityQ4_0Blob(scales, packed)
+	offset := payload.Len()
+	payload.Write(raw)
+	*blobs = append(*blobs, EntityWeightBlob{
+		Path:   "transformer.lm_head.q4_0",
+		Offset: uint64(offset),
+		Length: uint64(len(raw)),
+		DType:  entityBlobDTypeQ4_0,
+		Native: true,
+	})
+}
+
+func loadEntityTransformerGlobals(hdr *EntityHeader, readBlob entityBlobReader, spec *EntityTransformerSpec) (embeddings, lmHead, finalNorm []float32, lmHeadQ4Scales []float32, lmHeadQ4Packed []uint32, err error) {
 	for _, blob := range hdr.Blobs {
 		if !strings.HasPrefix(blob.Path, "transformer.") {
 			continue
 		}
 		raw, readErr := readBlob(blob)
 		if readErr != nil {
-			return nil, nil, nil, readErr
+			return nil, nil, nil, nil, nil, readErr
+		}
+		if blob.Path == "transformer.lm_head.q4_0" || (entityBlobIsQ4_0(blob) && strings.Contains(blob.Path, "lm_head")) {
+			scales, packed, decErr := decodeEntityQ4_0Blob(raw)
+			raw = nil
+			if decErr != nil {
+				return nil, nil, nil, nil, nil, fmt.Errorf("entity blob %q: %w", blob.Path, decErr)
+			}
+			lmHeadQ4Scales, lmHeadQ4Packed = scales, packed
+			continue
 		}
 		decoded, decErr := DecodeWeightsRawOwned(raw)
 		raw = nil
 		if decErr != nil {
-			return nil, nil, nil, fmt.Errorf("entity blob %q: %w", blob.Path, decErr)
+			return nil, nil, nil, nil, nil, fmt.Errorf("entity blob %q: %w", blob.Path, decErr)
 		}
 		switch blob.Path {
 		case "transformer.embeddings":
@@ -1022,17 +1089,17 @@ func loadEntityTransformerGlobals(hdr *EntityHeader, readBlob entityBlobReader, 
 	}
 	ReleaseInferenceTransientMemory()
 	if len(embeddings) == 0 {
-		return nil, nil, nil, fmt.Errorf("entity transformer: missing embeddings blob")
+		return nil, nil, nil, nil, nil, fmt.Errorf("entity transformer: missing embeddings blob")
 	}
 	if spec.LMHeadTied {
 		lmHead = embeddings
 	} else if len(lmHead) == 0 {
-		return nil, nil, nil, fmt.Errorf("entity transformer: missing lm_head blob")
+		return nil, nil, nil, nil, nil, fmt.Errorf("entity transformer: missing lm_head blob")
 	}
 	if spec.HasFinalNorm && len(finalNorm) == 0 {
-		return nil, nil, nil, fmt.Errorf("entity transformer: missing final_norm blob")
+		return nil, nil, nil, nil, nil, fmt.Errorf("entity transformer: missing final_norm blob")
 	}
-	return embeddings, lmHead, finalNorm, nil
+	return embeddings, lmHead, finalNorm, lmHeadQ4Scales, lmHeadQ4Packed, nil
 }
 
 func ensureLayerWeightStore(l *VolumetricLayer) {

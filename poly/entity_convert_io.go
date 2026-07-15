@@ -42,6 +42,24 @@ func collectEntityGlobalBlobAcc(name string, weights []float32, acc *entityPaylo
 	})
 }
 
+// collectEntityLMHeadQ4Acc bakes a Q4 logits matrix for CPU fused GEMV (alongside FP32 emb/head).
+func collectEntityLMHeadQ4Acc(weights []float32, acc *entityPayloadAcc, blobs *[]EntityWeightBlob) {
+	if len(weights) == 0 {
+		return
+	}
+	scales, packed := PackQ4_0GPUParallel(weights)
+	raw := encodeEntityQ4_0Blob(scales, packed)
+	offset := acc.Len()
+	_, _ = acc.Write(raw)
+	*blobs = append(*blobs, EntityWeightBlob{
+		Path:   "transformer.lm_head.q4_0",
+		Offset: uint64(offset),
+		Length: uint64(len(raw)),
+		DType:  entityBlobDTypeQ4_0,
+		Native: true,
+	})
+}
+
 func collectEntityWeightBlobsAcc(l *VolumetricLayer, path string, acc *entityPayloadAcc, blobs *[]EntityWeightBlob, entityQuant DType) {
 	if entityQuant == DTypeInt4 && (l.Type == LayerMultiHeadAttention || l.Type == LayerSwiGLU) {
 		if l.WeightStore != nil && len(l.WeightStore.Master) > 0 {

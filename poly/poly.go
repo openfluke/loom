@@ -540,6 +540,10 @@ type VolumetricNetwork struct {
 	// UseSimdForward routes Dense/SwiGLU/MHA CPU forward through Plan 9 AVX2/NEON tile dots.
 	UseSimdForward bool
 
+	// UsePackedQ4CPU keeps baked Q4_0 weights packed for ENTITY CPU chat (no FP32 Master inflate).
+	// SwiGLU/MHA use gemvQ4_0Packed; GPU path still uses uploadQ4_0Cached.
+	UsePackedQ4CPU bool
+
 	// ReleaseFP32MasterWhenIdle drops FP32 Master after SyncInferenceWeights so
 	// forward-only paths hold native Versions only. Training calls EnsureTrainingWeights.
 	ReleaseFP32MasterWhenIdle bool
@@ -1621,11 +1625,24 @@ func (l *VolumetricLayer) syncQuantizedSwiGLU_I8(ctx *WGPUContext, h, inter int)
 	l.syncQuantizedComponentI8(ctx, upW, "Up", DType(101))
 	l.syncQuantizedComponentI8(ctx, downW, "Down", DType(102))
 
-	// Biases stay FP32 for precision
-	master := ws.Master
-	gateB := master[3*wSize : 3*wSize+inter]
-	upB := master[3*wSize+inter : 3*wSize+2*inter]
-	downB := master[3*wSize+2*inter : 3*wSize+2*inter+h]
+	// Biases stay FP32 for precision (compact Master = biasTail only, or legacy padded).
+	biasTail := 2*inter + h
+	if ws == nil || len(ws.Master) < biasTail {
+		return
+	}
+	var gateB, upB, downB []float32
+	if len(ws.Master) == biasTail {
+		gateB = ws.Master[0:inter]
+		upB = ws.Master[inter : 2*inter]
+		downB = ws.Master[2*inter:biasTail]
+	} else if len(ws.Master) >= 3*wSize+biasTail {
+		master := ws.Master
+		gateB = master[3*wSize : 3*wSize+inter]
+		upB = master[3*wSize+inter : 3*wSize+2*inter]
+		downB = master[3*wSize+2*inter : 3*wSize+2*inter+h]
+	} else {
+		return
+	}
 
 	gBBuf, _ := ctx.CreatePersistentBuffer(gateB, "Gate Bias")
 	uBBuf, _ := ctx.CreatePersistentBuffer(upB, "Up Bias")
@@ -1716,13 +1733,23 @@ func (l *VolumetricLayer) syncQuantizedSwiGLU(ctx *WGPUContext, h, inter int) {
 		l.syncQuantizedComponent(ctx, w[2*wSize:3*wSize], "Down", DType(1102), DType(102))
 	}
 
-	if ws == nil || len(ws.Master) < 3*wSize+2*inter+h {
+	biasTail := 2*inter + h
+	if ws == nil || len(ws.Master) < biasTail {
 		return
 	}
-	w := ws.Master
-	gateB := w[3*wSize : 3*wSize+inter]
-	upB := w[3*wSize+inter : 3*wSize+2*inter]
-	downB := w[3*wSize+2*inter : 3*wSize+2*inter+h]
+	var gateB, upB, downB []float32
+	if len(ws.Master) == biasTail {
+		gateB = ws.Master[0:inter]
+		upB = ws.Master[inter : 2*inter]
+		downB = ws.Master[2*inter : biasTail]
+	} else if len(ws.Master) >= 3*wSize+biasTail {
+		w := ws.Master
+		gateB = w[3*wSize : 3*wSize+inter]
+		upB = w[3*wSize+inter : 3*wSize+2*inter]
+		downB = w[3*wSize+2*inter : 3*wSize+2*inter+h]
+	} else {
+		return
+	}
 
 	gBBuf, _ := ctx.CreatePersistentBuffer(gateB, "Gate Bias")
 	uBBuf, _ := ctx.CreatePersistentBuffer(upB, "Up Bias")
