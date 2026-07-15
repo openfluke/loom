@@ -9,6 +9,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 | File | Description |
 |:-----|:------------|
 | [overview.md](overview.md) | Big-picture architecture: the 3D grid, six design pillars, key types |
+| [poly_structure.md](poly_structure.md) | **Why `poly/` is flat**: god `VolumetricLayer`, file prefixes vs folders, real subpackages (`simd`/`accel`/`tests`), Go import-cycle constraints |
 | [deployment.md](deployment.md) | **Polyglot Ecosystem**: NPM deployment, TypeScript SDK, WASM bridge, and Browser/Node usage |
 | [flutter.md](flutter.md) | **Flutter / Dart**: `welvet` on pub.dev, FFI quick start, runnable examples, loom-flutter-quickstart showcase |
 | [donate_compute.md](donate_compute.md) | **Donate compute**: LAN TCP protocol (`donate_compute_*.go`), framed JSON, model push vs local LM, client/server API |
@@ -54,7 +55,7 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 ## Where to Start
 
-**New to the codebase?** Read [overview.md](overview.md) first for the architecture picture, then [layers.md](layers.md) to see what layer types are available.
+**New to the codebase?** Read [overview.md](overview.md) first for the architecture picture, then [layers.md](layers.md) to see what layer types are available. Wondering why `poly/` is one big package (~180 files) instead of `dense/` / `mha/` folders? Read [poly_structure.md](poly_structure.md).
 **Deploying to Web or JS?** Read [deployment.md](deployment.md).
 
 **Building a Flutter or Dart app?** Read [flutter.md](flutter.md) and clone [loom-flutter-quickstart](https://github.com/openfluke/loom-flutter-quickstart).
@@ -107,50 +108,20 @@ This directory contains comprehensive documentation for the `poly/` package — 
 
 ## Package Layout
 
+**Rationale (flat package, god layer, prefixes vs folders):** [poly_structure.md](poly_structure.md).
+
 ```
 poly/
-├── poly.go              Core types: LayerType, DType, Tensor[T], VolumetricNetwork
+├── poly.go              Core types: LayerType, DType, Tensor[T], VolumetricNetwork / Layer
 ├── weights.go           WeightStore, Morph, Unpack, ApplyGradients
-├── forward.go           DispatchLayer, ForwardPolymorphic (+ vendor accel hook)
-├── accel/               Vendor plugin loader (Intel dlopen; Qualcomm LoadLibrary; Apple dlopen; C ABI)
-├── accel_intel.go       Vendor-neutral SyncToAccel, DispatchAccelForward, dtype bytes
-├── accel_qualcomm.go    Qualcomm/Hexagon plugin discovery (QNN)
-├── accel_apple.go       Apple Metal/MPSGraph plugin discovery
-├── backward.go          DispatchLayerBackward, BackwardPolymorphic
-├── training.go          Train, TrainingConfig, CalculateLoss, ComputeLossGradient
-├── dense.go             DenseForwardPolymorphic, tiled fast-paths
-├── rnn.go               RNNForwardPolymorphic
-├── mha.go               MHAForwardPolymorphic, RoPE, GQA, KV cache
-├── softmax.go           All 10 softmax variants
-├── parallel.go          ParallelForwardPolymorphic, 5 combine modes
-├── sequential.go        SequentialForwardPolymorphic, step containers
-├── tween.go       TweenState, TweenBackward, ApplyTweenGaps
-├── step.go              StepState, StepForward, StepBackward
-├── dna.go               ExtractDNA, CompareNetworks, LogicShift, recursive all-19-type extraction
-├── evolution.go         SpliceDNA, SpliceDNAWithReport, NEATMutate, NEATPopulation
-├── quantization.go      Q4_0Block, QuantizeQ4_0, DequantizeQ4_0
-├── serialization.go     BuildNetworkFromJSON, ParseLayerType/DType/Activation
-├── persistence.go       SerializeNetwork, DeserializeNetwork, bit-packing, EncodeNativeWeightsRaw
-├── entity.go            SerializeEntity, LoadEntity, DeserializeEntity — native `.entity` checkpoints
-├── entity_convert_io.go Block-wise ENTITY encode: streaming payload, Q4 bake helpers, writeEntityWireStreaming
-├── hf_entity_convert.go ImportHFSaveEntityTransformerBlockwise(Progress) — mobile-safe HF→`.entity`
-├── hf_import.go         ImportHFCheckpointDir, ImportHFToEntity, ImportHFBitNetCheckpointDir
-├── seed_core.go         SeedFrom, DeriveLayerSeed, He-init from layer_seed
-├── seed_dense.go        Dense weight manifests (seeds only, no blobs)
-├── seed_*.go            Per-layer seed manifests (SwiGLU, MHA, CNN, …)
-├── seed_manifest.go     Entity .wseed tiny manifests
-├── transformer.go       Transformer[T], NewTransformer, Generate, SyncGlobalWeightsToGPUSequential
-├── memory_history.go    Load-path MemoryHistory, terminal chart, diagnosis
-├── memory_history_chart.go  Braille/sparkline renderers for memory timeline
-├── process_memory_unix.go   Process RSS sampling (getrusage)
-├── wgpu_context.go      WGPUContext, InitWGPU, BeginFrame, FlushFrame
-├── wgpu_forward.go      GPU forward dispatch, ForwardTokenIDsWGPU
-├── wgpu_backward_shaders.go  WGSL shader strings for dense backward
-├── safetensors.go       SafeTensors format reader
-├── prefix_safetensor.go Weight name prefix stripping
-├── donate_compute_*.go  LAN TCP donate-compute protocol (see donate_compute.md)
-├── tanhi.go             UDP TANHI telemetry (see tanhi.md)
-├── native_layer_matrix.go   Dtype × mode benchmark matrix (hooks + reports)
-├── native_matrix_builtin_hooks.go  Default hooks for `RunNativeLayerMatrixBuiltin`
-└── universal_loader.go  Auto-detecting checkpoint loader
+├── forward.go / backward.go   DispatchLayer (± vendor accel hook)
+├── dense_*.go / mha_*.go / swiglu_*.go / cnn*_*.go / …   Layer families (same package; find by prefix)
+├── q4_*.go / lm_head_q4.go / bitnet_*.go / quantization.go   Packed / ternary paths
+├── entity*.go / hf_*.go / transformer*.go   Checkpoints + HF bridge + generation
+├── seed_*.go / training.go / wgpu_*.go / donate_compute_*.go / …
+├── simd/                Package simd — Plan 9 / NEON-AVX tile & Q4 kernels (no VolumetricLayer)
+├── accel/               Package accel — vendor plugin loader (Intel / Qualcomm / Apple)
+└── tests/               Package poly_test — black-box suites importing loom/poly
 ```
+
+Full historical file checklist (still useful for grepping): older trees listed every entry; prefer prefixes + [poly_structure.md](poly_structure.md) when navigating today. Important single files still include `accel_intel.go` / `accel_qualcomm.go` / `accel_apple.go`, `persistence.go`, `serialization.go`, `tanhi.go`, `native_layer_matrix.go`, `universal_loader.go`.
