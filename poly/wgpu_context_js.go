@@ -154,14 +154,24 @@ func (c *WGPUContext) Cleanup() {
 // BeginFrame creates a shared CommandEncoder that all subsequent Dispatch* calls
 // will record into until FlushFrame is called.
 func (c *WGPUContext) BeginFrame() error {
+	c.EndComputePass()
 	enc, err := c.Device.CreateCommandEncoder(nil)
 	if err != nil {
 		return err
 	}
 	c.ActiveEncoder = enc
+	c.ActivePass = nil
 	c.PendingDestroys = c.PendingDestroys[:0] // reset slice, keep backing array
 	c.FrameCount++
 	return nil
+}
+
+// EndComputePass closes the fused compute pass so copy commands can be recorded.
+func (c *WGPUContext) EndComputePass() {
+	if c.ActivePass != nil {
+		c.ActivePass.End()
+		c.ActivePass = nil
+	}
 }
 
 // FlushFrame finishes and submits the shared CommandEncoder, then destroys any
@@ -170,9 +180,11 @@ func (c *WGPUContext) FlushFrame() {
 	if c.ActiveEncoder == nil {
 		return
 	}
+	c.EndComputePass()
 	cmd, _ := c.ActiveEncoder.Finish(nil)
 	c.Queue.Submit(cmd)
 	c.ActiveEncoder = nil
+	c.ActivePass = nil
 	// Now safe to destroy temp uniform buffers — GPU has consumed the commands.
 	for _, buf := range c.PendingDestroys {
 		buf.Destroy()
@@ -229,8 +241,15 @@ func (c *WGPUContext) GetActivationBuffer(name string, size uint64, usage wgpu.B
 		if buf.GetSize() >= size && (getBufferUsage(buf)&actualUsage == actualUsage) {
 			return buf
 		}
-		// Size mismatch or missing usage bits; must recreate.
-		buf.Destroy()
+		// Grow with slack so chat turns (longer prompts) don't thrash every time.
+		if size < buf.GetSize()*2 {
+			size = buf.GetSize() * 2
+		}
+		// Dropping this buffer invalidates BindGroups that still point at it.
+		// Defer destroy while a frame is open so in-flight cmds stay valid.
+		c.deferOrDestroy(buf)
+		delete(c.ActivationPool, name)
+		c.ResetCache()
 	}
 
 	buf, err := c.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -247,6 +266,41 @@ func (c *WGPUContext) GetActivationBuffer(name string, size uint64, usage wgpu.B
 }
 
 // GetUniformBuffer provides a pre-allocated uniform buffer from the pool.
+func (c *WGPUContext) WriteUniformBytes(data []byte) *wgpu.Buffer {
+	if len(data) == 0 {
+		return c.GetUniformBuffer(16)
+	}
+	if c.ActiveEncoder != nil {
+		if c.UniformSticky == nil {
+			c.UniformSticky = make(map[string]*wgpu.Buffer, 256)
+		}
+		key := string(data) // content-keyed for wasm sticky path
+		if buf, ok := c.UniformSticky[key]; ok && buf != nil && buf.GetSize() >= uint64(len(data)) {
+			return buf
+		}
+		buf := c.GetUniformBuffer(uint64(len(data)))
+		c.Queue.WriteBuffer(buf, 0, data)
+		c.UniformSticky[key] = buf
+		return buf
+	}
+	buf := c.GetUniformBuffer(uint64(len(data)))
+	c.Queue.WriteBuffer(buf, 0, data)
+	return buf
+}
+
+func (c *WGPUContext) GetStickyUniform(key string, size uint64, data []byte) *wgpu.Buffer {
+	if c.UniformSticky == nil {
+		c.UniformSticky = make(map[string]*wgpu.Buffer, 256)
+	}
+	if buf, ok := c.UniformSticky[key]; ok && buf != nil && buf.GetSize() >= size {
+		return buf
+	}
+	buf := c.GetUniformBuffer(size)
+	c.Queue.WriteBuffer(buf, 0, data)
+	c.UniformSticky[key] = buf
+	return buf
+}
+
 func (c *WGPUContext) GetUniformBuffer(size uint64) *wgpu.Buffer {
 	// WebGPU uniform buffer bindings often require 16-byte alignment.
 	if size < 16 {

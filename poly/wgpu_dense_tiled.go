@@ -2,7 +2,6 @@ package poly
 
 import (
 	"fmt"
-	"unsafe"
 
 	"github.com/openfluke/webgpu/wgpu"
 )
@@ -81,21 +80,16 @@ func (c *WGPUContext) DispatchDenseScaled(
 		TotalOutStride: 0,
 		OutputRowBase:  0,
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseScaleParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseScaleParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, weightBuf, bb, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+63)/64, uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outputSize)+63)/64, uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -189,21 +183,16 @@ func (c *WGPUContext) dispatchDenseTiledOnce(
 		TotalOutStride: totalOutStride,
 		OutputRowBase:  outputRowBase,
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseScaleParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseScaleParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, weightBuf, bb, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(chunkOutputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(chunkOutputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -229,25 +218,20 @@ func (c *WGPUContext) DispatchDenseBackwardDXTiled(
 		Activation: activation,
 		Scale:      1.0,
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]wgpuDenseBackwardUniform{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]wgpuDenseBackwardUniform{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf, preActBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(
+	if err := c.dispatchCompute(pipeline, bindGroup, 
 		(uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize),
 		uint32(batchSize),
 		1,
-	)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -273,24 +257,19 @@ func (c *WGPUContext) DispatchDenseBackwardDWTiled(
 		Activation: activation,
 		Scale:      1.0,
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]wgpuDenseBackwardUniform{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]wgpuDenseBackwardUniform{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightsBuf, preActBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(
+	if err := c.dispatchCompute(pipeline, bindGroup, 
 		(uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize),
 		uint32(outputSize),
 		1,
-	)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	); err != nil {
+		return err
+	}
 	return nil
 }

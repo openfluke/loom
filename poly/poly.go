@@ -563,6 +563,12 @@ type VolumetricNetwork struct {
 
 	GPUEmbeddings any // *wgpu.Buffer
 	GPULMHead     any // *wgpu.Buffer
+	// Optional Q4 LM head (vocab×hidden) for fast GPU decode logits.
+	GPULMHeadQ4Scales any // *wgpu.Buffer
+	GPULMHeadQ4Packed any // *wgpu.Buffer
+	// BitNet: packed ternary logits matrix (CPU path already packs this; FP32 emb stays for gather).
+	GPULMHeadTernaryPacked any     // *wgpu.Buffer of uint32 words
+	GPULMHeadTernaryScale  float32 // absmean scale for DispatchDenseBitNetTernaryQuantized
 
 	// Tanhi (see docs/tanhi.md) enables sparse UDP layer telemetry; nil = off.
 	Tanhi *TanhiUDPConfig
@@ -788,8 +794,21 @@ func (n *VolumetricNetwork) Release() {
 			buf.Release()
 		}
 	}
+	if buf, ok := n.GPULMHeadQ4Scales.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
+	if buf, ok := n.GPULMHeadQ4Packed.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
+	if buf, ok := n.GPULMHeadTernaryPacked.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
 	n.GPUEmbeddings = nil
 	n.GPULMHead = nil
+	n.GPULMHeadQ4Scales = nil
+	n.GPULMHeadQ4Packed = nil
+	n.GPULMHeadTernaryPacked = nil
+	n.GPULMHeadTernaryScale = 0
 
 	if n.GPUContext != nil {
 		n.GPUContext.Release()
@@ -927,6 +946,15 @@ func (n *VolumetricNetwork) GetVRAMWeightsBytes() int64 {
 			total += int64(buf.GetSize())
 		}
 	}
+	if buf, ok := n.GPULMHeadQ4Scales.(sizer); ok && buf != nil {
+		total += int64(buf.GetSize())
+	}
+	if buf, ok := n.GPULMHeadQ4Packed.(sizer); ok && buf != nil {
+		total += int64(buf.GetSize())
+	}
+	if buf, ok := n.GPULMHeadTernaryPacked.(sizer); ok && buf != nil {
+		total += int64(buf.GetSize())
+	}
 	for i := range n.Layers {
 		total += volumetricLayerVRAMWeightsRecursive(&n.Layers[i])
 	}
@@ -1023,11 +1051,24 @@ func (n *VolumetricNetwork) DestroyWGPU() {
 	if buf, ok := n.GPULMHead.(*wgpu.Buffer); ok && buf != nil {
 		buf.Release()
 	}
+	if buf, ok := n.GPULMHeadQ4Scales.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
+	if buf, ok := n.GPULMHeadQ4Packed.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
+	if buf, ok := n.GPULMHeadTernaryPacked.(*wgpu.Buffer); ok && buf != nil {
+		buf.Release()
+	}
 
 	ctx.Release() // Releases device and all pools/caches
 	n.GPUContext = nil
 	n.GPUEmbeddings = nil
 	n.GPULMHead = nil
+	n.GPULMHeadQ4Scales = nil
+	n.GPULMHeadQ4Packed = nil
+	n.GPULMHeadTernaryPacked = nil
+	n.GPULMHeadTernaryScale = 0
 }
 
 // SyncAllToGPU mirrors the entire network state to VRAM.

@@ -1110,6 +1110,15 @@ fn main(
 // ShaderTiledMHAN generates a tiled MHA shader for the given tile size and headDim.
 // Both are baked in as WGSL compile-time constants.
 func ShaderTiledMHAN(tileSize, headDim int) string {
+	return shaderTiledMHAN(tileSize, headDim, false)
+}
+
+// ShaderTiledMHANStep reads decode position from step[0] (stable uniforms for chunked decode).
+func ShaderTiledMHANStep(tileSize, headDim int) string {
+	return shaderTiledMHAN(tileSize, headDim, true)
+}
+
+func shaderTiledMHAN(tileSize, headDim int, useStep bool) string {
 	// tile_k and tile_v each hold tileSize rows of headDim floats
 	kvArraySize := tileSize * headDim
 	wgSize := 64
@@ -1118,6 +1127,13 @@ func ShaderTiledMHAN(tileSize, headDim int) string {
 	}
 	if headDim > 128 {
 		wgSize = 256
+	}
+	stepBind := ""
+	posExpr := "params.kvOffset + s"
+	if useStep {
+		stepBind = `
+@group(0) @binding(5) var<storage, read> step: array<u32>;`
+		posExpr = "step[0] + s"
 	}
 	return fmt.Sprintf(`
 struct Params {
@@ -1135,6 +1151,7 @@ struct Params {
 @group(0) @binding(2) var<storage, read> kCache: array<f32>;
 @group(0) @binding(3) var<storage, read> vCache: array<f32>;
 @group(0) @binding(4) var<storage, read_write> output: array<f32>;
+%s
 
 var<workgroup> tile_q: array<f32, %d>;   // headDim
 var<workgroup> tile_k: array<f32, %d>;   // tileSize * headDim
@@ -1154,7 +1171,7 @@ fn main(
     let headDim = params.headDim;
     let kvGroupSize = params.numHeads / params.numKVHeads;
     let kvH = h / kvGroupSize;
-    let currentTotalPos = params.kvOffset + s;
+    let currentTotalPos = %s;
     let totalKLen = currentTotalPos + 1u;
 
     let scale = 1.0 / sqrt(f32(headDim));
@@ -1213,7 +1230,7 @@ fn main(
         output[(s * params.numHeads + h) * headDim + tid] = local_v_acc / denom;
     }
 }
-`, headDim, kvArraySize, kvArraySize, wgSize, wgSize, wgSize)
+`, stepBind, headDim, kvArraySize, kvArraySize, wgSize, posExpr, wgSize, wgSize)
 }
 
 // Legacy alias constants (kept for non-tiled paths if used elsewhere)

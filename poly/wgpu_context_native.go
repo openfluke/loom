@@ -4,6 +4,7 @@ package poly
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"runtime"
 	"strings"
@@ -104,6 +105,10 @@ func (n *VolumetricNetwork) InitWGPU() error {
 		// Override only storage/buffer sizes; all other fields stay at adapter max.
 		requiredLimits.MaxStorageBufferBindingSize = min64(1024*1024*1024, adapterLimits.MaxStorageBufferBindingSize)
 		requiredLimits.MaxBufferSize = min64(2048*1024*1024, adapterLimits.MaxBufferSize)
+		// Fused decode QKV binds 10 storage buffers (input + 6 weight + 3 out).
+		if requiredLimits.MaxStorageBuffersPerShaderStage < 12 {
+			requiredLimits.MaxStorageBuffersPerShaderStage = 12
+		}
 
 		var requiredFeatures []wgpu.FeatureName
 		if adapter.HasFeature(wgpu.FeatureNameShaderF16) {
@@ -261,14 +266,26 @@ func (c *WGPUContext) Cleanup() {
 // BeginFrame creates a shared CommandEncoder that all subsequent Dispatch* calls
 // will record into until FlushFrame is called.
 func (c *WGPUContext) BeginFrame() error {
+	c.EndComputePass()
 	enc, err := c.Device.CreateCommandEncoder(nil)
 	if err != nil {
 		return err
 	}
 	c.ActiveEncoder = enc
+	c.ActivePass = nil
+	clear(c.UniformSticky)
 	c.PendingDestroys = c.PendingDestroys[:0] // reset slice, keep backing array
 	c.FrameCount++
 	return nil
+}
+
+// EndComputePass closes the fused compute pass so copy commands can be recorded.
+// Safe to call when no pass is open.
+func (c *WGPUContext) EndComputePass() {
+	if c.ActivePass != nil {
+		c.ActivePass.End()
+		c.ActivePass = nil
+	}
 }
 
 // FlushFrame finishes and submits the shared CommandEncoder, then destroys any
@@ -277,9 +294,12 @@ func (c *WGPUContext) FlushFrame() {
 	if c.ActiveEncoder == nil {
 		return
 	}
+	c.EndComputePass()
 	cmd, _ := c.ActiveEncoder.Finish(nil)
 	c.Queue.Submit(cmd)
 	c.ActiveEncoder = nil
+	c.ActivePass = nil
+	clear(c.UniformSticky)
 	// Now safe to destroy temp uniform buffers — GPU has consumed the commands.
 	for _, buf := range c.PendingDestroys {
 		buf.Destroy()
@@ -336,8 +356,16 @@ func (c *WGPUContext) GetActivationBuffer(name string, size uint64, usage wgpu.B
 		if buf.GetSize() >= size && (getBufferUsage(buf)&actualUsage == actualUsage) {
 			return buf
 		}
-		// Size mismatch or missing usage bits; must recreate.
-		buf.Destroy()
+		// Grow with slack so chat turns (longer prompts) don't thrash every time.
+		if size < buf.GetSize()*2 {
+			size = buf.GetSize() * 2
+		}
+		// Dropping this buffer invalidates BindGroups that still point at it
+		// (e.g. embedding Dispatch with "token_ids" after turn-2 prompt grows).
+		// Defer destroy while a frame is open so in-flight cmds stay valid.
+		c.deferOrDestroy(buf)
+		delete(c.ActivationPool, name)
+		c.ResetCache()
 	}
 
 	buf, err := c.Device.CreateBuffer(&wgpu.BufferDescriptor{
@@ -350,6 +378,37 @@ func (c *WGPUContext) GetActivationBuffer(name string, size uint64, usage wgpu.B
 		return nil
 	}
 	c.ActivationPool[name] = buf
+	return buf
+}
+
+// WriteUniformBytes allocates a uniform buffer. Within an open BeginFrame, identical
+// contents reuse the same buffer so BindGroupCache hits across chunked decode steps.
+func (c *WGPUContext) WriteUniformBytes(data []byte) *wgpu.Buffer {
+	if len(data) == 0 {
+		return c.GetUniformBuffer(16)
+	}
+	if c.ActiveEncoder != nil {
+		h := fnv.New64a()
+		_, _ = h.Write(data)
+		return c.GetStickyUniform(fmt.Sprintf("u%x", h.Sum64()), uint64(len(data)), data)
+	}
+	buf := c.GetUniformBuffer(uint64(len(data)))
+	c.Queue.WriteBuffer(buf, 0, data)
+	return buf
+}
+
+// GetStickyUniform returns a frame-sticky uniform buffer for key. First call writes
+// data; later calls with the same key reuse the buffer (BindGroup cache hits).
+func (c *WGPUContext) GetStickyUniform(key string, size uint64, data []byte) *wgpu.Buffer {
+	if c.UniformSticky == nil {
+		c.UniformSticky = make(map[string]*wgpu.Buffer, 256)
+	}
+	if buf, ok := c.UniformSticky[key]; ok && buf != nil && buf.GetSize() >= size {
+		return buf
+	}
+	buf := c.GetUniformBuffer(size)
+	c.Queue.WriteBuffer(buf, 0, data)
+	c.UniformSticky[key] = buf
 	return buf
 }
 

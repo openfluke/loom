@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/openfluke/loom/poly/simd"
+	"github.com/openfluke/webgpu/wgpu"
 )
 
 // Transformer coordinates high-level generation logic using the underlying VolumetricNetwork
@@ -70,6 +71,14 @@ type Transformer[T Numeric] struct {
 
 	// layerTrace is non-nil during Generate when GenOptions.LayerTrace is set.
 	layerTrace *layerTraceState
+
+	// gpuReturnGreedyToken / lastGPUSampledToken: on-device ArgMax (see ForwardSampleGreedyTokenWGPU).
+	// gpuChunkRecording: many decode steps in one BeginFrame → one MapAsync per chunk.
+	gpuReturnGreedyToken   bool
+	lastGPUSampledToken    uint32
+	gpuChunkRecording      bool
+	gpuChunkHistCount      int
+	gpuUseDecodeTokenBuf   bool // embed from GPU-resident decode_token buffer
 }
 
 // NewTransformer creates a new polymorphic transformer
@@ -131,9 +140,29 @@ func (t *Transformer[T]) Reset() {
 	t.PipelineReset()
 	for i := range t.Network.Layers {
 		t.Network.Layers[i].KVOffset = 0
-		// Optional: Clear tensors to save memory if needed
-		// t.Network.Layers[i].KVCacheK = nil
-		// t.Network.Layers[i].KVCacheV = nil
+	}
+	// Do not wipe GPU KV buffers here. Prefill/decode rewrite slots from offset 0 and
+	// MHA only attends to [0, KVOffset+seq). Full-cache zero (~tens of MB) every turn
+	// was a multi-turn latency tax with no correctness benefit when KVOffset is reset.
+}
+
+// zeroGPUKVCaches clears GPU KV (debug / explicit wipe). Not used by Reset.
+func (t *Transformer[T]) zeroGPUKVCaches() {
+	if t == nil || t.Network == nil || !t.Network.UseGPU || t.Network.GPUContext == nil {
+		return
+	}
+	ctx := t.Network.GPUContext
+	for i := range t.Network.Layers {
+		l := &t.Network.Layers[i]
+		if l.Type != LayerMultiHeadAttention {
+			continue
+		}
+		if k, ok := l.GPUKVCacheK.(*wgpu.Buffer); ok && k != nil {
+			ctx.zeroWriteBuffer(k, k.GetSize())
+		}
+		if v, ok := l.GPUKVCacheV.(*wgpu.Buffer); ok && v != nil {
+			ctx.zeroWriteBuffer(v, v.GetSize())
+		}
 	}
 }
 
@@ -222,10 +251,27 @@ func (t *Transformer[T]) ReleaseEmbeddingsHost() {
 }
 
 // SyncLMHeadToGPU uploads the LM head (or aliases tied embeddings).
+// Prefer baked/packed Q4 for decode GEMV when available. BitNet/ternary uploads a
+// packed ternary logits matrix (~82 MB for 128k×2560) — same encoding as CPU SIMD —
+// and keeps FP32 embeddings for gather (no Q4/FP32 vocab×hidden logits GEMM).
 func (t *Transformer[T]) SyncLMHeadToGPU() error {
 	if !t.Network.UseGPU || t.Network.GPUContext == nil {
 		return fmt.Errorf("GPU not enabled")
 	}
+	if t.hasTernaryDecoderLayers() {
+		if err := t.syncLMHeadTernaryToGPU(); err != nil {
+			return err
+		}
+		// Alias tied emb as GPULMHead for any non-logits paths that check presence.
+		if t.Network.GPULMHead == nil && t.Network.GPUEmbeddings != nil {
+			t.Network.GPULMHead = t.Network.GPUEmbeddings
+		}
+		return nil
+	}
+	if err := t.syncLMHeadQ4ToGPU(); err != nil {
+		return err
+	}
+	// Q4 logits path is enough when packed; still alias tied emb as GPULMHead for fallbacks.
 	if t.Network.GPULMHead != nil {
 		return nil
 	}
@@ -244,6 +290,96 @@ func (t *Transformer[T]) SyncLMHeadToGPU() error {
 		return err
 	}
 	t.Network.GPULMHead = buf
+	return nil
+}
+
+// syncLMHeadTernaryToGPU packs vocab×hidden as BitNet words and uploads for decode GEMV.
+func (t *Transformer[T]) syncLMHeadTernaryToGPU() error {
+	if t.Network.GPULMHeadTernaryPacked != nil {
+		return nil
+	}
+	if !t.ensurePackedTernaryLMHeadMatrix() {
+		return fmt.Errorf("BitNet GPU LM head: failed to pack ternary matrix (%d×%d)", t.VocabSize, t.HiddenSize)
+	}
+	m := t.lmHeadPackedTernary
+	ctx := t.Network.GPUContext
+	upStart := time.Now()
+	wBuf, err := ctx.CreatePersistentBufferUint32(m.Words, "LMHeadTernaryPacked")
+	if err != nil {
+		return err
+	}
+	t.Network.GPULMHeadTernaryPacked = wBuf
+	t.Network.GPULMHeadTernaryScale = m.Scale
+	mb := float64(len(m.Words)*4) / (1024 * 1024)
+	fmt.Printf("🧮 GPU LM head: BitNet ternary (%d×%d, %.1f MB packed) uploaded in %s\n",
+		t.VocabSize, t.HiddenSize, mb, time.Since(upStart).Round(time.Millisecond))
+	return nil
+}
+
+func (t *Transformer[T]) hasTernaryDecoderLayers() bool {
+	if t == nil || t.Network == nil {
+		return false
+	}
+	for i := range t.Network.Layers {
+		if t.Network.Layers[i].DType == DTypeTernary {
+			return true
+		}
+	}
+	return false
+}
+
+// syncLMHeadQ4ToGPU uploads vocab×hidden Q4 scales/packed for GPU DispatchDenseQ4 logits.
+func (t *Transformer[T]) syncLMHeadQ4ToGPU() error {
+	if t.Network.GPULMHeadQ4Packed != nil && t.Network.GPULMHeadQ4Scales != nil {
+		return nil
+	}
+	if t.VocabSize <= 0 || t.HiddenSize <= 0 {
+		return nil
+	}
+	if len(t.lmHeadQ4Packed) == 0 || len(t.lmHeadQ4Scales) == 0 ||
+		t.lmHeadQ4Rows != t.VocabSize || t.lmHeadQ4Cols != t.HiddenSize {
+		// Pack from FP32 head / embeddings if entity bake missing.
+		src := t.LMHead
+		if len(src) < t.VocabSize*t.HiddenSize {
+			src = t.Embeddings
+		}
+		if len(src) < t.VocabSize*t.HiddenSize {
+			return nil
+		}
+		// BitNet / huge untied heads: packing ~128256×2560 on CPU then CreateBufferInit
+		// appears hung (multi‑GB memcpy). Prefer FP32 GPU head / tied embeddings.
+		const maxPackElems = 64 * 1024 * 1024 // 64M floats ≈ skip 128k×2560 and bigger
+		if len(src) > maxPackElems {
+			fmt.Printf("⚠️  Skipping on-the-fly Q4 LM head pack (%d×%d too large); using FP32 GPU head\n",
+				t.VocabSize, t.HiddenSize)
+			return nil
+		}
+		fmt.Printf("🧮 GPU LM head: packing Q4 (%d×%d)...\n", t.VocabSize, t.HiddenSize)
+		packStart := time.Now()
+		scales, packed := PackQ4_0GPUParallel(src[:t.VocabSize*t.HiddenSize])
+		if len(scales) == 0 || len(packed) == 0 {
+			return nil
+		}
+		t.lmHeadQ4Scales = scales
+		t.lmHeadQ4Packed = packed
+		t.lmHeadQ4Rows = t.VocabSize
+		t.lmHeadQ4Cols = t.HiddenSize
+		fmt.Printf("🧮 GPU LM head: packed Q4 (%d×%d) in %s — uploading...\n",
+			t.VocabSize, t.HiddenSize, time.Since(packStart).Round(time.Millisecond))
+	}
+	ctx := t.Network.GPUContext
+	upStart := time.Now()
+	sBuf, err := ctx.CreatePersistentBuffer(t.lmHeadQ4Scales, "LMHeadQ4Scales")
+	if err != nil {
+		return err
+	}
+	wBuf, err := ctx.CreatePersistentBufferUint32(t.lmHeadQ4Packed, "LMHeadQ4Packed")
+	if err != nil {
+		return err
+	}
+	t.Network.GPULMHeadQ4Scales = sBuf
+	t.Network.GPULMHeadQ4Packed = wBuf
+	fmt.Printf("🧮 GPU LM head: Q4 upload done in %s\n", time.Since(upStart).Round(time.Millisecond))
 	return nil
 }
 
@@ -377,10 +513,35 @@ func (t *Transformer[T]) Generate(
 	stream := NewStreamer(decode, tokens)
 	t.Reset()
 
+	hasGPULM := t.Network.GPULMHead != nil ||
+		(t.Network.GPULMHeadQ4Packed != nil && t.Network.GPULMHeadQ4Scales != nil) ||
+		t.Network.GPULMHeadTernaryPacked != nil
+	useGPUSample := traceOpts.GPUSampleGreedy &&
+		!tracePrefill && !traceDecode &&
+		!t.forwardModeSkipsGPU() &&
+		t.Network.UseGPU && t.Network.GPUEmbeddings != nil && hasGPULM
+
 	// 1. Prefill
 	prefillStart := time.Now()
 	var logits []float32
-	if len(tokens) > 0 {
+	var nextGPUToken uint32
+	var haveGPUToken bool
+
+	if useGPUSample {
+		if len(tokens) == 0 {
+			return stream.String(), GenMetrics{}
+		}
+		tok, err := t.ForwardSampleGreedyTokenWGPU(tokens, true)
+		if err != nil {
+			fmt.Printf("⚠️  GPU greedy prefill failed: %v\n", err)
+			return stream.String(), GenMetrics{
+				PrefillTime:   time.Since(prefillStart),
+				PrefillTokens: len(tokens),
+			}
+		}
+		nextGPUToken = tok
+		haveGPUToken = true
+	} else if len(tokens) > 0 {
 		if traceOpts.LayerTrace && !traceOpts.LayerTracePrefill {
 			t.printLayerTraceBanner("prefill-skip", len(tokens), traceOpts.MaxTokens)
 		}
@@ -444,42 +605,142 @@ func (t *Transformer[T]) Generate(
 		t.printLayerTraceBanner("decode", len(inputIDs), traceOpts.MaxTokens)
 	}
 
-	for i := 0; i < traceOpts.MaxTokens; i++ {
-		t.applyRepetitionPenalty(logits, tokens, traceOpts)
-		t.applyBannedTokenMask(logits, traceOpts)
-		t.applyConsecutiveRepeatMask(logits, tokens, traceOpts)
-		t.applyNoRepeatNGramMask(logits, tokens, traceOpts)
-
-		nextToken := SampleTopK(logits, traceOpts.TopK, traceOpts.Temperature, traceOpts.Deterministic)
-
-		tokens = append(tokens, uint32(nextToken))
-		stream.Push(tokens, traceOpts.Silent, traceOpts.StreamCallback)
-		generatedCount++
-
-		if traceDecode {
-			fmt.Printf("→ sampled token id=%d\n", nextToken)
+	if useGPUSample {
+		// Prefill produced the first greedy token. Remaining decode runs in GPU chunks
+		// (one BeginFrame + one MapAsync per chunk). Host anti-loop still applied on map-back
+		// (RepetitionPenalty needs logits — pure greedy cannot apply it).
+		if !haveGPUToken {
+			// nothing
+		} else {
+			nextToken := int(nextGPUToken)
+			if t.greedyHostRejects(tokens, len(inputIDs), nextToken, traceOpts) {
+				// first token alone is banned / looping — stop immediately
+			} else {
+				tokens = append(tokens, uint32(nextToken))
+				stream.Push(tokens, traceOpts.Silent, traceOpts.StreamCallback)
+				generatedCount++
+			}
+			remain := traceOpts.MaxTokens - generatedCount
+			// Smaller chunks when host loop guards are active so we stop sooner.
+			chunkSize := 32
+			if traceOpts.NoRepeatNGram > 0 || traceOpts.MaxConsecutiveRepeats > 0 {
+				chunkSize = 8
+			}
+			for remain > 0 && generatedCount > 0 {
+				if generatedCount >= traceOpts.MinTokens && t.isEOS(nextToken, traceOpts.EOSTokens) {
+					break
+				}
+				if traceOpts.UseKVCache && stream.HasNewUserTurn(tokens) {
+					break
+				}
+				n := remain
+				if n > chunkSize {
+					n = chunkSize
+				}
+				chunkStartPos := 0
+				if len(t.Network.Layers) > 1 {
+					chunkStartPos = t.Network.Layers[1].KVOffset
+				}
+				chunk, err := t.ForwardSampleGreedyChunkWGPU(uint32(nextToken), n)
+				if err != nil {
+					fmt.Printf("⚠️  GPU greedy chunk decode failed: %v\n", err)
+					break
+				}
+				stop := false
+				used := 0
+				for _, tok := range chunk {
+					cand := int(tok)
+					if t.greedyHostRejects(tokens, len(inputIDs), cand, traceOpts) {
+						stop = true
+						break
+					}
+					nextToken = cand
+					tokens = append(tokens, tok)
+					stream.Push(tokens, traceOpts.Silent, traceOpts.StreamCallback)
+					generatedCount++
+					remain--
+					used++
+					if ReplyLooksDegenerate(stream.String()) {
+						if !traceOpts.Silent {
+							fmt.Print("\n…(stopped: degenerate output)\n")
+						}
+						stop = true
+						break
+					}
+					if (generatedCount >= traceOpts.MinTokens && t.isEOS(nextToken, traceOpts.EOSTokens)) ||
+						(traceOpts.UseKVCache && stream.HasNewUserTurn(tokens)) {
+						stop = true
+						break
+					}
+				}
+				// Chunk advanced GPU KV by n; host must match tokens we actually kept.
+				if used < n {
+					for b := 0; b < len(t.Network.Layers)/4; b++ {
+						t.Network.Layers[b*4+1].KVOffset = chunkStartPos + used
+					}
+				}
+				if stop || len(chunk) == 0 || used == 0 {
+					break
+				}
+			}
 		}
+	} else {
+		promptLen := len(inputIDs)
+		for i := 0; i < traceOpts.MaxTokens; i++ {
+			t.applyRepetitionPenalty(logits, tokens, traceOpts)
+			t.applyBannedTokenMask(logits, traceOpts)
+			t.applyConsecutiveRepeatMask(logits, tokens, promptLen, traceOpts)
+			t.applyNoRepeatNGramMask(logits, tokens, promptLen, traceOpts)
 
-		if (generatedCount >= traceOpts.MinTokens && t.isEOS(nextToken, traceOpts.EOSTokens)) || (traceOpts.UseKVCache && stream.HasNewUserTurn(tokens)) {
-			break
-		}
+			if logitsHaveNoFiniteCandidate(logits) {
+				// Masks wiped every real option (common once chat history poisons n-grams).
+				break
+			}
 
-		// Forward next token (Incremental)
-		useGPUDecode := !traceDecode && !t.forwardModeSkipsGPU() && t.Network.UseGPU && t.Network.GPUEmbeddings != nil
-		if useGPUDecode {
-			logitTensor, err := t.ForwardTokenIDsWGPU([]uint32{uint32(nextToken)}, nil, true, true)
-			if err == nil {
-				rawLogits := logitTensor.Data
-				logits = make([]float32, len(rawLogits))
-				for j, v := range rawLogits {
-					logits[j] = float32(v)
+			nextToken := SampleTopK(logits, traceOpts.TopK, traceOpts.Temperature, traceOpts.Deterministic)
+
+			tokens = append(tokens, uint32(nextToken))
+			stream.Push(tokens, traceOpts.Silent, traceOpts.StreamCallback)
+			generatedCount++
+
+			if traceDecode {
+				fmt.Printf("→ sampled token id=%d\n", nextToken)
+			}
+
+			if ReplyLooksDegenerate(stream.String()) {
+				if !traceOpts.Silent {
+					fmt.Print("\n…(stopped: degenerate output)\n")
+				}
+				break
+			}
+			if (generatedCount >= traceOpts.MinTokens && t.isEOS(nextToken, traceOpts.EOSTokens)) || (traceOpts.UseKVCache && stream.HasNewUserTurn(tokens)) {
+				break
+			}
+
+			// Forward next token (Incremental)
+			useGPUDecode := !traceDecode && !t.forwardModeSkipsGPU() && t.Network.UseGPU && t.Network.GPUEmbeddings != nil
+			if useGPUDecode {
+				logitTensor, err := t.ForwardTokenIDsWGPU([]uint32{uint32(nextToken)}, nil, true, true)
+				if err == nil {
+					rawLogits := logitTensor.Data
+					logits = make([]float32, len(rawLogits))
+					for j, v := range rawLogits {
+						logits[j] = float32(v)
+					}
+				} else {
+					fmt.Printf("⚠️  GPU Incremental Failed: %v\n", err)
+					if t.hostWeightsReleased || len(t.Embeddings) == 0 {
+						fmt.Println("⚠️  CPU fallback unavailable (weights are GPU-resident only).")
+						return stream.String(), metrics
+					}
+					nextEmbed := t.getEmbedding(nextToken)
+					input := NewTensor[T](1, t.HiddenSize)
+					copy(input.Data, nextEmbed)
+					t.layerTraceSetTokenOrdinal(generatedCount - 1)
+					hidden := t.forwardOne(input)
+					logits = t.ApplyLMHead(t.lastHiddenRow(hidden))
 				}
 			} else {
-				fmt.Printf("⚠️  GPU Incremental Failed: %v\n", err)
-				if t.hostWeightsReleased || len(t.Embeddings) == 0 {
-					fmt.Println("⚠️  CPU fallback unavailable (weights are GPU-resident only).")
-					return stream.String(), metrics
-				}
 				nextEmbed := t.getEmbedding(nextToken)
 				input := NewTensor[T](1, t.HiddenSize)
 				copy(input.Data, nextEmbed)
@@ -487,13 +748,6 @@ func (t *Transformer[T]) Generate(
 				hidden := t.forwardOne(input)
 				logits = t.ApplyLMHead(t.lastHiddenRow(hidden))
 			}
-		} else {
-			nextEmbed := t.getEmbedding(nextToken)
-			input := NewTensor[T](1, t.HiddenSize)
-			copy(input.Data, nextEmbed)
-			t.layerTraceSetTokenOrdinal(generatedCount - 1)
-			hidden := t.forwardOne(input)
-			logits = t.ApplyLMHead(t.lastHiddenRow(hidden))
 		}
 	}
 
@@ -519,7 +773,15 @@ func (t *Transformer[T]) Generate(
 	metrics.VRAMUsageMB = float64(vramBytes) / (1024 * 1024)
 
 	if generatedCount > 0 {
-		metrics.DecodeTokPerSec = float64(generatedCount) / decodeElapsed.Seconds()
+		// GPUSampleGreedy folds TTFT (first generated token) into PrefillTime; decode rate
+		// should count only subsequent token steps so it is not artificially inflated.
+		decodeTokCount := generatedCount
+		if useGPUSample && generatedCount > 1 {
+			decodeTokCount = generatedCount - 1
+		}
+		if decodeElapsed > 0 && decodeTokCount > 0 {
+			metrics.DecodeTokPerSec = float64(decodeTokCount) / decodeElapsed.Seconds()
+		}
 		totalTokens := len(inputIDs) + generatedCount
 		totalElapsed := prefillElapsed + decodeElapsed
 		metrics.TotalTokPerSec = float64(totalTokens) / totalElapsed.Seconds()
@@ -540,7 +802,7 @@ func (t *Transformer[T]) Generate(
 		}
 	}
 
-	return stream.String(), metrics
+	return SanitizeChatReply(stream.String()), metrics
 }
 
 func (t *Transformer[T]) calculateHostModelBytes() uint64 {
@@ -744,44 +1006,53 @@ func (t *Transformer[T]) applyFP32LMHeadRows(hidden []T, logits []float32) {
 	wg.Wait()
 }
 
-func (t *Transformer[T]) usePackedTernaryLMHead() bool {
-	if t == nil || t.Network == nil || !t.Network.UseExactDType || t.Network.UseGPU {
+func (t *Transformer[T]) wantsPackedTernaryLMHead() bool {
+	if t == nil || t.Network == nil || !t.Network.UseExactDType {
 		return false
 	}
 	// Tied emb/LM head is OK — we pack a separate ternary logits matrix (keep FP32 emb for gather).
-	for i := range t.Network.Layers {
-		if t.Network.Layers[i].DType == DTypeTernary {
-			return true
-		}
-	}
-	return false
+	return t.hasTernaryDecoderLayers()
 }
 
-// EnsurePackedTernaryLMHead builds the BitNet logits matvec once at sync (including tied heads).
-func (t *Transformer[T]) EnsurePackedTernaryLMHead() {
-	if !t.usePackedTernaryLMHead() {
-		return
+// usePackedTernaryLMHead is the CPU ApplyLMHead path (GPU uses GPULMHeadTernaryPacked instead).
+func (t *Transformer[T]) usePackedTernaryLMHead() bool {
+	return t.wantsPackedTernaryLMHead() && !t.Network.UseGPU
+}
+
+// ensurePackedTernaryLMHeadMatrix packs vocab×hidden once (CPU or GPU upload prep).
+func (t *Transformer[T]) ensurePackedTernaryLMHeadMatrix() bool {
+	if !t.wantsPackedTernaryLMHead() {
+		return false
+	}
+	if t.lmHeadPackedTernary != nil && t.lmHeadPackedTernary.Rows == t.VocabSize &&
+		t.lmHeadPackedTernary.Cols == t.HiddenSize && len(t.lmHeadPackedTernary.Words) > 0 {
+		return true
 	}
 	src := t.LMHead
 	if len(src) < t.VocabSize*t.HiddenSize {
 		src = t.Embeddings
 	}
 	if len(src) < t.VocabSize*t.HiddenSize {
-		return
-	}
-	if t.lmHeadPackedTernary != nil && t.lmHeadPackedTernary.Rows == t.VocabSize &&
-		t.lmHeadPackedTernary.Cols == t.HiddenSize {
-		return
+		return false
 	}
 	start := time.Now()
 	packed, ok := packFloat32AsBitNetTernaryMatrix(src[:t.VocabSize*t.HiddenSize], t.VocabSize, t.HiddenSize)
 	if !ok {
-		return
+		return false
 	}
 	t.lmHeadPackedTernary = packed
 	t.lmHeadPackedLen = len(src)
 	fmt.Printf("🧮 BitNet LM head → packed ternary for logits (%d×%d in %s)\n",
 		t.VocabSize, t.HiddenSize, time.Since(start).Round(time.Millisecond))
+	return true
+}
+
+// EnsurePackedTernaryLMHead builds the BitNet logits matvec once at CPU sync (including tied heads).
+func (t *Transformer[T]) EnsurePackedTernaryLMHead() {
+	if !t.usePackedTernaryLMHead() {
+		return
+	}
+	t.ensurePackedTernaryLMHeadMatrix()
 }
 
 func (t *Transformer[T]) applyPackedTernaryLMHead(hidden []T) []float32 {
@@ -880,14 +1151,72 @@ func (t *Transformer[T]) applyBannedTokenMask(logits []float32, opts GenOptions)
 	}
 }
 
-func (t *Transformer[T]) applyConsecutiveRepeatMask(logits []float32, tokens []uint32, opts GenOptions) {
-	if len(logits) == 0 || opts.MaxConsecutiveRepeats <= 0 || len(tokens) < opts.MaxConsecutiveRepeats {
+// greedyHostRejects reports whether nextToken must not be emitted under host loop/ban rules.
+// Used when GPUSampleGreedy skips logit masks (cannot re-sample without logits).
+// promptLen scopes n-gram / consecutive checks to the current reply (not the chat prompt).
+func (t *Transformer[T]) greedyHostRejects(tokens []uint32, promptLen, nextToken int, opts GenOptions) bool {
+	if nextToken < 0 {
+		return true
+	}
+	for _, b := range opts.BannedTokens {
+		if nextToken == b {
+			return true
+		}
+	}
+	gen := tokens
+	if promptLen > 0 && promptLen <= len(tokens) {
+		gen = tokens[promptLen:]
+	}
+	if opts.MaxConsecutiveRepeats > 0 && len(gen) >= opts.MaxConsecutiveRepeats {
+		last := uint32(nextToken)
+		if gen[len(gen)-1] == last {
+			repeats := 1 // the candidate itself
+			for i := len(gen) - 1; i >= 0; i-- {
+				if gen[i] != last {
+					break
+				}
+				repeats++
+			}
+			if repeats > opts.MaxConsecutiveRepeats {
+				return true
+			}
+		}
+	}
+	n := opts.NoRepeatNGram
+	if n > 1 && len(gen) >= n-1 {
+		// Would completing (prefix..., next) recreate an n-gram already in this reply?
+		prefix := gen[len(gen)-(n-1):]
+		for i := 0; i+n-1 < len(gen); i++ {
+			match := true
+			for j := 0; j < n-1; j++ {
+				if gen[i+j] != prefix[j] {
+					match = false
+					break
+				}
+			}
+			if match && int(gen[i+n-1]) == nextToken {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (t *Transformer[T]) applyConsecutiveRepeatMask(logits []float32, tokens []uint32, promptLen int, opts GenOptions) {
+	if len(logits) == 0 || opts.MaxConsecutiveRepeats <= 0 {
 		return
 	}
-	last := tokens[len(tokens)-1]
+	gen := tokens
+	if promptLen > 0 && promptLen <= len(tokens) {
+		gen = tokens[promptLen:]
+	}
+	if len(gen) < opts.MaxConsecutiveRepeats {
+		return
+	}
+	last := gen[len(gen)-1]
 	repeats := 1
-	for i := len(tokens) - 2; i >= 0; i-- {
-		if tokens[i] != last {
+	for i := len(gen) - 2; i >= 0; i-- {
+		if gen[i] != last {
 			break
 		}
 		repeats++
@@ -900,19 +1229,30 @@ func (t *Transformer[T]) applyConsecutiveRepeatMask(logits []float32, tokens []u
 	}
 }
 
-func (t *Transformer[T]) applyNoRepeatNGramMask(logits []float32, tokens []uint32, opts GenOptions) {
+// applyNoRepeatNGramMask bans continuations that would recreate an n-gram already
+// present in the *current reply* (tokens after promptLen). Scoping to the reply
+// avoids locking common phrases from system/user history as the chat grows —
+// that path previously forced TopK into obscure BPE junk on long conversations.
+func (t *Transformer[T]) applyNoRepeatNGramMask(logits []float32, tokens []uint32, promptLen int, opts GenOptions) {
 	n := opts.NoRepeatNGram
-	if n <= 1 || len(logits) == 0 || len(tokens) < n-1 {
+	if n <= 1 || len(logits) == 0 {
+		return
+	}
+	gen := tokens
+	if promptLen > 0 && promptLen <= len(tokens) {
+		gen = tokens[promptLen:]
+	}
+	if len(gen) < n-1 {
 		return
 	}
 
-	prefixStart := len(tokens) - (n - 1)
-	prefix := tokens[prefixStart:]
+	prefixStart := len(gen) - (n - 1)
+	prefix := gen[prefixStart:]
 
-	for i := 0; i+n-1 < len(tokens); i++ {
+	for i := 0; i+n-1 < len(gen); i++ {
 		match := true
 		for j := 0; j < n-1; j++ {
-			if tokens[i+j] != prefix[j] {
+			if gen[i+j] != prefix[j] {
 				match = false
 				break
 			}
@@ -920,9 +1260,24 @@ func (t *Transformer[T]) applyNoRepeatNGramMask(logits []float32, tokens []uint3
 		if !match {
 			continue
 		}
-		next := tokens[i+n-1]
+		next := gen[i+n-1]
 		if int(next) >= 0 && int(next) < len(logits) {
 			logits[next] = -math.MaxFloat32
 		}
 	}
+}
+
+// logitsHaveNoFiniteCandidate is true when every logit is at/below the ban floor
+// (masks erased the distribution — sampling would pick arbitrary -Inf ids).
+func logitsHaveNoFiniteCandidate(logits []float32) bool {
+	if len(logits) == 0 {
+		return true
+	}
+	const dead = -1e30
+	for _, v := range logits {
+		if v > dead {
+			return false
+		}
+	}
+	return true
 }

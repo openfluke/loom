@@ -2,7 +2,6 @@ package poly
 
 import (
 	"fmt"
-	"unsafe"
 
 	"github.com/openfluke/webgpu/wgpu"
 )
@@ -259,12 +258,59 @@ func ctxSubmit(c *WGPUContext, enc *wgpu.CommandEncoder, owned bool) {
 	c.Queue.Submit(cmd)
 }
 
-// DispatchDenseQ4 dispatches a tiled dense kernel that dequantizes Q4_0 weights.
+// dispatchCompute records a compute dispatch. When BeginFrame is open, all dispatches
+// share one ComputePass (the PoC win vs per-op BeginComputePass). Standalone calls
+// keep one-shot create/submit behaviour.
+func (c *WGPUContext) dispatchCompute(pipeline *wgpu.ComputePipeline, bindGroup *wgpu.BindGroup, x, y, z uint32) error {
+	if c.ActiveEncoder != nil {
+		if c.ActivePass == nil {
+			c.ActivePass = c.ActiveEncoder.BeginComputePass(nil)
+		}
+		c.ActivePass.SetPipeline(pipeline)
+		c.ActivePass.SetBindGroup(0, bindGroup, nil)
+		c.ActivePass.DispatchWorkgroups(x, y, z)
+		return nil
+	}
+	enc, err := c.Device.CreateCommandEncoder(nil)
+	if err != nil {
+		return err
+	}
+	pass := enc.BeginComputePass(nil)
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bindGroup, nil)
+	pass.DispatchWorkgroups(x, y, z)
+	pass.End()
+	cmd, err := enc.Finish(nil)
+	if err != nil {
+		return err
+	}
+	c.Queue.Submit(cmd)
+	return nil
+}
+
+// DispatchDenseQ4 dispatches a Q4_0 dense kernel. batch=1 uses decode-shaped shared-mem GEMV.
 func (c *WGPUContext) DispatchDenseQ4(
 	batchSize, inputSize, outputSize int,
 	inputBuf, scaleBuf, weightBuf, outputBuf *wgpu.Buffer,
 	tileSize int,
 ) error {
+	if batchSize == 1 && inputSize <= 2048 {
+		type decodeParams struct {
+			InputSize, OutputSize, _p0, _p1 uint32
+		}
+		params := decodeParams{uint32(inputSize), uint32(outputSize), 0, 0}
+		pipeline, err := c.CreateComputePipeline(ShaderDecodeQ4GEMV)
+		if err != nil {
+			return err
+		}
+		pBuf := c.WriteUniformBytes(wgpu.ToBytes([]decodeParams{params}))
+		bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, scaleBuf, weightBuf, outputBuf)
+		if err != nil {
+			return err
+		}
+		return c.dispatchCompute(pipeline, bindGroup, (uint32(outputSize)+63)/64, 1, 1)
+	}
+
 	shaderSrc := ShaderTiledDenseQ4(tileSize)
 	pipeline, err := c.CreateComputePipeline(shaderSrc)
 	if err != nil {
@@ -277,22 +323,44 @@ func (c *WGPUContext) DispatchDenseQ4(
 		OutputSize: uint32(outputSize),
 		TileSize:   uint32(tileSize),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, scaleBuf, weightBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
+}
+
+// DispatchDecodeQ4QKV fuses Q/K/V Q4 GEMVs with one shared-memory load of x (batch=1).
+func (c *WGPUContext) DispatchDecodeQ4QKV(
+	inputSize, qDim, kvDim int,
+	inputBuf *wgpu.Buffer,
+	qScales, qWeights, kScales, kWeights, vScales, vWeights *wgpu.Buffer,
+	qOut, kOut, vOut *wgpu.Buffer,
+) error {
+	if inputSize > 2048 {
+		return fmt.Errorf("DispatchDecodeQ4QKV: inputSize %d > shared-mem cap 2048", inputSize)
+	}
+	type p struct {
+		InputSize, QDim, KVDim, _pad uint32
+	}
+	params := p{uint32(inputSize), uint32(qDim), uint32(kvDim), 0}
+	pipeline, err := c.CreateComputePipeline(ShaderDecodeQ4GEMV_QKV)
+	if err != nil {
+		return err
+	}
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]p{params}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, qScales, qWeights, kScales, kWeights, vScales, vWeights, qOut, kOut, vOut)
+	if err != nil {
+		return err
+	}
+	total := uint32(qDim + kvDim + kvDim)
+	return c.dispatchCompute(pipeline, bindGroup, (total+63)/64, 1, 1)
 }
 
 // DispatchDenseI8 dispatches a tiled dense kernel that dequantizes INT8 weights.
@@ -315,21 +383,17 @@ func (c *WGPUContext) DispatchDenseI8(
 		TileSize:   uint32(tileSize),
 		Scale:      scale,
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseI8Params{params}))
+	data := wgpu.ToBytes([]WGPUDenseI8Params{params})
+	pBuf := c.GetStickyUniform(fmt.Sprintf("di8_%d_%d_%d_%d_%g", params.BatchSize, params.InputSize, params.OutputSize, params.TileSize, params.Scale), uint64(len(data)), data)
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, weightBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -363,21 +427,16 @@ func (c *WGPUContext) DispatchDenseBitNetTernary(
 	if biasBuf != c.BlankBuffer {
 		params.HasBias = 1
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseBitNetTernaryParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseBitNetTernaryParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, weightBuf, biasBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -385,7 +444,8 @@ func (c *WGPUContext) DispatchBitNetQuantizeActivation(
 	batchSize, inputSize int,
 	inputBuf, qPackedBuf, scaleBuf *wgpu.Buffer,
 ) error {
-	pipeline, err := c.CreateComputePipeline(ShaderBitNetQuantizeActivation)
+	// Parallel absmax+pack (256 threads / batch row). Old serial WG(1) starved Turing.
+	pipeline, err := c.CreateComputePipeline(ShaderBitNetQuantizeActivationParallel)
 	if err != nil {
 		return err
 	}
@@ -395,21 +455,17 @@ func (c *WGPUContext) DispatchBitNetQuantizeActivation(
 		InputSize: uint32(inputSize),
 		QWords:    uint32(qWords),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUBitNetQuantizeActivationParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUBitNetQuantizeActivationParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, qPackedBuf, scaleBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(uint32(batchSize), 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	// One workgroup per batch row (@workgroup_size 256).
+	if err := c.dispatchCompute(pipeline, bindGroup, uint32(batchSize), 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -420,10 +476,14 @@ func (c *WGPUContext) DispatchDenseBitNetTernaryQuantized(
 	activation ActivationType,
 	tileSize int,
 ) error {
-	tileSize = bitNetReductionTileSize(tileSize)
 	if biasBuf == nil {
 		biasBuf = c.BlankBuffer
 	}
+	// Decode-shaped path: shared qPacked, one output row per lane (Smol135-style).
+	if batchSize == 1 && inputSize > 0 && inputSize <= 8192 {
+		return c.DispatchDecodeBitNetGEMV(inputSize, outputSize, qPackedBuf, scaleBuf, weightBuf, biasBuf, outputBuf, weightScale, activation)
+	}
+	tileSize = bitNetReductionTileSize(tileSize)
 	shaderSrc := ShaderTiledDenseBitNetTernaryQuantizedReduce(tileSize)
 	pipeline, err := c.CreateComputePipeline(shaderSrc)
 	if err != nil {
@@ -443,22 +503,108 @@ func (c *WGPUContext) DispatchDenseBitNetTernaryQuantized(
 	if biasBuf != c.BlankBuffer {
 		params.HasBias = 1
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseBitNetTernaryQuantizedParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseBitNetTernaryQuantizedParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, qPackedBuf, scaleBuf, weightBuf, biasBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(uint32(outputSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, uint32(outputSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
+}
+
+// DispatchDecodeBitNetGEMV is batch=1 ternary GEMV with shared int8 activations.
+func (c *WGPUContext) DispatchDecodeBitNetGEMV(
+	inputSize, outputSize int,
+	qPackedBuf, scaleBuf, weightBuf, biasBuf, outputBuf *wgpu.Buffer,
+	weightScale float32,
+	activation ActivationType,
+) error {
+	if inputSize <= 0 || outputSize <= 0 {
+		return fmt.Errorf("DispatchDecodeBitNetGEMV: bad dims %d→%d", inputSize, outputSize)
+	}
+	if inputSize > 8192 {
+		return fmt.Errorf("DispatchDecodeBitNetGEMV: inputSize %d > shared-mem cap 8192", inputSize)
+	}
+	if biasBuf == nil {
+		biasBuf = c.BlankBuffer
+	}
+	pipeline, err := c.CreateComputePipeline(ShaderDecodeBitNetGEMV)
+	if err != nil {
+		return err
+	}
+	rowWords := (inputSize + 15) / 16
+	qWords := (inputSize + 3) / 4
+	params := WGPUDenseBitNetTernaryQuantizedParams{
+		BatchSize:   1,
+		InputSize:   uint32(inputSize),
+		OutputSize:  uint32(outputSize),
+		RowWords:    uint32(rowWords),
+		QWords:      uint32(qWords),
+		Activation:  mapActivation(activation),
+		WeightScale: weightScale,
+	}
+	if biasBuf != c.BlankBuffer {
+		params.HasBias = 1
+	}
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseBitNetTernaryQuantizedParams{params}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, qPackedBuf, scaleBuf, weightBuf, biasBuf, outputBuf)
+	if err != nil {
+		return err
+	}
+	nWG := (uint32(outputSize) + 63) / 64
+	return c.dispatchCompute(pipeline, bindGroup, nWG, 1, 1)
+}
+
+type wgpuDecodeBitNetQKVParams struct {
+	InputSize uint32
+	QDim      uint32
+	KVDim     uint32
+	RowWords  uint32
+	QWords    uint32
+	Pad0      uint32
+	Pad1      uint32
+	Pad2      uint32
+	QScale    float32
+	KScale    float32
+	VScale    float32
+	Pad3      float32
+}
+
+// DispatchDecodeBitNetQKV fuses Q/K/V ternary GEMVs after one shared int8 act load.
+func (c *WGPUContext) DispatchDecodeBitNetQKV(
+	inputSize, qDim, kvDim int,
+	qPackedBuf, scaleBuf, qW, kW, vW, qOut, kOut, vOut *wgpu.Buffer,
+	qScale, kScale, vScale float32,
+) error {
+	if inputSize <= 0 || inputSize > 8192 {
+		return fmt.Errorf("DispatchDecodeBitNetQKV: inputSize %d out of range", inputSize)
+	}
+	pipeline, err := c.CreateComputePipeline(ShaderDecodeBitNetGEMV_QKV)
+	if err != nil {
+		return err
+	}
+	params := wgpuDecodeBitNetQKVParams{
+		InputSize: uint32(inputSize),
+		QDim:      uint32(qDim),
+		KVDim:     uint32(kvDim),
+		RowWords:  uint32((inputSize + 15) / 16),
+		QWords:    uint32((inputSize + 3) / 4),
+		QScale:    qScale,
+		KScale:    kScale,
+		VScale:    vScale,
+	}
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]wgpuDecodeBitNetQKVParams{params}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, qPackedBuf, scaleBuf, qW, kW, vW, qOut, kOut, vOut)
+	if err != nil {
+		return err
+	}
+	total := uint32(qDim + kvDim + kvDim)
+	nWG := (total + 63) / 64
+	return c.dispatchCompute(pipeline, bindGroup, nWG, 1, 1)
 }
 
 func bitNetReductionTileSize(tileSize int) int {
@@ -488,21 +634,16 @@ func (c *WGPUContext) DispatchBitNetGateProduct(
 		HiddenSize: uint32(hiddenSize),
 		Activation: mapActivation(activation),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUBitNetGateProductParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUBitNetGateProductParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gateBuf, upBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(batchSize*hiddenSize)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(batchSize*hiddenSize)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -526,21 +667,16 @@ func (c *WGPUContext) DispatchSwiGLUI8(
 		GScale:     gScale,
 		UScale:     uScale,
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUSwiGLUI8Params{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUSwiGLUI8Params{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateWeightBuf, upWeightBuf, gateBiasBuf, upBiasBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -549,19 +685,14 @@ func (c *WGPUContext) DispatchAdd(size int, a, b, res any) error {
 	if err != nil {
 		return err
 	}
-	pBuf := c.GetUniformBuffer(4)
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]uint32{uint32(size)}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]uint32{uint32(size)}))
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, a, b, res)
 	if err != nil {
 		return err
 	}
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -605,21 +736,16 @@ func (c *WGPUContext) DispatchDenseBackwardDX(
 		OutputSize: uint32(outputSize),
 		TileSize:   uint32(tileSize),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -640,21 +766,16 @@ func (c *WGPUContext) DispatchDenseBackwardDW(
 		OutputSize: uint32(outputSize),
 		TileSize:   uint32(tileSize),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(outputSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(outputSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -664,7 +785,31 @@ func (c *WGPUContext) DispatchMHA(
 	qBuf, kBuf, vBuf, oBuf any,
 	tileSize int,
 ) error {
-	shaderSrc := ShaderTiledMHAN(tileSize, headDim)
+	return c.dispatchMHA(numHeads, numKVHeads, headDim, seqLen, kvOffset, maxSeqLen, qBuf, kBuf, vBuf, oBuf, tileSize, nil)
+}
+
+// DispatchMHAStep is DispatchMHA with position from step[0] (chunked greedy decode).
+func (c *WGPUContext) DispatchMHAStep(
+	numHeads, numKVHeads, headDim, seqLen, maxSeqLen int,
+	qBuf, kBuf, vBuf, oBuf any,
+	tileSize int,
+	stepBuf *wgpu.Buffer,
+) error {
+	return c.dispatchMHA(numHeads, numKVHeads, headDim, seqLen, 0, maxSeqLen, qBuf, kBuf, vBuf, oBuf, tileSize, stepBuf)
+}
+
+func (c *WGPUContext) dispatchMHA(
+	numHeads, numKVHeads, headDim, seqLen, kvOffset, maxSeqLen int,
+	qBuf, kBuf, vBuf, oBuf any,
+	tileSize int,
+	stepBuf *wgpu.Buffer,
+) error {
+	var shaderSrc string
+	if stepBuf != nil {
+		shaderSrc = ShaderTiledMHANStep(tileSize, headDim)
+	} else {
+		shaderSrc = ShaderTiledMHAN(tileSize, headDim)
+	}
 	pipeline, err := c.CreateComputePipeline(shaderSrc)
 	if err != nil {
 		return err
@@ -679,21 +824,21 @@ func (c *WGPUContext) DispatchMHA(
 		MaxSeqLen:  uint32(maxSeqLen),
 		TileSize:   uint32(tileSize),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUMHAParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUMHAParams{params}))
 
-	bindGroup, err := c.GetBindGroup(pipeline, pBuf, qBuf, kBuf, vBuf, oBuf)
+	var bindGroup *wgpu.BindGroup
+	if stepBuf != nil {
+		bindGroup, err = c.GetBindGroup(pipeline, pBuf, qBuf, kBuf, vBuf, oBuf, stepBuf)
+	} else {
+		bindGroup, err = c.GetBindGroup(pipeline, pBuf, qBuf, kBuf, vBuf, oBuf)
+	}
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(uint32(numHeads), uint32(seqLen), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, uint32(numHeads), uint32(seqLen), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -718,21 +863,17 @@ func (c *WGPUContext) DispatchSwiGLUQ4(
 		OutputSize: uint32(outputSize),
 		TileSize:   uint32(tileSize),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
+	data := wgpu.ToBytes([]WGPUDenseParams{params})
+	pBuf := c.GetStickyUniform(fmt.Sprintf("swq4_%d_%d_%d_%d", params.BatchSize, params.InputSize, params.OutputSize, params.TileSize), uint64(len(data)), data)
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateScaleBuf, gateWeightBuf, upScaleBuf, upWeightBuf, gateBiasBuf, upBiasBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -757,21 +898,16 @@ func (c *WGPUContext) DispatchSwiGLU(
 		OutputSize: uint32(outputSize),
 		TileSize:   uint32(tileSize),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateBuf, upBuf, gateBiasBuf, upBiasBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -795,19 +931,14 @@ func (c *WGPUContext) DispatchSwiGLUWithActCache(
 		OutputSize: uint32(outputSize),
 		TileSize:   uint32(tileSize),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseParams{params}))
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, gateBuf, upBuf, gateBiasBuf, upBiasBuf, outputBuf, gateOutBuf, upOutBuf)
 	if err != nil {
 		return err
 	}
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -825,21 +956,16 @@ func (c *WGPUContext) DispatchSwiGLUBackward(
 		InputSize:  uint32(inputSize),
 		OutputSize: uint32(outputSize),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUDenseParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUDenseParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, gateInBuf, upInBuf, gradGateBuf, gradUpBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(batchSize*outputSize)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(batchSize*outputSize)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -861,21 +987,16 @@ func (c *WGPUContext) DispatchRMSNorm(
 	}
 
 	params := WGPURMSNormParams{Size: uint32(size), Epsilon: epsilon}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURMSNormParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPURMSNormParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, weightBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(uint32(batchSize), 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, uint32(batchSize), 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -889,21 +1010,16 @@ func (c *WGPUContext) DispatchRMSNormBackward(
 	}
 
 	params := WGPURMSNormParams{Size: uint32(size), Epsilon: epsilon}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(params)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURMSNormParams{params}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPURMSNormParams{params}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, rmsBuf, weightBuf, gradInputBuf, gradWeightBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(uint32(batchSize), 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, uint32(batchSize), 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -921,21 +1037,16 @@ func (c *WGPUContext) DispatchEmbeddingBackward(
 		HiddenSize: uint32(hiddenSize),
 		NumTokens:  uint32(numTokens),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(pEmbed)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUEmbeddingParams{pEmbed}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUEmbeddingParams{pEmbed}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, indicesBuf, gradOutputBuf, gradWeightBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(numTokens*hiddenSize)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(numTokens*hiddenSize)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -948,21 +1059,16 @@ func (c *WGPUContext) DispatchResidualBackward(
 		return err
 	}
 
-	pBuf := c.GetUniformBuffer(4)
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]uint32{uint32(size)}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]uint32{uint32(size)}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, gradInputBuf, gradResidualBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -991,22 +1097,38 @@ func (c *WGPUContext) DispatchKVUpdate(
 		NumKVHeads: uint32(numKVHeads),
 		NumTokens:  uint32(numTokens),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUKVParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUKVParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, kCache, vCache, newK, newV, pBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(numKVHeads)*uint32(headDim)*uint32(numTokens)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(numKVHeads)*uint32(headDim)*uint32(numTokens)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
+}
+
+// DispatchKVUpdateStep writes K/V at GPU step[0] (stable uniforms; chunked decode).
+func (c *WGPUContext) DispatchKVUpdateStep(
+	headDim, maxSeqLen, numKVHeads, numTokens int,
+	kCache, vCache, newK, newV, stepBuf *wgpu.Buffer,
+) error {
+	pipeline, err := c.CreateComputePipeline(ShaderKVUpdateStep)
+	if err != nil {
+		return err
+	}
+	type kvStepParams struct {
+		HeadDim, MaxSeqLen, NumKVHeads, NumTokens uint32
+	}
+	p := kvStepParams{uint32(headDim), uint32(maxSeqLen), uint32(numKVHeads), uint32(numTokens)}
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]kvStepParams{p}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, stepBuf, kCache, vCache, newK, newV)
+	if err != nil {
+		return err
+	}
+	return c.dispatchCompute(pipeline, bindGroup, (uint32(numKVHeads)*uint32(headDim)*uint32(numTokens)+63)/64, 1, 1)
 }
 
 // DispatchResidual dispatches the element-wise addition kernel.
@@ -1019,21 +1141,16 @@ func (c *WGPUContext) DispatchResidual(
 		return err
 	}
 
-	pBuf := c.GetUniformBuffer(4)
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]uint32{uint32(size)}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]uint32{uint32(size)}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, residualBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1062,25 +1179,44 @@ func (c *WGPUContext) DispatchRoPE(
 		Offset:   uint32(offset),
 		Theta:    theta,
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(pROPE)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURoPEParams{pROPE}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPURoPEParams{pROPE}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, targetBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-
 	halfDim := headDim / 2
 	totalPairs := seqLen * numHeads * halfDim
-	pass.DispatchWorkgroups((uint32(totalPairs)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(totalPairs)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
+}
+
+// DispatchRoPEStep applies RoPE at GPU step[0] (stable uniforms; chunked decode).
+func (c *WGPUContext) DispatchRoPEStep(
+	seqLen, headDim, numHeads int, theta float32,
+	targetBuf, stepBuf *wgpu.Buffer,
+) error {
+	pipeline, err := c.CreateComputePipeline(ShaderRoPEStep)
+	if err != nil {
+		return err
+	}
+	type ropeStepParams struct {
+		SeqLen, HeadDim, NumHeads, _pad uint32
+		Theta                           float32
+		_                               [3]uint32
+	}
+	p := ropeStepParams{SeqLen: uint32(seqLen), HeadDim: uint32(headDim), NumHeads: uint32(numHeads), Theta: theta}
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]ropeStepParams{p}))
+	bindGroup, err := c.GetBindGroup(pipeline, pBuf, stepBuf, targetBuf)
+	if err != nil {
+		return err
+	}
+	halfDim := headDim / 2
+	totalPairs := seqLen * numHeads * halfDim
+	return c.dispatchCompute(pipeline, bindGroup, (uint32(totalPairs)+63)/64, 1, 1)
 }
 
 type WGPUEmbeddingParams struct {
@@ -1145,19 +1281,14 @@ func (c *WGPUContext) DispatchEmbedding(
 			HiddenSize: uint32(hiddenSize),
 			NumTokens:  uint32(numTokens),
 		}
-		pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(pEmbed)))
-		c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUEmbeddingParams{pEmbed}))
+		pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUEmbeddingParams{pEmbed}))
 		bindGroup, err := c.GetBindGroup(pipeline, pBuf, indicesBuf, weightsBuf, outputBuf)
 		if err != nil {
 			return err
 		}
-		enc, owned, _ := ctxEncoder(c)
-		pass := enc.BeginComputePass(nil)
-		pass.SetPipeline(pipeline)
-		pass.SetBindGroup(0, bindGroup, nil)
-		pass.DispatchWorkgroups((uint32(numTokens*hiddenSize)+63)/64, 1, 1)
-		pass.End()
-		ctxSubmit(c, enc, owned)
+		if err := c.dispatchCompute(pipeline, bindGroup, (uint32(numTokens*hiddenSize)+63)/64, 1, 1); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -1194,20 +1325,15 @@ func (c *WGPUContext) DispatchEmbedding(
 			RowOffset:  uint32(rowOff),
 			NumRows:    uint32(nRows),
 		}
-		pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(pEmbed)))
-		c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUEmbeddingShardParams{pEmbed}))
+		pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUEmbeddingShardParams{pEmbed}))
 
 		bindGroup, err := c.GetBindGroup(pipeline, pBuf, indicesBuf, wShard, outputBuf)
 		if err != nil {
 			return err
 		}
-		enc, owned, _ := ctxEncoder(c)
-		pass := enc.BeginComputePass(nil)
-		pass.SetPipeline(pipeline)
-		pass.SetBindGroup(0, bindGroup, nil)
-		pass.DispatchWorkgroups((uint32(numTokens*hiddenSize)+63)/64, 1, 1)
-		pass.End()
-		ctxSubmit(c, enc, owned)
+		if err := c.dispatchCompute(pipeline, bindGroup, (uint32(numTokens*hiddenSize)+63)/64, 1, 1); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1222,21 +1348,16 @@ func (c *WGPUContext) DispatchRNNStep(
 	}
 
 	p := WGPURNNParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURNNParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPURNNParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, hPrevBuf, wIHBuf, wHHBuf, biasBuf, hCurrBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(hiddenSize)+63)/64, uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(hiddenSize)+63)/64, uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1250,21 +1371,16 @@ func (c *WGPUContext) DispatchLSTMStep(
 	}
 
 	p := WGPULSTMParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPULSTMParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPULSTMParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, hPrevBuf, cPrevBuf, weightBuf, hCurrBuf, cCurrBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(hiddenSize)+63)/64, uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(hiddenSize)+63)/64, uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1277,19 +1393,14 @@ func (c *WGPUContext) DispatchLSTMStepPreAct(
 		return err
 	}
 	p := WGPULSTMParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPULSTMParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPULSTMParams{p}))
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, hPrevBuf, cPrevBuf, weightBuf, hCurrBuf, cCurrBuf, preActBuf)
 	if err != nil {
 		return err
 	}
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(hiddenSize)+63)/64, uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(hiddenSize)+63)/64, uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1305,19 +1416,14 @@ func (c *WGPUContext) DispatchRNNBackwardDX(
 		return err
 	}
 	p := WGPURNNParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURNNParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPURNNParams{p}))
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, wIHBuf, hCurrBuf, gradInputBuf)
 	if err != nil {
 		return err
 	}
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1333,19 +1439,14 @@ func (c *WGPUContext) DispatchRNNBackwardDW(
 		return err
 	}
 	p := WGPURNNParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURNNParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPURNNParams{p}))
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, hCurrBuf, hPrevBuf, gradWeightsBuf)
 	if err != nil {
 		return err
 	}
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(hiddenSize)+uint32(tileSize)-1)/uint32(tileSize), 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(hiddenSize)+uint32(tileSize)-1)/uint32(tileSize), 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1361,19 +1462,14 @@ func (c *WGPUContext) DispatchLSTMBackwardDX(
 		return err
 	}
 	p := WGPULSTMParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPULSTMParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPULSTMParams{p}))
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, preActBuf, gradInputBuf)
 	if err != nil {
 		return err
 	}
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(inputSize)+uint32(tileSize)-1)/uint32(tileSize), uint32(batchSize), 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1389,19 +1485,14 @@ func (c *WGPUContext) DispatchLSTMBackwardDW(
 		return err
 	}
 	p := WGPULSTMParams{BatchSize: uint32(batchSize), InputSize: uint32(inputSize), HiddenSize: uint32(hiddenSize)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPULSTMParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPULSTMParams{p}))
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, preActBuf, hPrevBuf, gradWeightsBuf)
 	if err != nil {
 		return err
 	}
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(hiddenSize)+uint32(tileSize)-1)/uint32(tileSize), 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(hiddenSize)+uint32(tileSize)-1)/uint32(tileSize), 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1420,21 +1511,16 @@ func (c *WGPUContext) DispatchCNN1(
 		OutC: uint32(outC), OutL: uint32(outL),
 		KSize: uint32(kSize), Stride: uint32(stride), Padding: uint32(padding),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN1Params{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUCNN1Params{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, weightBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outL)+7)/8, (uint32(outC)+7)/8, uint32(batchSize))
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outL)+7)/8, (uint32(outC)+7)/8, uint32(batchSize)); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1455,21 +1541,16 @@ func (c *WGPUContext) DispatchCNN2(
 		StrideH: uint32(strideH), StrideW: uint32(strideW),
 		PadH: uint32(padH), PadW: uint32(padW),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN2Params{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUCNN2Params{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, weightBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outH*outW)+255)/16, (uint32(outC)+15)/16, uint32(batchSize))
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outH*outW)+255)/16, (uint32(outC)+15)/16, uint32(batchSize)); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1490,21 +1571,16 @@ func (c *WGPUContext) DispatchCNN3(
 		SD: uint32(sD), SH: uint32(sH), SW: uint32(sW),
 		PD: uint32(pD), PH: uint32(pH), PW: uint32(pW),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN3Params{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUCNN3Params{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, weightBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(outD*outH*outW)+63)/64, (uint32(outC)+1)/1, uint32(batchSize))
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(outD*outH*outW)+63)/64, (uint32(outC)+1)/1, uint32(batchSize)); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1525,21 +1601,16 @@ func (c *WGPUContext) DispatchCNN1BackwardDX(
 		KSize: uint32(kSize), Stride: uint32(stride), Padding: uint32(padding),
 		Activation: mapActivation(activation),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN1BackwardParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUCNN1BackwardParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf, preActBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(batchSize*inC*inL)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(batchSize*inC*inL)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1560,21 +1631,16 @@ func (c *WGPUContext) DispatchCNN1BackwardDW(
 		KSize: uint32(kSize), Stride: uint32(stride), Padding: uint32(padding),
 		Activation: mapActivation(activation),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN1BackwardParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUCNN1BackwardParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf, preActBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(filters*inC*kSize)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(filters*inC*kSize)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1595,21 +1661,16 @@ func (c *WGPUContext) DispatchCNN2BackwardDX(
 		KSize: uint32(kSize), Stride: uint32(stride), Padding: uint32(padding),
 		Activation: mapActivation(activation),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN2BackwardParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUCNN2BackwardParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf, preActBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(batchSize*inC*inH*inW)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(batchSize*inC*inH*inW)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1630,21 +1691,16 @@ func (c *WGPUContext) DispatchCNN2BackwardDW(
 		KSize: uint32(kSize), Stride: uint32(stride), Padding: uint32(padding),
 		Activation: mapActivation(activation),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN2BackwardParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUCNN2BackwardParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf, preActBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(filters*inC*kSize*kSize)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(filters*inC*kSize*kSize)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1665,21 +1721,16 @@ func (c *WGPUContext) DispatchCNN3BackwardDX(
 		KSize: uint32(kSize), Stride: uint32(stride), Padding: uint32(padding),
 		Activation: mapActivation(activation),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN3BackwardParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUCNN3BackwardParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, weightBuf, gradInputBuf, preActBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(batchSize*inC*inD*inH*inW)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(batchSize*inC*inD*inH*inW)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1700,21 +1751,16 @@ func (c *WGPUContext) DispatchCNN3BackwardDW(
 		KSize: uint32(kSize), Stride: uint32(stride), Padding: uint32(padding),
 		Activation: mapActivation(activation),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUCNN3BackwardParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUCNN3BackwardParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, inputBuf, gradWeightBuf, preActBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(filters*inC*kSize*kSize*kSize)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(filters*inC*kSize*kSize*kSize)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1733,21 +1779,16 @@ func (c *WGPUContext) DispatchMHABackward(
 		HeadDim: uint32(headDim), SeqLen: uint32(seqLen),
 		Scale: scale,
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUMHABackwardParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUMHABackwardParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutputBuf, qBuf, kBuf, vBuf, dQBuf, dKBuf, dVBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(uint32(batchSize*numHeads*seqLen+31)/32, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, uint32(batchSize*numHeads*seqLen+31)/32, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1781,21 +1822,16 @@ func (c *WGPUContext) DispatchApplyGradients(size int, lr float32, clipVal float
 		LR:      lr,
 		ClipVal: clipVal,
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUApplyGradientsParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUApplyGradientsParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, weightBuf, gradBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1806,21 +1842,16 @@ func (c *WGPUContext) DispatchFillZero(size int, buf *wgpu.Buffer) error {
 	}
 
 	p := struct{ Size uint32 }{Size: uint32(size)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]uint32{p.Size}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]uint32{p.Size}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, buf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1837,21 +1868,16 @@ func (c *WGPUContext) DispatchQuantizeI8(size int, scale float32, masterBuf, nat
 	}
 
 	p := WGPUQuantizeParams{Size: uint32(size), Scale: scale}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUQuantizeParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUQuantizeParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, masterBuf, nativeBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size/4)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size/4)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1862,21 +1888,16 @@ func (c *WGPUContext) DispatchQuantizeI4(size int, scale float32, masterBuf, nat
 	}
 
 	p := WGPUQuantizeParams{Size: uint32(size), Scale: scale}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUQuantizeParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUQuantizeParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, masterBuf, nativeBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size/8)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size/8)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1887,21 +1908,16 @@ func (c *WGPUContext) DispatchQuantizeFP4(size int, scale float32, masterBuf, na
 	}
 
 	p := WGPUQuantizeParams{Size: uint32(size), Scale: scale}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUQuantizeParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUQuantizeParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, masterBuf, nativeBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size/8)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size/8)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1912,21 +1928,16 @@ func (c *WGPUContext) DispatchQuantizeTernary(size int, scale float32, masterBuf
 	}
 
 	p := WGPUQuantizeParams{Size: uint32(size), Scale: scale}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUQuantizeParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUQuantizeParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, masterBuf, nativeBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size/16)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size/16)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1937,21 +1948,16 @@ func (c *WGPUContext) DispatchQuantizeBinary(size int, scale float32, masterBuf,
 	}
 
 	p := WGPUQuantizeParams{Size: uint32(size), Scale: scale}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUQuantizeParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUQuantizeParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, masterBuf, nativeBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size/32)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size/32)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1967,8 +1973,7 @@ func (c *WGPUContext) DispatchMSEGradPartialLoss(
 	}
 
 	p := WGPULossParams{Size: uint32(size)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPULossParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPULossParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, outputBuf, targetBuf, gradBuf, partialsBuf)
 	if err != nil {
@@ -1976,13 +1981,9 @@ func (c *WGPUContext) DispatchMSEGradPartialLoss(
 	}
 
 	numWG := (uint32(size) + 255) / 256
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(numWG, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, numWG, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1997,8 +1998,7 @@ func (c *WGPUContext) DispatchCEGradPartialLoss(
 	}
 
 	p := WGPULossParams{Size: uint32(size)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPULossParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPULossParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, outputBuf, targetBuf, gradBuf, partialsBuf)
 	if err != nil {
@@ -2006,13 +2006,9 @@ func (c *WGPUContext) DispatchCEGradPartialLoss(
 	}
 
 	numWG := (uint32(size) + 255) / 256
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(numWG, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, numWG, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2038,8 +2034,7 @@ func (c *WGPUContext) DispatchMultiHeadSoftmaxCEGradPartialLoss(
 		H1:       uint32(h1),
 		H2:       uint32(h2),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUMultiHeadSoftmaxCEParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUMultiHeadSoftmaxCEParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, outputBuf, targetBuf, gradBuf, partialsBuf)
 	if err != nil {
@@ -2047,13 +2042,9 @@ func (c *WGPUContext) DispatchMultiHeadSoftmaxCEGradPartialLoss(
 	}
 
 	numWG := (uint32(batchSize) + 255) / 256
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(numWG, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, numWG, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2081,8 +2072,7 @@ func (c *WGPUContext) DispatchMultiHeadSoftmaxCEGradPartialLossMasked(
 		H1:       uint32(h1),
 		H2:       uint32(h2),
 	}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUMultiHeadSoftmaxCEParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUMultiHeadSoftmaxCEParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, outputBuf, targetBuf, gradBuf, partialsBuf, headMaskBuf)
 	if err != nil {
@@ -2090,13 +2080,9 @@ func (c *WGPUContext) DispatchMultiHeadSoftmaxCEGradPartialLossMasked(
 	}
 
 	numWG := (uint32(batchSize) + 255) / 256
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups(numWG, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, numWG, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2246,8 +2232,7 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 				return err
 			}
 			p := WGPURNNParams{BatchSize: uint32(batchSize), InputSize: uint32(l.InputHeight), HiddenSize: uint32(l.OutputHeight)}
-			pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-			c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPURNNParams{p}))
+			pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPURNNParams{p}))
 			wIHBind := c.GetSubBuffer(wBuf, 0, uint64(ihSize*4))
 			wHHBind := c.GetSubBuffer(wBuf, uint64(ihSize*4), uint64(hhSize*4))
 			biasBind := c.GetSubBuffer(wBuf, uint64((ihSize+hhSize)*4), uint64(l.OutputHeight*4))
@@ -2255,13 +2240,9 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 			if err != nil {
 				return err
 			}
-			enc, owned, _ := ctxEncoder(c)
-			pass := enc.BeginComputePass(nil)
-			pass.SetPipeline(pipeline)
-			pass.SetBindGroup(0, bindGroup, nil)
-			pass.DispatchWorkgroups((uint32(l.OutputHeight)+63)/64, uint32(batchSize), 1)
-			pass.End()
-			ctxSubmit(c, enc, owned)
+			if err := c.dispatchCompute(pipeline, bindGroup, (uint32(l.OutputHeight)+63)/64, uint32(batchSize), 1); err != nil {
+				return err
+			}
 			return nil
 		}
 	case LayerLSTM:
@@ -2377,6 +2358,7 @@ func (c *WGPUContext) DispatchForwardLayer(l *VolumetricLayer, batchSize int, in
 		return c.DispatchDenseTiled(32, batchSize, l.OutputHeight, l.InputHeight, act, 1.0, preOut, wDown, dB, outBuf)
 	case LayerResidual:
 		totalSize := l.InputHeight * batchSize
+		c.EndComputePass()
 		enc, owned, _ := ctxEncoder(c)
 		enc.CopyBufferToBuffer(inputBuf, 0, outBuf, 0, uint64(totalSize*4))
 		ctxSubmit(c, enc, owned)
@@ -2394,6 +2376,7 @@ func (c *WGPUContext) propagateSplitWeights(l *VolumetricLayer, masterBuf *wgpu.
 	if enc == nil || l.WeightStore == nil {
 		return
 	}
+	c.EndComputePass()
 	cp := func(key DType, srcOffset, size uint64) {
 		if b, ok := l.WeightStore.GPUWeights[key].(*wgpu.Buffer); ok && b != nil {
 			enc.CopyBufferToBuffer(masterBuf, srcOffset, b, 0, size)
@@ -2629,7 +2612,7 @@ func fallbackOutputShape(l *VolumetricLayer, batchSize int, dataLen int) []int {
 
 func (c *WGPUContext) DispatchActivation(size int, act ActivationType, inputBuf, outputBuf *wgpu.Buffer) error {
 	if act == ActivationLinear {
-		// gradInput = gradOutput
+		c.EndComputePass()
 		enc, owned, _ := ctxEncoder(c)
 		enc.CopyBufferToBuffer(inputBuf, 0, outputBuf, 0, uint64(size*4))
 		ctxSubmit(c, enc, owned)
@@ -2641,21 +2624,16 @@ func (c *WGPUContext) DispatchActivation(size int, act ActivationType, inputBuf,
 	}
 
 	p := WGPUActivationParams{Size: uint32(size), Act: uint32(act)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUActivationParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUActivationParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, inputBuf, outputBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2672,21 +2650,16 @@ func (c *WGPUContext) DispatchActivationBackward(size int, act ActivationType, g
 	}
 
 	p := WGPUActivationParams{Size: uint32(size), Act: uint32(act)}
-	pBuf := c.GetUniformBuffer(uint64(unsafe.Sizeof(p)))
-	c.Queue.WriteBuffer(pBuf, 0, wgpu.ToBytes([]WGPUActivationParams{p}))
+	pBuf := c.WriteUniformBytes(wgpu.ToBytes([]WGPUActivationParams{p}))
 
 	bindGroup, err := c.GetBindGroup(pipeline, pBuf, gradOutBuf, preActBuf, gradInBuf)
 	if err != nil {
 		return err
 	}
 
-	enc, owned, _ := ctxEncoder(c)
-	pass := enc.BeginComputePass(nil)
-	pass.SetPipeline(pipeline)
-	pass.SetBindGroup(0, bindGroup, nil)
-	pass.DispatchWorkgroups((uint32(size)+63)/64, 1, 1)
-	pass.End()
-	ctxSubmit(c, enc, owned)
+	if err := c.dispatchCompute(pipeline, bindGroup, (uint32(size)+63)/64, 1, 1); err != nil {
+		return err
+	}
 	return nil
 }
 func (c *WGPUContext) partitionMHAWeights(l *VolumetricLayer) error {

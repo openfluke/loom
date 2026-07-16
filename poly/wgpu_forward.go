@@ -28,6 +28,10 @@ func getGPUBuffer(ws *WeightStore, dtype DType) (*wgpu.Buffer, error) {
 // reducing GPU submission overhead from ~150+ submits/token to just 1 submit + 1 download.
 // ForwardTokenIDsWGPU is the "true" GPU residency path. If tokens are provided,
 // embedding lookup happens on GPU. If final norm/LM head are synced, they run on GPU too.
+//
+// When Transformer.gpuReturnGreedyToken is set (see ForwardSampleGreedyTokenWGPU), the LM-head
+// logits stay on GPU, an ArgMax shader picks the next token, and only a 4-byte u32 is mapped
+// back — not the full vocab logits vector.
 func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], computeLogits bool, onlyLast bool) (*Tensor[T], error) {
 	if t.Network.GPUContext == nil {
 		return nil, fmt.Errorf("GPU context not initialized")
@@ -51,10 +55,48 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 		anchorL = t.Network.Layers[0].L
 	}
 
+	// Begin the shared encoder BEFORE embedding so decode is one Queue.Submit, not
+	// embedding-submit + block-submit + MapAsync. Chunked greedy decode reuses an open frame.
+	if !t.gpuChunkRecording {
+		if err := ctx.BeginFrame(); err != nil {
+			return nil, fmt.Errorf("BeginFrame failed: %w", err)
+		}
+	} else if ctx.ActiveEncoder == nil {
+		return nil, fmt.Errorf("gpu chunk recording requires an open BeginFrame")
+	}
+
 	var currentBuf *wgpu.Buffer
 
 	// 1. Embedding / Initial Hidden State
-	if tokens != nil && t.Network.GPUEmbeddings != nil {
+	if t.gpuUseDecodeTokenBuf && t.Network.GPUEmbeddings != nil {
+		tBuf := ctx.GetActivationBuffer("decode_token", 64, wgpu.BufferUsageStorage)
+		numTokens = 1
+		currentBuf = ctx.GetActivationBuffer("hidden_A", uint64(numTokens*t.HiddenSize*4), wgpu.BufferUsageStorage)
+		eWeights, ok := t.Network.GPUEmbeddings.(*wgpu.Buffer)
+		if !ok || eWeights == nil {
+			return nil, fmt.Errorf("GPU embeddings not loaded")
+		}
+		tEmb0 := time.Now()
+		if err := ctx.DispatchEmbedding(t.VocabSize, t.HiddenSize, numTokens, tBuf, eWeights, currentBuf); err != nil {
+			return nil, err
+		}
+		tEmb1 := time.Now()
+		if t.Network.Tanhi != nil && t.Network.Tanhi.Enabled {
+			embL := VolumetricLayer{
+				Network:      t.Network,
+				Type:         LayerEmbedding,
+				DType:        DTypeFloat32,
+				VocabSize:    t.VocabSize,
+				EmbeddingDim: t.HiddenSize,
+				Z:            anchorZ, Y: anchorY, X: anchorX, L: anchorL,
+			}
+			var sh []int
+			if t.Network.Tanhi.SendShape {
+				sh = TanhiGPULayerShapeHint(&embL, numTokens)
+			}
+			tanhiEmitWithConn(t.Network, "fwd", -1, &embL, tEmb0, tEmb1, sh, len(t.Embeddings))
+		}
+	} else if tokens != nil && t.Network.GPUEmbeddings != nil {
 		// Optimization: Use WriteBuffer instead of CreateBufferInit to avoid sync allocation
 		tBuf := ctx.GetActivationBuffer("token_ids", uint64(numTokens*4), wgpu.BufferUsageStorage)
 		ctx.Queue.WriteBuffer(tBuf, 0, wgpu.ToBytes(tokens))
@@ -96,9 +138,6 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 	numBlocks := len(t.Network.Layers) / 4
 
 	// 2. Transformer Blocks
-	if err := ctx.BeginFrame(); err != nil {
-		return nil, fmt.Errorf("BeginFrame failed: %w", err)
-	}
 
 	for b := 0; b < numBlocks; b++ {
 		base := b * 4
@@ -169,24 +208,40 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 			if err != nil {
 				return nil, err
 			}
-			if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMHA.DModel, qDim, norm1Q, norm1Scale, wqBuf, nil, qBuf, bitNetGPUScaleValue(lMHA.WeightStore, WeightMHAQuery, 0), ActivationLinear, tileSize); err != nil {
-				return nil, err
-			}
-			if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMHA.DModel, kvDim, norm1Q, norm1Scale, wkBuf, nil, kBuf, bitNetGPUScaleValue(lMHA.WeightStore, WeightMHAKey, qDim*lMHA.DModel), ActivationLinear, tileSize); err != nil {
-				return nil, err
-			}
-			if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMHA.DModel, kvDim, norm1Q, norm1Scale, wvBuf, nil, vBuf, bitNetGPUScaleValue(lMHA.WeightStore, WeightMHAValue, qDim*lMHA.DModel+kvDim*lMHA.DModel), ActivationLinear, tileSize); err != nil {
-				return nil, err
+			qScale := bitNetGPUScaleValue(lMHA.WeightStore, WeightMHAQuery, 0)
+			kScale := bitNetGPUScaleValue(lMHA.WeightStore, WeightMHAKey, qDim*lMHA.DModel)
+			vScale := bitNetGPUScaleValue(lMHA.WeightStore, WeightMHAValue, qDim*lMHA.DModel+kvDim*lMHA.DModel)
+			// Decode: one shared int8 act load → fused Q|K|V (Microsoft-style packed ternary).
+			if numTokens == 1 && lMHA.DModel <= 8192 {
+				if err := ctx.DispatchDecodeBitNetQKV(lMHA.DModel, qDim, kvDim, norm1Q, norm1Scale, wqBuf, wkBuf, wvBuf, qBuf, kBuf, vBuf, qScale, kScale, vScale); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMHA.DModel, qDim, norm1Q, norm1Scale, wqBuf, nil, qBuf, qScale, ActivationLinear, tileSize); err != nil {
+					return nil, err
+				}
+				if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMHA.DModel, kvDim, norm1Q, norm1Scale, wkBuf, nil, kBuf, kScale, ActivationLinear, tileSize); err != nil {
+					return nil, err
+				}
+				if err := ctx.DispatchDenseBitNetTernaryQuantized(numTokens, lMHA.DModel, kvDim, norm1Q, norm1Scale, wvBuf, nil, vBuf, vScale, ActivationLinear, tileSize); err != nil {
+					return nil, err
+				}
 			}
 		} else if lMHA.DType == DTypeInt4 && sq != nil && sk != nil && sv != nil {
-			if err := ctx.DispatchDenseQ4(numTokens, lMHA.DModel, qDim, norm1Out, sq, wqBuf, qBuf, tileSize); err != nil {
-				return nil, err
-			}
-			if err := ctx.DispatchDenseQ4(numTokens, lMHA.DModel, kvDim, norm1Out, sk, wkBuf, kBuf, tileSize); err != nil {
-				return nil, err
-			}
-			if err := ctx.DispatchDenseQ4(numTokens, lMHA.DModel, kvDim, norm1Out, sv, wvBuf, vBuf, tileSize); err != nil {
-				return nil, err
+			if numTokens == 1 && lMHA.DModel <= 2048 {
+				if err := ctx.DispatchDecodeQ4QKV(lMHA.DModel, qDim, kvDim, norm1Out, sq, wqBuf, sk, wkBuf, sv, wvBuf, qBuf, kBuf, vBuf); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := ctx.DispatchDenseQ4(numTokens, lMHA.DModel, qDim, norm1Out, sq, wqBuf, qBuf, tileSize); err != nil {
+					return nil, err
+				}
+				if err := ctx.DispatchDenseQ4(numTokens, lMHA.DModel, kvDim, norm1Out, sk, wkBuf, kBuf, tileSize); err != nil {
+					return nil, err
+				}
+				if err := ctx.DispatchDenseQ4(numTokens, lMHA.DModel, kvDim, norm1Out, sv, wvBuf, vBuf, tileSize); err != nil {
+					return nil, err
+				}
 			}
 		} else if lMHA.DType == DTypeInt8 {
 			s := lMHA.WeightStore.Scale
@@ -234,24 +289,41 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 		if lMHA.RoPEFreqBase > 0 {
 			theta = float32(lMHA.RoPEFreqBase)
 		}
-		if err := ctx.DispatchRoPE(numTokens, lMHA.HeadDim, lMHA.NumHeads, lMHA.KVOffset, theta, qBuf); err != nil {
-			return nil, err
-		}
-		if err := ctx.DispatchRoPE(numTokens, lMHA.HeadDim, lMHA.NumKVHeads, lMHA.KVOffset, theta, kBuf); err != nil {
-			return nil, err
-		}
-
 		kCacheBuf, okK := lMHA.GPUKVCacheK.(*wgpu.Buffer)
 		vCacheBuf, okV := lMHA.GPUKVCacheV.(*wgpu.Buffer)
 		if !okK || kCacheBuf == nil || !okV || vCacheBuf == nil {
 			return nil, fmt.Errorf("layer %d GPU KV Cache not initialized", b)
 		}
-		if err := ctx.DispatchKVUpdate(lMHA.KVOffset, lMHA.HeadDim, lMHA.MaxSeqLen, lMHA.NumKVHeads, numTokens, kCacheBuf, vCacheBuf, kBuf, vBuf); err != nil {
-			return nil, err
+		if t.gpuChunkRecording {
+			stepBuf := ctx.GetActivationBuffer("greedy_step", 64, wgpu.BufferUsageStorage)
+			if err := ctx.DispatchRoPEStep(numTokens, lMHA.HeadDim, lMHA.NumHeads, theta, qBuf, stepBuf); err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchRoPEStep(numTokens, lMHA.HeadDim, lMHA.NumKVHeads, theta, kBuf, stepBuf); err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchKVUpdateStep(lMHA.HeadDim, lMHA.MaxSeqLen, lMHA.NumKVHeads, numTokens, kCacheBuf, vCacheBuf, kBuf, vBuf, stepBuf); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := ctx.DispatchRoPE(numTokens, lMHA.HeadDim, lMHA.NumHeads, lMHA.KVOffset, theta, qBuf); err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchRoPE(numTokens, lMHA.HeadDim, lMHA.NumKVHeads, lMHA.KVOffset, theta, kBuf); err != nil {
+				return nil, err
+			}
+			if err := ctx.DispatchKVUpdate(lMHA.KVOffset, lMHA.HeadDim, lMHA.MaxSeqLen, lMHA.NumKVHeads, numTokens, kCacheBuf, vCacheBuf, kBuf, vBuf); err != nil {
+				return nil, err
+			}
 		}
 
 		attnOut := ctx.GetActivationBuffer(fmt.Sprintf("b%d_ao", b), uint64(numTokens*qDim*4), wgpu.BufferUsageStorage)
-		if err := ctx.DispatchMHA(lMHA.NumHeads, lMHA.NumKVHeads, lMHA.HeadDim, numTokens, lMHA.KVOffset, lMHA.MaxSeqLen, qBuf, kCacheBuf, vCacheBuf, attnOut, tileSize); err != nil {
+		if t.gpuChunkRecording {
+			stepBuf := ctx.GetActivationBuffer("greedy_step", 64, wgpu.BufferUsageStorage)
+			if err := ctx.DispatchMHAStep(lMHA.NumHeads, lMHA.NumKVHeads, lMHA.HeadDim, numTokens, lMHA.MaxSeqLen, qBuf, kCacheBuf, vCacheBuf, attnOut, tileSize, stepBuf); err != nil {
+				return nil, err
+			}
+		} else if err := ctx.DispatchMHA(lMHA.NumHeads, lMHA.NumKVHeads, lMHA.HeadDim, numTokens, lMHA.KVOffset, lMHA.MaxSeqLen, qBuf, kCacheBuf, vCacheBuf, attnOut, tileSize); err != nil {
 			return nil, err
 		}
 		if lMHA.DType == DTypeTernary {
@@ -293,7 +365,9 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 			}
 		}
 
-		lMHA.KVOffset += numTokens
+		if !t.gpuChunkRecording {
+			lMHA.KVOffset += numTokens
+		}
 		if err := ctx.DispatchResidual(numTokens*lMHA.DModel, mhaOut, residual); err != nil {
 			return nil, err
 		}
@@ -487,7 +561,10 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 	downloadTokens := numTokens
 	readOffset := uint64(0)
 
-	if computeLogits && t.Network.GPULMHead != nil {
+	hasQ4LM := t.Network.GPULMHeadQ4Packed != nil && t.Network.GPULMHeadQ4Scales != nil
+	ternW, hasTernaryLM := t.Network.GPULMHeadTernaryPacked.(*wgpu.Buffer)
+	hasTernaryLM = hasTernaryLM && ternW != nil
+	if computeLogits && (t.Network.GPULMHead != nil || hasQ4LM || hasTernaryLM) {
 		tLM := time.Now()
 		effectiveInput := currentBuf
 		dispatchTokens := numTokens
@@ -500,6 +577,7 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 			offset := uint64((numTokens - 1) * t.HiddenSize * 4)
 
 			// Use the existing command encoder to perform a sync-less copy
+			ctx.EndComputePass()
 			ctx.ActiveEncoder.CopyBufferToBuffer(currentBuf, offset, scratchBuf, 0, scratchSize)
 
 			effectiveInput = scratchBuf
@@ -507,17 +585,37 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 		}
 
 		lmOut := ctx.GetActivationBuffer("logits", uint64(dispatchTokens*t.VocabSize*4), wgpu.BufferUsageStorage)
-		lmW, ok := t.Network.GPULMHead.(*wgpu.Buffer)
-		if !ok || lmW == nil {
-			return nil, fmt.Errorf("GPU LM Head not loaded")
-		}
-		if t.Network.Layers[0].DType == DTypeInt4 { // Use first layer's dtype hint
-			// We need a way to store LMHead scales.
-			// Let's assume LMHead is not quantized for now or use a global scale map.
-			if err := ctx.DispatchDense(dispatchTokens, t.HiddenSize, t.VocabSize, effectiveInput, lmW, lmOut, ctx.GPUTileSize); err != nil {
+		q4s, _ := t.Network.GPULMHeadQ4Scales.(*wgpu.Buffer)
+		q4w, _ := t.Network.GPULMHeadQ4Packed.(*wgpu.Buffer)
+		if hasTernaryLM {
+			// BitNet: int8 act × packed ternary LM (same cost class as decoder Dense).
+			lmQ, lmScale, err := bitNetQuantizeActivationGPU(ctx, "lm_bitnet", dispatchTokens, t.HiddenSize, effectiveInput)
+			if err != nil {
+				return nil, err
+			}
+			wScale := t.Network.GPULMHeadTernaryScale
+			if wScale == 0 {
+				wScale = 1
+			}
+			tile := ctx.GPUTileSize
+			if tile <= 0 {
+				tile = 32
+			}
+			if err := ctx.DispatchDenseBitNetTernaryQuantized(
+				dispatchTokens, t.HiddenSize, t.VocabSize,
+				lmQ, lmScale, ternW, nil, lmOut, wScale, ActivationLinear, tile,
+			); err != nil {
+				return nil, err
+			}
+		} else if q4s != nil && q4w != nil {
+			if err := ctx.DispatchDenseQ4(dispatchTokens, t.HiddenSize, t.VocabSize, effectiveInput, q4s, q4w, lmOut, ctx.GPUTileSize); err != nil {
 				return nil, err
 			}
 		} else {
+			lmW, ok := t.Network.GPULMHead.(*wgpu.Buffer)
+			if !ok || lmW == nil {
+				return nil, fmt.Errorf("GPU LM Head not loaded")
+			}
 			if err := ctx.DispatchDense(dispatchTokens, t.HiddenSize, t.VocabSize, effectiveInput, lmW, lmOut, ctx.GPUTileSize); err != nil {
 				return nil, err
 			}
@@ -555,10 +653,41 @@ func (t *Transformer[T]) ForwardTokenIDsWGPU(tokens []uint32, input *Tensor[T], 
 	if isReturningLogits {
 		dim = t.VocabSize
 	}
+
+	// On-device ArgMax. Chunk mode keeps the token on GPU (advance + hist) with no MapAsync.
+	if t.gpuReturnGreedyToken && isReturningLogits {
+		tokenOut := ctx.GetActivationBuffer("greedy_token", 16, wgpu.BufferUsageStorage|wgpu.BufferUsageCopySrc)
+		if err := ctx.DispatchArgMax(dim, currentBuf, tokenOut); err != nil {
+			return nil, err
+		}
+		if t.gpuChunkRecording {
+			stepBuf := ctx.GetActivationBuffer("greedy_step", 64, wgpu.BufferUsageStorage)
+			// Size must already be allocated by ForwardSampleGreedyChunkWGPU.
+			histBuf := ctx.GetActivationBuffer("greedy_hist", 64, wgpu.BufferUsageStorage)
+			liveTok := ctx.GetActivationBuffer("decode_token", 64, wgpu.BufferUsageStorage)
+			if err := ctx.DispatchAdvanceGreedy(stepBuf, tokenOut, histBuf, liveTok); err != nil {
+				return nil, err
+			}
+			t.gpuChunkHistCount++
+			return NewTensorFromSlice[T]([]T{0}, 1, 1), nil
+		}
+		stagingBuf := ctx.GetActivationBuffer("staging_u32", 64, wgpu.BufferUsageMapRead)
+		ctx.EndComputePass()
+		ctx.ActiveEncoder.CopyBufferToBuffer(tokenOut, 0, stagingBuf, 0, 4)
+		ctx.FlushFrame()
+		raw, err := ctx.pollMapRead(stagingBuf, 4)
+		if err != nil {
+			return nil, err
+		}
+		t.lastGPUSampledToken = uint32(raw[0]) | uint32(raw[1])<<8 | uint32(raw[2])<<16 | uint32(raw[3])<<24
+		return NewTensorFromSlice[T]([]T{T(t.lastGPUSampledToken)}, 1, 1), nil
+	}
+
 	resSize := uint64(downloadTokens * dim * 4)
 	stagingBuf := ctx.GetActivationBuffer("staging", resSize, wgpu.BufferUsageMapRead)
 
 	// Perform the copy within the ACTIVE encoder before flushing
+	ctx.EndComputePass()
 	ctx.ActiveEncoder.CopyBufferToBuffer(currentBuf, readOffset, stagingBuf, 0, resSize)
 
 	ctx.FlushFrame()
@@ -589,6 +718,18 @@ Finished:
 
 	shape := []int{downloadTokens, dim}
 	return NewTensorFromSlice[T](CastWeights[T](outData), shape...), nil
+}
+
+// ForwardSampleGreedyTokenWGPU runs a GPU forward and returns the ArgMax token id.
+// Only a 4-byte readback syncs to the host (not the full logits vector).
+func (t *Transformer[T]) ForwardSampleGreedyTokenWGPU(tokens []uint32, onlyLast bool) (uint32, error) {
+	t.gpuReturnGreedyToken = true
+	defer func() { t.gpuReturnGreedyToken = false }()
+	_, err := t.ForwardTokenIDsWGPU(tokens, nil, true, onlyLast)
+	if err != nil {
+		return 0, err
+	}
+	return t.lastGPUSampledToken, nil
 }
 
 func (t *Transformer[T]) ForwardWGPU(input *Tensor[T]) (*Tensor[T], error) {

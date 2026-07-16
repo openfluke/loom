@@ -16,11 +16,15 @@ type WGPUContext struct {
 	ActivationPool    map[string]*wgpu.Buffer
 	GPUTileSize       int
 	ActiveEncoder     *wgpu.CommandEncoder
+	ActivePass        *wgpu.ComputePassEncoder // fused compute pass while ActiveEncoder is open
 	PendingDestroys   []*wgpu.Buffer
 	LayoutCache       map[string]*wgpu.BindGroupLayout
 	BindGroupCache    map[uint64]*wgpu.BindGroup
 	UniformPool       []*wgpu.Buffer
-	UniformIdx          int
+	UniformIdx        int
+	// UniformSticky reuses the same uniform buffer (and thus BindGroup cache entries)
+	// for identical params within one BeginFrame — critical for chunked decode.
+	UniformSticky     map[string]*wgpu.Buffer
 	Limits            wgpu.Limits
 	BlankBuffer       *wgpu.Buffer
 	HasTimestampQuery bool
